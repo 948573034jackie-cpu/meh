@@ -1,0 +1,19 @@
+name: Build ClaudeSnap
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-14
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile for macOS 12+
+        working-directory: ClaudeSnap
+        run: |
+          swiftc -O -target ${{ matrix.arch }}-apple-macos12.0 main.swift -o ClaudeSnap-${{ matrix.arch }}
+          plutil -lint Info.plist
+      - name: Show Swift version
+        run: swiftc --version
