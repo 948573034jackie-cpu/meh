@@ -71,6 +71,27 @@ jobs:
             ios/YTLearn-unsigned.ipa
             ios/YTLearn-Xcode-project.zip
 
+  real-sites:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i playwright@1.56.1 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Test the extension on the real YouTube / ChatGPT / Claude pages
+        run: node tests/real-sites.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-site-screenshots
+          path: /tmp/*.png
+
   release:
     needs: [mac-app, ios]
     if: github.ref_name == 'claude/new-session-pxh22u'
