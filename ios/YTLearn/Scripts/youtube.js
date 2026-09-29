@@ -1,6 +1,8 @@
 // Runs on youtube.com. Reads the video info + transcript when the service worker asks.
 
-if (!window.__ytToClaudeLoaded) {
+(function () {
+  'use strict';
+  if (window.__ytToClaudeLoaded) return;
   window.__ytToClaudeLoaded = true;
   const { parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences, fmtTime } = window.YTC;
 
@@ -436,4 +438,4 @@ if (!window.__ytToClaudeLoaded) {
       handling = false;
     }
   }
-}
+})();

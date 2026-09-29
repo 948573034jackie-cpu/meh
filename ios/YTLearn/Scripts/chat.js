@@ -2,7 +2,9 @@
 // Written to survive small layout changes: several ways to find things, several ways to type, and it
 // checks that the message really left the box.
 
-if (!window.__ytChatLoaded) {
+(function () {
+  'use strict';
+  if (window.__ytChatLoaded) return;
   window.__ytChatLoaded = true;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -176,4 +178,4 @@ if (!window.__ytChatLoaded) {
     })();
     return true;
   });
-}
+})();
