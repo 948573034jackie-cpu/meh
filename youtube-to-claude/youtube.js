@@ -295,12 +295,12 @@ if (!window.__ytToClaudeLoaded) {
         note: '⏸ ' + fmtTime(t) + '  ·  ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end),
         seg
       });
-      setFoot('Sending to Claude…', true);
+      setFoot('Sending…', true);
       try {
         chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg })
           .then((r) => {
             const ok = !!(r && /^Sent /.test(r.result));
-            setFoot(ok ? '✓ Sent to Claude' : '✗ Not sent to Claude: ' + ((r && r.result) || 'no answer'), ok);
+            setFoot(ok ? '✓ ' + r.result.split(':')[0] : '✗ Not sent: ' + ((r && r.result) || 'no answer'), ok);
           })
           .catch(() => setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false));
       } catch (e) { setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false); }

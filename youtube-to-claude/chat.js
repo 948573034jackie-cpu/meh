@@ -1,7 +1,7 @@
-// Runs on claude.ai. Attaches a transcript file and types + sends the message.
+// Runs on claude.ai and chatgpt.com. Attaches a transcript file and types + sends the message.
 
-if (!window.__ytToClaudeClaudeLoaded) {
-  window.__ytToClaudeClaudeLoaded = true;
+if (!window.__ytChatLoaded) {
+  window.__ytChatLoaded = true;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function waitFor(fn, timeout, step = 150) {
@@ -15,12 +15,15 @@ if (!window.__ytToClaudeClaudeLoaded) {
   }
 
   function composer() {
-    return document.querySelector('div.ProseMirror[contenteditable="true"]') ||
+    return document.querySelector('#prompt-textarea') ||                       // ChatGPT
+      document.querySelector('div.ProseMirror[contenteditable="true"]') ||    // Claude
       document.querySelector('[contenteditable="true"]') ||
       document.querySelector('textarea');
   }
 
   function sendButton() {
+    const direct = document.querySelector('button[data-testid="send-button"]'); // ChatGPT
+    if (direct && !direct.disabled) return direct;
     const cands = Array.from(document.querySelectorAll('button'));
     return cands.find((b) => /send/i.test(b.getAttribute('aria-label') || '') && !b.disabled) || null;
   }
@@ -51,13 +54,13 @@ if (!window.__ytToClaudeClaudeLoaded) {
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg) return;
-    if (msg.type === 'claude-ping') { sendResponse({ ok: true, path: location.pathname }); return; }
-    if (msg.type !== 'claude-send') return;
+    if (msg.type === 'chat-ping') { sendResponse({ ok: true, path: location.pathname }); return; }
+    if (msg.type !== 'chat-send') return;
     (async () => {
       const steps = [];
       try {
         const box = await waitFor(composer, 8000);
-        if (!box) return sendResponse({ ok: false, error: 'no message box found on this claude.ai page', steps });
+        if (!box) return sendResponse({ ok: false, error: 'no message box found on this page (is it in voice mode?)', steps });
         let text = msg.text;
         if (msg.file) {
           if (attachFile(msg.file.name, msg.file.text)) { steps.push('file attached'); await sleep(800); }

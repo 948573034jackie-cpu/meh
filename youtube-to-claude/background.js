@@ -1,8 +1,16 @@
 // Popup button → read the YouTube video (link + transcript) → type it into your claude.ai chat.
 
 const YT_WATCH = 'https://www.youtube.com/watch';
-const CLAUDE_URL = 'https://claude.ai/*';
-const CLAUDE_NEW = 'https://claude.ai/new';
+const TARGETS = {
+  claude:  { name: 'Claude',  url: 'https://claude.ai/*',   newUrl: 'https://claude.ai/new' },
+  chatgpt: { name: 'ChatGPT', url: 'https://chatgpt.com/*', newUrl: 'https://chatgpt.com/' }
+};
+
+async function getTarget(id) {
+  if (id && TARGETS[id]) return TARGETS[id];
+  const { target } = await chrome.storage.local.get('target');
+  return TARGETS[target] || TARGETS.claude;
+}
 
 async function setLast(text) {
   await chrome.storage.local.set({ last: new Date().toLocaleTimeString() + ' — ' + text });
@@ -16,31 +24,14 @@ async function findVideoTab(tabId) {
   return tab;
 }
 
-async function findOrOpenClaude() {
-  const tabs = await chrome.tabs.query({ url: CLAUDE_URL });
+async function findOrOpenClaude(T) {
+  const tabs = await chrome.tabs.query({ url: T.url });
   if (tabs.length) {
     tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
     return { tab: tabs[0], opened: false };
   }
-  const tab = await chrome.tabs.create({ url: CLAUDE_NEW, active: false });
+  const tab = await chrome.tabs.create({ url: T.newUrl, active: false });
   return { tab, opened: true };
-}
-
-async function talkToClaude(tabId, msg) {
-  // The page (or a freshly opened tab) may need a moment before the script answers.
-  let lastErr;
-  for (let i = 0; i < 40; i++) {
-    try {
-      return await chrome.tabs.sendMessage(tabId, msg);
-    } catch (e) {
-      lastErr = e;
-      if (i === 3) {
-        try { await chrome.scripting.executeScript({ target: { tabId }, files: ['claude.js'] }); } catch (_) {}
-      }
-      await sleep(500);
-    }
-  }
-  throw lastErr;
 }
 
 function buildMessage(info, hasFile, askReady) {
@@ -67,7 +58,7 @@ function slug(s) {
 
 async function claudePath(tabId) {
   try {
-    const r = await chrome.tabs.sendMessage(tabId, { type: 'claude-ping' });
+    const r = await chrome.tabs.sendMessage(tabId, { type: 'chat-ping' });
     return r && r.path;
   } catch (e) { return null; }
 }
@@ -107,19 +98,20 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force }) {
-  const { tab: claudeTab, opened } = await findOrOpenClaude();
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
+  const T = await getTarget(targetId);
+  const { tab: claudeTab, opened } = await findOrOpenClaude(T);
 
   // wait for the claude.ai page to answer, and learn which chat it is showing
   let path = null;
   for (let i = 0; i < 40 && !path; i++) {
     path = await claudePath(claudeTab.id);
     if (!path) {
-      if (i === 3) { try { await chrome.scripting.executeScript({ target: { tabId: claudeTab.id }, files: ['claude.js'] }); } catch (_) {} }
+      if (i === 3) { try { await chrome.scripting.executeScript({ target: { tabId: claudeTab.id }, files: ['chat.js'] }); } catch (_) {} }
       await sleep(500);
     }
   }
-  if (!path) return 'Could not reach the claude.ai tab. Refresh claude.ai and try again.';
+  if (!path) return 'Could not reach the ' + T.name + ' tab. Refresh it and try again.';
 
   const sent = await getSent();
   const rec = sent[claudeTab.id];
@@ -146,24 +138,24 @@ async function sendToClaude({ videoTabId, videoId, passage, force }) {
 
   let res;
   try {
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'claude-send', text, file });
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file });
   } catch (e) {
-    return 'Could not send to claude.ai: ' + e.message + '. Refresh claude.ai and try again.';
+    return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
   if (!res || !res.ok) {
-    return 'Claude page problem: ' + ((res && res.error) || 'unknown') + ' ' + JSON.stringify((res && res.steps) || []);
+    return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' ' + JSON.stringify((res && res.steps) || []);
   }
   if (needTranscript && (force || sendTranscript !== false)) await markSent(claudeTab.id, videoId, path);
-  return 'Sent ' + summary + (opened ? ' (opened a new claude.ai tab)' : '') + '.';
+  return 'Sent to ' + T.name + ': ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 
-async function sendVideo(tabId) {
+async function sendVideo(tabId, targetId) {
   const tab = await findVideoTab(tabId);
   if (!tab || !(tab.url || '').startsWith(YT_WATCH)) {
     return 'Open a YouTube video page first (the address should start with youtube.com/watch), then click again.';
   }
   const videoId = new URL(tab.url).searchParams.get('v');
-  return sendToClaude({ videoTabId: tab.id, videoId, passage: null, force: true });
+  return sendToClaude({ videoTabId: tab.id, videoId, passage: null, force: true, targetId });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -171,7 +163,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'send') {
     (async () => {
       let result;
-      try { result = await sendVideo(msg.tabId); } catch (e) { result = 'Unexpected error: ' + e.message; }
+      try { result = await sendVideo(msg.tabId, msg.target); } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast(result);
       sendResponse({ result });
     })();

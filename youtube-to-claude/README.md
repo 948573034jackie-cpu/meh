@@ -1,6 +1,6 @@
-# YouTube to Claude (Chrome extension)
+# YouTube to Claude / ChatGPT (Chrome extension)
 
-Helps you learn English from YouTube videos with Claude (claude.ai in Chrome).
+Helps you learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.com), both in Chrome. Pick the target with the two buttons in the popup; the radio buttons choose where pause-sentences go.
 
 **Button:** on a YouTube video page, click the extension icon → *Send this video to Claude*. Claude gets the link and the full transcript (as an attached text file).
 
