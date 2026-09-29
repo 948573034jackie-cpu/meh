@@ -32,3 +32,7 @@ It types the message, then clicks Send. If the message is still in the box it pr
 - “let's go” uses Chrome's speech recognition (needs internet). With speakers, the AI saying “let's go” could trigger it; headphones avoid this. Space / Enter / the play arrow always work.
 - The subtitles are loaded in the background as soon as the video opens, so the first pause is instant. The popup's “Last:” line shows how many seconds each send took.
 - Ads are ignored. Only youtube.com/watch pages.
+
+## Picture for Claude, and no repeated words
+* With **Claude** selected, every pause sends the words **and a picture of the video** (the frame where you paused, without the subtitles on top). **ChatGPT** gets the words only. You can turn the picture off in the extension window ("Claude only: also send a picture…").
+* YouTube's automatic subtitles repeat the end of one line at the start of the next line. The extension now removes these repeats, so every sentence appears once.

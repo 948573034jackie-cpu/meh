@@ -18,7 +18,7 @@ const pr = JSON.stringify({ captions:{ playerCaptionsTracklistRenderer:{ caption
 const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><h1 class="ytd-watch-metadata"><yt-formatted-string>English Lesson 1</yt-formatted-string></h1><div id="movie_player" style="position:relative;width:800px;height:450px;background:#246"><video muted playsinline src="/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><script>var ytInitialPlayerResponse = ${pr};</script>`;
 const chatHtml = (kind) => `<!doctype html><title>${kind}</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" accept="image/*" id="fimg"><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const b=document.getElementById('box'),f=document.getElementById('f'),slot=document.getElementById('slot');
-function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name)});b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
+function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name),imgs:[...document.getElementById('fimg').files].map(y=>y.name+':'+y.size)});const fi=document.getElementById('fimg');fi.value='';b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
 b.addEventListener('input',upd);</script>`;
 // 40 s of silence as a WAV file (8 kHz, 8-bit mono) so the <video> element has something to play
 const wav = (() => { const n = 8000 * 40, b = Buffer.alloc(44 + n, 128);
@@ -208,6 +208,40 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const after10 = await sent(chat);
   const m10 = after10[after10.length - 1];
   ok('question without a video: sent, question only', /^Sent to ChatGPT/.test((ask10 && ask10.result) || '') && after10.length === n10 + 1 && m10 && /polite/.test(m10.text) && !/TRANSCRIPT|Link:|transcript/.test(m10.text) && m10.files === 0, ask10 && ask10.result);
+
+  // 11) Claude gets a picture of the paused video together with the words; ChatGPT gets the words only
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  await yt.evaluate(() => { Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { get: () => 640 }); Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { get: () => 360 }); });
+  await chat.goto('http://localhost:8765/'); await injectChat();
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', replayOn: false, imageOn: true }));
+  await yt.waitForTimeout(3500);
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(2500);
+  const cl = await sent(chat);
+  const lastCl = cl[cl.length - 1];
+  ok('Claude: pause sends the words AND a picture together', cl.length === 1 && lastCl && /English teacher/.test(lastCl.text) && lastCl.imgs.length === 1 && /^video-\d+\.jpg:[1-9]/.test(lastCl.imgs[0]), JSON.stringify(cl).slice(0, 200));
+  await chat.goto('http://localhost:8768/'); await injectChat();
+  await yt.evaluate(() => { document.querySelector('video').play(); });
+  await yt.waitForTimeout(400);
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'chatgpt' }));
+  await yt.evaluate(() => { document.querySelector('video').currentTime = 6; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(2500);
+  const gp = await sent(chat);
+  ok('ChatGPT: words only, no picture', gp.length === 1 && gp[0].imgs.length === 0 && /English teacher/.test(gp[0].text), JSON.stringify(gp).slice(0, 200));
+  await chat.goto('http://localhost:8765/'); await injectChat();
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', imageOn: false }));
+  await yt.evaluate(() => { document.querySelector('video').play(); });
+  await yt.waitForTimeout(400);
+  await yt.evaluate(() => { document.querySelector('video').currentTime = 7; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(2500);
+  const off = await sent(chat);
+  ok('Claude with the picture option off: words only', off.length === 1 && off[0].imgs.length === 0, JSON.stringify(off).slice(0, 160));
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();

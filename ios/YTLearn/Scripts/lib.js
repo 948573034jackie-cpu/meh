@@ -124,6 +124,20 @@
     return /[.?!…]["'”’)\]]*$/.test(w) && !ABBREV.test(w) && !/^\d+\.$/.test(w);
   }
 
+  // Auto-captions "roll": the next caption line starts with the last words of the one before
+  // ("we are going to learn" / "going to learn how to speak"). Cut the repeated start of `list`
+  // when it repeats the end of the words already collected (at least 2 words, so "no, no" is safe).
+  function dropRepeats(list, words) {
+    const tail = words.slice(-40).map((x) => bare(x.w));
+    const head = list.map((x) => bare(x.w));
+    for (let k = Math.min(tail.length, head.length); k >= 2; k--) {
+      let same = true;
+      for (let i = 0; i < k; i++) if (tail[tail.length - k + i] !== head[i]) { same = false; break; }
+      if (same) return list.slice(k);
+    }
+    return list;
+  }
+
   // One list of words with start (t) and end (e) times, from cues with or without per-word timing.
   function toWords(cues) {
     const words = [];
@@ -142,7 +156,8 @@
         const step = (end - c.start) / toks.length;
         list = toks.map((w, k) => ({ t: c.start + k * step, w, e: c.start + (k + 1) * step }));
       }
-      for (const x of list) if (!/^\[[^\]]*\]$/.test(x.w)) words.push(x); // drop [Music], [Applause]
+      list = dropRepeats(list.filter((x) => !/^\[[^\]]*\]$/.test(x.w)), words); // drop [Music], [Applause] and repeated starts
+      for (const x of list) words.push(x);
     }
     words.sort((a, b) => a.t - b.t);
     return words;

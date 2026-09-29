@@ -125,7 +125,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -168,7 +168,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
 
   let res;
   try {
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file });
+    const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
@@ -188,6 +189,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
   if (needTranscript && !noTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
+  if (image && T.name === 'Claude') summary += ' + picture';
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 
@@ -233,7 +235,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text)), force: false
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text)), force: false, image: msg.image || null
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

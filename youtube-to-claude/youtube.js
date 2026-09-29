@@ -139,7 +139,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -148,8 +148,9 @@
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
     if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
     if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
+    if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
@@ -507,10 +508,25 @@
     video.play().catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
   }
 
+  // A picture of the video at the moment you paused (the frame itself, not the subtitles on top).
+  function grabFrame() {
+    try {
+      const v = video;
+      if (!v || !v.videoWidth || !v.videoHeight) return null;
+      const scale = Math.min(1, 1280 / v.videoWidth);
+      const c = document.createElement('canvas');
+      c.width = Math.max(2, Math.round(v.videoWidth * scale));
+      c.height = Math.max(2, Math.round(v.videoHeight * scale));
+      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.82);
+    } catch (e) { return null; } // e.g. protected video: send the words only
+  }
+
   async function handlePause() {
     handling = true;
     try {
       const t = video.currentTime;
+      const image = settings.target === 'claude' && settings.imageOn ? grabFrame() : null; // before anything moves
       endWaiting();
       deferredSend = null;
       showOverlay({ note: '…' });
@@ -527,7 +543,7 @@
       const sendNow = () => {
         lastSend = 'sending…';
         try {
-          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, lines: groupSentences(seg.items).map((g) => g.text) })
+          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, image, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
               lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');

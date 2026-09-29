@@ -67,6 +67,37 @@
     return inputs.find((i) => !i.accept || /text|\.txt|\.md|\*\/\*|\.\*|application\//i.test(i.accept)) || null;
   }
 
+  // an input that takes pictures (Claude's takes everything; a text-only one would refuse)
+  function imageInput() {
+    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+    return inputs.find((i) => !i.accept || /image|\*\/\*|\.\*/i.test(i.accept)) || null;
+  }
+  function dataUrlToFile(dataUrl, name) {
+    const [head, b64] = dataUrl.split(',');
+    const mime = (head.match(/data:(.*?);/) || [])[1] || 'image/jpeg';
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], name || 'video.jpg', { type: mime });
+  }
+  function attachImage(img, box) {
+    const file = dataUrlToFile(img.dataUrl, img.name);
+    const input = imageInput();
+    if (input) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return 'file input';
+    }
+    const dt = new DataTransfer(); // no file input: paste the picture into the message box
+    dt.items.add(file);
+    box.focus();
+    box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return 'paste';
+  }
+
   // ---- doing things ----
   function attachFile(name, text) {
     const input = fileInput();
@@ -149,6 +180,11 @@
           else { mark('no file input for text; transcript pasted into the message'); text = text.replace('The full transcript is attached', 'The full transcript is pasted at the end of this message') + '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
         }
 
+        if (msg.image && msg.image.dataUrl) {
+          if (msg.file) await sleep(700); // let the page finish taking the first file
+          try { mark('picture attached via ' + attachImage(msg.image, box)); await sleep(500); } catch (e) { mark('picture failed: ' + e.message); }
+        }
+
         const how = await typeInto(box, text);
         if (!how) return sendResponse({ ok: false, error: 'could not type into the message box', steps, info: pageInfo() });
         mark('typed via ' + how);
@@ -160,7 +196,7 @@
         const path0 = location.pathname;
         const gone = (ms) => waitFor(() => !boxText(box) || !document.contains(box) || location.pathname !== path0, ms || 2000, 200);
         const t0 = Date.now();
-        const limit = t0 + (msg.file ? 25000 : 12000); // a file upload can take a while
+        const limit = t0 + (msg.file || msg.image ? 25000 : 12000); // a file upload can take a while
         let left = false, clicks = 0, enters = 0;
         while (!left && Date.now() < limit && clicks < 2 && enters < 2) {
           const btn = sendButton();

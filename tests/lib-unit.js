@@ -64,3 +64,30 @@ for (const [name, html] of Object.entries(pages)) {
 }
 assert.equal(L.extractPlayerResponse('<html>nothing here</html>'), null);
 console.log('player-data formats passed');
+// --- rolling auto-captions: the same words must not appear twice
+const roll = (evs) => L.buildSentences(L.parseJson3({ events: evs })).map((s) => s.text).join(' ');
+// (a) line 2 starts with the end of line 1, typed without per-word timing
+let r1 = roll([
+  { tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'we are going to learn' }] },
+  { tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: 'going to learn how to speak' }] },
+  { tStartMs: 4000, dDurationMs: 2000, segs: [{ utf8: 'how to speak clearly today.' }] }]);
+console.log('  rolling (a):', r1);
+assert.equal(r1, 'We are going to learn how to speak clearly today.');
+// (b) the whole previous line comes back at the start of the next one
+let r2 = roll([
+  { tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'Hello everyone.' }] },
+  { tStartMs: 2000, dDurationMs: 3000, segs: [{ utf8: 'Hello everyone. Welcome to the show.' }] }]);
+console.log('  rolling (b):', r2);
+assert.equal(r2, 'Hello everyone. Welcome to the show.');
+// (c) per-word timing, second line repeats the last words with slightly different times
+let r3 = roll([
+  { tStartMs: 0, dDurationMs: 3000, segs: [{ utf8: 'we' }, { utf8: ' are', tOffsetMs: 300 }, { utf8: ' going', tOffsetMs: 600 }, { utf8: ' to', tOffsetMs: 900 }] },
+  { tStartMs: 1500, dDurationMs: 3000, segs: [{ utf8: 'going', tOffsetMs: 20 }, { utf8: ' to', tOffsetMs: 330 }, { utf8: ' learn', tOffsetMs: 700 }, { utf8: ' English.', tOffsetMs: 1100 }] }]);
+console.log('  rolling (c):', r3);
+assert.equal(r3, 'We are going to learn English.');
+// (d) real repeats stay: "no, no, no" said by a person is not rolling
+let r4 = roll([{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'No, no, no, that is wrong.' }] }]);
+assert.equal(r4, 'No, no, no, that is wrong.');
+let r5 = roll([{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'I said very' }] }, { tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: 'very good work.' }] }]);
+assert.equal(r5, 'I said very very good work.'); // only one word overlaps: kept
+console.log('rolling-caption tests passed');

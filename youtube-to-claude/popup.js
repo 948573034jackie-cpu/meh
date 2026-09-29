@@ -32,7 +32,7 @@ go.addEventListener('click', async () => {
 });
 
 // ---- options ----
-for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn']) {
+for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn', 'imageOn']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
