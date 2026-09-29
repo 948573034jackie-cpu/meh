@@ -2,18 +2,31 @@ name: Build ClaudeSnap
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: macos-14
-    strategy:
-      matrix:
-        arch: [x86_64, arm64]
     steps:
       - uses: actions/checkout@v4
-      - name: Compile for macOS 12+
+      - name: Compile for macOS 12+ (Intel + Apple Silicon)
         working-directory: ClaudeSnap
         run: |
-          swiftc -O -target ${{ matrix.arch }}-apple-macos12.0 main.swift -o ClaudeSnap-${{ matrix.arch }}
+          swiftc -O -target x86_64-apple-macos12.0 main.swift -o snap-x86_64
+          swiftc -O -target arm64-apple-macos12.0 main.swift -o snap-arm64
           plutil -lint Info.plist
-      - name: Show Swift version
-        run: swiftc --version
+          mkdir -p ClaudeSnap.app/Contents/MacOS
+          lipo -create snap-x86_64 snap-arm64 -output ClaudeSnap.app/Contents/MacOS/ClaudeSnap
+          cp Info.plist ClaudeSnap.app/Contents/Info.plist
+          codesign --force --deep --sign - ClaudeSnap.app
+          ditto -c -k --keepParent ClaudeSnap.app ClaudeSnap.zip
+      - name: Publish download
+        if: github.ref_name == 'claude/new-session-pxh22u'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete claudesnap-latest --yes --cleanup-tag || true
+          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip \
+            --title "ClaudeSnap (ready-to-use app)" \
+            --notes "Download ClaudeSnap.zip, unzip, drag ClaudeSnap into Applications." \
+            --target "${{ github.sha }}"
