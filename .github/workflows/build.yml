@@ -26,7 +26,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete claudesnap-latest --yes --cleanup-tag || true
-          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip \
+          (cd chrome-extension && zip -qr ../ClaudeSnap-Chrome.zip .)
+          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip ClaudeSnap-Chrome.zip \
             --title "ClaudeSnap (ready-to-use app)" \
             --notes "Download ClaudeSnap.zip, unzip, drag ClaudeSnap into Applications." \
             --target "${{ github.sha }}"
