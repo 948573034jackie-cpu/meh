@@ -105,14 +105,16 @@ if (!window.__ytToClaudeLoaded) {
   });
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true };
-  chrome.storage.local.get(['pauseOn', 'replayOn']).then((s) => {
+  const settings = { pauseOn: true, replayOn: true, textSize: 'auto' };
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'textSize']).then((s) => {
+    settings.textSize = s.textSize || 'auto';
     settings.pauseOn = s.pauseOn !== false;
     settings.replayOn = s.replayOn !== false;
   });
   chrome.storage.onChanged.addListener((ch) => {
     if (ch.pauseOn) settings.pauseOn = ch.pauseOn.newValue !== false;
     if (ch.replayOn) settings.replayOn = ch.replayOn.newValue !== false;
+    if (ch.textSize) { settings.textSize = ch.textSize.newValue || 'auto'; rerender(); }
   });
 
   // ---- big sentences on the video ----
@@ -123,52 +125,94 @@ if (!window.__ytToClaudeLoaded) {
     if (el) el.remove();
   }
 
+  // Text size: 'auto' = as big as fits everything; the others are fixed sizes (a share of the player height),
+  // and the text scrolls to keep the sentence being played (or the one you paused in) in view.
+  const SIZE_SHARE = { l: 0.09, xl: 0.12, xxl: 0.16, max: 0.21 };
+  let lastShown = null;
+
   function setActive(index) {
     const el = document.getElementById(OVERLAY_ID);
     if (!el) return;
+    if (lastShown) lastShown.activeIndex = index;
     el.querySelectorAll('[data-i]').forEach((n) => {
       const on = Number(n.dataset.i) === index;
-      n.style.opacity = on ? '1' : '0.55';
       n.style.color = on ? '#ffd60a' : '#ffffff';
+      if (on) {
+        const wrap = document.getElementById('yt2c-wrap');
+        if (wrap) wrap.scrollTop = n.offsetTop - wrap.clientHeight / 2 + n.offsetHeight / 2;
+      }
     });
   }
 
-  function showOverlay({ note, seg, activeIndex }) {
+  function rerender() {
+    if (!lastShown || !document.getElementById(OVERLAY_ID)) return;
+    const foot = document.getElementById('yt2c-foot');
+    const keep = foot ? { text: foot.textContent, color: foot.style.color } : null;
+    showOverlay(lastShown);
+    if (keep) { const f = document.getElementById('yt2c-foot'); f.textContent = keep.text; f.style.color = keep.color; }
+  }
+
+  function showOverlay(args) {
+    const { note, seg, activeIndex } = args;
+    lastShown = { note, seg, activeIndex };
     const host = document.querySelector('#movie_player') || (video && video.parentElement) || document.body;
     hideOverlay();
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
     // pointer-events:none → clicking the video still pauses/plays as normal
-    el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;justify-content:center;' +
-      'align-items:center;padding:4% 6%;background:rgba(0,0,0,.84);color:#fff;font-family:system-ui,Arial,sans-serif;' +
+    el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;' +
+      'padding:2.5% 3.5%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
       'text-align:center;pointer-events:none;box-sizing:border-box;overflow:hidden';
     const head = document.createElement('div');
-    head.style.cssText = 'font-size:16px;opacity:.7;margin-bottom:2%';
+    head.id = 'yt2c-head';
+    head.style.cssText = 'font-size:18px;color:#cfcfcf;margin-bottom:1.5%;flex:none';
     head.textContent = note || '';
     el.appendChild(head);
+    const wrap = document.createElement('div');
+    wrap.id = 'yt2c-wrap';
+    wrap.style.cssText = 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column';
     const body = document.createElement('div');
-    body.style.cssText = 'line-height:1.35;font-weight:600';
+    body.id = 'yt2c-body';
+    body.style.cssText = 'margin:auto 0;line-height:1.28;font-weight:700;text-shadow:0 2px 6px #000'; // auto margins: centered if it fits, top-aligned if not
     if (seg) {
       seg.items.forEach((s, i) => {
         const p = document.createElement('div');
         p.dataset.i = String(i);
-        p.style.cssText = 'margin:0 0 .5em;transition:opacity .15s';
+        p.style.cssText = 'margin:0 0 .45em';
         p.textContent = s.text;
         body.appendChild(p);
       });
     }
-    el.appendChild(body);
+    wrap.appendChild(body);
+    el.appendChild(wrap);
+    const foot = document.createElement('div');
+    foot.id = 'yt2c-foot';
+    foot.style.cssText = 'font-size:16px;color:#cfcfcf;margin-top:1.5%;flex:none;min-height:20px';
+    el.appendChild(foot);
     host.appendChild(el);
     if (seg) {
-      // make the text as big as fits
-      let size = Math.max(22, Math.min(72, el.clientWidth / 18));
-      body.style.fontSize = size + 'px';
-      while (size > 18 && el.scrollHeight > el.clientHeight * 0.98) {
-        size -= 2;
-        body.style.fontSize = size + 'px';
+      const share = SIZE_SHARE[settings.textSize];
+      if (share) {
+        body.style.fontSize = Math.max(20, Math.round(el.clientHeight * share)) + 'px';
+      } else {
+        // biggest font that still fits all the sentences in the player
+        let lo = 16, hi = Math.min(150, el.clientWidth / 7), best = lo;
+        while (hi - lo > 1) {
+          const mid = Math.floor((lo + hi) / 2);
+          body.style.fontSize = mid + 'px';
+          if (body.offsetHeight <= wrap.clientHeight) { best = mid; lo = mid; } else hi = mid;
+        }
+        body.style.fontSize = best + 'px';
       }
       setActive(activeIndex === undefined ? seg.items.length - 1 : activeIndex);
     }
+  }
+
+  function setFoot(text, ok) {
+    const f = document.getElementById('yt2c-foot');
+    if (!f) return;
+    f.textContent = text;
+    f.style.color = ok ? '#7CFC9A' : '#ff8a80';
   }
 
   // ---- pause → show, send to Claude, replay ----
@@ -219,16 +263,19 @@ if (!window.__ytToClaudeLoaded) {
       let idx = 0;
       seg.items.forEach((s, i) => { if (ct >= s.start - 0.1) idx = i; });
       setActive(idx);
-      if (ct >= seg.end - 0.05) {
+      if (ct >= seg.end + 0.15) {
         cancelReplay();
         ourPause = true;
         video.pause();
         setActive(seg.items.length - 1);
+        const keep = (document.getElementById('yt2c-foot') || {}).textContent || '';
+        const keepColor = (document.getElementById('yt2c-foot') || { style: {} }).style.color;
         showOverlay({ note: '⏸ ' + fmtTime(seg.pausedAt) + '  ·  press Space to continue', seg });
+        setFoot(keep, keepColor !== 'rgb(255, 138, 128)');
       }
     }, 50);
     replaying = { seg, timer };
-    video.currentTime = Math.max(0, seg.start - 0.2);
+    video.currentTime = Math.max(0, seg.start - 0.3);
     video.play().catch(() => cancelReplay());
   }
 
@@ -248,9 +295,15 @@ if (!window.__ytToClaudeLoaded) {
         note: '⏸ ' + fmtTime(t) + '  ·  ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end),
         seg
       });
+      setFoot('Sending to Claude…', true);
       try {
-        chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg });
-      } catch (e) { /* extension was reloaded: refresh the page */ }
+        chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg })
+          .then((r) => {
+            const ok = !!(r && /^Sent /.test(r.result));
+            setFoot(ok ? '✓ Sent to Claude' : '✗ Not sent to Claude: ' + ((r && r.result) || 'no answer'), ok);
+          })
+          .catch(() => setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false));
+      } catch (e) { setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false); }
       if (settings.replayOn) startReplay(seg);
     } finally {
       handling = false;

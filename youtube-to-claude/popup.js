@@ -16,8 +16,12 @@ go.addEventListener('click', async () => {
 });
 
 // options
-for (const id of ['pauseOn', 'replayOn']) {
+for (const id of ['pauseOn', 'replayOn', 'sendTranscript']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
+
+const sizeSel = document.getElementById('textSize');
+chrome.storage.local.get('textSize').then((s) => { sizeSel.value = s.textSize || 'auto'; });
+sizeSel.addEventListener('change', () => chrome.storage.local.set({ textSize: sizeSel.value }));

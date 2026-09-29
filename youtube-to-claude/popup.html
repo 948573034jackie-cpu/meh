@@ -6,12 +6,23 @@
   button { width: 100%; padding: 10px 0; font-size: 14px; border-radius: 8px; border: 0; background: #d97757; color: #fff; cursor: pointer; }
   button:disabled { opacity: .6; cursor: default; }
   .opt { display: block; margin-top: 10px; font-size: 12px; line-height: 1.35; }
+  select { width: 100%; margin-top: 4px; padding: 5px; font-size: 12px; }
   #msg { margin-top: 10px; font-size: 12px; color: #5f6368; word-break: break-word; }
   #msg.err { color: #d93025; }
 </style>
 <h1>YouTube → Claude</h1>
 <button id="go">Send this video to Claude</button>
 <label class="opt"><input type="checkbox" id="pauseOn" checked> When I pause the video: show the last sentences big &amp; send them to Claude</label>
+<label class="opt"><input type="checkbox" id="sendTranscript" checked> The first time for a video, also send the link + full transcript</label>
 <label class="opt"><input type="checkbox" id="replayOn" checked> Also replay those sentences once</label>
+<label class="opt">Text size on the video:
+  <select id="textSize">
+    <option value="auto">Auto (as big as fits everything)</option>
+    <option value="l">Large</option>
+    <option value="xl">Extra large</option>
+    <option value="xxl">Huge</option>
+    <option value="max">Giant (scrolls to the current sentence)</option>
+  </select>
+</label>
 <div id="msg"></div>
 <script src="popup.js"></script>

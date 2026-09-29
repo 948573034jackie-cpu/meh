@@ -9,7 +9,7 @@ Helps you learn English from YouTube videos with Claude (claude.ai in Chrome).
 2. they are sent to Claude with their timestamps (the first time for a video/chat, the link + full transcript are sent too),
 3. the video replays those sentences once, then stops with the sentences still on screen. Press Space to continue.
 
-Both pause features can be turned off in the popup.
+Both pause features can be turned off in the popup, and **Text size** (Auto / Large / Extra large / Huge / Giant) sets how big the words are. Sentences are rebuilt as complete sentences (not cut mid-sentence like YouTube's subtitles) and fill about 30 seconds.
 
 ## Install
 1. Download and unzip https://github.com/948573034jackie-cpu/meh/releases/download/claudesnap-latest/YouTube-to-Claude.zip

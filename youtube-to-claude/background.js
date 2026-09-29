@@ -53,7 +53,7 @@ function buildMessage(info, hasFile, askReady) {
   lines.push('Link: ' + info.url);
   lines.push('');
   if (hasFile) {
-    lines.push('The full transcript is attached (source: ' + info.source + '). Please read all of it and keep it as context. I will ask you questions about the video next.');
+    lines.push('The full transcript is attached (source: ' + info.source + '). Read it silently and keep it as background context. Do not summarize it.');
   } else {
     lines.push('(I could not get a transcript automatically, so please use the title and link as context.)');
   }
@@ -91,14 +91,12 @@ async function markSent(claudeTabId, videoId, oldPath) {
 }
 
 function passageText(title, seg) {
-  const lines = seg.items.map((s, i) =>
-    '[' + fmt(s.start) + '] ' + s.text + (i === seg.items.length - 1 ? '   ◀ I paused here' : ''));
   return [
-    '📚 I paused "' + title + '" at ' + fmt(seg.pausedAt) + '. These are the sentences around where I stopped (' + fmt(seg.start) + ' – ' + fmt(seg.end) + '):',
+    '📚 I paused "' + title + '" at ' + fmt(seg.pausedAt) + '. This is the passage I just heard (' + fmt(seg.start) + ' – ' + fmt(seg.end) + '):',
     '',
-    ...lines,
+    seg.items.map((s) => s.text).join('\n'),
     '',
-    'If I ask a question next, it is about these sentences. For now, just reply "OK".'
+    'Please repeat this passage once, word for word, and then stop. Do not explain, translate, comment on, or answer anything unless I ask you next.'
   ].join('\n');
 }
 
@@ -127,10 +125,11 @@ async function sendToClaude({ videoTabId, videoId, passage, force }) {
   const rec = sent[claudeTab.id];
   const needTranscript = force || !(rec && rec.videoId === videoId && rec.path === path);
 
+  const { sendTranscript } = await chrome.storage.local.get('sendTranscript');
   let text = passage || '';
   let file = null;
   let summary = 'passage only';
-  if (needTranscript) {
+  if (needTranscript && (force || sendTranscript !== false)) {
     let info;
     try { info = await chrome.tabs.sendMessage(videoTabId, { type: 'yt-get' }); }
     catch (e) { return 'Refresh the YouTube page (Cmd+R) and try again. (' + e.message + ')'; }
@@ -154,7 +153,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force }) {
   if (!res || !res.ok) {
     return 'Claude page problem: ' + ((res && res.error) || 'unknown') + ' ' + JSON.stringify((res && res.steps) || []);
   }
-  if (needTranscript) await markSent(claudeTab.id, videoId, path);
+  if (needTranscript && (force || sendTranscript !== false)) await markSent(claudeTab.id, videoId, path);
   return 'Sent ' + summary + (opened ? ' (opened a new claude.ai tab)' : '') + '.';
 }
 
