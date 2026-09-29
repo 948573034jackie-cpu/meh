@@ -83,6 +83,8 @@
     'while than then is are was were be been my your his our their this these those i we they he she not very can will would ' +
     'could should have has had do does did just also about into onto over under between through after before until since ' +
     'what where how why its').split(' '));
+  // words that start the middle of a sentence, not a new one
+  const CONTINUES = new Set('because which who whom whose than of to with'.split(' '));
   const ABBREV = /^(mr|mrs|ms|dr|prof|sr|jr|st|vs|e\.g|i\.e)\.$/i;
 
   function bare(w) { return w.toLowerCase().replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, ''); }
@@ -143,8 +145,8 @@
       if (!next) brk = true;
       else if (punct) brk = endsSentence(w.w);
       else if (endsSentence(w.w)) brk = true;
-      else if (gap >= 0.8 && !dangling) brk = true;
-      else if (gap >= 0.4 && cur.length >= 10 && !dangling) brk = true;
+      else if (gap >= 0.8 && !dangling && !(gap < 1.3 && CONTINUES.has(bare(next.w)))) brk = true;
+      else if (gap >= 0.4 && cur.length >= 10 && !dangling && !CONTINUES.has(bare(next.w))) brk = true;
       if (brk) { push(cur); cur = []; continue; }
 
       // too long without a natural break: cut at the biggest pause among the last words
@@ -170,7 +172,7 @@
   // The sentence playing at time t plus the ones before it, filling about 30 seconds.
   function pickSegment(sentences, t, opts) {
     opts = opts || {};
-    const target = opts.target || 30;
+    const target = opts.target || 25;
     const maxSentences = opts.maxSentences || 12;
     if (!sentences.length) return null;
     let cur = 0;
@@ -179,7 +181,7 @@
     while (first > 0 && cur - first < maxSentences - 1) {
       const now = sentences[cur].end - sentences[first].start;
       const cand = sentences[cur].end - sentences[first - 1].start;
-      if (cand <= target || (cand <= target + 6 && Math.abs(cand - target) < Math.abs(now - target))) first--;
+      if (cand <= target || (cand <= target + 4 && Math.abs(cand - target) < Math.abs(now - target))) first--;
       else break;
     }
     const items = sentences.slice(first, cur + 1);

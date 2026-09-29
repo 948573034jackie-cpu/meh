@@ -37,12 +37,9 @@ for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn']) {
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
-const selects = { textSize: 'm', slowRate: '0.7' };
-for (const [id, def] of Object.entries(selects)) {
-  const sel = document.getElementById(id);
-  chrome.storage.local.get(id).then((s) => {
-    const v = s[id] === undefined ? def : String(s[id]);
-    sel.value = [...sel.options].some((o) => o.value === v) ? v : def;
-  });
-  sel.addEventListener('change', () => chrome.storage.local.set({ [id]: id === 'slowRate' ? Number(sel.value) : sel.value }));
-}
+const slider = document.getElementById('textLevel');
+const sizeVal = document.getElementById('sizeVal');
+const LABELS = { 1: 'smallest', 6: 'medium', 14: 'biggest' };
+function showSize(v) { sizeVal.textContent = v + (LABELS[v] ? ' (' + LABELS[v] + ')' : ''); }
+chrome.storage.local.get('textLevel').then((s) => { slider.value = s.textLevel || 6; showSize(Number(slider.value)); });
+slider.addEventListener('input', () => { showSize(Number(slider.value)); chrome.storage.local.set({ textLevel: Number(slider.value) }); });

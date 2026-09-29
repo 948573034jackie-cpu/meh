@@ -69,16 +69,25 @@ async function getSent() {
   return sent;
 }
 
-async function markSent(claudeTabId, videoId, oldPath) {
-  // After the first message a new chat changes its address (/new → /chat/…): remember the final one.
-  let path = oldPath;
-  for (let i = 0; i < 12 && path === oldPath && oldPath && /^\/(new)?$/.test(oldPath); i++) {
-    await sleep(500);
-    path = (await claudePath(claudeTabId)) || path;
-  }
+const isFreshPath = (p) => /^\/(new)?$/.test(p || '');
+
+async function saveSent(claudeTabId, videoId, path) {
   const sent = await getSent();
   sent[claudeTabId] = { videoId, path };
   await chrome.storage.session.set({ sent });
+}
+
+// Remember at once that this chat has the transcript, then learn its final address in the background
+// (a new chat changes from /new or / to /chat/… after the first message).
+function markSent(claudeTabId, videoId, oldPath) {
+  saveSent(claudeTabId, videoId, oldPath);
+  (async () => {
+    for (let i = 0; i < 16 && isFreshPath(oldPath); i++) {
+      await sleep(500);
+      const p = await claudePath(claudeTabId);
+      if (p && p !== oldPath) { await saveSent(claudeTabId, videoId, p); return; }
+    }
+  })().catch(() => {});
 }
 
 function passageText(title, seg) {
@@ -115,7 +124,9 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
 
   const sent = await getSent();
   const rec = sent[claudeTab.id];
-  const needTranscript = force || !(rec && rec.videoId === videoId && rec.path === path);
+  const sameChat = rec && rec.videoId === videoId && (rec.path === path || (isFreshPath(rec.path) && !isFreshPath(path)));
+  const needTranscript = force || !sameChat;
+  if (sameChat && rec.path !== path) await saveSent(claudeTab.id, videoId, path);
 
   const { sendTranscript } = await chrome.storage.local.get('sendTranscript');
   let text = passage || '';
@@ -143,9 +154,9 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
   if (!res || !res.ok) {
-    return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' ' + JSON.stringify((res && res.steps) || []);
+    return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
-  if (needTranscript && (force || sendTranscript !== false)) await markSent(claudeTab.id, videoId, path);
+  if (needTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
   return 'Sent to ' + T.name + ': ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 

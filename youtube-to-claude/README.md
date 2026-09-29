@@ -7,12 +7,12 @@ Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.co
 **Button:** *Send this video to …* sends the video link + full transcript (as a text file).
 
 **When you pause the video** (Space, click, or the pause button):
-1. The last ~30 seconds of speech appear over the video as **one tight paragraph of complete sentences** (YouTube's cut-off subtitles are rebuilt into real sentences). The sentence being played is yellow.
-2. The video goes back and replays that part **slowly (70% speed by default)** once, then stops.
-3. **Only after it has fully stopped**, the passage is sent to your chat (the first time for a video, with the link + full transcript too). The chat is asked to just repeat the passage, nothing else.
-4. Talk about it with Claude/ChatGPT. When you are done, say **“bye bye”** (or press **Enter**): the video jumps back to the start of that part and plays on at normal speed. (Space just continues from where the replay stopped.)
+1. The last **~25 seconds** of speech appear over the video as **one tight paragraph of complete sentences** (YouTube's cut-off subtitles are rebuilt into real sentences). The sentence you paused in is yellow.
+2. The video plays that part again **once at normal speed**, then stops.
+3. **When it has stopped**, the passage is sent to your chat (the first time for a video, with the link + full transcript too). The chat is asked to just repeat the passage, nothing else.
+4. Talk about it with Claude/ChatGPT. When you are done, say **“bye bye”** (or press **Enter**): the video jumps back to the start of that part and plays on at normal speed. (Space just continues from where it stopped.)
 
-**Popup settings:** replay on/off, replay speed (100/85/70/50%), text size (Small / Medium / Large / Extra large / Auto), send the transcript on/off, “bye bye” on/off.
+**Popup settings:** replay on/off, **text size slider (14 small steps, 6 = medium)**, send the transcript on/off, “bye bye” on/off.
 
 ## Install
 1. Download and unzip https://github.com/948573034jackie-cpu/meh/releases/download/claudesnap-latest/YouTube-to-Claude.zip
