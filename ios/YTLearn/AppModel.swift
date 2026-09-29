@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 
 /// Talks between the two web views (YouTube and the chat), keeps the settings, and does the listening.
-final class AppModel: NSObject, ObservableObject {
+final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     // ---- settings (same names the Chrome extension uses) ----
     @Published var target: String { didSet { changed("target", target); if oldValue != target { openChat() } } }
     @Published var pauseOn: Bool { didSet { changed("pauseOn", pauseOn) } }
@@ -63,6 +63,8 @@ final class AppModel: NSObject, ObservableObject {
         super.init()
 
         bridge.model = self
+        youtube.navigationDelegate = self
+        chat.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
         chat.allowsBackForwardNavigationGestures = true
 
@@ -91,6 +93,7 @@ final class AppModel: NSObject, ObservableObject {
         if let url = URL(string: "https://m.youtube.com/watch?v=iG9CE55wbtY") { youtube.load(URLRequest(url: url)) }
         if let url = URL(string: "https://chatgpt.com/") { chat.load(URLRequest(url: url)) }
 
+        Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in self?.writeSelfTestReport() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self = self else { return }
             let ytTest = """
@@ -170,6 +173,8 @@ final class AppModel: NSObject, ObservableObject {
             "safeArea": NSCoder.string(for: youtube.window?.safeAreaInsets ?? .zero)
         ]
         report["writtenAt"] = ISO8601DateFormatter().string(from: Date())
+        report["chatUrlNow"] = chat.url?.absoluteString ?? "-"
+        report["youtubeUrlNow"] = youtube.url?.absoluteString ?? "-"
         guard JSONSerialization.isValidJSONObject(report),
               let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
               let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first else { return }
@@ -246,12 +251,36 @@ final class AppModel: NSObject, ObservableObject {
 
         case "tabsSend":
             guard let msg = body["msg"] else { reply(nil, "no message"); return }
+            let startPath = chat.url?.path ?? ""
+            var answered = false
+            let finish: (Any?, String?) -> Void = { value, error in
+                if answered { return }
+                answered = true
+                reply(value, error)
+            }
             chat.callAsyncJavaScript("return await window.__ytcDeliver(msg);", arguments: ["msg": msg], in: nil, in: AppModel.world) { result in
-                switch result {
-                case .success(let value): reply(value, nil)
-                case .failure(let error): reply(nil, "chat page not ready: \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let value): finish(value, nil)
+                    case .failure(let error): finish(nil, "chat page not ready: \(error.localizedDescription)")
+                    }
                 }
             }
+            // A page that jumps to a new address right after "Send" can lose the answer. Then the move itself
+            // (a fresh chat turning into /c/... or /chat/...) is the proof that the message was sent.
+            func watch(_ round: Int) {
+                if answered { return }
+                let path = self.chat.url?.path ?? ""
+                if (startPath == "/" || startPath == "/new") && (path.hasPrefix("/c/") || path.hasPrefix("/chat/")) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        finish(["ok": true, "steps": ["message sent (the page moved on to a new chat)"]], nil)
+                    }
+                    return
+                }
+                if round >= 40 { finish(nil, "the chat page did not answer within 60 seconds"); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { watch(round + 1) }
+            }
+            watch(0)
 
         case "navigateChat":
             if let text = body["url"] as? String, let url = URL(string: text) { chat.load(URLRequest(url: url)) }
@@ -275,6 +304,18 @@ final class AppModel: NSObject, ObservableObject {
             reply(nil, nil)
         }
     }
+
+    // ---- navigation events (kept for the automatic test report) ----
+    private func navLog(_ event: String, _ webView: WKWebView, _ error: Error? = nil) {
+        guard jsLogs.count < 120 else { return }
+        let who = webView === chat ? "chat" : "youtube"
+        jsLogs.append("nav \(event) \(who) \(webView.url?.absoluteString ?? "-")" + (error.map { " error: \($0.localizedDescription)" } ?? ""))
+    }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { navLog("start", webView) }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { navLog("commit", webView) }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { navLog("finish", webView) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navLog("fail", webView, error) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navLog("failProvisional", webView, error) }
 
     // ---- helpers ----
     static func jsonString(_ object: Any) -> String {
