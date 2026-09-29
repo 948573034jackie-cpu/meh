@@ -213,6 +213,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === 'capture' && sender.tab) { // real screenshot of the YouTube tab (only if you are looking at it)
+    (async () => {
+      try {
+        if (!chrome.tabs.captureVisibleTab) return sendResponse({ dataUrl: null });
+        const tab = await chrome.tabs.get(sender.tab.id);
+        if (!tab.active) return sendResponse({ dataUrl: null });
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 85 });
+        sendResponse({ dataUrl });
+      } catch (e) { sendResponse({ dataUrl: null, error: String(e && e.message || e) }); }
+    })();
+    return true;
+  }
   if (msg.type === 'ask' && sender.tab) { // a question you said out loud (iPhone / iPad app): goes into the same chat
     (async () => {
       let result;

@@ -509,25 +509,85 @@
     video.play().catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
   }
 
-  // A picture of the video at the moment you paused (the frame itself, not the subtitles on top).
-  function grabFrame() {
-    try {
-      const v = video;
-      if (!v || !v.videoWidth || !v.videoHeight) return null;
-      const scale = Math.min(1, 1280 / v.videoWidth);
-      const c = document.createElement('canvas');
-      c.width = Math.max(2, Math.round(v.videoWidth * scale));
-      c.height = Math.max(2, Math.round(v.videoHeight * scale));
-      c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-      return c.toDataURL('image/jpeg', 0.82);
-    } catch (e) { return null; } // e.g. protected video: send the words only
+  // ---- the picture for Claude: the subtitle screen, taken 3 seconds after you stop the video ----
+  // 1) Chrome: a real screenshot of the tab, cut down to the subtitle area (no description, no comments).
+  // 2) Anywhere else (iPhone / iPad app, or if Chrome refuses): the same screen drawn again from the text.
+  function cropTo(dataUrl, rect) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const k = img.naturalWidth / window.innerWidth; // screenshot pixels per page pixel
+          const x = Math.max(0, Math.round(rect.left * k)), y = Math.max(0, Math.round(rect.top * k));
+          const w = Math.min(img.naturalWidth - x, Math.round(rect.width * k)), h = Math.min(img.naturalHeight - y, Math.round(rect.height * k));
+          if (w < 100 || h < 60) return resolve(null);
+          const c = document.createElement('canvas');
+          c.width = w; c.height = h;
+          c.getContext('2d').drawImage(img, x, y, w, h, 0, 0, w, h);
+          resolve(c.toDataURL('image/jpeg', 0.85));
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
   }
+
+  function renderSubtitlePicture(seg) {
+    try {
+      const W = 1280, H = 720, pad = 48;
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const g = c.getContext('2d');
+      g.fillStyle = '#000';
+      g.fillRect(0, 0, W, H);
+      const groups = groupSentences(seg.items).map((x) => x.text);
+      let fs = Math.min(70, Math.max(24, H * levelShare(settings.textLevel) * 1.15));
+      let blocks;
+      for (;;) {
+        g.font = '600 ' + fs + 'px system-ui, Arial, sans-serif';
+        blocks = groups.map((t) => {
+          const lines = [];
+          let line = '';
+          for (const word of t.split(/\s+/)) {
+            const test = line ? line + ' ' + word : word;
+            if (line && g.measureText(test).width > W - pad * 2) { lines.push(line); line = word; } else line = test;
+          }
+          if (line) lines.push(line);
+          return lines;
+        });
+        const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
+        if (total <= H - pad * 2 || fs <= 18) break;
+        fs -= 2;
+      }
+      const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
+      let y = Math.max(pad, (H - total) / 2) + fs;
+      g.textBaseline = 'alphabetic';
+      blocks.forEach((lines, bi) => {
+        g.fillStyle = bi === blocks.length - 1 ? '#ffd60a' : '#ffffff'; // the sentence you stopped at is yellow
+        lines.forEach((ln) => { g.fillText(ln, pad, y); y += fs * 1.35; });
+        y += fs * 0.45;
+      });
+      return c.toDataURL('image/jpeg', 0.88);
+    } catch (e) { return null; }
+  }
+
+  async function capturePicture(seg) {
+    try {
+      const el = document.getElementById(OVERLAY_ID);
+      const r = await chrome.runtime.sendMessage({ type: 'capture' });
+      if (r && r.dataUrl && el) {
+        const cropped = await cropTo(r.dataUrl, el.getBoundingClientRect());
+        if (cropped) return cropped;
+      }
+    } catch (e) { /* use the drawn picture */ }
+    return renderSubtitlePicture(seg);
+  }
+  window.__ytcDebug.picture = (seg) => capturePicture(seg || (lastShown && lastShown.seg));
 
   async function handlePause() {
     handling = true;
     try {
       const t = video.currentTime;
-      const image = settings.target === 'claude' && settings.imageOn ? grabFrame() : null; // before anything moves
       endWaiting();
       deferredSend = null;
       showOverlay({ note: '…' });
@@ -540,9 +600,13 @@
       }
       const seg = pickSegment(d.sentences, t);
       showOverlay({ seg });
+      // Claude only: 3 seconds after you stopped (the big subtitles are on screen by then) take the picture
+      const wantPicture = settings.target === 'claude' && settings.imageOn;
+      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then(resolve, () => resolve(null)), 3000)) : Promise.resolve(null);
       deferredSend = null;
-      const sendNow = () => {
+      const sendNow = async () => {
         lastSend = 'sending…';
+        const image = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
         try {
           chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, image, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {

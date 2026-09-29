@@ -132,8 +132,9 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.evaluate(() => document.querySelector('video').pause()); await yt.waitForTimeout(1500);
   const o5 = await ov();
   ok('text size level 10 applied', o5 && parseFloat(o5.font) > 38, o5 && o5.font);
+  await yt.waitForTimeout(3000); // Claude gets a picture too: the message goes out 3 s after the stop
   const c5 = await sent(chat);
-  ok('replay off: message sent at once, passage only, to Claude', c5.length === 2 && !/Link:/.test(c5[1].text), c5.length);
+  ok('replay off: message sent (after the 3 s picture), passage only, to Claude', c5.length === 2 && !/Link:/.test(c5[1].text), c5.length);
   ok('video stayed paused where you paused (no replay)', (await vid()).paused && Math.abs((await vid()).t - 5) < 0.6, JSON.stringify(await vid()));
 
   // 6) mobile ChatGPT: only image file inputs -> the transcript must be pasted into the message instead
@@ -218,10 +219,26 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
-  await yt.waitForTimeout(2500);
+  await yt.waitForTimeout(500);
+  const early = await sent(chat);
+  await yt.waitForTimeout(4200); // the picture is taken 3 s after the stop, then the message goes out
   const cl = await sent(chat);
   const lastCl = cl[cl.length - 1];
+  ok('Claude: nothing is sent before the 3-second picture is ready (replay off)', early.length === 0, String(early.length));
   ok('Claude: pause sends the words AND a picture together', cl.length === 1 && lastCl && /English teacher/.test(lastCl.text) && lastCl.imgs.length === 1 && /^video-\d+\.jpg:[1-9]/.test(lastCl.imgs[0]), JSON.stringify(cl).slice(0, 200));
+  const pic = await yt.evaluate(async () => {
+    const seg = { items: [{ text: 'Hello everyone, welcome to the show today.' }, { text: 'Today we are going to learn English together.' }] };
+    const url = await window.__ytcDebug.picture(seg);
+    if (!url) return null;
+    const img = new Image(); img.src = url; await img.decode();
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let white = 0, yellow = 0, dark = 0;
+    for (let i = 0; i < d.length; i += 4) { const r = d[i], gg = d[i + 1], b = d[i + 2]; if (r > 200 && gg > 200 && b > 200) white++; else if (r > 200 && gg > 170 && b < 90) yellow++; else if (r < 40 && gg < 40 && b < 40) dark++; }
+    return { w: img.width, h: img.height, white, yellow, dark };
+  });
+  ok('subtitle picture: 16:9 black screen with white text and the last sentence in yellow', pic && pic.w === 1280 && pic.h === 720 && pic.white > 2000 && pic.yellow > 500 && pic.dark > pic.w * pic.h * 0.6, JSON.stringify(pic));
   await chat.goto('http://localhost:8768/'); await injectChat();
   await yt.evaluate(() => { document.querySelector('video').play(); });
   await yt.waitForTimeout(400);
