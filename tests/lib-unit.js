@@ -91,3 +91,20 @@ assert.equal(r4, 'No, no, no, that is wrong.');
 let r5 = roll([{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: 'I said very' }] }, { tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: 'very good work.' }] }]);
 assert.equal(r5, 'I said very very good work.'); // only one word overlaps: kept
 console.log('rolling-caption tests passed');
+// --- the "Show transcript" panel gave every word twice (real text from the bug report)
+const dbl = [
+  'And and then then come come back back with with a a more more sober sober mindset mindset of, of, okay, okay,.',
+  "Now now I'm I'm going going to to fix fix all all the the things things that that need need fixing, fixing, you you know. Know.",
+  'But But I I think think sometimes sometimes separating separating those those two two halves halves of of our our brain brain.',
+  'Can can be be really really beneficial beneficial thing thing for for us us as as writers writers is is like, like,.',
+  '"Okay, "Okay, just just let let me me let let me me write write without without judgment judgment and and then then let let.',
+  'Me me come come back back and and edit edit later." Later."',
+  'Diamond Diamond Rio Rio has has a a song song called called I I believe believe it\'s it\'s called called One One Pump Pump Texico.'
+];
+const panelCues = dbl.map((text, i) => ({ start: i * 5, end: null, text, words: null }));
+const fixed = L.buildSentences(panelCues).map((x) => x.text).join(' ');
+console.log('  panel text ->', fixed);
+assert(!/\b(\w+) \1\b/i.test(fixed.replace(/ (very|no) \1/i, '')), 'still doubled: ' + fixed);
+assert(/going to fix all the things that need fixing/i.test(fixed));
+assert(/Diamond Rio has a song called I believe it's called One Pump Texico/i.test(fixed));
+console.log('doubled-word tests passed');

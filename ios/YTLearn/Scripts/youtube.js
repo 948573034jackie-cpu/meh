@@ -81,7 +81,8 @@
     const cues = [];
     segs.forEach((s) => {
       const ts = (s.querySelector('.segment-timestamp') || {}).textContent || '';
-      const text = ((s.querySelector('.segment-text') || {}).textContent || '').replace(/\s+/g, ' ').trim();
+      const el = s.querySelector('.segment-text');
+      const text = String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim(); // innerText: hidden copies are left out
       const parts = ts.trim().split(':').map(Number);
       const start = parts.reduce((a, n) => a * 60 + (n || 0), 0);
       if (text) cues.push({ start, text });

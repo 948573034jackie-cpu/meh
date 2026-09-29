@@ -138,6 +138,26 @@
     return list;
   }
 
+  // Some transcript pages give every word twice ("And and then then come come back back").
+  // When most words come in equal pairs, keep one of each pair. Ordinary speech ("very very good") is left alone.
+  function undouble(list) {
+    if (list.length < 6) return list;
+    const b = list.map((x) => bare(x.w));
+    let paired = 0;
+    for (let i = 0; i + 1 < b.length; i++) if (b[i] && b[i] === b[i + 1]) { paired += 2; i++; }
+    if (paired < list.length * 0.7) return list;
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (i + 1 < list.length && b[i] && b[i] === b[i + 1]) {
+        const a = list[i], c = list[i + 1];
+        const punct = (x) => (x.w.match(/[.,!?;:…]+$/) || [''])[0].length;
+        out.push(punct(c) > punct(a) ? { ...c, w: a.w.replace(/[.,!?;:…]+$/, '') + (c.w.match(/[.,!?;:…]+$/) || [''])[0], t: a.t } : a);
+        i++;
+      } else out.push(list[i]);
+    }
+    return out;
+  }
+
   // One list of words with start (t) and end (e) times, from cues with or without per-word timing.
   function toWords(cues) {
     const words = [];
@@ -156,7 +176,7 @@
         const step = (end - c.start) / toks.length;
         list = toks.map((w, k) => ({ t: c.start + k * step, w, e: c.start + (k + 1) * step }));
       }
-      list = dropRepeats(list.filter((x) => !/^\[[^\]]*\]$/.test(x.w)), words); // drop [Music], [Applause] and repeated starts
+      list = dropRepeats(undouble(list.filter((x) => !/^\[[^\]]*\]$/.test(x.w))), words); // drop [Music], [Applause] and repeated starts
       for (const x of list) words.push(x);
     }
     words.sort((a, b) => a.t - b.t);
@@ -164,7 +184,7 @@
   }
 
   function tidy(ws) {
-    let text = ws.map((x) => x.w).join(' ').replace(/\s+([,.!?;:])/g, '$1');
+    let text = ws.map((x) => x.w).join(' ').replace(/\s+([,.!?;:])/g, '$1').replace(/,+([.!?])/g, '$1');
     text = text.replace(/\bi\b/g, 'I').replace(/\bi'(m|ll|ve|d)\b/g, "I'$1");
     text = text.charAt(0).toUpperCase() + text.slice(1);
     if (!/[.?!…]["'”’)\]]*$/.test(text)) text += '.';
