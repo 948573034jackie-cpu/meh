@@ -22,6 +22,6 @@ The icon shows **ON** while listening, **OK** after a picture is sent, and **!**
 
 - It can only screenshot pages **inside Chrome**, not other apps.
 - Pages such as `chrome://…` and the Chrome Web Store cannot be captured.
-- Two screenshots are at least 4 seconds apart.
+- A picture is sent only when you speak, and at most one per minute (60 s after a send, the next time you speak). In silence nothing is sent.
 - While Claude is talking, your voice is ignored (this is how Claude's voice is filtered out).
 - It relies on the claude.ai page having an attach-image input or message box; if claude.ai changes, the attach step may need an update.

@@ -3,12 +3,11 @@
 // On speech we screenshot the page you are reading and hand it to the claude.ai tab.
 
 const CLAUDE_URL = 'https://claude.ai/*';
-const COOLDOWN_MS = 4000;      // minimum time between two screenshots
-const NEW_UTTERANCE_MS = 1000; // silence this long = the next speech is a new sentence
+const COOLDOWN_MS = 60000;     // after a picture is sent, wait this long before the next one
+const RETRY_MS = 3000;         // if a send fails, try again (while you keep talking) after this long
 
-let lastPing = 0;
-let lastCapture = 0;
-let utteranceDone = false;
+let busy = false;
+let lastAttempt = 0;
 
 // ---------- listening on / off ----------
 
@@ -19,7 +18,7 @@ async function isListening() {
 
 async function start() {
   if (await isListening()) return;
-  await chrome.storage.local.remove('error');
+  await chrome.storage.local.remove(['error', 'lastSentAt']); // fresh start: first speech sends a picture
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
     reasons: ['USER_MEDIA'],
@@ -59,15 +58,20 @@ async function claudeIsSpeaking() {
 }
 
 async function onSpeech() {
-  const now = Date.now();
-  if (now - lastPing > NEW_UTTERANCE_MS) utteranceDone = false;
-  lastPing = now;
-  if (utteranceDone) return;
-  if (await claudeIsSpeaking()) return;
-  if (now - lastCapture < COOLDOWN_MS) return;
-  utteranceDone = true;
-  lastCapture = now;
-  await capture();
+  // Only ever runs because you are speaking. No timers, nothing happens in silence.
+  if (busy) return;
+  busy = true; // set before any await, so two signals at once cannot both send
+  try {
+    const now = Date.now();
+    const { lastSentAt = 0 } = await chrome.storage.local.get('lastSentAt');
+    if (now - lastSentAt < COOLDOWN_MS) return;   // a picture was sent less than 1 minute ago
+    if (now - lastAttempt < RETRY_MS) return;     // last try failed a moment ago
+    if (await claudeIsSpeaking()) return;         // that sound is Claude, not you
+    lastAttempt = now;
+    if (await capture()) await chrome.storage.local.set({ lastSentAt: Date.now() });
+  } finally {
+    busy = false;
+  }
 }
 
 async function pickTargetTab(claudeTabs) {
@@ -102,12 +106,14 @@ async function capture() {
     const claudeTabs = await chrome.tabs.query({ url: CLAUDE_URL });
     if (!claudeTabs.length) {
       await setResult('No claude.ai tab is open. Open claude.ai in a Chrome tab.');
-      return flash('!', '#d93025');
+      flash('!', '#d93025');
+      return false;
     }
     const target = await pickTargetTab(claudeTabs);
     if (!target) {
       await setResult('Nothing to screenshot: the visible tab in your Chrome window is claude.ai itself, or a page Chrome blocks (chrome://, PDF viewer, file://).');
-      return flash('!', '#d93025');
+      flash('!', '#d93025');
+      return false;
     }
 
     let dataUrl;
@@ -115,7 +121,8 @@ async function capture() {
       dataUrl = await chrome.tabs.captureVisibleTab(target.windowId, { format: 'jpeg', quality: 90 });
     } catch (e) {
       await setResult('Screenshot blocked on "' + (target.url || '').slice(0, 60) + '": ' + e.message);
-      return flash('!', '#d93025');
+      flash('!', '#d93025');
+      return false;
     }
 
     claudeTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
@@ -124,19 +131,22 @@ async function capture() {
       res = await deliver(claudeTabs[0].id, dataUrl);
     } catch (e) {
       await setResult('Could not talk to the claude.ai tab: ' + e.message + '. Reload the claude.ai tab and try again.');
-      return flash('!', '#d93025');
+      flash('!', '#d93025');
+      return false;
     }
     if (res && res.ok) {
       await setResult('Sent a screenshot of "' + (target.title || target.url || '').slice(0, 40) + '" (' + res.via + ').');
       flash('OK', '#188038');
-    } else {
-      await setResult('claude.ai page has nowhere to attach a picture. ' + JSON.stringify(res && res.info));
-      flash('!', '#d93025');
+      return true;
     }
+    await setResult('claude.ai page has nowhere to attach a picture. ' + JSON.stringify(res && res.info));
+    flash('!', '#d93025');
+    return false;
   } catch (e) {
     console.warn('ClaudeSnap capture failed:', e);
     await setResult('Unexpected error: ' + e.message);
     flash('!', '#d93025');
+    return false;
   }
 }
 
