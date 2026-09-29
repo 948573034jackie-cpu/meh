@@ -27,7 +27,8 @@ jobs:
         run: |
           gh release delete claudesnap-latest --yes --cleanup-tag || true
           (cd chrome-extension && zip -qr ../ClaudeSnap-Chrome.zip .)
-          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip ClaudeSnap-Chrome.zip \
+          (cd youtube-to-claude && zip -qr ../YouTube-to-Claude.zip .)
+          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
             --title "ClaudeSnap (ready-to-use app)" \
             --notes "Download ClaudeSnap.zip, unzip, drag ClaudeSnap into Applications." \
             --target "${{ github.sha }}"
