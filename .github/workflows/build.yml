@@ -110,6 +110,8 @@ jobs:
           npm init -y >/dev/null
           npm i playwright@1.56.1 >/dev/null
           npx playwright install --with-deps chromium webkit >/dev/null
+      - name: Unit tests (sentences, subtitle-list formats)
+        run: node tests/lib-unit.js
       - name: App JavaScript test in WebKit (the iPhone/iPad engine)
         run: ENGINE=webkit node tests/app-js-test.js
       - name: Same test in Chromium

@@ -18,21 +18,49 @@
     return null;
   }
 
+  const trackList = (p) => (p && p.captions && p.captions.playerCaptionsTracklistRenderer &&
+    p.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
+
+  // The video's player data: first from the page itself, then by asking YouTube's own API the way the page does.
+  async function getPlayerResponse() {
+    const html = await (await fetch(location.href, { credentials: 'include' })).text();
+    const fromPage = extractPlayerResponse(html);
+    if (trackList(fromPage).length) return { pr: fromPage, via: 'page' };
+    let fromApi = null, apiNote = '';
+    try {
+      const key = (html.match(/"INNERTUBE_API_KEY":\s*"([^"]+)"/) || [])[1];
+      const version = (html.match(/"INNERTUBE_CONTEXT_CLIENT_VERSION":\s*"([^"]+)"/) || [])[1] || '2.20240101.00.00';
+      if (!key) apiNote = 'no API key in page';
+      else {
+        const res = await fetch('/youtubei/v1/player?key=' + encodeURIComponent(key) + '&prettyPrint=false', {
+          method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            context: { client: { clientName: location.hostname.startsWith('m.') ? 'MWEB' : 'WEB', clientVersion: version, hl: 'en' } },
+            videoId: videoId(), contentCheckOk: true, racyCheckOk: true
+          })
+        });
+        fromApi = await res.json();
+        if (trackList(fromApi).length) return { pr: fromApi, via: 'api' };
+      }
+    } catch (e) { apiNote = 'api: ' + e.message; }
+    const pr = fromPage || fromApi;
+    const ps = pr && pr.playabilityStatus;
+    return { pr, via: 'none', note: 'page ' + html.length + ' bytes, ' + (fromPage ? 'player data found' : 'no player data') +
+      (ps ? ', playability ' + ps.status + (ps.reason ? ' (' + ps.reason + ')' : '') : '') + (apiNote ? ', ' + apiNote : '') };
+  }
+
   // Method 1: the caption track the player itself uses (fetched with your normal YouTube session).
   async function fromCaptionTrack() {
-    const html = await (await fetch(location.href, { credentials: 'include' })).text();
-    const pr = extractPlayerResponse(html);
-    const tracks = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer &&
-      pr.captions.playerCaptionsTracklistRenderer.captionTracks;
-    const track = pickTrack(tracks);
-    if (!track) throw new Error('this video has no captions');
+    const { pr, via, note } = await getPlayerResponse();
+    const track = pickTrack(trackList(pr));
+    if (!track) throw new Error('this video has no captions [' + note + ']');
     const url = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
     const res = await fetch(url, { credentials: 'include' });
     const body = await res.text();
-    if (!body) throw new Error('YouTube returned an empty caption file');
+    if (!body) throw new Error('YouTube returned an empty caption file (status ' + res.status + ', list from the ' + via + ')');
     const cues = parseJson3(JSON.parse(body));
     if (!cues.length) throw new Error('caption file had no text');
-    return { cues, source: 'captions (' + (track.languageCode || '?') + (track.kind === 'asr' ? ', auto-generated' : '') + ')' };
+    return { cues, source: 'captions (' + (track.languageCode || '?') + (track.kind === 'asr' ? ', auto-generated' : '') + ', via ' + via + ')' };
   }
 
   // Method 2: open YouTube's own "Show transcript" panel and read it.

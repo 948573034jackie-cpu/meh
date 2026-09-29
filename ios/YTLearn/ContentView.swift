@@ -47,14 +47,14 @@ struct ContentView: View {
         if size.width > 700 {
             // iPad (wide): video on the left, chat on the right
             HStack(spacing: 0) {
-                WebHost(webView: model.youtube).frame(width: size.width * model.videoShare)
+                WebHost(webView: model.youtube).frame(width: model.videoLength(in: size))
                 Divider()
                 WebHost(webView: model.chat)
             }
         } else {
             // iPhone / narrow: video on top, chat below
             VStack(spacing: 0) {
-                WebHost(webView: model.youtube).frame(height: size.height * model.videoShare)
+                WebHost(webView: model.youtube).frame(height: model.videoLength(in: size))
                 Divider()
                 WebHost(webView: model.chat)
             }

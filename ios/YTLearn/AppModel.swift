@@ -25,9 +25,16 @@ final class AppModel: NSObject, ObservableObject {
     private var selfTestReport: [String: Any] = [:]
     private let defaults = UserDefaults.standard
 
-    /// Share of the screen used by the video, for each layout the layout button cycles through.
-    private let shares: [CGFloat] = [0.45, 0.75, 0.2]
-    var videoShare: CGFloat { shares[layoutIndex % shares.count] }
+    /// Size of the video pane (height on iPhone, width on iPad) for the layout the layout button is on:
+    /// 1) normal: a 16:9 video that fits the width, 2) video big, 3) video small (chat big).
+    func videoLength(in size: CGSize) -> CGFloat {
+        let narrow = size.width <= 700
+        switch layoutIndex % 3 {
+        case 0: return narrow ? min(size.width * 9 / 16, size.height * 0.6) : size.width * 0.58
+        case 1: return narrow ? size.height * 0.72 : size.width * 0.78
+        default: return narrow ? size.height * 0.24 : size.width * 0.3
+        }
+    }
 
     override init() {
         let d = UserDefaults.standard
@@ -91,6 +98,7 @@ final class AppModel: NSObject, ObservableObject {
             const v = document.querySelector('video');
             out.hasVideo = !!v;
             out.hasChromeShim = !!(window.chrome && window.chrome.__ytc);
+            out.viewport = [window.innerWidth, window.innerHeight];
             out.pageText = (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 240);
             try {
               const html = await (await fetch(location.href, { credentials: 'include' })).text();
@@ -149,6 +157,7 @@ final class AppModel: NSObject, ObservableObject {
     private func writeSelfTestReport() {
         var report = selfTestReport
         report["jsLogs"] = jsLogs
+        report["frames"] = ["youtube": NSCoder.string(for: youtube.frame), "chat": NSCoder.string(for: chat.frame)]
         report["writtenAt"] = ISO8601DateFormatter().string(from: Date())
         guard JSONSerialization.isValidJSONObject(report),
               let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
@@ -167,7 +176,7 @@ final class AppModel: NSObject, ObservableObject {
     }
 
     // ---- toolbar actions ----
-    func cycleLayout() { layoutIndex = (layoutIndex + 1) % shares.count }
+    func cycleLayout() { layoutIndex = (layoutIndex + 1) % 3 }
 
     func pasteLink() {
         let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

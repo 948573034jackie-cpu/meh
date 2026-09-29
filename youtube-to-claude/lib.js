@@ -39,12 +39,8 @@
     return cues;
   }
 
-  // Cut the JSON object that follows "ytInitialPlayerResponse =" out of a page's HTML.
-  function extractPlayerResponse(html) {
-    const marker = html.indexOf('ytInitialPlayerResponse');
-    if (marker < 0) return null;
-    const start = html.indexOf('{', marker);
-    if (start < 0) return null;
+  // Parse a JSON object starting at html[start] === '{' (bracket matching, string-aware).
+  function matchJson(html, start) {
     let depth = 0, inStr = false, esc = false;
     for (let i = start; i < html.length; i++) {
       const c = html[i];
@@ -62,6 +58,41 @@
       }
     }
     return null;
+  }
+
+  // JSON.parse('\x7b\x22a\x22...') style: read the quoted JavaScript string and undo its escapes.
+  function parseJsStringJson(html, quoteAt) {
+    const q = html[quoteAt];
+    let i = quoteAt + 1;
+    for (; i < html.length; i++) {
+      if (html[i] === '\\') { i++; continue; }
+      if (html[i] === q) break;
+    }
+    const raw = html.slice(quoteAt + 1, i);
+    const map = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' };
+    const text = raw.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[\s\S])/g, (m, g) => {
+      if (g[0] === 'x' && g.length === 3) return String.fromCharCode(parseInt(g.slice(1), 16));
+      if (g[0] === 'u' && g.length === 5) return String.fromCharCode(parseInt(g.slice(1), 16));
+      return map[g] !== undefined ? map[g] : g;
+    });
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
+  // The video's player data (captions list, playability...) from a watch page's HTML. Handles
+  //   ytInitialPlayerResponse = {...}    "ytInitialPlayerResponse":{...}    ytInitialPlayerResponse = JSON.parse('\x7b...')
+  function extractPlayerResponse(html) {
+    const marker = 'ytInitialPlayerResponse';
+    let from = 0;
+    for (;;) {
+      const at = html.indexOf(marker, from);
+      if (at < 0) return null;
+      from = at + marker.length;
+      const m = /^["']?\s*[:=]\s*(\{|JSON\.parse\(\s*["'])/.exec(html.slice(from, from + 40));
+      if (!m) continue; // a mention such as "if (window.ytInitialPlayerResponse)"
+      const valueAt = from + m[0].length - 1;
+      const obj = m[1] === '{' ? matchJson(html, valueAt) : parseJsStringJson(html, valueAt);
+      if (obj && (obj.playabilityStatus || obj.videoDetails || obj.captions)) return obj;
+    }
   }
 
   // English first (typed captions before auto-generated), then anything.
@@ -208,7 +239,7 @@
     return groups;
   }
 
-  const api = { fmtTime, parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
+  const api = { fmtTime, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YTC = api;
 })(typeof window !== 'undefined' ? window : globalThis);
