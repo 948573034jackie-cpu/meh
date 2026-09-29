@@ -44,6 +44,13 @@ if (!window.__ytChatLoaded) {
     'button[aria-label^="Send"]'
   ];
 
+  function sendButtonAny() { // even if it is disabled right now (e.g. while a file uploads)
+    for (const s of SEND_SELECTORS) {
+      const b = document.querySelector(s);
+      if (b) return b;
+    }
+    return null;
+  }
   function sendButton() {
     for (const s of SEND_SELECTORS) {
       const b = Array.from(document.querySelectorAll(s)).find((x) => !x.disabled && x.getAttribute('aria-disabled') !== 'true');
@@ -105,10 +112,10 @@ if (!window.__ytChatLoaded) {
     return boxText(el) ? 'textContent' : null;
   }
 
-  function pressEnter(el) {
+  function pressEnter(el, mods) {
     el.focus();
     for (const type of ['keydown', 'keypress', 'keyup']) {
-      el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent(type, Object.assign({ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }, mods || {})));
     }
   }
 
@@ -124,6 +131,8 @@ if (!window.__ytChatLoaded) {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg) return;
     if (msg.type === 'chat-ping') { sendResponse({ ok: true, path: location.pathname }); return; }
+    if (msg.type === 'chat-state') { const b = composer(); sendResponse({ boxText: b ? boxText(b).length : -1 }); return; }
+    if (msg.type === 'chat-focus') { const b = composer(); if (b) b.focus(); sendResponse({ ok: !!b }); return; }
     if (msg.type !== 'chat-send') return;
     (async () => {
       const steps = [];
@@ -141,20 +150,21 @@ if (!window.__ytChatLoaded) {
         if (!how) return sendResponse({ ok: false, error: 'could not type into the message box', steps, info: pageInfo() });
         steps.push('typed (' + how + ')');
 
-        // the Send button only enables after typing / after the file finished uploading (a missing button → Enter)
-        const btn = await waitFor(sendButton, msg.file ? 12000 : 8000, 250); // uploads take longer
-        let pressed = 'none';
-        if (btn) { btn.click(); pressed = 'button'; }
-        else { pressEnter(box); pressed = 'Enter'; }
-        steps.push('send via ' + pressed);
-
-        // did the message leave the box?
-        let left = await waitFor(() => !boxText(box) || !document.contains(box), 4000, 200);
-        if (!left && pressed === 'button') {
-          pressEnter(box); steps.push('also pressed Enter');
-          left = await waitFor(() => !boxText(box) || !document.contains(box), 4000, 200);
+        // Send. Click the Send button when it is ready; if the page has none, press Enter.
+        // After every try, check that the message really left the box.
+        const gone = (ms) => waitFor(() => !boxText(box) || !document.contains(box), ms || 2000, 200);
+        const t0 = Date.now();
+        const limit = t0 + (msg.file ? 25000 : 12000); // a file upload can take a while
+        let left = false, clicks = 0, enters = 0;
+        while (!left && Date.now() < limit && clicks < 2 && enters < 2) {
+          const btn = sendButton();
+          if (btn) { btn.click(); clicks++; steps.push('clicked Send'); left = await gone(3000); }
+          else if (!sendButtonAny() && Date.now() - t0 > 2500) { pressEnter(box); enters++; steps.push('pressed Enter'); left = await gone(); }
+          else await sleep(400); // Send exists but is disabled (uploading), or still appearing
         }
-        if (!left) return sendResponse({ ok: false, error: 'the message was typed but the Send button did not send it', steps, info: pageInfo() });
+        if (!left) { pressEnter(box, { ctrlKey: true, metaKey: true }); steps.push('pressed Ctrl/Cmd+Enter'); left = await gone(1500); }
+        if (!left && enters === 0) { pressEnter(box); steps.push('pressed Enter'); left = await gone(); }
+        if (!left) return sendResponse({ ok: false, needsTrustedEnter: true, error: 'the message was typed but the page did not send it', steps, info: pageInfo() });
         sendResponse({ ok: true, steps });
       } catch (e) {
         sendResponse({ ok: false, error: String(e), steps, info: pageInfo() });

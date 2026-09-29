@@ -359,6 +359,7 @@ if (!window.__ytToClaudeLoaded) {
       let idx = 0;
       seg.items.forEach((s, i) => { if (ct >= s.start - 0.1) idx = i; });
       setActive(idx);
+      if (deferredSend && ct >= seg.end - 1.0) runDeferredSend(); // the last second of the replay: send now
       if (ct >= seg.end + 0.15) {
         cancelReplay();
         ourPause = true;
@@ -367,7 +368,7 @@ if (!window.__ytToClaudeLoaded) {
         const h = document.getElementById('yt2c-head');
         if (h) h.textContent = '⏸ ' + fmtTime(seg.pausedAt) + '  ·  press Space to continue from here';
         beginWaiting(seg);
-        runDeferredSend(); // the video has stopped: now send it
+        runDeferredSend(); // (only if it was not sent already)
       }
     }, 50);
     replaying = { seg, timer };
@@ -407,7 +408,7 @@ if (!window.__ytToClaudeLoaded) {
       };
       if (settings.replayOn) {
         deferredSend = sendNow;
-        setFoot('Playing this part again… I will send it to ' + targetName() + ' when it ends', true);
+        setFoot('Playing this part again… I will send it to ' + targetName() + ' in its last second', true);
         startReplay(seg);
       } else {
         beginWaiting(seg);

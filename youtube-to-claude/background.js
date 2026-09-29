@@ -34,6 +34,24 @@ async function findOrOpenClaude(T) {
   return { tab, opened: true };
 }
 
+// Last resort: a REAL Enter key press (pages can ignore the software-made one). Chrome shows a
+// "started debugging this browser" bar for a moment while this runs.
+async function trustedEnter(tabId) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, '1.3');
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'chat-focus' }).catch(() => {});
+    await chrome.debugger.sendCommand(target, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
+    const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key, text: '\r' });
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', { type: 'char', ...key, text: '\r' });
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+    await sleep(600);
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
 function buildMessage(info, hasFile, askReady) {
   const lines = [
     "📺 I'm watching this YouTube video and I want to talk about it with you.",
@@ -95,7 +113,7 @@ function passageText(lines) {
   return [
     lines.join('\n'),
     '',
-    'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then repeat the sentences above once more, exactly as written. Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words.'
+    'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then repeat the sentences above once more, exactly as written. Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words, and do not ask me anything or offer anything at the end.'
   ].join('\n');
 }
 
@@ -151,6 +169,18 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
     res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
+  }
+  if (res && !res.ok && res.needsTrustedEnter) {
+    try {
+      await trustedEnter(claudeTab.id);
+      for (let i = 0; i < 10; i++) {
+        const st = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-state' }).catch(() => null);
+        if (st && st.boxText === 0) { res = { ok: true, steps: (res.steps || []).concat('real Enter key press') }; break; }
+        await sleep(300);
+      }
+    } catch (e) {
+      res.steps = (res.steps || []).concat('real Enter failed: ' + e.message);
+    }
   }
   if (!res || !res.ok) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
