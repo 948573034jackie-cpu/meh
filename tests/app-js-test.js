@@ -1,0 +1,136 @@
+// Runs the iOS-app JavaScript in Chromium with a stand-in for the Swift side ("native").
+const pw = require(process.env.PWMOD || 'playwright');
+const engine = process.env.ENGINE || 'chromium'; // chromium or webkit (Safari's engine, what the iPhone uses)
+const path = require('path');
+const http = require('http'); const fs = require('fs');
+const SC = path.resolve(__dirname, '../ios/YTLearn/Scripts') + '/';
+const rd = (f) => fs.readFileSync(SC + f, 'utf8');
+const swap = (s) => s.replace(/https:\/\/www\.youtube\.com/g, 'http://localhost:8767').replace(/https:\/\/claude\.ai/g, 'http://localhost:8765').replace(/https:\/\/chatgpt\.com/g, 'http://localhost:8768');
+
+const json3 = JSON.stringify({ events: [
+  { tStartMs: 0, dDurationMs: 2500, segs: [{utf8:'Hello everyone, welcome'}] },
+  { tStartMs: 2500, dDurationMs: 2500, segs: [{utf8:'to the show. Today we'}] },
+  { tStartMs: 5000, dDurationMs: 2500, segs: [{utf8:'learn English. It is really'}] },
+  { tStartMs: 7500, dDurationMs: 2500, segs: [{utf8:'fun, I think. Let us start'}] },
+  { tStartMs: 10000, dDurationMs: 2500, segs: [{utf8:'with a story about a small'}] },
+  { tStartMs: 12500, dDurationMs: 2500, segs: [{utf8:'dog. Once upon a time.'}] } ] });
+const pr = JSON.stringify({ captions:{ playerCaptionsTracklistRenderer:{ captionTracks:[{ baseUrl:'http://localhost:8767/timedtext?lang=en', languageCode:'en', kind:'asr'}] } } });
+const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><h1 class="ytd-watch-metadata"><yt-formatted-string>English Lesson 1</yt-formatted-string></h1><div id="movie_player" style="position:relative;width:800px;height:450px;background:#246"><video muted playsinline src="/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><script>var ytInitialPlayerResponse = ${pr};</script>`;
+const chatHtml = (kind) => `<!doctype html><title>${kind}</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" accept="image/*" id="fimg"><input type="file" multiple id="f"><div id="slot"></div>
+<script>window.__sent=[];const b=document.getElementById('box'),f=document.getElementById('f'),slot=document.getElementById('slot');
+function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name)});b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
+b.addEventListener('input',upd);</script>`;
+// 40 s of silence as a WAV file (8 kHz, 8-bit mono) so the <video> element has something to play
+const wav = (() => { const n = 8000 * 40, b = Buffer.alloc(44 + n, 128);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
+const serve = (port, fn) => http.createServer(fn).listen(port);
+const s1 = serve(8767, (q, r) => {
+  if (q.url.startsWith('/v.wav')) { const rg = q.headers.range; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; r.writeHead(206, {'content-type':'audio/wav','accept-ranges':'bytes','content-range':`bytes ${a}-${e}/${wav.length}`,'content-length':e-a+1}); return r.end(wav.slice(a, e+1)); } r.writeHead(200, {'content-type':'audio/wav','accept-ranges':'bytes','content-length':wav.length}); return r.end(wav); }
+  if (q.url.startsWith('/timedtext')) { r.setHeader('content-type','application/json'); return r.end(json3); }
+  r.setHeader('content-type','text/html'); r.end(ytHtml); });
+const s2 = serve(8765, (q, r) => { r.setHeader('content-type','text/html'); r.end(chatHtml('claude')); });
+const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.end(chatHtml('chatgpt')); });
+
+(async () => {
+  const browser = engine === 'webkit'
+    ? await pw.webkit.launch()
+    : await pw.chromium.launch({ executablePath: process.env.CHROME || undefined, args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
+  console.log('engine:', engine, browser.version());
+  const ctx = await browser.newContext();
+  const yt = await ctx.newPage(), chat = await ctx.newPage();
+  for (const [n, p] of [['yt', yt], ['chat', chat]]) { p.on('pageerror', (e) => console.log('PAGE ERROR (' + n + '):', String(e.message || e).slice(0, 300), '|', String(e.stack || '').split('\n').slice(0, 3).join(' <- '))); }
+  const store = { target: 'chatgpt', pauseOn: true, replayOn: true, sendTranscript: true, voiceOn: true, textLevel: 6 };
+  const nativeLog = [];
+  const native = async (m) => {
+    nativeLog.push(m.kind + (m.op ? ':' + m.op : ''));
+    switch (m.kind) {
+      case 'chatInfo': return { url: chat.url() };
+      case 'tabsSend': return await chat.evaluate((x) => window.__ytcDeliver(x), m.msg);
+      case 'navigateChat': await chat.goto(swap(m.url).replace(/\/new$/, '/')); await injectChat(); return null;
+      case 'storageSet': Object.assign(store, m.obj); return null;
+      case 'speech': return null;
+      default: return null;
+    }
+  };
+  const bridgeInit = `window.webkit = { messageHandlers: { ytc: { postMessage: (m) => window.__native(m) } } };`;
+  for (const p of [yt, chat]) { await p.exposeFunction('__native', native); await p.addInitScript(bridgeInit); }
+  async function injectChat() { await chat.evaluate(swap(rd('shim-common.js') + rd('shim-chat.js') + rd('chat.js'))); }
+  async function injectYT() { await yt.evaluate(`window.__ytcStorageInit=${JSON.stringify(store)};` + swap(rd('shim-common.js') + rd('shim-youtube.js') + rd('lib.js') + rd('background.js') + rd('youtube.js'))); }
+  await chat.goto('http://localhost:8768/'); await injectChat();
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  const sent = (p) => p.evaluate(() => window.__sent);
+  const vid = () => yt.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(2), paused: v.paused }; });
+  const ov = () => yt.evaluate(() => { const e = document.getElementById('yt2c-overlay'); return e ? { text: document.getElementById('yt2c-body').innerText.replace(/\n+/g, ' | '), font: getComputedStyle(document.getElementById('yt2c-body')).fontSize, foot: document.getElementById('yt2c-foot').textContent } : null; });
+  const ok = (name, cond, extra) => console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? '  ' + extra : ''));
+
+  await yt.waitForTimeout(3500);
+  console.log('subtitle preload:', JSON.stringify(await yt.evaluate(() => window.__ytcDebug.load())));
+
+  // 1) pause -> subtitles, replay, message in the last second
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(700);
+  const o1 = await ov();
+  ok('subtitles shown after pause', !!(o1 && /Hello everyone/.test(o1.text)), JSON.stringify(o1));
+  ok('nothing sent yet (replay running)', (await sent(chat)).length === 0);
+  await yt.waitForTimeout(8500);
+  const got = await sent(chat);
+  ok('replay finished and video stopped', (await vid()).paused === true, JSON.stringify(await vid()));
+  ok('ChatGPT mock got exactly 1 message', got.length === 1, got.length);
+  ok('message has transcript file + no filler', got[0] && got[0].files.includes('transcript-English-Lesson-1.txt') && /explain this part to me like an English teacher/.test(got[0].text) && !/repeat this passage/.test(got[0].text));
+  ok('picked the general file input, not the image one', got[0] && got[0].files.length === 1);
+  ok('speech listening started for "let\'s go"', nativeLog.includes('speech:start'), nativeLog.filter(x => x.startsWith('speech')).join(','));
+  // 2) say "let's go" (iOS speech result comes from Swift)
+  await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: "okay let's go" }));
+  await yt.waitForTimeout(1200);
+  const v2 = await vid();
+  ok('"let\'s go" -> back to start of the part and playing', v2.paused === false && v2.t < 3, JSON.stringify(v2));
+  ok('speech recogniser stopped', nativeLog.includes('speech:stop'));
+  await yt.waitForTimeout(6000);
+  ok('keeps playing past the end of the part', (await vid()).t > 6.6 && !(await vid()).paused, JSON.stringify(await vid()));
+  ok('overlay gone', (await ov()) === null);
+
+  // 3) second pause in the same chat: passage only (no second transcript)
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 9; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(3000);
+  console.log('   2nd pause: replay running:', JSON.stringify(await vid()), '| overlay', !!(await ov()));
+  await yt.waitForTimeout(10500);
+  console.log('   2nd pause: after replay :', JSON.stringify(await vid()), '| last:', store.last);
+  const got2 = await sent(chat);
+  ok('2nd pause sends a 2nd message', got2.length === 2, got2.length);
+  ok('2nd message: passage only, no link/intro', got2[1] && !/Link:/.test(got2[1].text) && /English teacher/.test(got2[1].text));
+  // wait until the 2nd replay has stopped, then resume by voice like a user would
+  for (let i = 0; i < 60 && !(await vid()).paused; i++) await yt.waitForTimeout(250);
+  ok('2nd replay stopped by itself', (await vid()).paused, JSON.stringify(await vid()));
+  await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: 'lets go' }));
+  await yt.waitForTimeout(700);
+  const v3 = await vid();
+  ok('"lets go" (no apostrophe) also resumes from the start of the part', !v3.paused && v3.t < 5, JSON.stringify(v3));
+
+  // 4) toolbar button (Send video) + mode switch to Claude
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', replayOn: false }));
+  const resObj = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'send', target: 'claude' }));
+  const res = resObj && resObj.result;
+  ok('button send while chat shows ChatGPT: switches to Claude and sends', /^Sent to Claude/.test(res || ''), res);
+  await chat.waitForTimeout(500);
+  const claudeMsgs = await sent(chat);
+  ok('Claude mock got the video message with the transcript', claudeMsgs.length === 1 && claudeMsgs[0].files.length === 1, JSON.stringify(claudeMsgs).slice(0, 120));
+
+  // 5) pause with replay off -> sends at once, to Claude, passage only; text size setting reaches the page
+  await yt.evaluate(() => window.__ytcStorageChanged({ textLevel: 10 }));
+  await yt.evaluate(() => { document.querySelector('video').currentTime = 5; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause()); await yt.waitForTimeout(1500);
+  const o5 = await ov();
+  ok('text size level 10 applied', o5 && parseFloat(o5.font) > 38, o5 && o5.font);
+  const c5 = await sent(chat);
+  ok('replay off: message sent at once, passage only, to Claude', c5.length === 2 && !/Link:/.test(c5[1].text), c5.length);
+  ok('video stayed paused where you paused (no replay)', (await vid()).paused && Math.abs((await vid()).t - 5) < 0.6, JSON.stringify(await vid()));
+  console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
+  console.log('storage persisted to native:', JSON.stringify(store));
+  await browser.close(); s1.close(); s2.close(); s3.close();
+})().catch((e) => { console.error('FAIL', e); process.exit(1); });

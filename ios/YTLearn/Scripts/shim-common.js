@@ -68,7 +68,7 @@
       return orig.apply(console, arguments);
     };
   });
-  window.addEventListener('error', (e) => { try { post({ kind: 'log', text: 'uncaught: ' + e.message + ' @' + (e.filename || '') + ':' + e.lineno }).catch(() => {}); } catch (x) { /* ignore */ } });
+  window.addEventListener('error', (e) => { try { post({ kind: 'log', text: 'uncaught: ' + e.message + ' @' + (e.filename || '') + ':' + e.lineno + ':' + e.colno + ' | ' + String(e.error && e.error.stack || '').split('\n').slice(0, 4).join(' <- ') }).catch(() => {}); } catch (x) { /* ignore */ } });
 
   window.chrome = window.chrome || {};
   window.chrome.__ytc = true;
