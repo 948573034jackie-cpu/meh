@@ -17,7 +17,18 @@ A tiny menu-bar app for voice calls with Claude. **When you start speaking, it i
 
 ## Install
 
-Download the installer for your computer from the **Actions → latest run → Artifacts** section of this repo (`Claude-Eyes-macos-latest` = Mac `.dmg`, `Claude-Eyes-windows-latest` = Windows `.exe`), or build it yourself: `npm install && npm run dist`.
+Build the app on your own computer (needs [Node.js](https://nodejs.org) installed, one time):
+
+```
+git clone https://github.com/948573034jackie-cpu/meh.git && cd meh
+git checkout claude/desktop-voice-call-app-3avr4d
+npm install
+npm run dist        # makes the installer in the dist/ folder (.dmg on Mac, .exe on Windows)
+```
+
+Or just try it without installing: `npm install && npm start`.
+
+(The repo also has a GitHub Actions workflow that builds the Mac and Windows installers automatically and uploads them as *Artifacts*, when GitHub Actions is available for your account.)
 
 **First time on Mac** (the app isn't signed by Apple, so macOS asks you to confirm):
 1. Open the `.dmg`, drag *Claude Eyes* to Applications, then **right-click → Open** once.
