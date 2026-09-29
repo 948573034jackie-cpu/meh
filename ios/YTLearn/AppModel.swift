@@ -139,10 +139,14 @@ final class AppModel: NSObject, ObservableObject {
                 }
             }
             let chatTest = """
-            const r = await window.__ytcDeliver({ type: 'chat-send', text: 'self test message', dryRun: true });
+            const r = await window.__ytcDeliver({ type: 'chat-send', text: 'REALTEXT', dryRun: DRYRUN });
             return { url: location.href, title: document.title, result: r };
             """
-            self.chat.callAsyncJavaScript(chatTest, arguments: [:], in: nil, in: AppModel.world) { result in
+            let real = ProcessInfo.processInfo.arguments.contains("-selftest-send")
+            let chatScript = chatTest
+                .replacingOccurrences(of: "DRYRUN", with: real ? "false" : "true")
+                .replacingOccurrences(of: "REALTEXT", with: real ? "Hello! This is an automatic test of my own app. Please reply with just the word OK." : "self test message")
+            self.chat.callAsyncJavaScript(chatScript, arguments: [:], in: nil, in: AppModel.world) { result in
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let value): self.selfTestReport["chat"] = value
@@ -157,7 +161,14 @@ final class AppModel: NSObject, ObservableObject {
     private func writeSelfTestReport() {
         var report = selfTestReport
         report["jsLogs"] = jsLogs
-        report["frames"] = ["youtube": NSCoder.string(for: youtube.frame), "chat": NSCoder.string(for: chat.frame)]
+        report["frames"] = [
+            "youtube": NSCoder.string(for: youtube.frame), "chat": NSCoder.string(for: chat.frame),
+            "youtubeContainer": NSCoder.string(for: youtube.superview?.frame ?? .zero),
+            "chatContainer": NSCoder.string(for: chat.superview?.frame ?? .zero),
+            "window": NSCoder.string(for: youtube.window?.frame ?? .zero),
+            "screen": NSCoder.string(for: UIScreen.main.bounds),
+            "safeArea": NSCoder.string(for: youtube.window?.safeAreaInsets ?? .zero)
+        ]
         report["writtenAt"] = ISO8601DateFormatter().string(from: Date())
         guard JSONSerialization.isValidJSONObject(report),
               let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),

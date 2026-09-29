@@ -456,7 +456,8 @@
       const d = await loadTranscript();
       if (!video.paused) { hideOverlay(); return; } // you pressed play again meanwhile
       if (!d.sentences.length) {
-        showOverlay({ note: 'No subtitles found for this video' });
+        const why = (d.errors.join(' ').match(/playability ([A-Z_]+)(?: \(([^)]*)\))?/) || []);
+        showOverlay({ note: 'No subtitles could be read for this video.' + (why[1] && why[1] !== 'OK' ? ' YouTube says: ' + (why[2] || why[1]) + '.' : '') });
         return;
       }
       const seg = pickSegment(d.sentences, t);
