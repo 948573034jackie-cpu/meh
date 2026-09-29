@@ -156,7 +156,9 @@
         if (msg.dryRun) { mark('dry run: typed, not sent'); return sendResponse({ ok: true, dryRun: true, steps, info: pageInfo(), boxChars: boxText(box).length }); }
         // Send. Click the Send button when it is ready; if the page has none, press Enter.
         // After every try, check that the message really left the box.
-        const gone = (ms) => waitFor(() => !boxText(box) || !document.contains(box), ms || 2000, 200);
+        // "Sent" = the box emptied, the box was replaced, or the page moved to another chat address.
+        const path0 = location.pathname;
+        const gone = (ms) => waitFor(() => !boxText(box) || !document.contains(box) || location.pathname !== path0, ms || 2000, 200);
         const t0 = Date.now();
         const limit = t0 + (msg.file ? 25000 : 12000); // a file upload can take a while
         let left = false, clicks = 0, enters = 0;

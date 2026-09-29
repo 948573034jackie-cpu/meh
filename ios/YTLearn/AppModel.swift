@@ -271,7 +271,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             func watch(_ round: Int) {
                 if answered { return }
                 let path = self.chat.url?.path ?? ""
-                if (startPath == "/" || startPath == "/new") && (path.hasPrefix("/c/") || path.hasPrefix("/chat/")) {
+                if (startPath == "/" || startPath == "/new") && path != "/" && path != "/new" {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         finish(["ok": true, "steps": ["message sent (the page moved on to a new chat)"]], nil)
                     }
