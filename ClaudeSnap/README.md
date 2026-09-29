@@ -54,7 +54,7 @@ defaults write local.claudesnap sensitivity -float 5
 
 (default is 3; higher = needs a louder voice). Restart the app after changing it.
 
-Optional: also press Return after pasting (sends the picture immediately):
+The picture is pasted in the first moment you speak (about half a second), so it travels together with your voice. Return is **not** pressed by default, because that would send the picture as a separate message. Only if pasting alone does not attach the picture to your voice turn, try:
 
 ```
 defaults write local.claudesnap pressReturn -bool true

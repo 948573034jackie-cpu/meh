@@ -19,7 +19,7 @@ enum Config {
     /// Minimum seconds between two screenshots.
     static let cooldown: TimeInterval = 4
     /// Your voice must stay loud this long before we count it as speech.
-    static let onsetDuration: TimeInterval = 0.25
+    static let onsetDuration: TimeInterval = 0.15
     /// Silence needed before the next sentence can trigger again.
     static let rearmSilence: TimeInterval = 1.0
     /// Sensitivity. Bigger number = needs a louder voice.
@@ -157,6 +157,17 @@ final class Snapper {
         up?.post(tap: .cghidEventTap)
     }
 
+    /// Calls `then` once `app` is frontmost (plus a short moment for its text box to get focus).
+    private func waitUntilActive(_ app: NSRunningApplication, deadline: Date, then: @escaping () -> Void) {
+        if app.isActive || Date() >= deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: then)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [self] in
+                waitUntilActive(app, deadline: deadline, then: then)
+            }
+        }
+    }
+
     /// Full flow. `done` is called on the main thread when we are back on the original app.
     func run(panelWindowNumber: Int, done: @escaping (Result<Void, SnapError>) -> Void) {
         let previous = NSWorkspace.shared.frontmostApplication
@@ -170,15 +181,16 @@ final class Snapper {
 
             claude.activate(options: [.activateIgnoringOtherApps])
 
-            // Give Claude time to come to the front, then paste.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            // Paste as soon as Claude is in front (usually ~0.2 s), so the picture
+            // is in place while you are still speaking.
+            waitUntilActive(claude, deadline: Date().addingTimeInterval(1.0)) { [self] in
                 pressKey(9, command: true)                 // Cmd+V
                 if Config.pressReturn {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
                         pressKey(36, command: false)       // Return
                     }
                 }
-                let wait = Config.pressReturn ? 1.2 : 0.7
+                let wait = Config.pressReturn ? 0.6 : 0.3
                 DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
                     // Go back to what you were reading or studying.
                     if let prev = previous, prev.processIdentifier != me,
