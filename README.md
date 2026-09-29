@@ -45,9 +45,17 @@ Until Screen Recording is on, Claude Eyes will **not** send anything (macOS woul
 
 **Windows**: run the installer (click *More info → Run anyway* if SmartScreen warns), allow the microphone if Windows asks.
 
-## How the screenshot reaches Claude
+## How the screenshot reaches Claude (and how you stay on your page)
 
-The screenshot is copied to the clipboard, then the **Claude desktop app** is brought forward for a split second, the picture is pasted (⌘V / Ctrl+V), and focus jumps back to whatever you were using. If the Claude app isn't open, the screenshot just stays on your clipboard and you get a notification. Turn off *Paste into Claude app automatically* if you'd rather paste yourself.
+The screenshot is copied to the clipboard, then the **Claude desktop app** is brought forward for a split second, the picture is pasted (⌘V / Ctrl+V), and you are put **straight back on the exact window you were reading**, with your cursor, text and scroll position untouched. Measured on the test rig: about **0.15 seconds** away from your page.
+
+Safety rules built in:
+- If the Claude app is already in front, it does not switch at all.
+- It presses paste **only after Claude is really in front**. If Claude is slow or can't come forward, nothing is pasted (it will never paste into the page you are reading) and you get a notification. The screenshot stays on your clipboard.
+- After pasting it checks that you are back on your window and retries if not.
+- If the Claude app isn't open, the screenshot just stays on your clipboard.
+
+Turn off *Paste into Claude app automatically* if you would rather paste yourself. Mac tip: if your reading page is a **full-screen app**, macOS slides to Claude's screen and back (about half a second each way); keeping the Claude window on the same desktop avoids that.
 
 Tip: use **headphones**. With loudspeakers, a loud Claude voice can leak into the microphone and count as "speech" (it will still only cause one screenshot per minute).
 
@@ -56,12 +64,12 @@ Tip: use **headphones**. With loudspeakers, a loud Claude voice can leak into th
 ```
 npm install
 npm test          # 49 unit tests: voice detector, settings, icons, paste scripts, multi-screen layout/stitching
-npm run test:e2e  # real Electron app + fake microphone playing a scripted recording + real screen capture (needs xvfb on Linux)
+npm run test:e2e  # real Electron app + fake microphone playing a scripted recording + real screen capture + real window switching (Linux: needs xvfb, xdotool, openbox)
 npm start         # run it
 ```
 
 - `src/vad.js`: speech-onset detector (adaptive noise floor, 60 ms onset, 1.2 s hang-over, 60 s screenshot interval)
 - `src/listener.js` / `audio-worklet.js`: hidden page that reads the microphone (all audio processing off, no output device)
 - `src/screenshot.js` / `src/layout.js`: captures all screens (or just the mouse's) into one picture; checks the macOS Screen Recording permission first
-- `src/deliver.js`: clipboard + paste into the Claude app (macOS AppleScript / Windows PowerShell / Linux xdotool)
+- `src/deliver.js`: clipboard + paste into the Claude app, then back to your window (macOS AppleScript / Windows PowerShell / Linux xdotool)
 - CI (`.github/workflows/build.yml`) runs all tests, validates the Mac/Windows paste scripts on real Mac/Windows machines, and builds the installers.

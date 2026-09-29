@@ -248,6 +248,7 @@ function start(overrides = {}) {
       if (settings.get('paste')) {
         pasted = await o.paste({ appName: settings.get('targetApp') });
         if (!pasted.ok) handlePasteProblem(pasted);
+        else if (!pasted.focusRestored) complain('Claude Eyes', "The screenshot was sent, but I couldn't switch you back to your page automatically. Click your page to continue.");
         // put back whatever was on the clipboard before (best effort, text/image only)
         setTimeout(() => {
           if (!before.image.isEmpty()) clipboard.writeImage(before.image);
@@ -275,7 +276,8 @@ function start(overrides = {}) {
 
   function handlePasteProblem(r) {
     const app_ = settings.get('targetApp');
-    if (r.reason === 'not-running') complain('Claude Eyes', `The ${app_} app isn't open, so the screenshot is only on your clipboard.`);
+    if (r.reason === 'wrong-window') complain('Claude Eyes', `The ${app_} app didn't come forward in time, so nothing was pasted (your page was left alone). The screenshot is on your clipboard.`);
+    else if (r.reason === 'not-running') complain('Claude Eyes', `The ${app_} app isn't open, so the screenshot is only on your clipboard.`);
     else if (r.reason === 'no-accessibility') {
       complain('Claude Eyes needs permission', 'Allow Claude Eyes under System Settings > Privacy & Security > Accessibility so it can paste.');
       if (process.platform === 'darwin') shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');

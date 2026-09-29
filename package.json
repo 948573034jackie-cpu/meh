@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/unit/*.test.js",
-    "test:e2e": "xvfb-run -a --server-args='-screen 0 1280x800x24' electron test/e2e/run.js --no-sandbox",
+    "test:e2e": "sh test/e2e/run.sh",
     "icons": "node scripts/make-icons.js",
     "dist": "electron-builder"
   },

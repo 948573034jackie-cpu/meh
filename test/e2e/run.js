@@ -17,6 +17,13 @@ app.commandLine.appendSwitch('use-file-for-fake-audio-capture', WAV);
 
 const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`); };
+// The test creates many app instances in one process; Electron sometimes idles instead of
+// exiting after app.exit(). Record the verdict, then make sure the process really ends.
+function finish(code) {
+  try { fs.writeFileSync(path.join(OUT, 'result'), String(code)); } catch (_) {}
+  setTimeout(() => process.kill(process.pid, 'SIGKILL'), 2000).unref();
+  app.exit(code);
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function launch(intervalSec, extra = {}) {
@@ -32,6 +39,107 @@ function launch(intervalSec, extra = {}) {
     onEvent: (e) => { if (e.type !== 'level') events.push({ ...e, at: Date.now() - t0 }); else events.levelCount = (events.levelCount || 0) + 1; },
   });
   return { events, handle, pasteCalls, t0 };
+}
+
+
+// ---------------------------------------------------------------------------
+// Focus: after the screenshot is pasted into "Claude", the user must land back
+// on the SAME window, with their caret/text untouched, and quickly.
+// Uses the real paste script (xdotool) with two real windows + a window manager.
+// ---------------------------------------------------------------------------
+async function focusScenarios() {
+  const { execFileSync, execFile } = require('child_process');
+  const { pasteIntoApp } = require('../../src/deliver');
+  console.log('\n# Focus: back on the page you were reading');
+  let haveXdotool = true;
+  try { execFileSync('xdotool', ['getactivewindow'], { stdio: 'ignore' }); } catch (_) {
+    try { execFileSync('xdotool', ['--version'], { stdio: 'ignore' }); } catch (e) { haveXdotool = false; }
+  }
+  if (!haveXdotool) { check('xdotool available for the focus test', false, 'install xdotool + openbox'); return; }
+
+  const html = (title, extra) => 'data:text/html,' + encodeURIComponent(
+    `<title>${title}</title><body style="margin:20px;background:#fff"><textarea id=t rows=6 cols=50 autofocus>${title} text</textarea>` +
+    `<script>window.__pasted=0;document.addEventListener('paste',e=>{const it=[...e.clipboardData.items].some(i=>i.type.startsWith('image/'));if(it)window.__pasted++});${extra || ''}</script>`);
+  const mk = async (title, x) => {
+    const w = new BrowserWindow({ x, y: 100, width: 500, height: 300, title, show: true, webPreferences: { backgroundThrottling: false } });
+    await w.loadURL(html(title));
+    return w;
+  };
+  const reader = await mk('Reader', 20);
+  const claude = await mk('Claude', 560);
+  const id = (w) => w.getNativeWindowHandle().readUInt32LE(0);
+  const active = () => Number(execFileSync('xdotool', ['getactivewindow']).toString().trim());
+  const activate = async (w) => { execFileSync('xdotool', ['windowactivate', String(id(w))]); await sleep(400); };
+  const js = (w, code) => w.webContents.executeJavaScript(code);
+  const pastedCount = (w) => js(w, 'window.__pasted');
+
+  // caret in the middle of the reader's text, so we can prove it is untouched
+  await activate(reader);
+  await js(reader, `(()=>{const t=document.getElementById('t');t.focus();t.setSelectionRange(3,7);})()`);
+
+  const handleBox = launch(60, { paste: (a) => pasteIntoApp(a) });
+  handleBox.handle.setEnabled(false);
+  await sleep(500);
+  const send = async () => {
+    const before = handleBox.events.length;
+    await handleBox.handle.sendScreenshot('test');
+    return handleBox.events.slice(before).find((e) => e.type === 'sent' || e.type === 'error');
+  };
+
+  // 1. reader active -> paste lands in Claude -> reader active again, caret untouched
+  check('setup: Reader window is in front', active() === id(reader));
+  let ev = await send();
+  await sleep(300);
+  check('picture was pasted into the Claude window', (await pastedCount(claude)) === 1 && ev && ev.pasted && ev.pasted.ok, JSON.stringify(ev && ev.pasted));
+  check('nothing was pasted into the page being read', (await pastedCount(reader)) === 0);
+  check('back on the SAME window you were reading', active() === id(reader));
+  const st = await js(reader, `(()=>{const t=document.getElementById('t');return {focus:document.hasFocus(),el:document.activeElement===t,s:t.selectionStart,e:t.selectionEnd,v:t.value}})()`);
+  check('your text box still has focus, caret and text exactly as before', st.focus && st.el && st.s === 3 && st.e === 7 && st.v === 'Reader text', JSON.stringify(st));
+  check('away from your page less than 1 second', ev.pasted.awayMs < 1000 && ev.pasted.focusRestored === true, `${ev.pasted.awayMs}ms`);
+  console.log(`   away time: ${ev.pasted.awayMs}ms`);
+
+  // 2. Claude already in front -> no switching at all
+  await activate(claude);
+  ev = await send();
+  await sleep(300);
+  check('Claude already in front: pasted without any switching', ev.pasted.ok && ev.pasted.awayMs === 0 && (await pastedCount(claude)) === 2 && active() === id(claude));
+
+  // 3. Claude not open -> nothing touched
+  claude.hide();
+  await sleep(300);
+  await activate(reader);
+  ev = await send();
+  await sleep(300);
+  check('Claude app not open: reports it, does not touch your page', ev.pasted.reason === 'not-running' && active() === id(reader) && (await pastedCount(reader)) === 0);
+  claude.show();
+  await sleep(300);
+
+  // 4. Claude is too slow to come forward -> must NOT paste into the page you are reading
+  const shim = fs.mkdtempSync(path.join(os.tmpdir(), 'ce-shim-'));
+  const real = execFileSync('which', ['xdotool']).toString().trim();
+  fs.writeFileSync(path.join(shim, 'xdotool'), `#!/bin/sh\nif [ "$1" = windowactivate ] && [ "$2" = "${id(claude)}" ]; then exit 0; fi\nexec ${real} "$@"\n`, { mode: 0o755 });
+  const slowRun = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { env: { ...process.env, PATH: `${shim}:${process.env.PATH}` }, timeout: 8000 },
+    (err, stdout, stderr) => resolve({ code: err ? 1 : 0, stdout: String(stdout), stderr: String(stderr) })));
+  await activate(reader);
+  const beforeC = await pastedCount(claude);
+  const res = await pasteIntoApp({ appName: 'Claude', run: slowRun });
+  await sleep(300);
+  check('Claude never came forward: nothing pasted anywhere (page you read is safe)', res.reason === 'wrong-window' && (await pastedCount(reader)) === 0 && (await pastedCount(claude)) === beforeC, JSON.stringify(res));
+  check('...and you are still on your page', active() === id(reader));
+
+  // 5. Several rounds in a row stay stable
+  const away = [];
+  for (let i = 0; i < 5; i++) {
+    await activate(reader);
+    const e = await send();
+    await sleep(200);
+    away.push(e.pasted.awayMs);
+    if (active() !== id(reader) || !e.pasted.ok) { check(`round ${i + 1} returns to the page`, false, JSON.stringify(e.pasted)); break; }
+  }
+  check('5 rounds in a row: always back on the page, fast', away.length === 5 && Math.max(...away) < 1000, away.join(',') + 'ms');
+
+  handleBox.handle.setEnabled(false);
+  reader.destroy(); claude.destroy();
 }
 
 async function main() {
@@ -139,10 +247,12 @@ async function main() {
   check('nothing extra fired for the 0.4s pause inside sentence 1 or the click', sB.length <= 5, `count=${sB.length}`);
   B.handle.setEnabled(false);
 
+  await focusScenarios();
+
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
-  app.exit(failed.length ? 1 : 0);
+  finish(failed.length ? 1 : 0);
 }
 
-main().catch((e) => { console.error('E2E CRASH', e); app.exit(2); });
-setTimeout(() => { console.error('E2E TIMEOUT'); app.exit(3); }, 150000);
+main().catch((e) => { console.error('E2E CRASH', e); finish(2); });
+setTimeout(() => { console.error('E2E TIMEOUT'); finish(3); }, 150000);
