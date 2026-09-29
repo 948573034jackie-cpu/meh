@@ -37,6 +37,10 @@ jobs:
           ./sync-scripts.sh
           xcodegen generate
           xcodebuild -version
+          # XcodeGen writes the newest project file format (77, Xcode 16). Xcode 14/15 cannot open that: use format 56.
+          grep -n "objectVersion\|preferredProjectObjectVersion\|compatibilityVersion" YTLearn.xcodeproj/project.pbxproj
+          sed -i '' -E 's/objectVersion = [0-9]+;/objectVersion = 56;/; s/preferredProjectObjectVersion = [0-9]+;/preferredProjectObjectVersion = 56;/' YTLearn.xcodeproj/project.pbxproj
+          grep -n "objectVersion\|preferredProjectObjectVersion" YTLearn.xcodeproj/project.pbxproj
       - name: Compile for iPhone/iPad Simulator (checks the code)
         working-directory: ios
         shell: bash
