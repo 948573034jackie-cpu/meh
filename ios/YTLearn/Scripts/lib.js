@@ -140,12 +140,12 @@
 
   // Some transcript pages give every word twice ("And and then then come come back back").
   // When most words come in equal pairs, keep one of each pair. Ordinary speech ("very very good") is left alone.
-  function undouble(list) {
-    if (list.length < 6) return list;
+  function undouble(list, force) {
+    if (!force && list.length < 6) return list;
     const b = list.map((x) => bare(x.w));
     let paired = 0;
     for (let i = 0; i + 1 < b.length; i++) if (b[i] && b[i] === b[i + 1]) { paired += 2; i++; }
-    if (paired < list.length * 0.7) return list;
+    if (!force && paired < list.length * 0.7) return list;
     const out = [];
     for (let i = 0; i < list.length; i++) {
       if (i + 1 < list.length && b[i] && b[i] === b[i + 1]) {
@@ -159,7 +159,18 @@
   }
 
   // One list of words with start (t) and end (e) times, from cues with or without per-word timing.
+  function rawDoubleRate(cues) {
+    let total = 0, same = 0;
+    for (const c of cues) {
+      const b = (c.words ? c.words.map((x) => x.w) : c.text.split(/\s+/)).filter(Boolean).map(bare);
+      total += b.length;
+      for (let i = 0; i + 1 < b.length; i++) if (b[i] && b[i] === b[i + 1]) same++;
+    }
+    return total >= 40 && same >= 8 ? same / total : 0; // needs a real amount of text: one "no, no, no" is not a pattern
+  }
+
   function toWords(cues) {
+    const forceUndouble = rawDoubleRate(cues) >= 0.2; // the whole transcript is doubled (real speech: about 0.01)
     const words = [];
     for (let i = 0; i < cues.length; i++) {
       const c = cues[i];
@@ -176,11 +187,31 @@
         const step = (end - c.start) / toks.length;
         list = toks.map((w, k) => ({ t: c.start + k * step, w, e: c.start + (k + 1) * step }));
       }
-      list = dropRepeats(undouble(list.filter((x) => !/^\[[^\]]*\]$/.test(x.w))), words); // drop [Music], [Applause] and repeated starts
+      list = dropRepeats(undouble(list.filter((x) => !/^\[[^\]]*\]$/.test(x.w)), forceUndouble), words); // drop [Music], [Applause] and repeated starts
       for (const x of list) words.push(x);
     }
     words.sort((a, b) => a.t - b.t);
-    return words;
+    return collapseDoubles(words);
+  }
+
+  // Safety net over the whole transcript: if many words are followed by the very same word
+  // (real speech: about 1 in 100; a doubled transcript: 1 in 2), it is doubled everywhere, so keep one of each.
+  function collapseDoubles(words) {
+    if (words.length < 8) return words;
+    const b = words.map((x) => bare(x.w));
+    let same = 0;
+    for (let i = 0; i + 1 < b.length; i++) if (b[i] && b[i] === b[i + 1]) same++;
+    if (same / words.length < 0.2) return words;
+    const out = [];
+    for (let i = 0; i < words.length; i++) {
+      if (i + 1 < words.length && b[i] && b[i] === b[i + 1]) {
+        const a = words[i], c = words[i + 1];
+        const endMark = (x) => (x.w.match(/[.,!?;:…]+$/) || [''])[0];
+        out.push(endMark(c).length > endMark(a).length ? { ...a, w: a.w.replace(/[.,!?;:…]+$/, '') + endMark(c), e: c.e } : { ...a, e: c.e });
+        i++;
+      } else out.push(words[i]);
+    }
+    return out;
   }
 
   function tidy(ws) {

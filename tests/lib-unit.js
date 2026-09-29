@@ -108,3 +108,25 @@ assert(!/\b(\w+) \1\b/i.test(fixed.replace(/ (very|no) \1/i, '')), 'still double
 assert(/going to fix all the things that need fixing/i.test(fixed));
 assert(/Diamond Rio has a song called I believe it's called One Pump Texico/i.test(fixed));
 console.log('doubled-word tests passed');
+// --- more kinds of doubling (every route must come out clean)
+const clean = (t) => t.replace(/\s+/g, ' ');
+const noDouble = (t, label) => { const m = t.match(/\b([A-Za-z']+)[.,"]* \1\b/i); assert(!m || /^(very|no|let me)/i.test(m[0]), label + ' still doubled: ' + t); };
+// (1) doubled, but the cue is short (under 6 words) -> the whole-transcript net must catch it
+const shortCues = [];
+const lines = ['Hello Hello everyone everyone.', 'Welcome Welcome to to the the show show.', 'Today Today we we learn learn English English.', 'It It is is really really fun fun.', 'Let Let us us start start now now.', 'First First we we read read a a story story.', 'Then Then we we talk talk about about it it.', 'You You can can ask ask me me anything anything.'];
+lines.forEach((t, i) => shortCues.push({ start: i * 3, end: null, text: t, words: null }));
+const o1 = L.buildSentences(shortCues).map((x) => x.text).join(' ');
+console.log('  short doubled cues ->', o1);
+assert.equal(o1, 'Hello everyone. Welcome to the show. Today we learn English. It is really fun. Let us start now. First we read a story. Then we talk about it. You can ask me anything.');
+// (2) per-word timing where every word is listed twice
+const timedDouble = { events: [{ tStartMs: 0, dDurationMs: 4000, segs: ['we', 'we', 'are', 'are', 'going', 'going', 'to', 'to', 'learn', 'learn', 'English.', 'English.'].map((w, k) => ({ utf8: (k ? ' ' : '') + w, tOffsetMs: Math.floor(k / 2) * 500 })) }] };
+const o2 = L.buildSentences(L.parseJson3(timedDouble)).map((x) => x.text).join(' ');
+console.log('  timed doubled ->', o2);
+assert.equal(o2, 'We are going to learn English.');
+// (3) real speech with a few natural repeats stays untouched
+const speech = L.buildSentences([{ start: 0, end: null, text: 'It was very very good and I said no no that is not what I meant at all today my friend.', words: null }]).map((x) => x.text).join(' ');
+assert.equal(speech, 'It was very very good and I said no no that is not what I meant at all today my friend.');
+// (4) a doubled transcript keeps sentence times sane (each sentence starts before it ends, in order)
+const ss4 = L.buildSentences(shortCues);
+assert(ss4.every((x, i) => x.end > x.start && (i === 0 || x.start >= ss4[i - 1].start)));
+console.log('more doubling tests passed');
