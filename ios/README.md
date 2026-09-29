@@ -32,6 +32,9 @@ Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pi
 ## Buttons (top bar)
 **Ask** (big blue button): tap, say your question, and hear the answer · Claude | ChatGPT switch · **AI** = make the AI window small / half / big · **…** menu: send video + transcript, YouTube home, open a copied link, settings (text size, replay, voice).
 
+## If the video says “Sign in to confirm you're not a bot”
+YouTube sometimes asks this on some internet connections. The small label in the corner of the video shows it too (“subtitles: none (Sign in…)”). Sign in to YouTube in the video window (the account picture, top right), then open the video again. Subtitles are read with your own YouTube session.
+
 ## Limits (honest)
 * Needs an Apple ID for signing (see above). The app is not on the App Store.
 * Works with videos that have captions or YouTube's *Show transcript*.

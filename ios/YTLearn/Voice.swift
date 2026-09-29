@@ -5,6 +5,7 @@ import AVFoundation
 final class Voice: NSObject, AVSpeechSynthesizerDelegate {
     private let synth = AVSpeechSynthesizer()
     private(set) var isSpeaking = false
+    private var current: AVSpeechUtterance?
     var onChange: ((Bool) -> Void)?
 
     override init() {
@@ -34,21 +35,24 @@ final class Voice: NSObject, AVSpeechSynthesizerDelegate {
         let utterance = AVSpeechUtterance(string: clean)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = 0.47   // a little slower than normal: easier to follow
+        current = utterance
         isSpeaking = true
         onChange?(true)
         synth.speak(utterance)
     }
 
     func stop() {
+        current = nil                      // late "cancelled" messages of the old sentence must not count
         if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         if isSpeaking { isSpeaking = false; onChange?(false) }
     }
 
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        isSpeaking = false
-        onChange?(false)
-    }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { ended(utterance) }
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { ended(utterance) }
+
+    private func ended(_ utterance: AVSpeechUtterance) {
+        guard utterance === current else { return }   // an old sentence ended; the new one is still going
+        current = nil
         isSpeaking = false
         onChange?(false)
     }
