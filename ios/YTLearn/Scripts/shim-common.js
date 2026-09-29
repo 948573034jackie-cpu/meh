@@ -60,6 +60,16 @@
   }
   window.__ytcDispatch = dispatch;
 
+  // page errors -> Swift (helps find problems on real sites)
+  ['error', 'warn'].forEach((level) => {
+    const orig = console[level];
+    console[level] = function () {
+      try { post({ kind: 'log', text: level + ': ' + Array.prototype.slice.call(arguments).map(String).join(' ') }).catch(() => {}); } catch (e) { /* ignore */ }
+      return orig.apply(console, arguments);
+    };
+  });
+  window.addEventListener('error', (e) => { try { post({ kind: 'log', text: 'uncaught: ' + e.message + ' @' + (e.filename || '') + ':' + e.lineno }).catch(() => {}); } catch (x) { /* ignore */ } });
+
   window.chrome = window.chrome || {};
   window.chrome.__ytc = true;
   window.chrome.storage = { local: area(local, true), session: area(session, false), onChanged: { addListener: (fn) => changeListeners.push(fn) } };

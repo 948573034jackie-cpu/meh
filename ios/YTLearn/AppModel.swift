@@ -21,6 +21,8 @@ final class AppModel: NSObject, ObservableObject {
     private let speech = SpeechListener()
     private let bridge: Bridge
     private var started = false
+    private var jsLogs: [String] = []
+    private var selfTestReport: [String: Any] = [:]
     private let defaults = UserDefaults.standard
 
     /// Share of the screen used by the video, for each layout the layout button cycles through.
@@ -68,8 +70,76 @@ final class AppModel: NSObject, ObservableObject {
     func start() {
         if started { return }
         started = true
+        if ProcessInfo.processInfo.arguments.contains("-selftest") {
+            runSelfTest()
+            return
+        }
         goHome()
         openChat()
+    }
+
+    // ---- automatic test (used by the build server: launch the app with the argument -selftest) ----
+    private func runSelfTest() {
+        selfTestReport = ["ios": UIDevice.current.systemVersion, "device": UIDevice.current.model]
+        if let url = URL(string: "https://m.youtube.com/watch?v=iG9CE55wbtY") { youtube.load(URLRequest(url: url)) }
+        if let url = URL(string: "https://chatgpt.com/") { chat.load(URLRequest(url: url)) }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self = self else { return }
+            let ytTest = """
+            const out = { url: location.href };
+            const v = document.querySelector('video');
+            out.hasVideo = !!v;
+            out.hasChromeShim = !!(window.chrome && window.chrome.__ytc);
+            try { out.transcript = await window.__ytcDebug.load(); } catch (e) { out.transcriptError = String(e); }
+            if (v) {
+              v.muted = true;
+              try { await Promise.race([v.play(), new Promise(r => setTimeout(r, 5000))]); } catch (e) { out.playError = String(e); }
+              await new Promise(r => setTimeout(r, 2000));
+              v.currentTime = Math.min(40, (v.duration || 90) / 3);
+              await new Promise(r => setTimeout(r, 1500));
+              v.pause();
+              await new Promise(r => setTimeout(r, 3500));
+              const o = document.getElementById('yt2c-overlay');
+              const b = document.getElementById('yt2c-body');
+              out.overlay = o ? { text: b.innerText.slice(0, 200), font: getComputedStyle(b).fontSize, w: o.clientWidth, h: o.clientHeight } : null;
+              out.videoState = { t: v.currentTime, paused: v.paused };
+            }
+            return out;
+            """
+            self.youtube.callAsyncJavaScript(ytTest, arguments: [:], in: nil, in: AppModel.world) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let value): self.selfTestReport["youtube"] = value
+                    case .failure(let error): self.selfTestReport["youtubeError"] = error.localizedDescription
+                    }
+                    self.writeSelfTestReport()
+                }
+            }
+            let chatTest = """
+            const r = await window.__ytcDeliver({ type: 'chat-send', text: 'self test message', dryRun: true });
+            return { url: location.href, title: document.title, result: r };
+            """
+            self.chat.callAsyncJavaScript(chatTest, arguments: [:], in: nil, in: AppModel.world) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let value): self.selfTestReport["chat"] = value
+                    case .failure(let error): self.selfTestReport["chatError"] = error.localizedDescription
+                    }
+                    self.writeSelfTestReport()
+                }
+            }
+        }
+    }
+
+    private func writeSelfTestReport() {
+        var report = selfTestReport
+        report["jsLogs"] = jsLogs
+        report["writtenAt"] = ISO8601DateFormatter().string(from: Date())
+        guard JSONSerialization.isValidJSONObject(report),
+              let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
+              let dir = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first else { return }
+        try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("selftest.json"))
     }
 
     func goHome() {
@@ -161,6 +231,10 @@ final class AppModel: NSObject, ObservableObject {
 
         case "speech":
             if (body["op"] as? String) == "start" { speech.start() } else { speech.stop() }
+            reply(nil, nil)
+
+        case "log":
+            if jsLogs.count < 80 { jsLogs.append((body["text"] as? String ?? "").prefix(300).description) }
             reply(nil, nil)
 
         default:
