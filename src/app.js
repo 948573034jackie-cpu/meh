@@ -2,12 +2,13 @@
 const path = require('path');
 const {
   app, BrowserWindow, Tray, Menu, nativeImage, session, systemPreferences,
-  powerMonitor, Notification, shell, clipboard, ipcMain,
+  powerMonitor, Notification, shell, clipboard, ipcMain, dialog,
 } = require('electron');
 const { Vad, SENSITIVITY } = require('./vad');
 const { Settings } = require('./settings');
 const { renderIcon } = require('./icons');
-const { captureScreen } = require('./screenshot');
+const { captureScreen, screenAccess } = require('./screenshot');
+const { screenGranted } = require('./layout');
 const { pasteIntoApp } = require('./deliver');
 
 const RETRY_MS = 5000;
@@ -17,6 +18,8 @@ const STALL_MS = 4000;
 function start(overrides = {}) {
   const o = {
     capture: captureScreen,
+    screenAccess,
+    platform: process.platform, // tests may pretend to be macOS
     paste: pasteIntoApp,
     settingsFile: path.join(app.getPath('userData'), 'settings.json'),
     manageLoginItem: app.isPackaged,
@@ -106,6 +109,11 @@ function start(overrides = {}) {
           click: () => { settings.set('intervalSec', sec); vad.setMinInterval(sec * 1000); refreshTray(); },
         })),
       },
+      {
+        label: 'Capture all screens',
+        type: 'checkbox', checked: settings.get('allScreens'),
+        click: (mi) => { settings.set('allScreens', mi.checked); refreshTray(); },
+      },
       { type: 'separator' },
       { label: 'Send a test screenshot now', click: () => sendScreenshot('test') },
       {
@@ -114,6 +122,7 @@ function start(overrides = {}) {
         click: (mi) => { settings.set('launchAtLogin', mi.checked); applyLoginItem(); refreshTray(); },
       },
       { type: 'separator' },
+      ...(process.platform === 'darwin' ? [{ label: 'Check permissions…', click: () => showPermissions() }] : []),
       { label: lastSent ? `Last screenshot: ${lastSent}` : 'No screenshot sent yet', enabled: false },
     ];
     if (micState === 'error' && /NotAllowed|denied|Permission/i.test(micMessage)) {
@@ -223,7 +232,15 @@ function start(overrides = {}) {
     busy = true;
     const t0 = Date.now();
     try {
-      const image = await o.capture(); // grab the screen FIRST, before anything else moves
+      const access = o.screenAccess();
+      if (!screenGranted(o.platform, access)) {
+        // Without Screen Recording permission macOS only returns the wallpaper. Never send that.
+        if (access === 'not-determined') o.capture({ all: false }).catch(() => {}); // makes macOS show its permission prompt
+        handleScreenDenied(access);
+        o.onEvent({ type: 'blocked', reason: 'screen-permission', access });
+        return;
+      }
+      const image = await o.capture({ all: settings.get('allScreens') }); // grab the screen FIRST, before anything else moves
       const tCaptured = Date.now();
       const before = { text: clipboard.readText(), image: clipboard.readImage() };
       clipboard.writeImage(image);
@@ -249,6 +266,7 @@ function start(overrides = {}) {
   }
 
   let lastComplaint = 0;
+  let lastPaneOpen = 0;
   function complain(title, body) {
     if (Date.now() - lastComplaint < 60000) return; // don't nag on every sentence
     lastComplaint = Date.now();
@@ -264,9 +282,40 @@ function start(overrides = {}) {
     } else complain('Claude Eyes', `Couldn't paste into ${app_} (${r.reason}). The screenshot is on your clipboard.`);
   }
 
+  const PANE = (name) => `x-apple.systempreferences:com.apple.preference.security?Privacy_${name}`;
+
+  function handleScreenDenied(access) {
+    complain('Claude Eyes can\'t see your screen yet', 'Turn on Claude Eyes under System Settings > Privacy & Security > Screen Recording, then quit and reopen it. No screenshot was sent.');
+    if (process.platform === 'darwin' && Date.now() - lastPaneOpen > 60000) { lastPaneOpen = Date.now(); shell.openExternal(PANE('ScreenCapture')); }
+  }
+
   function handleCaptureProblem(e) {
     complain('Claude Eyes can\'t see the screen', 'Allow Claude Eyes under System Settings > Privacy & Security > Screen Recording, then restart it.');
-    if (process.platform === 'darwin') shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture');
+    if (process.platform === 'darwin') shell.openExternal(PANE('ScreenCapture'));
+  }
+
+  // macOS: one place to see and fix every permission the app needs.
+  async function showPermissions() {
+    const mark = (ok) => (ok ? '✅' : '❌');
+    const mic = systemPreferences.getMediaAccessStatus('microphone');
+    const scr = o.screenAccess();
+    const acc = systemPreferences.isTrustedAccessibilityClient(false);
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      title: 'Claude Eyes permissions',
+      message: 'Claude Eyes needs three permissions',
+      detail:
+        `${mark(mic === 'granted')}  Microphone: hears when you start speaking\n` +
+        `${mark(scr === 'granted')}  Screen Recording: lets it see every app, folder and screen\n` +
+        `${mark(acc)}  Accessibility: lets it paste the picture into Claude\n\n` +
+        'After turning on Screen Recording, quit and reopen Claude Eyes once.',
+      buttons: ['Screen Recording…', 'Microphone…', 'Accessibility…', 'Close'],
+      defaultId: scr === 'granted' ? 3 : 0,
+      cancelId: 3,
+    });
+    if (response === 0) { o.capture({ all: false }).catch(() => {}); shell.openExternal(PANE('ScreenCapture')); }
+    else if (response === 1) { await systemPreferences.askForMediaAccess('microphone').catch(() => {}); shell.openExternal(PANE('Microphone')); }
+    else if (response === 2) { systemPreferences.isTrustedAccessibilityClient(true); shell.openExternal(PANE('Accessibility')); }
   }
 
   // ---------- boot ----------
@@ -276,11 +325,12 @@ function start(overrides = {}) {
     refreshTray();
     applyLoginItem();
 
-    // Ask for screen access right away (macOS prompts on first capture) rather than mid-call.
-    if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
-      o.capture().catch(() => {});
-    }
     if (settings.get('enabled')) await startListening(); else await createListener();
+    if (process.platform === 'darwin' && o.showFirstRun !== false && (settings.isNew || o.screenAccess() !== 'granted')) {
+      // First launch (or still missing screen access): walk through the permissions BEFORE the first call.
+      if (settings.isNew) settings.set('launchAtLogin', settings.get('launchAtLogin')); // creates settings.json so this shows once
+      showPermissions().catch(() => {});
+    }
 
     watchdog = setInterval(() => {
       // Audio stopped flowing (device glitch, sleep/wake)? Restart the listener.
@@ -297,7 +347,7 @@ function start(overrides = {}) {
   app.on('window-all-closed', (e) => e.preventDefault()); // tray app: never quit when windows close
   app.on('before-quit', () => { clearInterval(watchdog); clearTimeout(retryTimer); });
 
-  return { settings, vad, setEnabled, sendScreenshot, getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
+  return { settings, vad, setEnabled, sendScreenshot, showPermissions, getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
 }
 
 module.exports = { start };

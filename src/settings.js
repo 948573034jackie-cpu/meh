@@ -6,6 +6,7 @@ const DEFAULTS = {
   enabled: true, // the on/off switch
   paste: true, // paste the screenshot into the Claude app
   sensitivity: 'normal', // low | normal | high
+  allScreens: true, // capture every monitor, not just the one under the mouse
   intervalSec: 60, // wait between screenshots
   launchAtLogin: true,
   targetApp: 'Claude',
@@ -14,6 +15,7 @@ const DEFAULTS = {
 class Settings {
   constructor(file) {
     this.file = file;
+    this.isNew = !fs.existsSync(file); // first ever launch
     this.data = { ...DEFAULTS };
     try {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));

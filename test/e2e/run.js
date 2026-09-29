@@ -19,7 +19,7 @@ const results = [];
 const check = (name, ok, detail = '') => { results.push({ name, ok }); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function launch(intervalSec) {
+function launch(intervalSec, extra = {}) {
   const events = [];
   const settingsFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ce-e2e-')), 's.json');
   fs.writeFileSync(settingsFile, JSON.stringify({ intervalSec, paste: true }));
@@ -28,6 +28,7 @@ function launch(intervalSec) {
   const handle = require('../../src/app').start({
     settingsFile, notify: false, manageLoginItem: false, allowMultiple: true,
     paste: async (a) => { pasteCalls.push(a); return { ok: true }; },
+    ...extra,
     onEvent: (e) => { if (e.type !== 'level') events.push({ ...e, at: Date.now() - t0 }); else events.levelCount = (events.levelCount || 0) + 1; },
   });
   return { events, handle, pasteCalls, t0 };
@@ -39,6 +40,44 @@ async function main() {
   const win = new BrowserWindow({ x: 0, y: 0, width: 1280, height: 800, frame: false });
   await win.loadURL('data:text/html,<body style="margin:0;background:%23ff00ff;color:white;font:80px sans-serif">CLAUDE EYES TEST SCREEN</body>');
   await sleep(500);
+
+  // ---- Screen Recording permission (macOS behaviour, simulated) ----
+  console.log('\n# Permission gate: macOS without Screen Recording must send NOTHING');
+  {
+    const P = launch(1, { platform: 'darwin', screenAccess: () => 'denied' });
+    await sleep(7000);
+    const blocked = P.events.filter((e) => e.type === 'blocked');
+    check('speech while permission is denied -> blocked, nothing sent', blocked.length >= 1 && P.events.filter((e) => e.type === 'sent').length === 0, `blocked=${blocked.length}`);
+    check('nothing was pasted into Claude', P.pasteCalls.length === 0);
+    check('user was told what to do', P.events.some((e) => e.type === 'notice' && /Screen Recording/.test(e.body)));
+    P.handle.setEnabled(false);
+    await sleep(500);
+
+    let captures = 0;
+    const N = launch(1, { platform: 'darwin', screenAccess: () => 'not-determined', capture: async () => { captures++; throw new Error('x'); } });
+    await sleep(5000);
+    check('first time (not asked yet): triggers the macOS permission prompt, sends nothing', captures >= 1 && N.events.filter((e) => e.type === 'sent').length === 0, `captures=${captures}`);
+    N.handle.setEnabled(false);
+    await sleep(500);
+
+    const G = launch(60, { platform: 'darwin', screenAccess: () => 'granted' });
+    await sleep(5000);
+    check('permission granted on macOS -> screenshot sent normally', G.events.some((e) => e.type === 'sent'));
+    G.handle.setEnabled(false);
+    await sleep(500);
+  }
+
+  // ---- Capture directly: all screens vs one screen ----
+  console.log('\n# Capture function');
+  {
+    const { captureScreen } = require('../../src/screenshot');
+    const all = await captureScreen({ all: true });
+    const one = await captureScreen({ all: false });
+    check('all-screens capture works (single monitor here: same as one screen)', all.getSize().width === 1280 && all.getSize().height === 800 && one.getSize().width === 1280, JSON.stringify(all.getSize()));
+    const bm = all.toBitmap(); const sz = all.getSize();
+    const o2 = (Math.floor(sz.height * 0.9) * sz.width + Math.floor(sz.width * 0.9)) * 4;
+    check('all-screens capture shows the real screen content', bm[o2 + 2] > 230 && bm[o2 + 1] < 30 && bm[o2] > 230);
+  }
 
   // ---- Scenario A: default-style 60s wait. Many sentences, exactly ONE screenshot. ----
   console.log('\n# Scenario A: 60-second wait (18s of audio containing 4 speech bursts)');
