@@ -15,7 +15,7 @@ const json3 = JSON.stringify({ events: [
   { tStartMs: 10000, dDurationMs: 2500, segs: [{utf8:'with a story about a small'}] },
   { tStartMs: 12500, dDurationMs: 2500, segs: [{utf8:'dog. Once upon a time.'}] } ] });
 const pr = JSON.stringify({ captions:{ playerCaptionsTracklistRenderer:{ captionTracks:[{ baseUrl:'http://localhost:8767/timedtext?lang=en', languageCode:'en', kind:'asr'}] } } });
-const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><h1 class="ytd-watch-metadata"><yt-formatted-string>English Lesson 1</yt-formatted-string></h1><div id="movie_player" style="position:relative;width:800px;height:450px;background:#246"><video muted playsinline src="/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><script>var ytInitialPlayerResponse = ${pr};</script>`;
+const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px;background:#246"><video muted playsinline src="/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><div id="below"><h1 class="ytd-watch-metadata"><yt-formatted-string>English Lesson 1</yt-formatted-string></h1></div><script>var ytInitialPlayerResponse = ${pr};</script>`;
 const chatHtml = (kind) => `<!doctype html><title>${kind}</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" accept="image/*" id="fimg"><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const b=document.getElementById('box'),f=document.getElementById('f'),slot=document.getElementById('slot');
 function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name),imgs:[...document.getElementById('fimg').files].map(y=>y.name+':'+y.size)});const fi=document.getElementById('fimg');fi.value='';b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
@@ -58,7 +58,9 @@ const mobileHtml = `<!doctype html><title>mobile chat</title><textarea id="mobil
 <script>window.__sent=[];const t=document.getElementById('mobile-composer-prompt'),slot=document.getElementById('slot');
 t.addEventListener('input',()=>{ if(t.value.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{window.__sent.push({text:t.value,files:[...document.querySelectorAll('input[type=file]')].reduce((n,i)=>n+i.files.length,0)});t.value='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' });</script>`;
 const oddYtHtml = ytHtml.replace(/<div id="movie_player"[^>]*>/, '<div id="plain-wrapper" style="height:0">').replace('style="width:100%;height:100%"', 'style="width:600px;height:340px"');
-const s2 = serve(8765, (q, r) => { r.setHeader('content-type','text/html'); r.end(chatHtml('claude')); });
+const voiceHtml = `<!doctype html><title>Claude voice</title><div>Voice call in progress…</div><input type="file" accept="image/*,.pdf,.txt" id="fimg" multiple>
+<script>window.__sent=[];const f=document.getElementById('fimg');f.addEventListener('change',()=>{window.__sent.push({voice:true,imgs:[...f.files].map(y=>y.name+':'+y.size+':'+y.type)});});</script>`;
+const s2 = serve(8765, (q, r) => { r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/voice') ? voiceHtml : chatHtml('claude')); });
 const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/mobile') ? mobileHtml : chatHtml('chatgpt')); });
 
 (async () => {
@@ -286,7 +288,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   ok('Claude with the picture option off: words only', off.length === 1 && off[0].imgs.length === 0, JSON.stringify(off).slice(0, 160));
 
   // 12) which source is used, and are the times right? (long videos, hidden time copies, wrong-video panel)
-  const loadOn = async (url) => { await yt.goto(url); await injectYT(); await yt.waitForTimeout(400); return yt.evaluate(() => window.__ytcDebug.load()); };
+  const loadOn = async (url) => { delete store.subsCache; await yt.goto(url); await injectYT(); await yt.waitForTimeout(400); return yt.evaluate(() => window.__ytcDebug.load()); };
   const viaApi = await loadOn('http://localhost:8767/apitest?v=abc12345678');
   ok('captions refused (empty file): the transcript service gives all 40 lines with exact times', viaApi.source === 'YouTube transcript service' && viaApi.lines === 40 && Math.round(viaApi.lastStart) === 585, JSON.stringify(viaApi).slice(0, 260));
   const viaPanel = await loadOn('http://localhost:8767/panelok?v=abc12345678');
@@ -303,6 +305,60 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   ok('a subtitle file you loaded is always used first (even if the panel is wrong)', /subtitle file you loaded \(3 lines\)/.test(viaFile.source || '') && viaFile.lines === 3 && /Loaded by hand line one/.test(viaFile.first || ''), JSON.stringify(viaFile).slice(0, 260));
   delete store.manualSubs;
   ok('title comes from the video data, with its own length known', viaApi.title === 'Long Lesson', viaApi.title);
+
+  // 13) saved copy ("database"): opens instantly in a new window; the bar under the video; the timeline in every message
+  delete store.subsCache;
+  const first13 = await loadOn('http://localhost:8767/apitest?v=abc12345678');
+  await yt.waitForTimeout(300);
+  ok('the full subtitles are saved after the first download', !!(store.subsCache && store.subsCache.abc12345678 && store.subsCache.abc12345678.cues.length === 40), store.subsCache ? Object.keys(store.subsCache).join(',') : 'nothing saved');
+  const second13 = await (async () => { await yt.goto('http://localhost:8767/panelok?v=abc12345678'); await injectYT(); await yt.waitForTimeout(400); return yt.evaluate(() => window.__ytcDebug.load()); })();
+  ok('new window: the saved copy is used at once (no download)', /saved copy/.test(second13.source || '') && second13.lines === 40 && Math.round(second13.lastStart) === 585, JSON.stringify(second13).slice(0, 220));
+  // the bar
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT(); await yt.waitForTimeout(900);
+  const barInfo = await yt.evaluate(() => { const b = document.getElementById('yt2c-bar'); const p = document.getElementById('movie_player'); return b ? { parent: b.parentElement.id, below: !!(p.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING), h: Math.round(b.getBoundingClientRect().height), text: b.textContent } : null; });
+  ok('small bar sits right under the video (inside the area below the player)', barInfo && barInfo.parent === 'below' && barInfo.below && barInfo.h < 45 && /Claude/.test(barInfo.text) && /ChatGPT/.test(barInfo.text) && /Send video/.test(barInfo.text), JSON.stringify(barInfo));
+  await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
+  await yt.waitForTimeout(300);
+  ok('bar: choosing ChatGPT is saved as the target', store.target === 'chatgpt', store.target);
+  await chat.goto('http://localhost:8768/'); await injectChat();
+  const n13 = (await sent(chat)).length;
+  await yt.evaluate(() => document.getElementById('yt2c-b-send').click());
+  await yt.waitForTimeout(2500);
+  const m13 = await sent(chat);
+  const st13 = await yt.evaluate(() => document.getElementById('yt2c-b-status').textContent);
+  ok('bar: "Send video" sends the link + full subtitles and shows Sent ✓', m13.length === n13 + 1 && /Link:/.test(m13[m13.length - 1].text) && /Sent to ChatGPT/.test(st13), st13);
+  // timeline in the pause message
+  await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: false, target: 'chatgpt' }));
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(2500);
+  const t13 = await sent(chat);
+  ok('every pause message carries the timeline (paused at, from-to)', /Paused at 0:0\d\. This part of the video runs from 0:00 to 0:\d\d \(find it in the transcript timeline\)\./.test(t13[t13.length - 1].text), t13[t13.length - 1].text.slice(0, 140));
+
+  // 14) Claude voice mode (no text box): only a picture can go in, so it carries the sentences and the question
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  await yt.evaluate(() => { Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { get: () => 640, configurable: true }); Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { get: () => 360, configurable: true }); });
+  await chat.goto('http://localhost:8765/voice'); await injectChat();
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', replayOn: false, imageOn: true }));
+  await yt.waitForTimeout(3500);
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(8500);
+  const vs = await sent(chat);
+  const vlast = store.last || '';
+  ok('voice mode: exactly one picture goes in (the card with words + question)', vs.length === 1 && vs[0].imgs.length === 1 && /^question-\d+\.jpg:[1-9]\d+:image\/jpeg$/.test(vs[0].imgs[0]), JSON.stringify(vs));
+  ok('voice mode: the status says why only a picture was sent', /voice mode/i.test(vlast), vlast.slice(0, 200));
+  const card = await yt.evaluate(async () => {
+    const seg = { start: 0, end: 13, pausedAt: 9, items: [{ text: 'Hello everyone, welcome to the show today.' }, { text: 'Today we are going to learn English together.' }] };
+    const url = await (async () => window.__ytcDebug.card(seg))();
+    const img = new Image(); img.src = url; await img.decode();
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+    const px = (x0, y0, w, h) => { const d = g.getImageData(x0, y0, w, h).data; let lit = 0; for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 300) lit++; return lit; };
+    return { w: img.width, h: img.height, header: px(40, 20, 1200, 40), footer: px(40, 640, 1200, 70), middle: px(40, 200, 1200, 300) };
+  });
+  ok('card picture: has a header (time), the sentences, and the question at the bottom', card.w === 1280 && card.header > 300 && card.footer > 300 && card.middle > 3000, JSON.stringify(card));
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();

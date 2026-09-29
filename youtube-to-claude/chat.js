@@ -81,6 +81,7 @@
     return new File([bytes], name || 'video.jpg', { type: mime });
   }
   function attachImage(img, box) {
+    if (!box && !imageInput()) throw new Error('no way to attach a picture here');
     const file = dataUrlToFile(img.dataUrl, img.name);
     const input = imageInput();
     if (input) {
@@ -171,8 +172,15 @@
       const t00 = Date.now();
       const mark = (s) => steps.push(s + ' (' + ((Date.now() - t00) / 1000).toFixed(1) + 's)');
       try {
-        const box = await waitFor(composer, 8000);
-        if (!box) return sendResponse({ ok: false, error: 'no message box found on this page (is it in voice mode?)', steps, info: pageInfo() });
+        const pic = msg.card || msg.image;
+        const box = await waitFor(composer, pic ? 2500 : 8000);
+        // Claude's voice mode has no text box: only a picture can go in. The card picture carries the sentences AND the question.
+        if ((!box || !visible(box)) && pic && pic.dataUrl && imageInput()) {
+          mark('no visible message box (voice mode)');
+          mark('picture with the words attached via ' + attachImage(pic, box));
+          return sendResponse({ ok: true, voiceMode: true, steps });
+        }
+        if (!box) return sendResponse({ ok: false, error: 'no message box found on this page (is it in voice mode? then only a picture can be sent)', steps, info: pageInfo() });
 
         let text = msg.text;
         if (msg.file) {

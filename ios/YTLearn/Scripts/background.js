@@ -110,8 +110,12 @@ function markSent(claudeTabId, videoId, oldPath) {
 }
 
 // Just the text that was on screen, then one plain instruction (no headings, no extra words).
-function passageText(lines) {
+function passageText(lines, seg) {
+  const when = seg && seg.start !== undefined
+    ? ['Paused at ' + fmt(seg.pausedAt !== undefined ? seg.pausedAt : seg.end) + '. This part of the video runs from ' + fmt(seg.start) + ' to ' + fmt(seg.end) + ' (find it in the transcript timeline).', '']
+    : [];
   return [
+    ...when,
     lines.join('\n'),
     '',
     'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then repeat the sentences above once more, exactly as written. Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words, and do not ask me anything or offer anything at the end.'
@@ -125,7 +129,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -144,7 +148,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   const sent = await getSent();
   const rec = sent[claudeTab.id];
   const sameChat = rec && rec.videoId === videoId && (rec.path === path || (isFreshPath(rec.path) && !isFreshPath(path)));
-  const needTranscript = force || !sameChat;
+  const { alwaysTranscript } = await chrome.storage.local.get('alwaysTranscript');
+  const needTranscript = force || !sameChat || (alwaysTranscript === true && !!passage && !noTranscript);
   if (sameChat && rec.path !== path) await saveSent(claudeTab.id, videoId, path);
 
   const { sendTranscript } = await chrome.storage.local.get('sendTranscript');
@@ -169,7 +174,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   let res;
   try {
     const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage });
+    const sendCard = card && T.name === 'Claude' ? { name: 'question-' + Date.now() + '.jpg', dataUrl: card } : null; // for voice mode: the words are inside the picture
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
@@ -189,7 +195,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
   if (needTranscript && !noTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
-  if (image && T.name === 'Claude') summary += ' + picture';
+  if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
+  else if (image && T.name === 'Claude') summary += ' + picture';
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 
@@ -207,7 +214,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'send') {
     (async () => {
       let result;
-      try { result = await sendVideo(msg.tabId, msg.target); } catch (e) { result = 'Unexpected error: ' + e.message; }
+      try { result = await sendVideo(msg.tabId || (sender && sender.tab && sender.tab.id), msg.target); } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast(result);
       sendResponse({ result });
     })();
@@ -247,7 +254,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text)), force: false, image: msg.image || null
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, image: msg.image || null, card: msg.card || null
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

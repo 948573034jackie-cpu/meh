@@ -36,3 +36,17 @@ It types the message, then clicks Send. If the message is still in the box it pr
 ## Picture for Claude, and no repeated words
 * With **Claude** selected, every pause sends the words **and a picture of the video** (the frame where you paused, without the subtitles on top). **ChatGPT** gets the words only. You can turn the picture off in the extension window ("Claude only: also send a picture…").
 * YouTube's automatic subtitles repeat the end of one line at the start of the next line. The extension now removes these repeats, so every sentence appears once.
+
+## Subtitles: six ways, saved, and your own file
+The extension tries these in order and uses the first one that looks right (its times must fit the length of the video, and a long video must be fully covered):
+1. a subtitle file you loaded yourself (.srt / .vtt / .txt) in the extension window,
+2. the copy saved the last time you watched this video (opens instantly, also in a new window),
+3. the video's caption file, 4. the same list the YouTube phone app uses, 5. YouTube's transcript service,
+6. the subtitles the player itself downloads (it switches CC on for a moment and back off), 7. the "Show transcript" panel (it waits until a long panel has filled up).
+Every message carries the timeline ("Paused at 12:34. This part runs from 12:10 to 12:35"). Tick "Attach the full subtitles on every pause" if you want the whole file each time.
+
+## Small bar under the video
+Claude | ChatGPT | Send video ▸ sits right under the player. It sends the link + the full subtitles (with timeline).
+
+## Claude voice mode
+Voice mode has no text box, so only a picture can be sent. In that case the extension sends one picture that contains the time, the sentences **and** the question, and Claude answers by voice.

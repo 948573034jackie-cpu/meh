@@ -146,6 +146,25 @@
     return { cues: mine, source: 'the subtitle file you loaded (' + mine.length + ' lines)', trusted: true };
   }
 
+  // Method 0b: the copy of this video's subtitles saved the last time (opens instantly, also in a new window)
+  async function fromSavedCopy() {
+    const { subsCache } = await chrome.storage.local.get('subsCache');
+    const mine = subsCache && subsCache[videoId()];
+    if (!mine || !mine.cues || !mine.cues.length) throw new Error('nothing saved for this video yet');
+    return { cues: mine.cues, source: mine.source + ' — saved copy', fromSaved: true, length: mine.length || 0 };
+  }
+  async function saveCopy(cues, source) {
+    try {
+      const size = JSON.stringify(cues).length;
+      if (size > 6000000) return; // absurdly big: skip
+      const { subsCache = {} } = await chrome.storage.local.get('subsCache');
+      subsCache[videoId()] = { cues, source, length: videoLength(), savedAt: Date.now() };
+      const ids = Object.keys(subsCache).sort((a, b) => subsCache[a].savedAt - subsCache[b].savedAt);
+      while (ids.length > 25) delete subsCache[ids.shift()]; // keep the newest 25 videos
+      await chrome.storage.local.set({ subsCache });
+    } catch (e) { /* saving is a bonus */ }
+  }
+
   // Method 4: the subtitles the PLAYER itself downloads. Switch the CC button on for a moment, find the
   // address the player used (it carries the player's own permission), and read that file. It holds the
   // whole video, also a 3-hour one.
@@ -240,18 +259,18 @@
       const info = await getInfo();
       const errors = [];
       let best = null;
-      for (const method of [fromManualFile, fromCaptionTrack, fromAndroidTrack, fromTranscriptApi, fromPlayerCaptions, fromTranscriptPanel]) {
+      for (const method of [fromManualFile, fromSavedCopy, fromCaptionTrack, fromAndroidTrack, fromTranscriptApi, fromPlayerCaptions, fromTranscriptPanel]) {
         try {
           const r = await method();
           if (r.trusted) { best = r; break; } // a file you loaded yourself: always used
-          const j = judgeCues(r.cues, videoLength());
+          const j = judgeCues(r.cues, videoLength() || r.length || 0);
           if (j.tooLate) { errors.push(method.name + ': ' + j.reason); continue; } // another video's transcript: never use
           r.coverage = j.coverage;
-          if (j.ok) { best = r; break; }
+          if (j.ok) { best = r; if (!r.fromSaved) saveCopy(r.cues, r.source); break; }
           errors.push(method.name + ': ' + j.reason + ' (kept as a backup)');
           if (!best || r.coverage > best.coverage) best = r;
         } catch (e) {
-          if (method !== fromManualFile) errors.push(method.name + ': ' + e.message);
+          if (method !== fromManualFile && method !== fromSavedCopy) errors.push(method.name + ': ' + e.message);
         }
       }
       if (best) {
@@ -284,7 +303,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -293,9 +312,10 @@
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
     if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
     if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
+    if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
     if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
@@ -503,9 +523,60 @@
     video.pause();                                // touching a playing video = pause -> show + send the sentences
   }
 
+  // ---- small bar just under the video: Claude | ChatGPT | Send video ----
+  let bar = null;
+  function updateBar(r) {
+    const want = settings.barOn && location.pathname === '/watch';
+    if (!want) { if (bar) { bar.remove(); bar = null; } return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'yt2c-bar';
+      bar.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 0;font:600 12px/1 system-ui,Arial,sans-serif;z-index:2147483000';
+      const mk = (id, text, extra) => { const b = document.createElement('button'); b.id = id; b.textContent = text; b.style.cssText = 'border:1px solid #888;border-radius:14px;padding:5px 11px;font:inherit;cursor:pointer;background:transparent;color:inherit;' + (extra || ''); return b; };
+      const claude = mk('yt2c-b-claude', 'Claude'), gpt = mk('yt2c-b-chatgpt', 'ChatGPT'), send = mk('yt2c-b-send', 'Send video ▸', 'margin-left:4px');
+      const status = document.createElement('span');
+      status.id = 'yt2c-b-status';
+      status.style.cssText = 'font-weight:400;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw';
+      const pick = (t) => { settings.target = t; chrome.storage.local.set({ target: t }); updateBar(); };
+      claude.onclick = () => pick('claude');
+      gpt.onclick = () => pick('chatgpt');
+      send.onclick = async () => {
+        status.textContent = 'Sending…';
+        try {
+          const res = await chrome.runtime.sendMessage({ type: 'send', target: settings.target });
+          const text = (res && res.result) || 'no answer';
+          status.textContent = /^Sent /.test(text) ? 'Sent to ' + targetName() + ' ✓' : text.slice(0, 120);
+        } catch (e) { status.textContent = 'Not sent: reload this YouTube page'; }
+      };
+      bar.append(claude, gpt, send, status);
+    }
+    const on = settings.target === 'chatgpt' ? 'chatgpt' : 'claude';
+    for (const id of ['claude', 'chatgpt']) {
+      const b = bar.querySelector('#yt2c-b-' + id);
+      const active = id === on;
+      b.style.background = active ? (id === 'claude' ? '#d97757' : '#10a37f') : 'transparent';
+      b.style.color = active ? '#fff' : 'inherit';
+      b.style.borderColor = active ? 'transparent' : '#888';
+    }
+    const below = document.querySelector('#below');   // desktop YouTube: right under the player, above the title
+    if (below) {
+      if (bar.parentElement !== below || below.firstChild !== bar) { bar.style.position = ''; below.insertBefore(bar, below.firstChild); }
+    } else {                                           // other layouts: float just under the video
+      if (bar.parentElement !== document.documentElement) document.documentElement.appendChild(bar);
+      bar.style.position = 'fixed';
+      bar.style.left = (r && r.width > 80 ? Math.round(r.left) : 8) + 'px';
+      bar.style.top = (r && r.height > 60 ? Math.round(r.bottom + 2) : 8) + 'px';
+      bar.style.background = 'rgba(0,0,0,.55)';
+      bar.style.color = '#fff';
+      bar.style.borderRadius = '16px';
+      bar.style.padding = '4px 8px';
+    }
+  }
+
   function updateTapLayer() {
     const r = video ? video.getBoundingClientRect() : null;
     const ok = !!r && r.width > 80 && r.height > 60 && location.pathname === '/watch';
+    try { updateBar(r); } catch (e) { /* ignore */ }
     // the touch area: the middle of the picture (the buttons on the edges keep working)
     if (settings.tapOn && ok) {
       if (!tapLayer) {
@@ -676,7 +747,7 @@
     });
   }
 
-  function renderSubtitlePicture(seg) {
+  function renderSubtitlePicture(seg, withCard) {
     try {
       const W = 1280, H = 720, pad = 48;
       const c = document.createElement('canvas');
@@ -700,17 +771,30 @@
           return lines;
         });
         const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
-        if (total <= H - pad * 2 || fs <= 18) break;
+        if (total <= H - pad * 2 - (withCard ? 150 : 0) || fs <= 18) break;
         fs -= 2;
       }
       const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
-      let y = Math.max(pad, (H - total) / 2) + fs;
+      const top = withCard ? 62 : 0;
+      let y = Math.max(pad + top, top + (H - top - (withCard ? 88 : 0) - total) / 2) + fs;
       g.textBaseline = 'alphabetic';
+      if (withCard) { // for Claude's voice mode, where nothing can be typed: the picture carries the question too
+        g.fillStyle = '#8ab4f8';
+        g.font = '600 26px system-ui, Arial, sans-serif';
+        g.fillText('Paused at ' + fmtTime(seg.pausedAt !== undefined ? seg.pausedAt : seg.end) + '  ·  this part of the video: ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end), pad, 44);
+        g.font = '600 ' + fs + 'px system-ui, Arial, sans-serif';
+      }
       blocks.forEach((lines, bi) => {
         g.fillStyle = bi === blocks.length - 1 ? '#ffd60a' : '#ffffff'; // the sentence you stopped at is yellow
         lines.forEach((ln) => { g.fillText(ln, pad, y); y += fs * 1.35; });
         y += fs * 0.45;
       });
+      if (withCard) {
+        g.fillStyle = '#8ab4f8';
+        g.font = '600 24px system-ui, Arial, sans-serif';
+        const ask = ['Please explain this part to me like an English teacher: what is happening and the important idea.', 'Then say the sentences above once more. Answer by voice, with no greeting and no lists.'];
+        ask.forEach((ln, i) => g.fillText(ln, pad, H - 58 + i * 32));
+      }
       return c.toDataURL('image/jpeg', 0.88);
     } catch (e) { return null; }
   }
@@ -727,6 +811,7 @@
     return renderSubtitlePicture(seg);
   }
   window.__ytcDebug.picture = (seg) => capturePicture(seg || (lastShown && lastShown.seg));
+  window.__ytcDebug.card = (seg) => renderSubtitlePicture(seg || (lastShown && lastShown.seg), true);
 
   async function handlePause() {
     handling = true;
@@ -746,13 +831,14 @@
       showOverlay({ seg });
       // Claude only: 3 seconds after you stopped (the big subtitles are on screen by then) take the picture
       const wantPicture = settings.target === 'claude' && settings.imageOn;
-      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then(resolve, () => resolve(null)), 3000)) : Promise.resolve(null);
+      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 3000)) : Promise.resolve(null);
       deferredSend = null;
       const sendNow = async () => {
         lastSend = 'sending…';
-        const image = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
+        const pics = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
+        const image = pics && pics.shot, card = pics && pics.card;
         try {
-          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, image, lines: groupSentences(seg.items).map((g) => g.text) })
+          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, image, card, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
               lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');

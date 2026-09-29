@@ -35,10 +35,15 @@ go.addEventListener('click', async () => {
 const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
 
 // ---- options ----
-for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn', 'imageOn']) {
+for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
+}
+{ // off unless you switch it on
+  const box = document.getElementById('alwaysTranscript');
+  chrome.storage.local.get('alwaysTranscript').then((s) => { box.checked = s.alwaysTranscript === true; });
+  box.addEventListener('change', () => chrome.storage.local.set({ alwaysTranscript: box.checked }));
 }
 const slider = document.getElementById('textLevel');
 const sizeVal = document.getElementById('sizeVal');
