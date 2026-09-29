@@ -39,6 +39,81 @@
     return cues;
   }
 
+  // "1:05", "1:05:30", "0:05 5 seconds", "1:05 1 minute, 5 seconds" -> seconds (only the clock part counts)
+  function parseClock(text) {
+    const m = /(\d+):(\d{2})(?::(\d{2}))?/.exec(String(text || ''));
+    if (!m) return null;
+    return m[3] !== undefined ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[1]) * 60 + (+m[2]);
+  }
+
+  // YouTube's transcript service answer -> cues [{start, end, text}] (seconds). Looks for every
+  // transcriptSegmentRenderer anywhere in the answer, so small changes of the wrapper do not matter.
+  function parseTranscriptResponse(json) {
+    const cues = [];
+    const text = (sn) => {
+      if (!sn) return '';
+      if (typeof sn === 'string') return sn;
+      if (sn.simpleText) return sn.simpleText;
+      if (Array.isArray(sn.runs)) return sn.runs.map((r) => r.text || '').join('');
+      return sn.content || '';
+    };
+    (function walk(o) {
+      if (!o || typeof o !== 'object') return;
+      if (Array.isArray(o)) { o.forEach(walk); return; }
+      const seg = o.transcriptSegmentRenderer || o.transcriptSegmentViewModel;
+      if (seg && seg.startMs !== undefined) {
+        const t = text(seg.snippet).replace(/\s+/g, ' ').trim();
+        const start = Number(seg.startMs) / 1000, end = seg.endMs !== undefined ? Number(seg.endMs) / 1000 : null;
+        if (t && isFinite(start)) cues.push({ start, end: end && isFinite(end) ? end : null, text: t, words: null });
+        return;
+      }
+      for (const k of Object.keys(o)) walk(o[k]);
+    })(json);
+    cues.sort((a, b) => a.start - b.start);
+    return cues;
+  }
+
+  // A subtitle file from any tool (.srt, .vtt, or a plain "[1:05] text" list) -> cues [{start, end, text}]
+  function parseSubtitleFile(raw) {
+    const text = String(raw || '').replace(/^\uFEFF/, '').replace(/\r/g, '');
+    const clean = (t) => t.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\{\\[^}]*\}/g, '').replace(/\s+/g, ' ').trim();
+    const stamp = (h, m, sec, ms) => (+h || 0) * 3600 + (+m) * 60 + (+sec) + (ms ? +('0.' + ms) : 0);
+    const cues = [];
+    const arrow = /(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,](\d{1,3}))?\s*-->\s*(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,](\d{1,3}))?/;
+    if (arrow.test(text)) {
+      for (const block of text.split(/\n{2,}/)) {
+        const lines = block.split('\n');
+        const i = lines.findIndex((l) => arrow.test(l));
+        if (i < 0) continue;
+        const m = arrow.exec(lines[i]);
+        const body = clean(lines.slice(i + 1).join(' '));
+        if (body) cues.push({ start: stamp(m[1], m[2], m[3], m[4]), end: stamp(m[5], m[6], m[7], m[8]), text: body, words: null });
+      }
+    } else {
+      for (const line of text.split('\n')) {
+        const m = /^\s*\[?(?:(\d+):)?(\d{1,2}):(\d{2})(?:[.,]\d+)?\]?\s*[-–:]?\s*(.+)$/.exec(line);
+        const body = m ? clean(m[4]) : '';
+        if (body) cues.push({ start: stamp(m[1], m[2], m[3]), end: null, text: body, words: null });
+      }
+    }
+    cues.sort((a, b) => a.start - b.start);
+    return cues;
+  }
+
+  // Is this transcript believable for a video of `length` seconds?
+  //   - times that run past the end of the video: it belongs to another video (or is garbage)
+  //   - a long video whose lines stop early: only part of it was loaded
+  function judgeCues(cues, length) {
+    if (!cues || !cues.length) return { ok: false, coverage: 0, tooLate: false, reason: 'no lines' };
+    let last = 0;
+    for (const c of cues) if (c.start > last) last = c.start;
+    if (!length) return { ok: true, coverage: 1, tooLate: false, reason: '' };
+    const coverage = Math.min(1, last / length);
+    if (last > length + 15) return { ok: false, coverage, tooLate: true, reason: 'the times run past the end of the video (' + Math.round(last) + ' s of ' + Math.round(length) + ' s), so it is probably another video' };
+    if (length >= 120 && coverage < 0.6) return { ok: false, coverage, tooLate: false, reason: 'it only reaches ' + Math.round(coverage * 100) + '% of the video' };
+    return { ok: true, coverage, tooLate: false, reason: '' };
+  }
+
   // Parse a JSON object starting at html[start] === '{' (bracket matching, string-aware).
   function matchJson(html, start) {
     let depth = 0, inStr = false, esc = false;
@@ -305,7 +380,7 @@
     return groups;
   }
 
-  const api = { fmtTime, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
+  const api = { fmtTime, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YTC = api;
 })(typeof window !== 'undefined' ? window : globalThis);

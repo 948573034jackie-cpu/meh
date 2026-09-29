@@ -25,7 +25,32 @@ const wav = (() => { const n = 8000 * 40, b = Buffer.alloc(44 + n, 128);
   b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
   b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
 const serve = (port, fn) => http.createServer(fn).listen(port);
+// pages for the "which source is used, and are the times right" tests
+const prFor = (len, track) => JSON.stringify(Object.assign({ videoDetails: { videoId: 'abc12345678', title: 'Long Lesson', lengthSeconds: String(len) }, playabilityStatus: { status: 'OK' } },
+  track ? { captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'http://localhost:8767/timedtext-empty?lang=en', languageCode: 'en', kind: 'asr' }] } } } : {}));
+const apiPage = `<!doctype html><title>Long Lesson - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px"><video muted src="/v.wav" class="html5-main-video"></video></div>
+<script>var ytInitialPlayerResponse = ${prFor(600, true)};</script><script>var cfg = {"INNERTUBE_API_KEY":"testkey","INNERTUBE_CONTEXT_CLIENT_VERSION":"2.2024"}; var d = {"getTranscriptEndpoint":{"params":"abc\\u003d\\u003d"}};</script>`;
+const playerPage = `<!doctype html><title>Player Lesson - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px"><video muted src="/v.wav" class="html5-main-video"></video><button class="ytp-subtitles-button" aria-pressed="false">CC</button></div>
+<script>var ytInitialPlayerResponse = ${prFor(600, true)};
+document.querySelector('.ytp-subtitles-button').onclick=(e)=>{ const b=e.currentTarget; const on=b.getAttribute('aria-pressed')!=='true'; b.setAttribute('aria-pressed', on?'true':'false'); if(on) fetch('/api/timedtext?v=abc12345678&lang=en&kind=asr&pot=XYZ&fmt=srv3'); };</script>`;
+const transcriptJson = JSON.stringify({ actions: [{ updateEngagementPanelAction: { content: { transcriptSearchPanelRenderer: { body: { transcriptSegmentListRenderer: { initialSegments:
+  Array.from({ length: 40 }, (_, i) => ({ transcriptSegmentRenderer: { startMs: String(i * 15000), endMs: String(i * 15000 + 14000), snippet: { runs: [{ text: 'This is sentence number ' + (i + 1) + ' of the long lesson.' }] } } })) } } } } } }] });
+const segHtml = (i, clock, words) => `<ytd-transcript-segment-renderer><div class="segment-timestamp">${clock}</div><yt-formatted-string class="segment-text">Sentence ${i} of the panel lesson ${words}.</yt-formatted-string></ytd-transcript-segment-renderer>`;
+const clockText = (sec) => { const m = Math.floor(sec / 60), ss = sec % 60; return m + ':' + String(ss).padStart(2, '0') + ' ' + m + ' minutes, ' + ss + ' seconds'; }; // clock + the same time in words
+const panelPage = (len, maxSec) => `<!doctype html><title>Panel Lesson - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px"><video muted src="/v.wav" class="html5-main-video"></video></div>
+<script>var ytInitialPlayerResponse = ${prFor(len, false)};</script><button id="st">Show transcript</button><div id="panel"></div>
+<script>const clock=${clockText.toString()}; const seg=${segHtml.toString()};
+document.getElementById('st').onclick=()=>{ const all=[]; for(let i=0;i<40;i++) all.push(i*${Math.floor(maxSec / 40)});
+ [0,15,30].forEach((from,bi)=>setTimeout(()=>{ all.slice(from,bi===2?40:from+15).forEach((sec,k)=>document.getElementById('panel').insertAdjacentHTML('beforeend',seg(from+k+1,clock(sec),'x'))); }, 300+bi*700)); };</script>`;
 const s1 = serve(8767, (q, r) => {
+  if (q.method === 'POST' && q.url.startsWith('/youtubei/v1/get_transcript')) { let b = ''; q.on('data', (c) => b += c); q.on('end', () => { let ok = false; try { ok = JSON.parse(b).params === 'abc=='; } catch (e) { /* no */ } r.setHeader('content-type', 'application/json'); r.end(ok ? transcriptJson : '{"error":"bad params"}'); }); return; }
+  if (q.method === 'POST' && q.url.startsWith('/youtubei/v1/player')) { r.setHeader('content-type', 'application/json'); return r.end('{"playabilityStatus":{"status":"LOGIN_REQUIRED"}}'); }
+  if (q.url.startsWith('/timedtext-empty')) { r.setHeader('content-type', 'application/json'); return r.end(''); }
+  if (q.url.startsWith('/api/timedtext')) { r.setHeader('content-type', 'application/json'); return r.end(/pot=XYZ/.test(q.url) ? json3 : ''); }
+  if (q.url.startsWith('/apitest')) { r.setHeader('content-type', 'text/html'); return r.end(apiPage); }
+  if (q.url.startsWith('/player')) { r.setHeader('content-type', 'text/html'); return r.end(playerPage); }
+  if (q.url.startsWith('/panelok')) { r.setHeader('content-type', 'text/html'); return r.end(panelPage(600, 585)); }
+  if (q.url.startsWith('/stale')) { r.setHeader('content-type', 'text/html'); return r.end(panelPage(60, 1800)); }
   if (q.url.startsWith('/v.wav')) { const rg = q.headers.range; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; r.writeHead(206, {'content-type':'audio/wav','accept-ranges':'bytes','content-range':`bytes ${a}-${e}/${wav.length}`,'content-length':e-a+1}); return r.end(wav.slice(a, e+1)); } r.writeHead(200, {'content-type':'audio/wav','accept-ranges':'bytes','content-length':wav.length}); return r.end(wav); }
   if (q.url.startsWith('/timedtext')) { r.setHeader('content-type','application/json'); return r.end(json3); }
   r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/odd') ? oddYtHtml : ytHtml); });
@@ -259,6 +284,25 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.waitForTimeout(2500);
   const off = await sent(chat);
   ok('Claude with the picture option off: words only', off.length === 1 && off[0].imgs.length === 0, JSON.stringify(off).slice(0, 160));
+
+  // 12) which source is used, and are the times right? (long videos, hidden time copies, wrong-video panel)
+  const loadOn = async (url) => { await yt.goto(url); await injectYT(); await yt.waitForTimeout(400); return yt.evaluate(() => window.__ytcDebug.load()); };
+  const viaApi = await loadOn('http://localhost:8767/apitest?v=abc12345678');
+  ok('captions refused (empty file): the transcript service gives all 40 lines with exact times', viaApi.source === 'YouTube transcript service' && viaApi.lines === 40 && Math.round(viaApi.lastStart) === 585, JSON.stringify(viaApi).slice(0, 260));
+  const viaPanel = await loadOn('http://localhost:8767/panelok?v=abc12345678');
+  ok('panel filled in 3 pieces: ALL 40 lines are read (waits until it stops growing)', /transcript panel \(40 lines\)/.test(viaPanel.source || ''), JSON.stringify(viaPanel).slice(0, 260));
+  ok('panel: times read from the clock only (not "9 minutes, 45 seconds")', Math.round(viaPanel.lastStart) === 546, 'last start ' + viaPanel.lastStart);
+  const viaStale = await loadOn('http://localhost:8767/stale?v=abc12345678');
+  ok('wrong-video panel (times run to 30 min in a 1-min video) is refused, not used', viaStale.lines === 0 && /run past the end of the video/.test(viaStale.errors.join(' ')), JSON.stringify(viaStale).slice(0, 300));
+  const viaPlayer = await loadOn('http://localhost:8767/player?v=abc12345678');
+  const ccAfter = await yt.evaluate(() => document.querySelector('.ytp-subtitles-button').getAttribute('aria-pressed'));
+  ok('captions refused everywhere else: reads the subtitles the PLAYER downloaded (CC switched on for a moment)', /the subtitles the player loaded \(en\)/.test(viaPlayer.source || '') && viaPlayer.lines === 6, JSON.stringify(viaPlayer).slice(0, 300));
+  ok('...and the CC button is put back to off', ccAfter === 'false', ccAfter);
+  store.manualSubs = { abc12345678: [{ start: 0, text: 'Loaded by hand line one.' }, { start: 4, text: 'Loaded by hand line two.' }, { start: 8, text: 'Loaded by hand line three.' }] };
+  const viaFile = await loadOn('http://localhost:8767/stale?v=abc12345678');
+  ok('a subtitle file you loaded is always used first (even if the panel is wrong)', /subtitle file you loaded \(3 lines\)/.test(viaFile.source || '') && viaFile.lines === 3 && /Loaded by hand line one/.test(viaFile.first || ''), JSON.stringify(viaFile).slice(0, 260));
+  delete store.manualSubs;
+  ok('title comes from the video data, with its own length known', viaApi.title === 'Long Lesson', viaApi.title);
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();

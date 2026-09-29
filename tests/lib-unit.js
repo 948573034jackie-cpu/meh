@@ -130,3 +130,44 @@ assert.equal(speech, 'It was very very good and I said no no that is not what I 
 const ss4 = L.buildSentences(shortCues);
 assert(ss4.every((x, i) => x.end > x.start && (i === 0 || x.start >= ss4[i - 1].start)));
 console.log('more doubling tests passed');
+// --- time stamps and transcript checks
+assert.equal(L.parseClock('0:05'), 5);
+assert.equal(L.parseClock('1:05'), 65);
+assert.equal(L.parseClock('1:02:03'), 3723);
+assert.equal(L.parseClock('0:05 5 seconds'), 5);                 // a second copy of the time in words must not count
+assert.equal(L.parseClock('1:05 1 minute, 5 seconds'), 65);
+assert.equal(L.parseClock('  12:34\n'), 754);
+assert.equal(L.parseClock('1:05:30 1 hour, 5 minutes, 30 seconds'), 3930);
+assert.equal(L.parseClock('no time here'), null);
+const tr = L.parseTranscriptResponse({ actions: [{ updateEngagementPanelAction: { content: { transcriptSearchPanelRenderer: { body: { transcriptSegmentListRenderer: { initialSegments: [
+  { transcriptSectionHeaderRenderer: { sectionHeader: { sectionHeaderViewModel: {} } } },
+  { transcriptSegmentRenderer: { startMs: '65000', endMs: '68500', snippet: { runs: [{ text: 'Hello ' }, { text: 'again' }] } } },
+  { transcriptSegmentRenderer: { startMs: '3930000', endMs: '3933000', snippet: { simpleText: 'Much later.' } } },
+  { transcriptSegmentRenderer: { startMs: '1000', endMs: '2000', snippet: { runs: [{ text: 'First.' }] } } }] } } } } } }] });
+assert.deepEqual(tr.map((c) => [c.start, c.end, c.text]), [[1, 2, 'First.'], [65, 68.5, 'Hello again'], [3930, 3933, 'Much later.']]);
+const cu = (arr) => arr.map((s) => ({ start: s, text: 'x' }));
+assert.equal(L.judgeCues(cu([0, 60, 590]), 600).ok, true);
+assert.equal(L.judgeCues(cu([0, 60, 1800]), 600).tooLate, true);   // another video's transcript
+assert.equal(L.judgeCues(cu([0, 60, 200]), 7200).ok, false);       // a 2-hour video that stops after 3 minutes
+assert.equal(L.judgeCues(cu([0, 60, 200]), 7200).tooLate, false);
+assert.equal(L.judgeCues(cu([0, 30]), 60).ok, true);              // short video: fine
+assert.equal(L.judgeCues(cu([0, 5]), 100).ok, true);              // under 2 minutes: never "partial"
+assert.equal(L.judgeCues(cu([0, 60]), 0).ok, true);               // length unknown: trust it
+assert.equal(L.judgeCues([], 600).ok, false);
+console.log('time stamp + transcript check tests passed');
+// --- subtitle files from other tools
+const srt = '1\n00:00:01,000 --> 00:00:03,500\nHello everyone,\nwelcome to the show.\n\n2\n00:01:05,250 --> 00:01:08,000\n<i>Today</i> we learn &amp; practise.\n\n3\n01:02:03,000 --> 01:02:05,000\nMuch later.\n';
+const sc = L.parseSubtitleFile(srt);
+assert.deepEqual(sc.map((c) => [c.start, c.text]), [[1, 'Hello everyone, welcome to the show.'], [65.25, 'Today we learn & practise.'], [3723, 'Much later.']]);
+const vtt = 'WEBVTT\nKind: captions\n\nNOTE this is a note\n\n00:00:01.000 --> 00:00:03.000 align:start position:0%\nHello<00:00:01.500><c> everyone</c>\n\n00:03.000 --> 00:05.000\nshort form works too\n';
+const vc = L.parseSubtitleFile(vtt);
+assert.deepEqual(vc.map((c) => [c.start, c.text]), [[1, 'Hello everyone'], [3, 'short form works too']]);
+const txt = '[0:05] First line here\n[1:05] Second line\n1:02:03 Hour line\nnot a line\n';
+assert.deepEqual(L.parseSubtitleFile(txt).map((c) => [c.start, c.text]), [[5, 'First line here'], [65, 'Second line'], [3723, 'Hour line']]);
+assert.deepEqual(L.parseSubtitleFile('nothing useful'), []);
+// a 3-hour subtitle file (2000 lines) parses fast and in order
+const big = Array.from({ length: 2000 }, (_, i) => { const t = i * 5; const f = (n) => String(n).padStart(2, '0'); return (i + 1) + '\n' + f(Math.floor(t / 3600)) + ':' + f(Math.floor(t % 3600 / 60)) + ':' + f(t % 60) + ',000 --> ' + f(Math.floor((t + 4) / 3600)) + ':' + f(Math.floor((t + 4) % 3600 / 60)) + ':' + f((t + 4) % 60) + ',000\nLine number ' + (i + 1) + ' of the long video.\n'; }).join('\n');
+const bc = L.parseSubtitleFile(big);
+assert.equal(bc.length, 2000); assert.equal(bc[1999].start, 9995);
+assert.equal(L.buildSentences(bc).length > 1000, true);
+console.log('subtitle file tests passed');

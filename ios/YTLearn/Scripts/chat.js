@@ -177,7 +177,7 @@
         let text = msg.text;
         if (msg.file) {
           if (attachFile(msg.file.name, msg.file.text)) { mark('file attached'); }
-          else { mark('no file input for text; transcript pasted into the message'); text = text.replace('The full transcript is attached', 'The full transcript is pasted at the end of this message') + '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
+          else { mark('no file input for text; transcript pasted into the message'); text = text.replace('The full transcript is attached', 'The full transcript is pasted at the end of this message') + '\n\n--- TRANSCRIPT ---\n' + (msg.file.text.length > 60000 ? msg.file.text.slice(0, 60000) + '\n[...shortened: the transcript is very long...]' : msg.file.text); }
         }
 
         if (msg.image && msg.image.dataUrl) {

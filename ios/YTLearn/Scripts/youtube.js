@@ -4,7 +4,7 @@
   'use strict';
   if (window.__ytToClaudeLoaded) return;
   window.__ytToClaudeLoaded = true;
-  const { parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences, fmtTime } = window.YTC;
+  const { parseJson3, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences, fmtTime } = window.YTC;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,10 +21,35 @@
   const trackList = (p) => (p && p.captions && p.captions.playerCaptionsTracklistRenderer &&
     p.captions.playerCaptionsTracklistRenderer.captionTracks) || [];
 
+  // The page of the video we are on, fetched once per video (it holds the player data and the transcript address).
+  let htmlCache = { id: null, promise: null };
+  function getPageHtml() {
+    const id = videoId();
+    if (htmlCache.id !== id || !htmlCache.promise) {
+      const promise = fetch(location.href, { credentials: 'include' }).then((r) => r.text());
+      promise.catch(() => { if (htmlCache.promise === promise) htmlCache = { id: null, promise: null }; });
+      htmlCache = { id, promise };
+    }
+    return htmlCache.promise;
+  }
+
+  // what we learn about the video on the way: its length (to check the transcript) and its real title
+  let meta = { id: null, length: 0, title: '', author: '' };
+  function noteMeta(pr) {
+    const d = pr && pr.videoDetails;
+    if (!d || (d.videoId && d.videoId !== videoId())) return;
+    meta = { id: videoId(), length: Number(d.lengthSeconds) || meta.length || 0, title: d.title || meta.title, author: d.author || meta.author };
+  }
+  function videoLength() {
+    if (meta.id === videoId() && meta.length) return meta.length;
+    return video && isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
+  }
+
   // The video's player data: first from the page itself, then by asking YouTube's own API the way the page does.
   async function getPlayerResponse() {
-    const html = await (await fetch(location.href, { credentials: 'include' })).text();
+    const html = await getPageHtml();
     const fromPage = extractPlayerResponse(html);
+    noteMeta(fromPage);
     if (trackList(fromPage).length) return { pr: fromPage, via: 'page' };
     let fromApi = null, apiNote = '';
     try {
@@ -40,6 +65,7 @@
           })
         });
         fromApi = await res.json();
+        noteMeta(fromApi);
         if (trackList(fromApi).length) return { pr: fromApi, via: 'api' };
       }
     } catch (e) { apiNote = 'api: ' + e.message; }
@@ -49,21 +75,114 @@
       (ps ? ', playability ' + ps.status + (ps.reason ? ' (' + ps.reason + ')' : '') : '') + (apiNote ? ', ' + apiNote : '') };
   }
 
+  // download one caption track (timed text) and turn it into cues
+  async function cuesFromTrack(track, via) {
+    const url = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
+    const res = await fetch(url, { credentials: 'include' });
+    const body = await res.text();
+    if (!body) throw new Error('YouTube returned an empty caption file (status ' + res.status + ', list from the ' + via + ')');
+    let json;
+    try { json = JSON.parse(body); } catch (e) { throw new Error('the caption file was not readable (status ' + res.status + ')'); }
+    const cues = parseJson3(json);
+    if (!cues.length) throw new Error('caption file had no text');
+    return { cues, source: 'captions (' + (track.languageCode || '?') + (track.kind === 'asr' ? ', auto-generated' : '') + ', via ' + via + ')' };
+  }
+
   // Method 1: the caption track the player itself uses (fetched with your normal YouTube session).
   async function fromCaptionTrack() {
     const { pr, via, note } = await getPlayerResponse();
     const track = pickTrack(trackList(pr));
     if (!track) throw new Error('this video has no captions [' + note + ']');
-    const url = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
-    const res = await fetch(url, { credentials: 'include' });
-    const body = await res.text();
-    if (!body) throw new Error('YouTube returned an empty caption file (status ' + res.status + ', list from the ' + via + ')');
-    const cues = parseJson3(JSON.parse(body));
-    if (!cues.length) throw new Error('caption file had no text');
-    return { cues, source: 'captions (' + (track.languageCode || '?') + (track.kind === 'asr' ? ', auto-generated' : '') + ', via ' + via + ')' };
+    return cuesFromTrack(track, via);
   }
 
-  // Method 2: open YouTube's own "Show transcript" panel and read it.
+  // Method 2: the same captions, asked the way YouTube's phone app asks (its caption addresses need no extra key).
+  async function fromAndroidTrack() {
+    const html = await getPageHtml();
+    const key = (html.match(/"INNERTUBE_API_KEY":\s*"([^"]+)"/) || [])[1];
+    if (!key) throw new Error('no API key in the page');
+    const res = await fetch('/youtubei/v1/player?key=' + encodeURIComponent(key) + '&prettyPrint=false', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', androidSdkVersion: 30, hl: 'en', gl: 'US' } },
+        videoId: videoId(), contentCheckOk: true, racyCheckOk: true
+      })
+    });
+    let pr;
+    try { pr = await res.json(); } catch (e) { throw new Error('the phone-app answer was not readable (status ' + res.status + ')'); }
+    noteMeta(pr);
+    const track = pickTrack(trackList(pr));
+    if (!track) throw new Error('no captions in the phone-app answer (' + ((pr.playabilityStatus || {}).status || 'no status') + ')');
+    return cuesFromTrack(track, 'phone-app list');
+  }
+
+  // Method 3: YouTube's own transcript service (what the "Show transcript" button uses), asked directly:
+  // every line comes with its exact start time, nothing depends on what is drawn on the page.
+  async function fromTranscriptApi() {
+    const html = await getPageHtml();
+    const raw = (html.match(/"getTranscriptEndpoint":\s*\{\s*"params":\s*"([^"]+)"/) || [])[1];
+    if (!raw) throw new Error('this page has no transcript address');
+    let params = raw;
+    try { params = JSON.parse('"' + raw + '"'); } catch (e) { /* keep as is */ }
+    const key = (html.match(/"INNERTUBE_API_KEY":\s*"([^"]+)"/) || [])[1];
+    const version = (html.match(/"INNERTUBE_CONTEXT_CLIENT_VERSION":\s*"([^"]+)"/) || [])[1] || '2.20240101.00.00';
+    if (!key) throw new Error('no API key in the page');
+    const res = await fetch('/youtubei/v1/get_transcript?key=' + encodeURIComponent(key) + '&prettyPrint=false', {
+      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion: version, hl: 'en' } }, params })
+    });
+    let json;
+    try { json = await res.json(); } catch (e) { throw new Error('the transcript service answer was not readable (status ' + res.status + ')'); }
+    const cues = parseTranscriptResponse(json);
+    if (!cues.length) throw new Error('the transcript service returned no lines (status ' + res.status + ')');
+    return { cues, source: 'YouTube transcript service' };
+  }
+
+  // Method 0: a subtitle file you loaded for this video in the extension window (.srt / .vtt / .txt)
+  async function fromManualFile() {
+    const { manualSubs } = await chrome.storage.local.get('manualSubs');
+    const mine = manualSubs && manualSubs[videoId()];
+    if (!mine || !mine.length) throw new Error('no subtitle file was loaded for this video');
+    return { cues: mine, source: 'the subtitle file you loaded (' + mine.length + ' lines)', trusted: true };
+  }
+
+  // Method 4: the subtitles the PLAYER itself downloads. Switch the CC button on for a moment, find the
+  // address the player used (it carries the player's own permission), and read that file. It holds the
+  // whole video, also a 3-hour one.
+  async function fromPlayerCaptions() {
+    const id = videoId();
+    const find = () => {
+      const list = performance.getEntriesByType('resource').filter((e) => /\/api\/timedtext\?/.test(e.name) && e.name.includes('v=' + id));
+      const ok = list.filter((e) => !/[?&]tlang=/.test(e.name)); // not YouTube's auto-translation
+      const pool = ok.length ? ok : list;
+      return pool.filter((e) => /[?&]lang=en/.test(e.name)).pop() || pool.pop() || null;
+    };
+    let entry = find();
+    const btn = document.querySelector('.ytp-subtitles-button');
+    let switchedOn = false;
+    try {
+      if (!entry) {
+        if (!btn) throw new Error('no CC button on this page');
+        if (btn.getAttribute('aria-pressed') !== 'true') { btn.click(); switchedOn = true; }
+        entry = await waitFor(find, 7000);
+        if (!entry) throw new Error('the player did not download subtitles (does this video have any?)');
+      }
+      const u = new URL(entry.name, location.href);
+      u.searchParams.set('fmt', 'json3');
+      const res = await fetch(u.href, { credentials: 'include' });
+      const body = await res.text();
+      if (!body) throw new Error('the player subtitle file was empty (status ' + res.status + ')');
+      let json;
+      try { json = JSON.parse(body); } catch (e) { throw new Error('the player subtitle file was not readable'); }
+      const cues = parseJson3(json);
+      if (!cues.length) throw new Error('the player subtitle file had no text');
+      return { cues, source: 'the subtitles the player loaded (' + (u.searchParams.get('lang') || '?') + ')' };
+    } finally {
+      if (switchedOn && btn && btn.getAttribute('aria-pressed') === 'true') btn.click(); // put it back like it was
+    }
+  }
+
+  // Method 5: open YouTube's own "Show transcript" panel and read it.
   async function fromTranscriptPanel() {
     const expand = document.querySelector('#description-inline-expander #expand, ytd-text-inline-expander #expand');
     if (expand) expand.click();
@@ -73,31 +192,39 @@
     }, 3000);
     if (!btn) throw new Error('no "Show transcript" button on this page');
     btn.click();
-    const segs = await waitFor(() => {
-      const s = document.querySelectorAll('ytd-transcript-segment-renderer');
-      return s.length ? s : null;
-    }, 6000);
-    if (!segs) throw new Error('transcript panel did not load');
+    const SEG = 'ytd-transcript-segment-renderer';
+    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 6000);
+    if (!first) throw new Error('transcript panel did not load');
+    // A long video fills the panel piece by piece: wait until it stops growing.
+    let count = document.querySelectorAll(SEG).length, lastChange = Date.now();
+    const end = Date.now() + 15000;
+    while (Date.now() < end && Date.now() - lastChange < 1500) {
+      await sleep(250);
+      const n = document.querySelectorAll(SEG).length;
+      if (n !== count) { count = n; lastChange = Date.now(); }
+    }
     const cues = [];
-    segs.forEach((s) => {
-      const ts = (s.querySelector('.segment-timestamp') || {}).textContent || '';
-      const el = s.querySelector('.segment-text');
-      const text = String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim(); // innerText: hidden copies are left out
-      const parts = ts.trim().split(':').map(Number);
-      const start = parts.reduce((a, n) => a * 60 + (n || 0), 0);
-      if (text) cues.push({ start, text });
+    document.querySelectorAll(SEG).forEach((seg) => {
+      const tsEl = seg.querySelector('.segment-timestamp');
+      const el = seg.querySelector('.segment-text');
+      // innerText: hidden copies are left out; only the "1:05" clock counts, not "1 minute, 5 seconds"
+      const start = parseClock(String((tsEl && (tsEl.innerText || tsEl.textContent)) || ''));
+      const text = String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+      if (text && start !== null) cues.push({ start, text });
     });
     if (!cues.length) throw new Error('transcript panel was empty');
-    return { cues, source: 'YouTube transcript panel' };
+    return { cues, source: 'YouTube transcript panel (' + cues.length + ' lines)' };
   }
 
   async function getInfo() {
+    try { await getPlayerResponse(); } catch (e) { /* the title falls back to the page */ }
     const title = (document.querySelector('h1.ytd-watch-metadata, h1 yt-formatted-string') || {}).textContent ||
       document.title.replace(/ - YouTube$/, '');
     const channel = (document.querySelector('ytd-channel-name a, #owner #channel-name a') || {}).textContent || '';
     const v = videoId();
     const url = v ? 'https://www.youtube.com/watch?v=' + v : location.href;
-    return { title: title.trim(), channel: channel.trim(), url };
+    const known = meta.id === v; // the player data of THIS video (the page text can still show the last video)
+    return { title: ((known && meta.title) || title).trim(), channel: ((known && meta.author) || channel).trim(), url };
   }
 
   function videoId() { return new URL(location.href).searchParams.get('v'); }
@@ -112,13 +239,24 @@
     cache.promise = (async () => {
       const info = await getInfo();
       const errors = [];
-      for (const method of [fromCaptionTrack, fromTranscriptPanel]) {
+      let best = null;
+      for (const method of [fromManualFile, fromCaptionTrack, fromAndroidTrack, fromTranscriptApi, fromPlayerCaptions, fromTranscriptPanel]) {
         try {
-          const { cues, source } = await method();
-          return { ...info, cues, sentences: buildSentences(cues), transcript: formatTranscript(cues), source, lines: cues.length, errors };
+          const r = await method();
+          if (r.trusted) { best = r; break; } // a file you loaded yourself: always used
+          const j = judgeCues(r.cues, videoLength());
+          if (j.tooLate) { errors.push(method.name + ': ' + j.reason); continue; } // another video's transcript: never use
+          r.coverage = j.coverage;
+          if (j.ok) { best = r; break; }
+          errors.push(method.name + ': ' + j.reason + ' (kept as a backup)');
+          if (!best || r.coverage > best.coverage) best = r;
         } catch (e) {
-          errors.push(method.name + ': ' + e.message);
+          if (method !== fromManualFile) errors.push(method.name + ': ' + e.message);
         }
+      }
+      if (best) {
+        const cues = best.cues;
+        return { ...info, cues, sentences: buildSentences(cues), transcript: formatTranscript(cues), source: best.source, lines: cues.length, errors };
       }
       cache.promise = null; // nothing found: try again next time
       return { ...info, cues: [], sentences: [], transcript: null, source: null, lines: 0, errors };
@@ -127,6 +265,12 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'reload-subs') { // you loaded a subtitle file: read this video again
+      cache = { id: null, promise: null };
+      preloadedFor = null;
+      loadTranscript().then((d) => sendResponse({ lines: d.lines, source: d.source, errors: d.errors }));
+      return true;
+    }
     if (!msg || msg.type !== 'yt-get') return;
     loadTranscript().then((d) => sendResponse({
       title: d.title, channel: d.channel, url: d.url, transcript: d.transcript,
@@ -136,7 +280,7 @@
   });
 
   window.__ytcDebug = {
-    load: () => loadTranscript().then((d) => ({ title: d.title, lines: d.lines, sentences: d.sentences.length, source: d.source, errors: d.errors, first: d.sentences[0] && d.sentences[0].text }))
+    load: () => loadTranscript().then((d) => ({ title: d.title, lines: d.lines, sentences: d.sentences.length, source: d.source, errors: d.errors, first: d.sentences[0] && d.sentences[0].text, lastStart: d.cues.reduce((m, c) => Math.max(m, c.start), 0) }))
   };
 
   // ---- settings (set in the popup) ----
@@ -595,7 +739,7 @@
       if (!video.paused) { hideOverlay(); return; } // you pressed play again meanwhile
       if (!d.sentences.length) {
         const why = (d.errors.join(' ').match(/playability ([A-Z_]+)(?: \(([^)]*)\))?/) || []);
-        showOverlay({ note: 'No subtitles could be read for this video.' + (why[1] && why[1] !== 'OK' ? ' YouTube says: ' + (why[2] || why[1]) + '.' : '') });
+        showOverlay({ note: 'No subtitles could be read for this video.' + (why[1] && why[1] !== 'OK' ? ' YouTube says: ' + (why[2] || why[1]) + '.' : '') + ' Tip: turn on CC in the player, or load a subtitle file (.srt / .vtt) in the extension window.' });
         return;
       }
       const seg = pickSegment(d.sentences, t);

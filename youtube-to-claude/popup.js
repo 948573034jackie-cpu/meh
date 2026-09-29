@@ -31,6 +31,9 @@ go.addEventListener('click', async () => {
   msg.classList.toggle('err', !/^Sent /.test(result));
 });
 
+// the subtitle-file reader is the same code the video page uses
+const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
+
 // ---- options ----
 for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn', 'imageOn']) {
   const box = document.getElementById(id);
@@ -43,3 +46,25 @@ const LABELS = { 1: 'smallest', 6: 'medium', 10: 'biggest' };
 function showSize(v) { sizeVal.textContent = (Number.isInteger(v) ? v : v.toFixed(2).replace(/0$/, '')) + (LABELS[v] ? ' (' + LABELS[v] + ')' : ''); }
 chrome.storage.local.get('textLevel').then((s) => { slider.value = Math.min(10, s.textLevel || 6); showSize(Number(slider.value)); });
 slider.addEventListener('input', () => { showSize(Number(slider.value)); chrome.storage.local.set({ textLevel: Number(slider.value) }); });
+
+
+// ---- load your own subtitle file for the video in the current tab ----
+document.getElementById('subfile').addEventListener('change', async (e) => {
+  const out = document.getElementById('subMsg');
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const id = tab && tab.url && new URL(tab.url).searchParams.get('v');
+    if (!id) { out.textContent = 'Open the YouTube video first, then choose the file.'; return; }
+    const cues = parseSubtitleFile(await file.text());
+    if (!cues.length) { out.textContent = 'I could not find subtitle lines in that file.'; return; }
+    const { manualSubs = {} } = await chrome.storage.local.get('manualSubs');
+    manualSubs[id] = cues;
+    const ids = Object.keys(manualSubs);
+    while (ids.length > 6) delete manualSubs[ids.shift()]; // keep the last few videos only
+    await chrome.storage.local.set({ manualSubs });
+    const r = await chrome.tabs.sendMessage(tab.id, { type: 'reload-subs' }).catch(() => null);
+    out.textContent = 'Loaded ' + cues.length + ' lines' + (r ? ' (' + (r.lines || 0) + ' used). Pause the video now.' : '. Reload the YouTube page, then pause.');
+  } catch (err) { out.textContent = 'Could not load: ' + err.message; }
+});
