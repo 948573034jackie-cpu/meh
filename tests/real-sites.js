@@ -9,6 +9,9 @@ const VIDEOS = [
   'https://www.youtube.com/watch?v=jNQXAC9IVRw',   // first YouTube video (auto captions)
 ];
 const log = (...a) => console.log(...a);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const limit = (p, ms, what) => Promise.race([p, sleep(ms).then(() => { throw new Error('timed out: ' + what); })]);
+setTimeout(() => { console.log('HARD STOP after 4 minutes'); process.exit(0); }, 240000);
 
 (async () => {
   const ctx = await chromium.launchPersistentContext('/tmp/real-profile', {
@@ -30,10 +33,10 @@ const log = (...a) => console.log(...a);
       const consent = await page.$('button[aria-label*="Accept"], button:has-text("Accept all")');
       if (consent) { await consent.click().catch(() => {}); await page.waitForTimeout(3000); }
       log('title:', await page.title());
-      const info = await sw.evaluate(async () => {
+      const info = await limit(sw.evaluate(async () => {
         const [t] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' });
         try { return await chrome.tabs.sendMessage(t.id, { type: 'yt-get' }); } catch (e) { return { error: e.message }; }
-      });
+      }), 40000, 'yt-get');
       log('transcript result:', JSON.stringify({ title: info.title, lines: info.lines, source: info.source, errors: info.errors, error: info.error }));
       if (info.transcript) log('first lines:\n' + info.transcript.split('\n').slice(0, 4).join('\n'));
 
@@ -42,7 +45,7 @@ const log = (...a) => console.log(...a);
         const v = document.querySelector('video');
         if (!v) return { noVideo: true };
         v.muted = true;
-        try { await v.play(); } catch (e) {}
+        try { await Promise.race([v.play(), new Promise((r) => setTimeout(r, 4000))]); } catch (e) {}
         await new Promise((r) => setTimeout(r, 1500));
         v.currentTime = Math.min(60, (v.duration || 100) / 3);
         await new Promise((r) => setTimeout(r, 1500));
@@ -74,12 +77,12 @@ const log = (...a) => console.log(...a);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForTimeout(7000);
       log('landed on:', page.url(), '| title:', await page.title());
-      const res = await sw.evaluate(async (pattern) => {
+      const res = await limit(sw.evaluate(async (pattern) => {
         const [t] = await chrome.tabs.query({ url: pattern });
         if (!t) return { error: 'no tab' };
         try { return await chrome.tabs.sendMessage(t.id, { type: 'chat-send', text: 'dry run test message', dryRun: true }); }
         catch (e) { return { error: e.message }; }
-      }, url.replace(/\/new$/, '/') .replace(/\/$/, '/*'));
+      }, url.replace(/\/new$/, '/') .replace(/\/$/, '/*')), 40000, 'chat dry run');
       log('dry run result:', JSON.stringify(res));
       await page.screenshot({ path: '/tmp/chat-' + name + '.png' });
     } catch (e) { log(name + ' step failed:', e.message); }
