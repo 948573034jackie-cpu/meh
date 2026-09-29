@@ -91,6 +91,14 @@ final class AppModel: NSObject, ObservableObject {
             const v = document.querySelector('video');
             out.hasVideo = !!v;
             out.hasChromeShim = !!(window.chrome && window.chrome.__ytc);
+            out.pageText = (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 240);
+            try {
+              const html = await (await fetch(location.href, { credentials: 'include' })).text();
+              const pr = window.YTC.extractPlayerResponse(html);
+              out.htmlLength = html.length;
+              out.playability = pr && pr.playabilityStatus ? { status: pr.playabilityStatus.status, reason: pr.playabilityStatus.reason } : null;
+              out.captionTracks = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer ? (pr.captions.playerCaptionsTracklistRenderer.captionTracks || []).length : 0;
+            } catch (e) { out.htmlError = String(e); }
             try { out.transcript = await window.__ytcDebug.load(); } catch (e) { out.transcriptError = String(e); }
             if (v) {
               v.muted = true;
@@ -104,6 +112,12 @@ final class AppModel: NSObject, ObservableObject {
               const b = document.getElementById('yt2c-body');
               out.overlay = o ? { text: b.innerText.slice(0, 200), font: getComputedStyle(b).fontSize, w: o.clientWidth, h: o.clientHeight } : null;
               out.videoState = { t: v.currentTime, paused: v.paused };
+              const rect = v.getBoundingClientRect();
+              out.videoRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)];
+              const chain = [];
+              for (let n = v.parentElement, i = 0; n && i < 5; n = n.parentElement, i++) chain.push(n.tagName.toLowerCase() + (n.id ? '#' + n.id : '') + (n.className && n.className.baseVal === undefined ? '.' + String(n.className).split(' ')[0] : '') + ' ' + n.clientWidth + 'x' + n.clientHeight);
+              out.videoAncestors = chain;
+              out.overlayPosition = o ? getComputedStyle(o).position : null;
             }
             return out;
             """

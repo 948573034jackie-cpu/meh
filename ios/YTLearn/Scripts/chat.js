@@ -63,9 +63,8 @@
 
   function fileInput() {
     const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-    // prefer an input that accepts any file / text; skip ones that only take images
-    const general = inputs.find((i) => !i.accept || /text|\.txt|\*\/\*|\.\*/.test(i.accept));
-    return general || inputs.find((i) => !/^image\//.test(i.accept || '')) || inputs[0] || null;
+    // an input that only takes images is useless for a text file (mobile ChatGPT has only those)
+    return inputs.find((i) => !i.accept || /text|\.txt|\.md|\*\/\*|\.\*|application\//i.test(i.accept)) || null;
   }
 
   // ---- doing things ----
@@ -147,7 +146,7 @@
         let text = msg.text;
         if (msg.file) {
           if (attachFile(msg.file.name, msg.file.text)) { mark('file attached'); }
-          else { mark('no file input; transcript pasted as text'); text += '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
+          else { mark('no file input for text; transcript pasted into the message'); text = text.replace('The full transcript is attached', 'The full transcript is pasted at the end of this message') + '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
         }
 
         const how = await typeInto(box, text);

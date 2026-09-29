@@ -144,10 +144,23 @@
   };
   let lastShown = null;
 
+  let placeTimer = null;
+
   function hideOverlay() {
     const el = document.getElementById(OVERLAY_ID);
     if (el) el.remove();
+    if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
     lastShown = null;
+  }
+
+  // used when the page has no usable player box (some mobile layouts): cover exactly the video
+  function placeFixed(el) {
+    const r = video ? video.getBoundingClientRect() : null;
+    const ok = r && r.width > 80 && r.height > 60;
+    el.style.left = (ok ? r.left : 0) + 'px';
+    el.style.top = (ok ? r.top : 0) + 'px';
+    el.style.width = (ok ? r.width : window.innerWidth) + 'px';
+    el.style.height = (ok ? r.height : window.innerHeight) + 'px';
   }
 
   function setActive(index) {
@@ -185,13 +198,18 @@
   function showOverlay(args) {
     const { note, seg, activeIndex } = args;
     lastShown = { note, seg, activeIndex };
-    const host = (video && video.closest('#movie_player, .html5-video-player')) || document.querySelector('#movie_player') || (video && video.parentElement) || document.body;
+    let host = (video && video.closest('#movie_player, .html5-video-player')) || document.querySelector('#movie_player') || (video && video.parentElement);
+    const usable = (h) => !!h && h.clientWidth > 80 && h.clientHeight > 60;
+    const fixed = !usable(host);
+    if (fixed) host = document.documentElement;
     const old = document.getElementById(OVERLAY_ID);
     if (old) old.remove();
+    if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
     // pointer-events:none → clicking the video still pauses/plays as normal
-    el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;container-type:size;' +
+    el.style.cssText = (fixed ? 'position:fixed;z-index:2147483647;' : 'position:absolute;inset:0;z-index:2000;') +
+      'display:flex;flex-direction:column;container-type:size;' +
       'padding:2.5% 4%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
       'pointer-events:none;box-sizing:border-box;overflow:hidden';
     const mk = (id, css, text) => {
@@ -221,6 +239,7 @@
     el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#ff8a80;margin-top:1%;flex:none;text-align:center'));  // only shows if something goes wrong
     el.appendChild(mk('yt2c-hint', 'display:none'));
     host.appendChild(el);
+    if (fixed) { placeFixed(el); placeTimer = setInterval(() => placeFixed(el), 300); }
     if (seg) {
       if (window.CSS && CSS.supports && CSS.supports('width', '1cqh')) {
         body.style.fontSize = fontSizeCss(settings.textLevel);

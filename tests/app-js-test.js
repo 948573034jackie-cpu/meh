@@ -28,9 +28,13 @@ const serve = (port, fn) => http.createServer(fn).listen(port);
 const s1 = serve(8767, (q, r) => {
   if (q.url.startsWith('/v.wav')) { const rg = q.headers.range; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; r.writeHead(206, {'content-type':'audio/wav','accept-ranges':'bytes','content-range':`bytes ${a}-${e}/${wav.length}`,'content-length':e-a+1}); return r.end(wav.slice(a, e+1)); } r.writeHead(200, {'content-type':'audio/wav','accept-ranges':'bytes','content-length':wav.length}); return r.end(wav); }
   if (q.url.startsWith('/timedtext')) { r.setHeader('content-type','application/json'); return r.end(json3); }
-  r.setHeader('content-type','text/html'); r.end(ytHtml); });
+  r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/odd') ? oddYtHtml : ytHtml); });
+const mobileHtml = `<!doctype html><title>mobile chat</title><textarea id="mobile-composer-prompt" style="width:300px;height:60px"></textarea><input type="file" accept="image/*"><input type="file" accept="image/avif,image/bmp,image/gif,image/jpeg,image/png"><div id="slot"></div>
+<script>window.__sent=[];const t=document.getElementById('mobile-composer-prompt'),slot=document.getElementById('slot');
+t.addEventListener('input',()=>{ if(t.value.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{window.__sent.push({text:t.value,files:[...document.querySelectorAll('input[type=file]')].reduce((n,i)=>n+i.files.length,0)});t.value='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' });</script>`;
+const oddYtHtml = ytHtml.replace(/<div id="movie_player"[^>]*>/, '<div id="plain-wrapper" style="height:0">').replace('style="width:100%;height:100%"', 'style="width:600px;height:340px"');
 const s2 = serve(8765, (q, r) => { r.setHeader('content-type','text/html'); r.end(chatHtml('claude')); });
-const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.end(chatHtml('chatgpt')); });
+const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/mobile') ? mobileHtml : chatHtml('chatgpt')); });
 
 (async () => {
   const browser = engine === 'webkit'
@@ -62,7 +66,8 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const sent = (p) => p.evaluate(() => window.__sent);
   const vid = () => yt.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(2), paused: v.paused }; });
   const ov = () => yt.evaluate(() => { const e = document.getElementById('yt2c-overlay'); return e ? { text: document.getElementById('yt2c-body').innerText.replace(/\n+/g, ' | '), font: getComputedStyle(document.getElementById('yt2c-body')).fontSize, foot: document.getElementById('yt2c-foot').textContent } : null; });
-  const ok = (name, cond, extra) => console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? '  ' + extra : ''));
+  let failures = 0;
+  const ok = (name, cond, extra) => { if (!cond) failures++; console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? '  ' + extra : '')); };
 
   await yt.waitForTimeout(3500);
   console.log('subtitle preload:', JSON.stringify(await yt.evaluate(() => window.__ytcDebug.load())));
@@ -130,7 +135,30 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const c5 = await sent(chat);
   ok('replay off: message sent at once, passage only, to Claude', c5.length === 2 && !/Link:/.test(c5[1].text), c5.length);
   ok('video stayed paused where you paused (no replay)', (await vid()).paused && Math.abs((await vid()).t - 5) < 0.6, JSON.stringify(await vid()));
+
+  // 6) mobile ChatGPT: only image file inputs -> the transcript must be pasted into the message instead
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  await chat.goto('http://localhost:8768/mobile'); await injectChat();
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'chatgpt' }));
+  const resM = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'send', target: 'chatgpt' }));
+  const gotM = await sent(chat);
+  ok('image-only file inputs: message still sent', /^Sent to ChatGPT/.test((resM && resM.result) || ''), resM && resM.result);
+  ok('transcript pasted into the message (not attached)', gotM.length === 1 && /--- TRANSCRIPT ---/.test(gotM[0].text) && gotM[0].files === 0 && /pasted at the end of this message/.test(gotM[0].text) && !/is attached/.test(gotM[0].text), gotM[0] && gotM[0].text.slice(-120).replace(/\n/g, ' | '));
+
+  // 7) a page layout where the player box has no size: the subtitles must still cover the video
+  await yt.goto('http://localhost:8767/odd?v=abc12345678'); await injectYT();
+  await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: false, target: 'chatgpt' }));
+  await yt.waitForTimeout(3500);
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.waitForTimeout(300);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await yt.waitForTimeout(1200);
+  const odd = await yt.evaluate(() => { const o = document.getElementById('yt2c-overlay'); const v = document.querySelector('video'); if (!o) return null; const a = o.getBoundingClientRect(), b = v.getBoundingClientRect(); return { pos: getComputedStyle(o).position, overlay: [Math.round(a.left), Math.round(a.top), Math.round(a.width), Math.round(a.height)], video: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)], font: getComputedStyle(document.getElementById('yt2c-body')).fontSize }; });
+  ok('zero-size player box: subtitles use a fixed overlay exactly over the video', odd && odd.pos === 'fixed' && JSON.stringify(odd.overlay) === JSON.stringify(odd.video), JSON.stringify(odd));
+  ok('...and the text is a sane size there', odd && parseFloat(odd.font) >= 14 && parseFloat(odd.font) <= 120, odd && odd.font);
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();
+  console.log(failures ? failures + ' CHECK(S) FAILED' : 'ALL CHECKS PASSED');
+  process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('FAIL', e); process.exit(1); });
