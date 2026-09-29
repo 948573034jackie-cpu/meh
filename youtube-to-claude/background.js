@@ -210,6 +210,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.type === 'ask' && sender.tab) { // a question you said out loud (iPhone / iPad app): goes into the same chat
+    (async () => {
+      let result;
+      try {
+        const videoId = new URL(sender.tab.url).searchParams.get('v');
+        result = await sendToClaude({
+          videoTabId: sender.tab.id, videoId,
+          passage: String(msg.text || '').trim() + '\n\n(Answer in simple English, in short plain sentences, as if you are speaking to me. No headings, no bullet points, no bold.)',
+          force: false, targetId: msg.target
+        });
+      } catch (e) { result = 'Unexpected error: ' + e.message; }
+      await setLast('Question: ' + result);
+      sendResponse({ result });
+    })();
+    return true;
+  }
   if (msg.type === 'pause-send' && sender.tab) {
     (async () => {
       let result;

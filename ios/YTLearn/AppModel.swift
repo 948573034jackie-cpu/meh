@@ -12,6 +12,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var textLevel: Double { didSet { changed("textLevel", textLevel) } }
     @Published var tapOn: Bool { didSet { changed("tapOn", tapOn) } }
     @Published var badgeOn: Bool { didSet { changed("badgeOn", badgeOn) } }
+    @Published var speakOn: Bool { didSet { defaults.set(speakOn, forKey: "speakOn"); if !speakOn { voice.stop() } } }
+    @Published var listening = false     // the microphone is open for your question
+    @Published var speaking = false      // the app is reading an answer aloud
 
     @Published var layoutIndex = 0
     @Published var toast: String?
@@ -21,6 +24,11 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     static let world = WKContentWorld.world(name: "ytc")
 
     private let speech = SpeechListener()
+    private let voice = Voice()
+    private var dictating = false
+    private var dictated = ""
+    private var dictationTimer: Timer?
+    private var answerToken = 0
     private let bridge: Bridge
     private var started = false
     private var jsLogs: [String] = []
@@ -31,7 +39,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// small strip -> half -> big. The video gets the rest of the height.
     func chatLength(in size: CGSize) -> CGFloat {
         switch layoutIndex % 3 {
-        case 0: return 130
+        case 0: return 96
         case 1: return size.height * 0.45
         default: return size.height * 0.75
         }
@@ -47,9 +55,11 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let replayOn = d.object(forKey: "replayOn") as? Bool ?? true
         let sendTranscript = d.object(forKey: "sendTranscript") as? Bool ?? true
         let voiceOn = d.object(forKey: "voiceOn") as? Bool ?? true
-        let textLevel = d.object(forKey: "textLevel") as? Double ?? 6.0
+        if !d.bool(forKey: "textLevelMigrated2") { d.set(7.5, forKey: "textLevel"); d.set(true, forKey: "textLevelMigrated2") }
+        let textLevel = d.object(forKey: "textLevel") as? Double ?? 7.5
         let tapOn = d.object(forKey: "tapOn") as? Bool ?? true
         let badgeOn = d.object(forKey: "badgeOn") as? Bool ?? true
+        let speakOn = d.object(forKey: "speakOn") as? Bool ?? true
 
         self.target = target
         self.pauseOn = pauseOn
@@ -59,6 +69,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         self.textLevel = textLevel
         self.tapOn = tapOn
         self.badgeOn = badgeOn
+        self.speakOn = speakOn
 
         let bridge = Bridge()
         self.bridge = bridge
@@ -77,11 +88,23 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         youtube.allowsBackForwardNavigationGestures = true
         chat.allowsBackForwardNavigationGestures = true
 
-        speech.onText = { [weak self] text in self?.sendSpeech(["type": "result", "text": text]) }
-        speech.onEnd = { [weak self] reason in
-            if let reason = reason { self?.sendSpeech(["type": "error", "error": reason]) }
-            self?.sendSpeech(["type": "end"])
+        speech.onText = { [weak self] text in
+            guard let self = self else { return }
+            if self.dictating { self.heardQuestion(text); return }
+            if self.voice.isSpeaking { return }   // do not listen to our own voice
+            self.sendSpeech(["type": "result", "text": text])
         }
+        speech.onEnd = { [weak self] reason in
+            guard let self = self else { return }
+            if self.dictating {
+                if reason != nil { self.cancelDictation(); self.show("The microphone is not allowed. Settings > YT Learn > allow Microphone and Speech Recognition.") }
+                else { self.finishDictation() }
+                return
+            }
+            if let reason = reason { self.sendSpeech(["type": "error", "error": reason]) }
+            self.sendSpeech(["type": "end"])
+        }
+        voice.onChange = { [weak self] on in DispatchQueue.main.async { self?.speaking = on } }
     }
 
     // ---- start-up ----
@@ -103,6 +126,12 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if let url = URL(string: "https://chatgpt.com/") { chat.load(URLRequest(url: url)) }
 
         Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in self?.writeSelfTestReport() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self = self else { return }
+            self.voice.speak("This is a test of the voice. **Hello** [link](https://example.com) there.")
+            self.selfTestReport["voiceCleaned"] = Voice.clean("This is a test of the voice. **Hello** [link](https://example.com) there.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.selfTestReport["voiceSpeaking"] = self.voice.isSpeaking; self.voice.stop() }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self = self else { return }
             let ytTest = """
@@ -203,6 +232,95 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if let url = URL(string: address) { chat.load(URLRequest(url: url)) }
     }
 
+    // ---- talking with the AI: tap the microphone, say your question, hear the answer ----
+    func micTapped() {
+        if listening { finishDictation(); return }
+        voice.stop()
+        dictating = true
+        dictated = ""
+        listening = true
+        speech.stop()
+        sendSpeech(["type": "end"])          // the "let's go" listener steps aside for a moment
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self = self, self.dictating else { return }
+            self.speech.start()
+            self.show("Listening… say your question.")
+            self.restartDictationTimer(seconds: 8)   // if you say nothing it stops after 8 s
+        }
+    }
+
+    private func heardQuestion(_ text: String) {
+        dictated = text
+        restartDictationTimer(seconds: 1.8)          // 1.8 s of quiet = you finished
+    }
+
+    private func restartDictationTimer(seconds: TimeInterval) {
+        dictationTimer?.invalidate()
+        dictationTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in self?.finishDictation() }
+    }
+
+    private func cancelDictation() {
+        dictationTimer?.invalidate()
+        dictating = false
+        listening = false
+    }
+
+    private func finishDictation() {
+        guard dictating else { return }
+        let question = dictated.trimmingCharacters(in: .whitespacesAndNewlines)
+        cancelDictation()
+        speech.stop()
+        sendSpeech(["type": "end"])              // the "let's go" listener starts again
+        if question.split(separator: " ").count < 2 { show("I did not hear a question. Tap the microphone and try again."); return }
+        show("Asking: \(question)")
+        youtube.callAsyncJavaScript(
+            "return await chrome.runtime.sendMessage({type: 'ask', text: text, target: target});",
+            arguments: ["text": question, "target": target], in: nil, in: AppModel.world
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let value):
+                    if let dict = value as? [String: Any], let text = dict["result"] as? String, !text.hasPrefix("Sent") { self?.show(text) }
+                case .failure(let error): self?.show("Could not ask: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// After a message went into the chat: wait until the AI has finished its answer, then read it aloud.
+    private func followAnswer(baseline: Int) {
+        guard speakOn else { return }
+        answerToken += 1
+        let token = answerToken
+        var lastText = ""
+        var stable = 0
+        func poll(_ round: Int) {
+            if token != answerToken { return }                 // a newer message took over
+            if round > 130 { return }                          // about 2.5 minutes
+            chat.callAsyncJavaScript("return window.__ytcReplyState ? window.__ytcReplyState() : null;", arguments: [:], in: nil, in: AppModel.world) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self = self, token == self.answerToken else { return }
+                    var done = false
+                    if case .success(let value) = result, let st = value as? [String: Any],
+                       let count = st["count"] as? Int, let text = st["text"] as? String, let busy = st["busy"] as? Bool {
+                        if count > baseline && !text.isEmpty {
+                            if text == lastText { stable += 1 } else { stable = 0; lastText = text }
+                            // finished: it stopped growing (and the "stop" button is gone, or nothing changed for 4 checks)
+                            if (!busy && stable >= 2) || stable >= 4 { done = true }
+                        }
+                    }
+                    if done {
+                        self.show("Reading the answer…")
+                        self.voice.speak(lastText)
+                    } else {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { poll(round + 1) }
+                    }
+                }
+            }
+        }
+        poll(0)
+    }
+
     // ---- toolbar actions ----
     func cycleLayout() { layoutIndex = (layoutIndex + 1) % 3 }
 
@@ -270,14 +388,31 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
                 answered = true
                 reply(value, error)
             }
-            chat.callAsyncJavaScript("return await window.__ytcDeliver(msg);", arguments: ["msg": msg], in: nil, in: AppModel.world) { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let value): finish(value, nil)
-                    case .failure(let error): finish(nil, "chat page not ready: \(error.localizedDescription)")
+            let msgDict = msg as? [String: Any]
+            let isChatSend = (msgDict?["type"] as? String) == "chat-send"
+            let sentText = msgDict?["text"] as? String ?? ""
+            let readAnswer = isChatSend && !sentText.contains("just reply \"Ready\"")   // the plain "Send video" button only says Ready
+            var baseline = 0
+            let deliver = {
+                self.chat.callAsyncJavaScript("return await window.__ytcDeliver(msg);", arguments: ["msg": msg], in: nil, in: AppModel.world) { result in
+                    DispatchQueue.main.async {
+                        switch result {
+                        case .success(let value):
+                            if readAnswer, let d = value as? [String: Any], (d["ok"] as? Bool) == true { self.followAnswer(baseline: baseline) }
+                            finish(value, nil)
+                        case .failure(let error): finish(nil, "chat page not ready: \(error.localizedDescription)")
+                        }
                     }
                 }
             }
+            if readAnswer {
+                self.chat.callAsyncJavaScript("return window.__ytcReplyState ? window.__ytcReplyState().count : 0;", arguments: [:], in: nil, in: AppModel.world) { result in
+                    DispatchQueue.main.async {
+                        if case .success(let v) = result, let n = v as? Int { baseline = n }
+                        deliver()
+                    }
+                }
+            } else { deliver() }
             // A page that jumps to a new address right after "Send" can lose the answer. Then the move itself
             // (a fresh chat turning into /c/... or /chat/...) is the proof that the message was sent.
             func watch(_ round: Int) {
@@ -285,6 +420,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
                 let path = self.chat.url?.path ?? ""
                 if (startPath == "/" || startPath == "/new") && path != "/" && path != "/new" {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        if !answered && readAnswer { self.followAnswer(baseline: 0) }
                         finish(["ok": true, "steps": ["message sent (the page moved on to a new chat)"]], nil)
                     }
                     return
@@ -302,6 +438,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if let obj = body["obj"] as? [String: Any] {
                 for (key, value) in obj { defaults.set(value, forKey: key) }
             }
+            reply(nil, nil)
+
+        case "voice":
+            if (body["op"] as? String) == "stop" { voice.stop() }
             reply(nil, nil)
 
         case "speech":

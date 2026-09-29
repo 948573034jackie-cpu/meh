@@ -30,7 +30,7 @@ Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pi
 * The first time you say “let's go”, iOS asks for the **microphone** and **speech recognition**. Allow both. (Space/▶/tap always work too.)
 
 ## Buttons (top bar)
-Claude | ChatGPT switch · **Send video** (link + full transcript) · 🏠 YouTube home · 🔗 open a YouTube link you copied · AI button = make the AI window small / half / big · ⚙ settings (text size 1–10, replay, voice, transcript).
+**Ask** (big blue button): tap, say your question, and hear the answer · Claude | ChatGPT switch · **AI** = make the AI window small / half / big · **…** menu: send video + transcript, YouTube home, open a copied link, settings (text size, replay, voice).
 
 ## Limits (honest)
 * Needs an Apple ID for signing (see above). The app is not on the App Store.

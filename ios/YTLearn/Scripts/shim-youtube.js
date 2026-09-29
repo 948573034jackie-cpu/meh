@@ -41,6 +41,9 @@
     detach: () => Promise.resolve()
   };
 
+  // the video plays again ("let's go", a touch, the play button): stop reading the answer aloud
+  document.addEventListener('play', () => { post({ kind: 'voice', op: 'stop' }).catch(() => {}); }, true);
+
   // ---- speech: iOS does the listening (SFSpeechRecognizer), we look like webkitSpeechRecognition ----
   class NativeSpeechRecognition {
     constructor() { this.continuous = false; this.interimResults = false; this.lang = 'en-US'; this.onresult = null; this.onerror = null; this.onend = null; }

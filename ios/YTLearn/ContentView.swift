@@ -25,18 +25,25 @@ struct ContentView: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 210)
 
-            Button { model.sendVideoNow() } label: {
-                Label("Send video", systemImage: "paperplane.fill").font(.footnote)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
             Spacer(minLength: 0)
 
-            Button { model.goHome() } label: { Image(systemName: "house") }
-            Button { model.pasteLink() } label: { Image(systemName: "link") }
+            // the one big button: tap, say your question, and hear the answer
+            Button { model.micTapped() } label: {
+                Label(model.listening ? "Listening… tap to send" : (model.speaking ? "Talking… tap to ask" : "Ask"),
+                      systemImage: model.listening ? "waveform" : "mic.fill")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(model.listening ? .red : .blue)
+
             Button { model.cycleLayout() } label: { Label("AI", systemImage: "bubble.left.and.bubble.right").font(.footnote) }
-            Button { showSettings = true } label: { Image(systemName: "gearshape") }
+
+            Menu {
+                Button { model.sendVideoNow() } label: { Label("Send video + transcript", systemImage: "paperplane") }
+                Button { model.goHome() } label: { Label("YouTube home", systemImage: "house") }
+                Button { model.pasteLink() } label: { Label("Open copied YouTube link", systemImage: "link") }
+                Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+            } label: { Image(systemName: "ellipsis.circle").font(.title3) }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -79,6 +86,7 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     Toggle("First time for a video: also send the link + full transcript", isOn: $model.sendTranscript)
+                    Toggle("Read the AI's answer out loud", isOn: $model.speakOn)
                 }
                 Section(header: Text("When I pause the video")) {
                     Toggle("Show the last ~25 seconds as subtitles and send them", isOn: $model.pauseOn)

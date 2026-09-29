@@ -183,6 +183,22 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const v8 = await vid();
   ok('touch on the stopped video = "let\'s go" (start of the part, playing)', !v8.paused && v8.t < 4, JSON.stringify(v8));
   ok('overlay gone after "let\'s go"', (await ov()) === null);
+
+  // 9) talking with the AI: a spoken question goes into the same chat; the app can read the newest answer
+  const countBefore = (await sent(chat)).length;
+  const askRes = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'ask', text: 'What does dangling mean?', target: 'chatgpt' }));
+  const afterAsk = await sent(chat);
+  ok('spoken question is sent to the chat', /^Sent to ChatGPT/.test((askRes && askRes.result) || '') && afterAsk.length === countBefore + 1, askRes && askRes.result);
+  const last = afterAsk[afterAsk.length - 1];
+  ok('question: your words + "simple English", no transcript again', last && /What does dangling mean\?/.test(last.text) && /simple English/.test(last.text) && !/TRANSCRIPT/.test(last.text) && last.files === 0, last && last.text.slice(0, 160));
+  const st0 = await chat.evaluate(() => window.__ytcReplyState());
+  ok('reply reader: no answer yet', st0.count === 0 && st0.text === '' && st0.busy === false, JSON.stringify(st0));
+  await chat.evaluate(() => { const d = document.createElement('div'); d.setAttribute('data-message-author-role', 'assistant'); d.textContent = 'Dangling means hanging.'; document.body.appendChild(d); const b = document.createElement('button'); b.id = 'stopper'; b.setAttribute('data-testid', 'stop-button'); document.body.appendChild(b); });
+  const st1 = await chat.evaluate(() => window.__ytcReplyState());
+  ok('reply reader: sees the newest answer and that it is still being written', st1.count === 1 && st1.text === 'Dangling means hanging.' && st1.busy === true, JSON.stringify(st1));
+  await chat.evaluate(() => document.getElementById('stopper').remove());
+  const st2 = await chat.evaluate(() => window.__ytcReplyState());
+  ok('reply reader: finished when the stop button is gone', st2.busy === false, JSON.stringify(st2));
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();
