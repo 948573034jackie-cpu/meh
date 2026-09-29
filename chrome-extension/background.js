@@ -38,6 +38,10 @@ function setBadge(text, color) {
   chrome.action.setBadgeBackgroundColor({ color });
 }
 
+async function setResult(text) {
+  await chrome.storage.local.set({ last: new Date().toLocaleTimeString() + ' — ' + text });
+}
+
 async function flash(text, color) {
   setBadge(text, color);
   setTimeout(async () => {
@@ -96,18 +100,42 @@ async function deliver(tabId, dataUrl) {
 async function capture() {
   try {
     const claudeTabs = await chrome.tabs.query({ url: CLAUDE_URL });
-    if (!claudeTabs.length) return flash('!', '#d93025'); // no Claude tab open
+    if (!claudeTabs.length) {
+      await setResult('No claude.ai tab is open. Open claude.ai in a Chrome tab.');
+      return flash('!', '#d93025');
+    }
     const target = await pickTargetTab(claudeTabs);
-    if (!target) return flash('!', '#d93025');            // nothing to screenshot
+    if (!target) {
+      await setResult('Nothing to screenshot: the visible tab in your Chrome window is claude.ai itself, or a page Chrome blocks (chrome://, PDF viewer, file://).');
+      return flash('!', '#d93025');
+    }
 
-    const dataUrl = await chrome.tabs.captureVisibleTab(target.windowId, { format: 'jpeg', quality: 90 });
+    let dataUrl;
+    try {
+      dataUrl = await chrome.tabs.captureVisibleTab(target.windowId, { format: 'jpeg', quality: 90 });
+    } catch (e) {
+      await setResult('Screenshot blocked on "' + (target.url || '').slice(0, 60) + '": ' + e.message);
+      return flash('!', '#d93025');
+    }
 
     claudeTabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-    const res = await deliver(claudeTabs[0].id, dataUrl);
-    if (res && res.ok) flash('OK', '#188038');
-    else flash('!', '#d93025');
+    let res;
+    try {
+      res = await deliver(claudeTabs[0].id, dataUrl);
+    } catch (e) {
+      await setResult('Could not talk to the claude.ai tab: ' + e.message + '. Reload the claude.ai tab and try again.');
+      return flash('!', '#d93025');
+    }
+    if (res && res.ok) {
+      await setResult('Sent a screenshot of "' + (target.title || target.url || '').slice(0, 40) + '" (' + res.via + ').');
+      flash('OK', '#188038');
+    } else {
+      await setResult('claude.ai page has nowhere to attach a picture. ' + JSON.stringify(res && res.info));
+      flash('!', '#d93025');
+    }
   } catch (e) {
     console.warn('ClaudeSnap capture failed:', e);
+    await setResult('Unexpected error: ' + e.message);
     flash('!', '#d93025');
   }
 }
@@ -126,8 +154,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       case 'status': {
-        const { error } = await chrome.storage.local.get('error');
-        sendResponse({ listening: await isListening(), error: error || null });
+        const { error, last } = await chrome.storage.local.get(['error', 'last']);
+        sendResponse({ listening: await isListening(), error: error || null, last: last || null });
         break;
       }
       case 'speech':

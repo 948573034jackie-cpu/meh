@@ -51,7 +51,15 @@ if (!window.__claudeSnapLoaded) {
     try {
       const via = attach(dataUrlToFile(msg.dataUrl));
       if (via) toast('📸 Screenshot sent to Claude');
-      sendResponse({ ok: !!via, via });
+      sendResponse({
+        ok: !!via, via,
+        info: {
+          path: location.pathname,
+          fileInputs: document.querySelectorAll('input[type="file"]').length,
+          editable: document.querySelectorAll('[contenteditable="true"]').length,
+          textareas: document.querySelectorAll('textarea').length
+        }
+      });
     } catch (e) {
       sendResponse({ ok: false, error: String(e) });
     }

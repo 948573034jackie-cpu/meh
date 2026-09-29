@@ -3,10 +3,12 @@ const bar = document.getElementById('bar');
 const openBtn = document.getElementById('open');
 const quitBtn = document.getElementById('quit');
 const errEl = document.getElementById('err');
+const lastEl = document.getElementById('last');
 
 let port = null;
 
-function render(listening, error) {
+function render(listening, error, last) {
+  lastEl.textContent = last ? 'Last: ' + last : '';
   statusEl.textContent = listening ? '● Listening' : 'Off';
   statusEl.style.color = listening ? '#188038' : '';
   openBtn.textContent = listening ? 'Stop' : 'Open';
@@ -22,7 +24,7 @@ function render(listening, error) {
 
 async function refresh() {
   const s = await chrome.runtime.sendMessage({ type: 'status' });
-  render(s.listening, s.error);
+  render(s.listening, s.error, s.last);
   return s;
 }
 
