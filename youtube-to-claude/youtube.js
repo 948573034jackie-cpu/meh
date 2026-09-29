@@ -127,6 +127,13 @@ if (!window.__ytToClaudeLoaded) {
   // Text size: level 1..10 in small steps (10 = the biggest). Font size = share of the player height.
   // level 6 = medium (6.75 %), level 10 = 8.95 %.
   const levelShare = (lv) => 0.04 + (lv - 1) * 0.0055;
+  // Size is written in CSS "container" units (cqh = 1% of the player's height, cqw = 1% of its width), so the
+  // browser recalculates it whenever the player changes size (fullscreen, theater mode, window resize).
+  // Nothing is measured in JavaScript, so it cannot come out random. Hard limits: never below 14px or above 120px.
+  const fontSizeCss = (lv) => {
+    const share = levelShare(lv);
+    return 'clamp(14px, min(' + (share * 100 * 1.097).toFixed(3) + 'cqh, ' + (share * 190).toFixed(3) + 'cqw), 120px)';
+  };
   let lastShown = null;
 
   function hideOverlay() {
@@ -170,13 +177,13 @@ if (!window.__ytToClaudeLoaded) {
   function showOverlay(args) {
     const { note, seg, activeIndex } = args;
     lastShown = { note, seg, activeIndex };
-    const host = document.querySelector('#movie_player') || (video && video.parentElement) || document.body;
+    const host = (video && video.closest('#movie_player, .html5-video-player')) || document.querySelector('#movie_player') || (video && video.parentElement) || document.body;
     const old = document.getElementById(OVERLAY_ID);
     if (old) old.remove();
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
     // pointer-events:none → clicking the video still pauses/plays as normal
-    el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;' +
+    el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;container-type:size;' +
       'padding:2.5% 4%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
       'pointer-events:none;box-sizing:border-box;overflow:hidden';
     const mk = (id, css, text) => {
@@ -207,7 +214,7 @@ if (!window.__ytToClaudeLoaded) {
     el.appendChild(mk('yt2c-hint', 'display:none'));
     host.appendChild(el);
     if (seg) {
-      body.style.fontSize = Math.max(16, el.clientHeight * levelShare(settings.textLevel)).toFixed(2) + 'px'; // no rounding: every step changes the size
+      body.style.fontSize = fontSizeCss(settings.textLevel);
       setActive(activeIndex === undefined ? seg.items.length - 1 : activeIndex);
     }
   }

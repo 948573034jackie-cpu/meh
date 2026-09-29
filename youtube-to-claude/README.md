@@ -20,6 +20,9 @@ Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.co
 3. Pin the extension. Refresh your YouTube tab and your Claude/ChatGPT tab.
 4. The first time you use “let's go”, Chrome asks to allow the **microphone for youtube.com** — click Allow.
 
+## Text size is stable
+The size is tied to the video player's *current* size by the browser itself (CSS container units), so it can never get stuck huge or tiny: fullscreen and theater mode make it scale up and back down smoothly, there is a hard limit (14–120 px), and your slider setting is kept.
+
 ## Sending (how it presses Send)
 It types the message, then clicks Send. If the message is still in the box it presses Enter (the send key in ChatGPT), and if the page ignores that, it sends a real Enter key press through Chrome itself (this is why the extension asks for the *debugger* permission; Chrome may flash a "started debugging this browser" bar for a moment). After every try it checks that the message really left the box.
 
