@@ -1,34 +1,48 @@
 const msg = document.getElementById('msg');
-const buttons = document.querySelectorAll('button.go');
+const go = document.getElementById('go');
+const NAMES = { claude: 'Claude', chatgpt: 'ChatGPT' };
+let mode = 'claude';
 
 chrome.storage.local.get('last').then(({ last }) => { if (last) msg.textContent = 'Last: ' + last; });
 
-buttons.forEach((btn) => btn.addEventListener('click', async () => {
-  const target = btn.id === 'gochatgpt' ? 'chatgpt' : 'claude';
-  buttons.forEach((b) => (b.disabled = true));
-  const label = btn.textContent;
-  btn.textContent = 'Sending…';
+// ---- mode: Claude or ChatGPT ----
+function showMode(m) {
+  mode = m;
+  document.querySelectorAll('input[name="target"]').forEach((r) => { r.checked = r.value === m; });
+  document.getElementById('lbl-claude').className = m === 'claude' ? 'on-claude' : '';
+  document.getElementById('lbl-chatgpt').className = m === 'chatgpt' ? 'on-chatgpt' : '';
+  go.className = m === 'chatgpt' ? 'chatgpt' : '';
+  go.textContent = 'Send this video to ' + NAMES[m];
+}
+chrome.storage.local.get('target').then((s) => showMode(s.target === 'chatgpt' ? 'chatgpt' : 'claude'));
+document.querySelectorAll('input[name="target"]').forEach((r) => {
+  r.addEventListener('change', () => { if (r.checked) { chrome.storage.local.set({ target: r.value }); showMode(r.value); } });
+});
+
+go.addEventListener('click', async () => {
+  go.disabled = true;
+  go.textContent = 'Sending…';
   msg.classList.remove('err');
   msg.textContent = 'Working (up to 30 s)…';
-  const { result } = await chrome.runtime.sendMessage({ type: 'send', target });
-  buttons.forEach((b) => (b.disabled = false));
-  btn.textContent = label;
+  const { result } = await chrome.runtime.sendMessage({ type: 'send', target: mode });
+  go.disabled = false;
+  showMode(mode);
   msg.textContent = result;
   msg.classList.toggle('err', !/^Sent /.test(result));
-}));
+});
 
-// options
-for (const id of ['pauseOn', 'replayOn', 'sendTranscript']) {
+// ---- options ----
+for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
-
-const sizeSel = document.getElementById('textSize');
-chrome.storage.local.get('textSize').then((s) => { sizeSel.value = s.textSize || 'auto'; });
-sizeSel.addEventListener('change', () => chrome.storage.local.set({ textSize: sizeSel.value }));
-
-document.querySelectorAll('input[name="target"]').forEach((r) => {
-  chrome.storage.local.get('target').then((s) => { r.checked = r.value === (s.target || 'claude'); });
-  r.addEventListener('change', () => { if (r.checked) chrome.storage.local.set({ target: r.value }); });
-});
+const selects = { textSize: 'm', slowRate: '0.7' };
+for (const [id, def] of Object.entries(selects)) {
+  const sel = document.getElementById(id);
+  chrome.storage.local.get(id).then((s) => {
+    const v = s[id] === undefined ? def : String(s[id]);
+    sel.value = [...sel.options].some((o) => o.value === v) ? v : def;
+  });
+  sel.addEventListener('change', () => chrome.storage.local.set({ [id]: id === 'slowRate' ? Number(sel.value) : sel.value }));
+}

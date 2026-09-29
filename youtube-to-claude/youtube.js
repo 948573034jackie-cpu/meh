@@ -105,97 +105,108 @@ if (!window.__ytToClaudeLoaded) {
   });
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textSize: 'auto' };
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'textSize']).then((s) => {
-    settings.textSize = s.textSize || 'auto';
-    settings.pauseOn = s.pauseOn !== false;
-    settings.replayOn = s.replayOn !== false;
-  });
+  const settings = { pauseOn: true, replayOn: true, textSize: 'm', slowRate: 0.7, voiceOn: true, target: 'claude' };
+  const SIZE_KEYS = ['s', 'm', 'l', 'xl', 'auto'];
+  function readSettings(s) {
+    if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
+    if ('replayOn' in s) settings.replayOn = s.replayOn !== false;
+    if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
+    if ('textSize' in s) settings.textSize = SIZE_KEYS.includes(s.textSize) ? s.textSize : 'm';
+    if ('slowRate' in s) settings.slowRate = Number(s.slowRate) || 0.7;
+    if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
+  }
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textSize', 'slowRate', 'target']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
-    if (ch.pauseOn) settings.pauseOn = ch.pauseOn.newValue !== false;
-    if (ch.replayOn) settings.replayOn = ch.replayOn.newValue !== false;
-    if (ch.textSize) { settings.textSize = ch.textSize.newValue || 'auto'; rerender(); }
+    const s = {};
+    for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
+    readSettings(s);
+    if (ch.textSize) rerender();
   });
+  const targetName = () => (settings.target === 'chatgpt' ? 'ChatGPT' : 'Claude');
 
-  // ---- big sentences on the video ----
+  // ---- the sentences, shown as ONE tight paragraph over the video ----
   const OVERLAY_ID = 'yt2c-overlay';
+  // font size = share of the player height; 'auto' = as big as fits everything
+  const SIZE_SHARE = { s: 0.05, m: 0.068, l: 0.09, xl: 0.12 };
+  let lastShown = null;
 
   function hideOverlay() {
     const el = document.getElementById(OVERLAY_ID);
     if (el) el.remove();
+    lastShown = null;
   }
-
-  // Text size: 'auto' = as big as fits everything; the others are fixed sizes (a share of the player height),
-  // and the text scrolls to keep the sentence being played (or the one you paused in) in view.
-  const SIZE_SHARE = { l: 0.09, xl: 0.12, xxl: 0.16, max: 0.21 };
-  let lastShown = null;
 
   function setActive(index) {
     const el = document.getElementById(OVERLAY_ID);
     if (!el) return;
     if (lastShown) lastShown.activeIndex = index;
+    let activeEl = null;
     el.querySelectorAll('[data-i]').forEach((n) => {
       const on = Number(n.dataset.i) === index;
       n.style.color = on ? '#ffd60a' : '#ffffff';
-      if (on) {
-        const wrap = document.getElementById('yt2c-wrap');
-        if (wrap) wrap.scrollTop = n.offsetTop - wrap.clientHeight / 2 + n.offsetHeight / 2;
-      }
+      if (on) activeEl = n;
     });
+    const wrap = document.getElementById('yt2c-wrap');
+    if (wrap && activeEl && wrap.scrollHeight > wrap.clientHeight + 1) {
+      // long text at a big size: keep the current sentence in view
+      const w = wrap.getBoundingClientRect(), a = activeEl.getBoundingClientRect();
+      wrap.scrollTop += (a.top + a.height / 2) - (w.top + w.height / 2);
+    }
   }
 
   function rerender() {
     if (!lastShown || !document.getElementById(OVERLAY_ID)) return;
-    const foot = document.getElementById('yt2c-foot');
-    const keep = foot ? { text: foot.textContent, color: foot.style.color } : null;
+    const keep = {};
+    for (const id of ['yt2c-foot', 'yt2c-hint']) {
+      const n = document.getElementById(id);
+      keep[id] = n ? { text: n.textContent, color: n.style.color } : null;
+    }
     showOverlay(lastShown);
-    if (keep) { const f = document.getElementById('yt2c-foot'); f.textContent = keep.text; f.style.color = keep.color; }
+    for (const id of Object.keys(keep)) {
+      const n = document.getElementById(id);
+      if (n && keep[id]) { n.textContent = keep[id].text; n.style.color = keep[id].color; }
+    }
   }
 
   function showOverlay(args) {
     const { note, seg, activeIndex } = args;
     lastShown = { note, seg, activeIndex };
     const host = document.querySelector('#movie_player') || (video && video.parentElement) || document.body;
-    hideOverlay();
+    const old = document.getElementById(OVERLAY_ID);
+    if (old) old.remove();
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
     // pointer-events:none → clicking the video still pauses/plays as normal
     el.style.cssText = 'position:absolute;inset:0;z-index:2000;display:flex;flex-direction:column;' +
-      'padding:2.5% 3.5%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
-      'text-align:center;pointer-events:none;box-sizing:border-box;overflow:hidden';
-    const head = document.createElement('div');
-    head.id = 'yt2c-head';
-    head.style.cssText = 'font-size:18px;color:#cfcfcf;margin-bottom:1.5%;flex:none';
-    head.textContent = note || '';
-    el.appendChild(head);
-    const wrap = document.createElement('div');
-    wrap.id = 'yt2c-wrap';
-    wrap.style.cssText = 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column';
-    const body = document.createElement('div');
-    body.id = 'yt2c-body';
-    body.style.cssText = 'margin:auto 0;line-height:1.28;font-weight:700;text-shadow:0 2px 6px #000'; // auto margins: centered if it fits, top-aligned if not
+      'padding:2.5% 4%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
+      'pointer-events:none;box-sizing:border-box;overflow:hidden';
+    const mk = (id, css, text) => {
+      const d = document.createElement('div');
+      d.id = id; d.style.cssText = css; d.textContent = text || '';
+      return d;
+    };
+    el.appendChild(mk('yt2c-head', 'font-size:17px;color:#cfcfcf;margin-bottom:1.2%;flex:none;text-align:center', note));
+    const wrap = mk('yt2c-wrap', 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column');
+    const body = mk('yt2c-body', 'margin:auto 0;line-height:1.3;font-weight:600;text-align:left;text-shadow:0 2px 6px #000');
     if (seg) {
+      // sentences run on inside one paragraph, so short ones share a line
       seg.items.forEach((s, i) => {
-        const p = document.createElement('div');
-        p.dataset.i = String(i);
-        p.style.cssText = 'margin:0 0 .45em';
-        p.textContent = s.text;
-        body.appendChild(p);
+        const sp = document.createElement('span');
+        sp.dataset.i = String(i);
+        sp.textContent = s.text + ' ';
+        body.appendChild(sp);
       });
     }
     wrap.appendChild(body);
     el.appendChild(wrap);
-    const foot = document.createElement('div');
-    foot.id = 'yt2c-foot';
-    foot.style.cssText = 'font-size:16px;color:#cfcfcf;margin-top:1.5%;flex:none;min-height:20px';
-    el.appendChild(foot);
+    el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#cfcfcf;margin-top:1.2%;flex:none;min-height:18px;text-align:center'));
+    el.appendChild(mk('yt2c-hint', 'font-size:15px;color:#9ad1ff;margin-top:.5%;flex:none;min-height:18px;text-align:center'));
     host.appendChild(el);
     if (seg) {
       const share = SIZE_SHARE[settings.textSize];
       if (share) {
-        body.style.fontSize = Math.max(20, Math.round(el.clientHeight * share)) + 'px';
+        body.style.fontSize = Math.max(18, Math.round(el.clientHeight * share)) + 'px';
       } else {
-        // biggest font that still fits all the sentences in the player
         let lo = 16, hi = Math.min(150, el.clientWidth / 7), best = lo;
         while (hi - lo > 1) {
           const mid = Math.floor((lo + hi) / 2);
@@ -214,12 +225,25 @@ if (!window.__ytToClaudeLoaded) {
     f.textContent = text;
     f.style.color = ok ? '#7CFC9A' : '#ff8a80';
   }
+  function setHint(text) {
+    const h = document.getElementById('yt2c-hint');
+    if (h) h.textContent = text;
+  }
 
-  // ---- pause → show, send to Claude, replay ----
+  // ---- pause → show, send, replay slowly ... "bye bye" → continue at normal speed ----
   let video = null;
   let replaying = null;   // { seg, timer }
   let ourPause = false;   // true while WE pause the video, so it does not count as "you paused"
   let handling = false;
+  let pending = null;     // the passage waiting for "bye bye" / Enter
+  let origRate = 1;       // your normal playback speed, restored after the slow replay
+  let deferredSend = null; // the message to Claude/ChatGPT, sent once the slow replay has fully stopped
+
+  function runDeferredSend() {
+    const f = deferredSend;
+    deferredSend = null;
+    if (f) f();
+  }
 
   function isAd() {
     const p = document.querySelector('#movie_player');
@@ -238,12 +262,14 @@ if (!window.__ytToClaudeLoaded) {
   bind();
 
   function onPlay() {
-    if (!replaying) hideOverlay();
+    if (replaying) return;
+    endWaiting();          // you pressed play yourself: normal YouTube behaviour, we step aside
+    hideOverlay();
   }
 
   function onPause() {
     if (ourPause) { ourPause = false; return; }
-    if (replaying) { cancelReplay(); return; } // you paused during the replay: leave it there
+    if (replaying) { cancelReplay(); restoreRate(); beginWaiting(replayingSegOrPending()); runDeferredSend(); return; } // you paused during the replay
     if (!settings.pauseOn) return;
     const v = video;
     // wait a moment: ignore pauses caused by seeking, the video ending, or ads
@@ -252,10 +278,92 @@ if (!window.__ytToClaudeLoaded) {
     }, 250);
   }
 
+  let lastSeg = null;
+  function replayingSegOrPending() { return lastSeg; }
+
   function cancelReplay() {
     if (replaying) { clearInterval(replaying.timer); replaying = null; }
   }
+  function restoreRate() {
+    if (video) video.playbackRate = origRate || 1;
+  }
 
+  // ---- waiting for "bye bye" ----
+  let rec = null;
+  let recWanted = false;
+
+  function beginWaiting(seg) {
+    if (!seg) return;
+    pending = seg;
+    setHint(settings.voiceOn
+      ? 'Say “bye bye” or press Enter → continue from the start of this part'
+      : 'Press Enter → continue from the start of this part');
+    if (settings.voiceOn) startListening();
+  }
+
+  function endWaiting() {
+    pending = null;
+    stopListening();
+  }
+
+  function startListening() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR || rec) return;
+    recWanted = true;
+    try {
+      rec = new SR();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+      rec.onresult = (e) => {
+        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript);
+      };
+      rec.onerror = (e) => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          recWanted = false;
+          setHint('Microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (Enter still works.)');
+        }
+      };
+      rec.onend = () => { rec = null; if (recWanted && pending) setTimeout(startListening, 300); }; // Chrome stops after silence
+      rec.start();
+    } catch (e) { rec = null; }
+  }
+
+  function stopListening() {
+    recWanted = false;
+    if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
+  }
+
+  function onHeard(text) {
+    if (!pending) return;
+    if (/\bbye[\s-]?bye\b|\bgood[\s-]?bye\b/i.test(text || '')) continueFromStart();
+  }
+
+  // back to the start of the passage, normal speed, keep playing to the end and beyond
+  function continueFromStart() {
+    const seg = pending;
+    if (!seg || !video) return;
+    endWaiting();
+    cancelReplay();
+    hideOverlay();
+    video.playbackRate = origRate || 1;
+    video.currentTime = Math.max(0, seg.start - 0.3);
+    video.play().catch(() => {});
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !pending) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    e.preventDefault();
+    continueFromStart();
+  }, true);
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'heard') onHeard(msg.text); // used by tests / other parts of the extension
+  });
+
+  // ---- slow replay ----
   function startReplay(seg) {
     cancelReplay();
     const timer = setInterval(() => {
@@ -267,22 +375,31 @@ if (!window.__ytToClaudeLoaded) {
         cancelReplay();
         ourPause = true;
         video.pause();
+        restoreRate();
         setActive(seg.items.length - 1);
-        const keep = (document.getElementById('yt2c-foot') || {}).textContent || '';
-        const keepColor = (document.getElementById('yt2c-foot') || { style: {} }).style.color;
-        showOverlay({ note: '⏸ ' + fmtTime(seg.pausedAt) + '  ·  press Space to continue', seg });
-        setFoot(keep, keepColor !== 'rgb(255, 138, 128)');
+        setHead('⏸ ' + fmtTime(seg.pausedAt) + '  ·  press Space to continue from here');
+        beginWaiting(seg);
+        runDeferredSend(); // the video has fully stopped: now tell Claude / ChatGPT
       }
     }, 50);
     replaying = { seg, timer };
+    video.playbackRate = settings.slowRate;
     video.currentTime = Math.max(0, seg.start - 0.3);
-    video.play().catch(() => cancelReplay());
+    video.play().catch(() => { cancelReplay(); restoreRate(); });
+  }
+
+  function setHead(text) {
+    const h = document.getElementById('yt2c-head');
+    if (h) h.textContent = text;
   }
 
   async function handlePause() {
     handling = true;
     try {
       const t = video.currentTime;
+      if (!replaying && !pending) origRate = video.playbackRate || 1;
+      endWaiting();
+      deferredSend = null;
       showOverlay({ note: '⏸ ' + fmtTime(t) + '  ·  loading transcript…' });
       const d = await loadTranscript();
       if (!video.paused) { hideOverlay(); return; } // you pressed play again meanwhile
@@ -291,20 +408,30 @@ if (!window.__ytToClaudeLoaded) {
         return;
       }
       const seg = pickSegment(d.sentences, t);
+      lastSeg = seg;
       showOverlay({
         note: '⏸ ' + fmtTime(t) + '  ·  ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end),
         seg
       });
-      setFoot('Sending…', true);
-      try {
-        chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg })
-          .then((r) => {
-            const ok = !!(r && /^Sent /.test(r.result));
-            setFoot(ok ? '✓ ' + r.result.split(':')[0] : '✗ Not sent: ' + ((r && r.result) || 'no answer'), ok);
-          })
-          .catch(() => setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false));
-      } catch (e) { setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false); }
-      if (settings.replayOn) startReplay(seg);
+      const sendNow = () => {
+        setFoot('Sending to ' + targetName() + '…', true);
+        try {
+          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg })
+            .then((r) => {
+              const ok = !!(r && /^Sent /.test(r.result));
+              setFoot(ok ? '✓ ' + r.result.split(':')[0] : '✗ Not sent: ' + ((r && r.result) || 'no answer'), ok);
+            })
+            .catch(() => setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false));
+        } catch (e) { setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false); }
+      };
+      if (settings.replayOn) {
+        deferredSend = sendNow; // wait until the slow replay has completely stopped
+        setFoot('Replaying slowly… I will send it to ' + targetName() + ' when it stops', true);
+        startReplay(seg);
+      } else {
+        beginWaiting(seg);
+        sendNow();
+      }
     } finally {
       handling = false;
     }

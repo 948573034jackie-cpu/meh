@@ -1,22 +1,27 @@
 # YouTube to Claude / ChatGPT (Chrome extension)
 
-Helps you learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.com), both in Chrome. Pick the target with the two buttons in the popup; the radio buttons choose where pause-sentences go.
+Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.com), both in Chrome.
 
-**Button:** on a YouTube video page, click the extension icon → *Send this video to Claude*. Claude gets the link and the full transcript (as an attached text file).
+**Pick a mode** at the top of the popup: *Claude* or *ChatGPT*. Everything goes to that chat.
 
-**Pause:** when you pause the video (Space, click, or the pause button):
-1. the last ≤3 sentences (under 30 seconds, ending at the sentence you stopped in) appear very big over the video,
-2. they are sent to Claude with their timestamps (the first time for a video/chat, the link + full transcript are sent too),
-3. the video replays those sentences once, then stops with the sentences still on screen. Press Space to continue.
+**Button:** *Send this video to …* sends the video link + full transcript (as a text file).
 
-Both pause features can be turned off in the popup, and **Text size** (Auto / Large / Extra large / Huge / Giant) sets how big the words are. Sentences are rebuilt as complete sentences (not cut mid-sentence like YouTube's subtitles) and fill about 30 seconds.
+**When you pause the video** (Space, click, or the pause button):
+1. The last ~30 seconds of speech appear over the video as **one tight paragraph of complete sentences** (YouTube's cut-off subtitles are rebuilt into real sentences). The sentence being played is yellow.
+2. The video goes back and replays that part **slowly (70% speed by default)** once, then stops.
+3. **Only after it has fully stopped**, the passage is sent to your chat (the first time for a video, with the link + full transcript too). The chat is asked to just repeat the passage, nothing else.
+4. Talk about it with Claude/ChatGPT. When you are done, say **“bye bye”** (or press **Enter**): the video jumps back to the start of that part and plays on at normal speed. (Space just continues from where the replay stopped.)
+
+**Popup settings:** replay on/off, replay speed (100/85/70/50%), text size (Small / Medium / Large / Extra large / Auto), send the transcript on/off, “bye bye” on/off.
 
 ## Install
 1. Download and unzip https://github.com/948573034jackie-cpu/meh/releases/download/claudesnap-latest/YouTube-to-Claude.zip
-2. `chrome://extensions` → Developer mode → Load unpacked → choose the unzipped folder.
-3. Pin the extension. Keep a claude.ai tab open (or it opens one for you). Refresh your YouTube tab once.
+2. `chrome://extensions` → Developer mode → Load unpacked → choose the unzipped folder. (Updating: copy the new files over the old folder, then press the reload arrow.)
+3. Pin the extension. Refresh your YouTube tab and your Claude/ChatGPT tab.
+4. The first time you use “bye bye”, Chrome asks to allow the **microphone for youtube.com** — click Allow.
 
 ## Limits
-- Needs a video with captions (typed or auto-generated) or YouTube's "Show transcript".
+- Needs a video with captions (typed or auto-generated) or YouTube's “Show transcript”.
+- Use a normal text chat (not voice mode) in Claude/ChatGPT — voice mode has no text box to type into. The bottom of the video shows ✓ or ✗ with the reason.
+- “bye bye” uses Chrome's speech recognition (needs internet). With speakers, the AI saying “bye bye” could trigger it; headphones avoid this. Enter always works.
 - Ads are ignored. Only youtube.com/watch pages.
-- If claude.ai changes its layout, the sending step may need an update; the popup shows why a send failed.
