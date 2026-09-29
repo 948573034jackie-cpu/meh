@@ -125,7 +125,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -151,7 +151,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
   let text = passage || '';
   let file = null;
   let summary = 'passage only';
-  if (needTranscript && (force || sendTranscript !== false)) {
+  if (needTranscript && !noTranscript && (force || sendTranscript !== false)) {
     let info;
     try { info = await chrome.tabs.sendMessage(videoTabId, { type: 'yt-get' }); }
     catch (e) { return 'Refresh the YouTube page (Cmd+R) and try again. (' + e.message + ')'; }
@@ -187,7 +187,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
   if (!res || !res.ok) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
-  if (needTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
+  if (needTranscript && !noTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 
@@ -219,7 +219,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId,
           passage: String(msg.text || '').trim() + '\n\n(Answer in simple English, in short plain sentences, as if you are speaking to me. No headings, no bullet points, no bold.)',
-          force: false, targetId: msg.target
+          force: false, targetId: msg.target, noTranscript: !videoId // no video open: just the question
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Question: ' + result);

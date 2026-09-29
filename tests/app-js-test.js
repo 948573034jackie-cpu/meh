@@ -199,6 +199,15 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await chat.evaluate(() => document.getElementById('stopper').remove());
   const st2 = await chat.evaluate(() => window.__ytcReplyState());
   ok('reply reader: finished when the stop button is gone', st2.busy === false, JSON.stringify(st2));
+
+  // 10) a question with no video open: only the question is sent (no transcript, no link)
+  await yt.goto('http://localhost:8767/'); await injectYT();
+  await yt.waitForTimeout(500);
+  const n10 = (await sent(chat)).length;
+  const ask10 = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'ask', text: 'How do I say hello politely?', target: 'chatgpt' }));
+  const after10 = await sent(chat);
+  const m10 = after10[after10.length - 1];
+  ok('question without a video: sent, question only', /^Sent to ChatGPT/.test((ask10 && ask10.result) || '') && after10.length === n10 + 1 && m10 && /polite/.test(m10.text) && !/TRANSCRIPT|Link:|transcript/.test(m10.text) && m10.files === 0, ask10 && ask10.result);
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();

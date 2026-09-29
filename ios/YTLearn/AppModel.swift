@@ -310,9 +310,18 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
                         }
                     }
                     if done {
-                        self.show("Reading the answer…")
-                        self.voice.speak(lastText)
+                        // read it aloud only while the video is stopped (not over the video's own sound)
+                        self.youtube.callAsyncJavaScript("const v = document.querySelector('video'); return !v || v.paused;", arguments: [:], in: nil, in: AppModel.world) { r in
+                            DispatchQueue.main.async {
+                                guard token == self.answerToken else { return }
+                                var stopped = true
+                                if case .success(let v) = r, let b = v as? Bool { stopped = b }
+                                if stopped { self.show("Reading the answer…"); self.voice.speak(lastText) }
+                                else { self.show("The answer is ready. Tap AI to read it.") }
+                            }
+                        }
                     } else {
+                        if round == 30 && lastText.isEmpty { self.show("I cannot read the answer from this page. Tap AI to read it there.") }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { poll(round + 1) }
                     }
                 }
