@@ -139,15 +139,17 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude' };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
     if ('replayOn' in s) settings.replayOn = s.replayOn !== false;
     if ('textLevel' in s) settings.textLevel = Math.min(10, Math.max(1, Number(s.textLevel) || 6)); // 1..10, in steps of 0.25
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
+    if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
+    if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
@@ -326,9 +328,68 @@
     const id = location.pathname === '/watch' ? videoId() : null;
     if (id && id !== preloadedFor) {
       preloadedFor = id;
-      setTimeout(() => { if (videoId() === id) loadTranscript(); }, 1500);
+      subState = 'loading…';
+      setTimeout(() => {
+        if (videoId() !== id) return;
+        loadTranscript().then((d) => { if (videoId() === id) subState = describeSubs(d); }).catch((e) => { subState = 'error: ' + e.message; });
+      }, 1500);
     }
   }, 1000);
+
+  // ---- status label + "touch the video" layer (used by the iPhone / iPad app) ----
+  let subState = 'no video yet';
+  let lastSend = '';
+  let tapLayer = null;
+  let badge = null;
+
+  function describeSubs(d) {
+    if (d.sentences.length) return d.sentences.length + ' sentences';
+    const why = (d.errors.join(' ').match(/playability ([A-Z_]+)(?: \(([^)]*)\))?/) || []);
+    return 'none' + (why[1] && why[1] !== 'OK' ? ' (' + (why[2] || why[1]) + ')' : '');
+  }
+
+  function onTap(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!video) return;
+    if (pending) { continueFromStart(); return; } // touching a paused video = "let's go"
+    if (video.paused) { video.play().catch(() => {}); return; }
+    video.pause();                                // touching a playing video = pause -> show + send the sentences
+  }
+
+  function updateTapLayer() {
+    const r = video ? video.getBoundingClientRect() : null;
+    const ok = !!r && r.width > 80 && r.height > 60 && location.pathname === '/watch';
+    // the touch area: the middle of the picture (the buttons on the edges keep working)
+    if (settings.tapOn && ok) {
+      if (!tapLayer) {
+        tapLayer = document.createElement('div');
+        tapLayer.id = 'yt2c-tap';
+        tapLayer.style.cssText = 'position:fixed;z-index:2147483000;background:transparent;-webkit-tap-highlight-color:transparent;touch-action:manipulation';
+        tapLayer.addEventListener('click', onTap, true);
+        document.documentElement.appendChild(tapLayer);
+      }
+      tapLayer.style.left = Math.round(r.left + r.width * 0.12) + 'px';
+      tapLayer.style.top = Math.round(r.top + r.height * 0.14) + 'px';
+      tapLayer.style.width = Math.round(r.width * 0.76) + 'px';
+      tapLayer.style.height = Math.round(r.height * 0.62) + 'px';
+    } else if (tapLayer) { tapLayer.remove(); tapLayer = null; }
+
+    if (settings.badgeOn) {
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.id = 'yt2c-badge';
+        badge.style.cssText = 'position:fixed;z-index:2147483001;pointer-events:none;font:11px/1.3 system-ui,Arial,sans-serif;' +
+          'color:#fff;background:rgba(0,0,0,.6);padding:2px 6px;border-radius:0 0 6px 0;max-width:90vw';
+        document.documentElement.appendChild(badge);
+      }
+      badge.style.left = (r && r.width > 80 ? Math.round(r.left) : 0) + 'px';
+      badge.style.top = (r && r.height > 60 ? Math.round(r.top) : 0) + 'px';
+      badge.textContent = 'YT Learn · ' + (video ? 'video ✓' : 'no video') + ' · subtitles: ' + subState + (lastSend ? ' · ' + lastSend : '');
+    } else if (badge) { badge.remove(); badge = null; }
+  }
+  setInterval(updateTapLayer, 300);
+  window.addEventListener('scroll', updateTapLayer, true);
 
   function onPlay() {
     if (replaying) return;
@@ -464,15 +525,16 @@
       showOverlay({ seg });
       deferredSend = null;
       const sendNow = () => {
-        
+        lastSend = 'sending…';
         try {
           chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
+              lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');
               setFoot('Not sent to ' + targetName() + ': ' + ((r && r.result) || 'no answer'), ok);
             })
-            .catch(() => setFoot('Not sent: refresh this YouTube page (Cmd+R)', false));
-        } catch (e) { setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
+            .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); });
+        } catch (e) { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
       };
       if (settings.replayOn) {
         deferredSend = sendNow;

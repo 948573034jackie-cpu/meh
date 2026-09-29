@@ -30,11 +30,11 @@ Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pi
 * The first time you say “let's go”, iOS asks for the **microphone** and **speech recognition**. Allow both. (Space/▶/tap always work too.)
 
 ## Buttons (top bar)
-Claude | ChatGPT switch · **Send video** (link + full transcript) · 🏠 YouTube home · 🔗 open a YouTube link you copied · ▭ change the layout (video big / medium / small) · ⚙ settings (text size 1–10, replay, voice, transcript).
+Claude | ChatGPT switch · **Send video** (link + full transcript) · 🏠 YouTube home · 🔗 open a YouTube link you copied · AI button = make the AI window small / half / big · ⚙ settings (text size 1–10, replay, voice, transcript).
 
 ## Limits (honest)
 * Needs an Apple ID for signing (see above). The app is not on the App Store.
 * Works with videos that have captions or YouTube's *Show transcript*.
 * If Claude/ChatGPT change their web pages, the sending step may need an update.
 * Use a normal text chat, not voice mode, in Claude/ChatGPT.
-* iPhone: put the video in *landscape* or use the layout button (▭) for a bigger video.
+* The AI window starts as a small strip so the video is big. Tap the **AI** button to open it when you want to read the answer.

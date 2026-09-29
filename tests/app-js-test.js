@@ -44,7 +44,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const ctx = await browser.newContext();
   const yt = await ctx.newPage(), chat = await ctx.newPage();
   for (const [n, p] of [['yt', yt], ['chat', chat]]) { p.on('pageerror', (e) => console.log('PAGE ERROR (' + n + '):', String(e.message || e).slice(0, 300), '|', String(e.stack || '').split('\n').slice(0, 3).join(' <- '))); }
-  const store = { target: 'chatgpt', pauseOn: true, replayOn: true, sendTranscript: true, voiceOn: true, textLevel: 6 };
+  const store = { target: 'chatgpt', pauseOn: true, replayOn: true, sendTranscript: true, voiceOn: true, textLevel: 6, tapOn: true, badgeOn: true };
   const nativeLog = [];
   const native = async (m) => {
     nativeLog.push(m.kind + (m.op ? ':' + m.op : ''));
@@ -156,6 +156,33 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const odd = await yt.evaluate(() => { const o = document.getElementById('yt2c-overlay'); const v = document.querySelector('video'); if (!o) return null; const a = o.getBoundingClientRect(), b = v.getBoundingClientRect(); return { pos: getComputedStyle(o).position, overlay: [Math.round(a.left), Math.round(a.top), Math.round(a.width), Math.round(a.height)], video: [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)], font: getComputedStyle(document.getElementById('yt2c-body')).fontSize }; });
   ok('zero-size player box: subtitles use a fixed overlay exactly over the video', odd && odd.pos === 'fixed' && JSON.stringify(odd.overlay) === JSON.stringify(odd.video), JSON.stringify(odd));
   ok('...and the text is a sane size there', odd && parseFloat(odd.font) >= 14 && parseFloat(odd.font) <= 120, odd && odd.font);
+
+  // 8) touching the video (iPhone / iPad app): pause + send, touch again = "let's go"; the status label tells what happens
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: true, target: 'chatgpt' }));
+  await yt.waitForTimeout(3500);
+  const badge1 = await yt.evaluate(() => { const b = document.getElementById('yt2c-badge'); return b && b.textContent; });
+  ok('status label shows video found + subtitles read', !!badge1 && /video ✓/.test(badge1) && /subtitles: \d+ sentences/.test(badge1), badge1);
+  const rect = await yt.evaluate(() => { const r = document.querySelector('video').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+  const hit = (fx, fy) => yt.evaluate(([x, y]) => { const e = document.elementFromPoint(x, y); return e ? e.id || e.tagName : null; }, [rect.x + rect.w * fx, rect.y + rect.h * fy]);
+  ok('middle of the picture is the touch area', (await hit(0.5, 0.45)) === 'yt2c-tap', await hit(0.5, 0.45));
+  ok('bottom bar of the player is NOT covered', (await hit(0.5, 0.95)) !== 'yt2c-tap', await hit(0.5, 0.95));
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.waitForTimeout(400);
+  const before = (await sent(chat)).length;
+  await yt.mouse.click(rect.x + rect.w * 0.5, rect.y + rect.h * 0.45);
+  await yt.waitForTimeout(900);
+  ok('touch on a playing video pauses it and shows the sentences', /Hello everyone/.test(((await ov()) || {}).text || ''), JSON.stringify(await ov()));
+  await yt.waitForTimeout(9500);
+  ok('...and the sentences were sent (exactly one new message)', (await sent(chat)).length === before + 1, (await sent(chat)).length + ' vs ' + before);
+  const badge2 = await yt.evaluate(() => document.getElementById('yt2c-badge').textContent);
+  ok('status label says sent', /sent to ChatGPT ✓/.test(badge2), badge2);
+  ok('replay stopped by itself', (await vid()).paused, JSON.stringify(await vid()));
+  await yt.mouse.click(rect.x + rect.w * 0.5, rect.y + rect.h * 0.45);
+  await yt.waitForTimeout(900);
+  const v8 = await vid();
+  ok('touch on the stopped video = "let\'s go" (start of the part, playing)', !v8.paused && v8.t < 4, JSON.stringify(v8));
+  ok('overlay gone after "let\'s go"', (await ov()) === null);
   console.log('native calls seen:', [...new Set(nativeLog)].join(', '));
   console.log('storage persisted to native:', JSON.stringify(store));
   await browser.close(); s1.close(); s2.close(); s3.close();

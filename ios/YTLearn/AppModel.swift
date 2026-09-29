@@ -10,6 +10,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var sendTranscript: Bool { didSet { changed("sendTranscript", sendTranscript) } }
     @Published var voiceOn: Bool { didSet { changed("voiceOn", voiceOn) } }
     @Published var textLevel: Double { didSet { changed("textLevel", textLevel) } }
+    @Published var tapOn: Bool { didSet { changed("tapOn", tapOn) } }
+    @Published var badgeOn: Bool { didSet { changed("badgeOn", badgeOn) } }
 
     @Published var layoutIndex = 0
     @Published var toast: String?
@@ -25,15 +27,17 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     private var selfTestReport: [String: Any] = [:]
     private let defaults = UserDefaults.standard
 
-    /// Size of the video pane (height on iPhone, width on iPad) for the layout the layout button is on:
-    /// 1) normal: a 16:9 video that fits the width, 2) video big, 3) video small (chat big).
-    func videoLength(in size: CGSize) -> CGFloat {
-        let narrow = size.width <= 700
+    /// The AI (chat) window sits under the video. It starts as a small strip; the button cycles
+    /// small strip -> half -> big. The video gets the rest of the height.
+    func chatLength(in size: CGSize) -> CGFloat {
         switch layoutIndex % 3 {
-        case 0: return narrow ? min(size.width * 9 / 16, size.height * 0.6) : size.width * 0.58
-        case 1: return narrow ? size.height * 0.72 : size.width * 0.78
-        default: return narrow ? size.height * 0.24 : size.width * 0.3
+        case 0: return 130
+        case 1: return size.height * 0.45
+        default: return size.height * 0.75
         }
+    }
+    func videoLength(in size: CGSize) -> CGFloat {
+        max(120, size.height - chatLength(in: size) - 1)
     }
 
     override init() {
@@ -44,6 +48,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let sendTranscript = d.object(forKey: "sendTranscript") as? Bool ?? true
         let voiceOn = d.object(forKey: "voiceOn") as? Bool ?? true
         let textLevel = d.object(forKey: "textLevel") as? Double ?? 6.0
+        let tapOn = d.object(forKey: "tapOn") as? Bool ?? true
+        let badgeOn = d.object(forKey: "badgeOn") as? Bool ?? true
 
         self.target = target
         self.pauseOn = pauseOn
@@ -51,12 +57,15 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         self.sendTranscript = sendTranscript
         self.voiceOn = voiceOn
         self.textLevel = textLevel
+        self.tapOn = tapOn
+        self.badgeOn = badgeOn
 
         let bridge = Bridge()
         self.bridge = bridge
         let storage: [String: Any] = [
             "target": target, "pauseOn": pauseOn, "replayOn": replayOn,
-            "sendTranscript": sendTranscript, "voiceOn": voiceOn, "textLevel": textLevel
+            "sendTranscript": sendTranscript, "voiceOn": voiceOn, "textLevel": textLevel,
+            "tapOn": tapOn, "badgeOn": badgeOn
         ]
         self.youtube = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: true, storage: storage))
         self.chat = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: false, storage: storage))
@@ -125,6 +134,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
               out.videoState = { t: v.currentTime, paused: v.paused };
               const rect = v.getBoundingClientRect();
               out.videoRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)];
+              const bd = document.getElementById('yt2c-badge');
+              out.badge = bd ? bd.textContent : null;
+              const hitEl = document.elementFromPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.45);
+              out.tapLayerHit = hitEl ? (hitEl.id || hitEl.tagName) : null;
               const chain = [];
               for (let n = v.parentElement, i = 0; n && i < 5; n = n.parentElement, i++) chain.push(n.tagName.toLowerCase() + (n.id ? '#' + n.id : '') + (n.className && n.className.baseVal === undefined ? '.' + String(n.className).split(' ')[0] : '') + ' ' + n.clientWidth + 'x' + n.clientHeight);
               out.videoAncestors = chain;
@@ -182,8 +195,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func goHome() {
-        let host = UIDevice.current.userInterfaceIdiom == .pad ? "www.youtube.com" : "m.youtube.com"
-        if let url = URL(string: "https://\(host)/") { youtube.load(URLRequest(url: url)) }
+        if let url = URL(string: "https://m.youtube.com/") { youtube.load(URLRequest(url: url)) }
     }
 
     func openChat() {
