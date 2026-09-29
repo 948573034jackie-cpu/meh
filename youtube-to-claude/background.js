@@ -44,7 +44,7 @@ function buildMessage(info, hasFile, askReady) {
   lines.push('Link: ' + info.url);
   lines.push('');
   if (hasFile) {
-    lines.push('The full transcript is attached (source: ' + info.source + '). Read it silently and keep it as background context. Do not summarize it.');
+    lines.push('The full transcript is attached (source: ' + info.source + '). Read it silently and keep it as background context. Do not summarize the whole video.');
   } else {
     lines.push('(I could not get a transcript automatically, so please use the title and link as context.)');
   }
@@ -90,13 +90,12 @@ function markSent(claudeTabId, videoId, oldPath) {
   })().catch(() => {});
 }
 
-function passageText(title, seg) {
+// Just the text that was on screen, then one plain instruction (no headings, no extra words).
+function passageText(lines) {
   return [
-    '📚 I paused "' + title + '" at ' + fmt(seg.pausedAt) + '. This is the passage I just heard (' + fmt(seg.start) + ' – ' + fmt(seg.end) + '):',
+    lines.join('\n'),
     '',
-    seg.items.map((s) => s.text).join('\n'),
-    '',
-    'Please repeat this passage once, word for word, and then stop. Do not explain, translate, comment on, or answer anything unless I ask you next.'
+    'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then repeat the sentences above once more, exactly as written. Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words.'
   ].join('\n');
 }
 
@@ -186,7 +185,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.title, msg.seg), force: false
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text)), force: false
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

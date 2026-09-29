@@ -27,13 +27,13 @@
 <button id="go">Send this video to Claude</button>
 <div class="hint">Sends the video link + full transcript. Pauses go to the same chat.</div>
 <hr>
-<label class="opt"><input type="checkbox" id="pauseOn" checked> When I pause: show the last ~25 s big and send them to the chat</label>
+<label class="opt"><input type="checkbox" id="pauseOn" checked> When I pause: show the last ~25 s big and send the text to the chat</label>
 <label class="opt"><input type="checkbox" id="sendTranscript" checked> First time for a video: also send the link + full transcript</label>
 <label class="opt"><input type="checkbox" id="replayOn" checked> Play those sentences again once (normal speed), and send to the chat when it ends</label>
 <label class="opt"><input type="checkbox" id="voiceOn" checked> Say “bye bye” (or press Enter) to play again from the start of that part</label>
 <label class="opt">Text size on the video: <b id="sizeVal"></b>
-  <input type="range" id="textLevel" min="1" max="14" step="1" style="width:100%">
-  <span class="hint" style="display:flex;justify-content:space-between"><span>smaller</span><span>bigger</span></span>
+  <input type="range" id="textLevel" min="1" max="10" step="0.25" style="width:100%">
+  <span class="hint" style="display:flex;justify-content:space-between"><span>1 smaller</span><span>bigger 10</span></span>
 </label>
 <div id="msg"></div>
 <script src="popup.js"></script>

@@ -39,7 +39,7 @@ for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn']) {
 }
 const slider = document.getElementById('textLevel');
 const sizeVal = document.getElementById('sizeVal');
-const LABELS = { 1: 'smallest', 6: 'medium', 14: 'biggest' };
-function showSize(v) { sizeVal.textContent = v + (LABELS[v] ? ' (' + LABELS[v] + ')' : ''); }
-chrome.storage.local.get('textLevel').then((s) => { slider.value = s.textLevel || 6; showSize(Number(slider.value)); });
+const LABELS = { 1: 'smallest', 6: 'medium', 10: 'biggest' };
+function showSize(v) { sizeVal.textContent = (Number.isInteger(v) ? v : v.toFixed(2).replace(/0$/, '')) + (LABELS[v] ? ' (' + LABELS[v] + ')' : ''); }
+chrome.storage.local.get('textLevel').then((s) => { slider.value = Math.min(10, s.textLevel || 6); showSize(Number(slider.value)); });
 slider.addEventListener('input', () => { showSize(Number(slider.value)); chrome.storage.local.set({ textLevel: Number(slider.value) }); });

@@ -188,7 +188,27 @@
     return { start: items[0].start, end: items[items.length - 1].end, pausedAt: t, items };
   }
 
-  const api = { fmtTime, parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment };
+
+  // Lines to show / send: every full sentence on its own line, but tiny phrases ("Yeah.", "It is fun!")
+  // stay with the sentence next to them instead of getting a line of their own.
+  function groupSentences(items, minWords) {
+    minWords = minWords || 5;
+    const words = (s) => s.text.split(/\s+/).filter(Boolean).length;
+    const groups = [];
+    let carry = null; // tiny sentences at the very start wait for the next sentence
+    items.forEach((s, i) => {
+      if (words(s) < minWords) {
+        if (groups.length) groups[groups.length - 1].idx.push(i);
+        else carry = (carry || []).concat(i);
+      } else if (carry) { groups.push({ idx: carry.concat(i) }); carry = null; }
+      else groups.push({ idx: [i] });
+    });
+    if (carry) groups.push({ idx: carry });
+    groups.forEach((g) => { g.text = g.idx.map((i) => items[i].text).join(' '); });
+    return groups;
+  }
+
+  const api = { fmtTime, parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YTC = api;
 })(typeof window !== 'undefined' ? window : globalThis);

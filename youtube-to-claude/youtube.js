@@ -2,7 +2,7 @@
 
 if (!window.__ytToClaudeLoaded) {
   window.__ytToClaudeLoaded = true;
-  const { parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, fmtTime } = window.YTC;
+  const { parseJson3, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences, fmtTime } = window.YTC;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -110,7 +110,7 @@ if (!window.__ytToClaudeLoaded) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
     if ('replayOn' in s) settings.replayOn = s.replayOn !== false;
-    if ('textLevel' in s) settings.textLevel = Math.min(14, Math.max(1, Number(s.textLevel) || 6));
+    if ('textLevel' in s) settings.textLevel = Math.min(10, Math.max(1, Number(s.textLevel) || 6)); // 1..10, in steps of 0.25
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
   }
   chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target']).then(readSettings);
@@ -124,8 +124,8 @@ if (!window.__ytToClaudeLoaded) {
 
   // ---- the sentences, shown as ONE tight paragraph over the video ----
   const OVERLAY_ID = 'yt2c-overlay';
-  // Text size: level 1..14 in small steps. Font size = share of the player height.
-  // level 6 = medium (6.75 %), level 10 = 8.95 %, level 14 = 11.2 %.
+  // Text size: level 1..10 in small steps (10 = the biggest). Font size = share of the player height.
+  // level 6 = medium (6.75 %), level 10 = 8.95 %.
   const levelShare = (lv) => 0.04 + (lv - 1) * 0.0055;
   let lastShown = null;
 
@@ -186,14 +186,19 @@ if (!window.__ytToClaudeLoaded) {
     };
     el.appendChild(mk('yt2c-head', 'font-size:17px;color:#cfcfcf;margin-bottom:1.2%;flex:none;text-align:center', note));
     const wrap = mk('yt2c-wrap', 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column');
-    const body = mk('yt2c-body', 'margin:auto 0;line-height:1.3;font-weight:600;text-align:left;text-shadow:0 2px 6px #000');
+    const body = mk('yt2c-body', 'margin:auto 0;line-height:1.35;font-weight:600;text-align:left;text-shadow:0 2px 6px #000');
     if (seg) {
-      // sentences run on inside one paragraph, so short ones share a line
-      seg.items.forEach((s, i) => {
-        const sp = document.createElement('span');
-        sp.dataset.i = String(i);
-        sp.textContent = s.text + ' ';
-        body.appendChild(sp);
+      // every full sentence gets its own block; tiny phrases stay with a neighbouring sentence
+      groupSentences(seg.items).forEach((g) => {
+        const block = document.createElement('div');
+        block.style.cssText = 'margin:0 0 .8em';
+        g.idx.forEach((i) => {
+          const sp = document.createElement('span');
+          sp.dataset.i = String(i);
+          sp.textContent = seg.items[i].text + ' ';
+          block.appendChild(sp);
+        });
+        body.appendChild(block);
       });
     }
     wrap.appendChild(body);
@@ -202,7 +207,7 @@ if (!window.__ytToClaudeLoaded) {
     el.appendChild(mk('yt2c-hint', 'font-size:15px;color:#9ad1ff;margin-top:.5%;flex:none;min-height:18px;text-align:center'));
     host.appendChild(el);
     if (seg) {
-      body.style.fontSize = Math.max(16, Math.round(el.clientHeight * levelShare(settings.textLevel))) + 'px';
+      body.style.fontSize = Math.max(16, el.clientHeight * levelShare(settings.textLevel)).toFixed(2) + 'px'; // no rounding: every step changes the size
       setActive(activeIndex === undefined ? seg.items.length - 1 : activeIndex);
     }
   }
@@ -392,7 +397,7 @@ if (!window.__ytToClaudeLoaded) {
       const sendNow = () => {
         setFoot('Sending to ' + targetName() + '…', true);
         try {
-          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg })
+          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
               setFoot(ok ? '✓ ' + r.result.split(':')[0] : '✗ Not sent: ' + ((r && r.result) || 'no answer'), ok);
