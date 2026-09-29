@@ -211,8 +211,9 @@
     }, 3000);
     if (!btn) throw new Error('no "Show transcript" button on this page');
     btn.click();
-    const SEG = 'ytd-transcript-segment-renderer';
-    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 6000);
+    // YouTube has two page designs for the panel lines; read both
+    const SEG = 'ytd-transcript-segment-renderer, transcript-segment-view-model';
+    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 8000);
     if (!first) throw new Error('transcript panel did not load');
     // A long video fills the panel piece by piece: wait until it stops growing.
     let count = document.querySelectorAll(SEG).length, lastChange = Date.now();
@@ -224,11 +225,19 @@
     }
     const cues = [];
     document.querySelectorAll(SEG).forEach((seg) => {
-      const tsEl = seg.querySelector('.segment-timestamp');
-      const el = seg.querySelector('.segment-text');
+      const tsEl = seg.querySelector('.segment-timestamp, [class*="Timestamp"]');
+      const el = seg.querySelector('.segment-text, [class*="AttributedString"]');
       // innerText: hidden copies are left out; only the "1:05" clock counts, not "1 minute, 5 seconds"
-      const start = parseClock(String((tsEl && (tsEl.innerText || tsEl.textContent)) || ''));
-      const text = String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+      let start = parseClock(String((tsEl && (tsEl.innerText || tsEl.textContent)) || ''));
+      let text = String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+      if (start === null || !text) { // unknown design: the line is "clock, then the words"
+        const lines = String(seg.innerText || seg.textContent || '').split('\n').map((x) => x.trim()).filter(Boolean);
+        const i = lines.findIndex((x) => /^\d+:\d{2}/.test(x));
+        if (i >= 0) {
+          start = parseClock(lines[i]);
+          text = lines.filter((x, k) => k !== i && !/^\d+ (hours?|minutes?|seconds?)/i.test(x)).join(' ').replace(/\s+/g, ' ').trim();
+        }
+      }
       if (text && start !== null) cues.push({ start, text });
     });
     if (!cues.length) throw new Error('transcript panel was empty');

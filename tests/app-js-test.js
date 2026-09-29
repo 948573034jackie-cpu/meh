@@ -49,6 +49,8 @@ const s1 = serve(8767, (q, r) => {
   if (q.url.startsWith('/api/timedtext')) { r.setHeader('content-type', 'application/json'); return r.end(/pot=XYZ/.test(q.url) ? json3 : ''); }
   if (q.url.startsWith('/apitest')) { r.setHeader('content-type', 'text/html'); return r.end(apiPage); }
   if (q.url.startsWith('/player')) { r.setHeader('content-type', 'text/html'); return r.end(playerPage); }
+  if (q.url.startsWith('/newpanel')) { r.setHeader('content-type', 'text/html'); return r.end(`<!doctype html><title>New Panel - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px"><video muted src="/v.wav" class="html5-main-video"></video></div><script>var ytInitialPlayerResponse = ${prFor(300, false)};</script><button id="st">Show transcript</button><div id="panel"></div>
+<script>document.getElementById('st').onclick=()=>{ for(let i=0;i<20;i++){ const sec=i*14, m=Math.floor(sec/60), ss=sec%60; document.getElementById('panel').insertAdjacentHTML('beforeend','<transcript-segment-view-model><div class="ytwTranscriptSegmentViewModelTimestamp">'+m+':'+String(ss).padStart(2,'0')+'</div><span class="ytwTranscriptSegmentViewModelTimestampA11yLabel" style="display:none">'+m+' minutes, '+ss+' seconds</span><span class="ytAttributedStringHost">New design sentence '+(i+1)+' of the lesson.</span></transcript-segment-view-model>'); } };</script>`); }
   if (q.url.startsWith('/panelok')) { r.setHeader('content-type', 'text/html'); return r.end(panelPage(600, 585)); }
   if (q.url.startsWith('/stale')) { r.setHeader('content-type', 'text/html'); return r.end(panelPage(60, 1800)); }
   if (q.url.startsWith('/v.wav')) { const rg = q.headers.range; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; r.writeHead(206, {'content-type':'audio/wav','accept-ranges':'bytes','content-range':`bytes ${a}-${e}/${wav.length}`,'content-length':e-a+1}); return r.end(wav.slice(a, e+1)); } r.writeHead(200, {'content-type':'audio/wav','accept-ranges':'bytes','content-length':wav.length}); return r.end(wav); }
@@ -294,6 +296,8 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const viaPanel = await loadOn('http://localhost:8767/panelok?v=abc12345678');
   ok('panel filled in 3 pieces: ALL 40 lines are read (waits until it stops growing)', /transcript panel \(40 lines\)/.test(viaPanel.source || ''), JSON.stringify(viaPanel).slice(0, 260));
   ok('panel: times read from the clock only (not "9 minutes, 45 seconds")', Math.round(viaPanel.lastStart) === 546, 'last start ' + viaPanel.lastStart);
+  const viaNew = await loadOn('http://localhost:8767/newpanel?v=abc12345678');
+  ok('newer YouTube panel design is read too (20 lines, right times, no doubled/hidden text)', /transcript panel \(20 lines\)/.test(viaNew.source || '') && Math.round(viaNew.lastStart) === 266 && /New design sentence 1 of the lesson/.test(viaNew.first || ''), JSON.stringify(viaNew).slice(0, 260));
   const viaStale = await loadOn('http://localhost:8767/stale?v=abc12345678');
   ok('wrong-video panel (times run to 30 min in a 1-min video) is refused, not used', viaStale.lines === 0 && /run past the end of the video/.test(viaStale.errors.join(' ')), JSON.stringify(viaStale).slice(0, 300));
   const viaPlayer = await loadOn('http://localhost:8767/player?v=abc12345678');

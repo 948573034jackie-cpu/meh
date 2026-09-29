@@ -73,3 +73,5 @@ document.getElementById('subfile').addEventListener('change', async (e) => {
     out.textContent = 'Loaded ' + cues.length + ' lines' + (r ? ' (' + (r.lines || 0) + ' used). Pause the video now.' : '. Reload the YouTube page, then pause.');
   } catch (err) { out.textContent = 'Could not load: ' + err.message; }
 });
+
+document.getElementById('ver').textContent = 'version ' + chrome.runtime.getManifest().version;
