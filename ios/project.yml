@@ -1,6 +1,7 @@
 name: YTLearn
 options:
   bundleIdPrefix: local.ytlearn
+  xcodeVersion: "14.3"   # keeps the project file readable by Xcode 14 and 15
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
