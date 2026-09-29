@@ -5,11 +5,11 @@ on:
 permissions:
   contents: write
 jobs:
-  build:
+  mac-app:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - name: Compile for macOS 12+ (Intel + Apple Silicon)
+      - name: Compile ClaudeSnap for macOS 12+ (Intel + Apple Silicon)
         working-directory: ClaudeSnap
         run: |
           swiftc -O -target x86_64-apple-macos12.0 main.swift -o snap-x86_64
@@ -20,15 +20,76 @@ jobs:
           cp Info.plist ClaudeSnap.app/Contents/Info.plist
           codesign --force --deep --sign - ClaudeSnap.app
           ditto -c -k --keepParent ClaudeSnap.app ClaudeSnap.zip
-      - name: Publish download
-        if: github.ref_name == 'claude/new-session-pxh22u'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: ClaudeSnap/ClaudeSnap.zip
+
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: |
+          ./sync-scripts.sh
+          xcodegen generate
+          xcodebuild -version
+      - name: Compile for iPhone/iPad Simulator (checks the code)
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -project YTLearn.xcodeproj -scheme YTLearn -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build-sim.log | tail -40
+      - name: Check the JavaScript files are inside the app
+        working-directory: ios
+        run: |
+          APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
+          ls "$APP" | head -30
+          for f in shim-common shim-youtube shim-chat lib background youtube chat; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
+      - name: Build the iPhone/iPad app (not signed) and pack it as an .ipa
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -project YTLearn.xcodeproj -scheme YTLearn -sdk iphoneos \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -20
+          mkdir -p Payload
+          cp -R build-dev/Build/Products/Release-iphoneos/YTLearn.app Payload/
+          zip -qr YTLearn-unsigned.ipa Payload
+          ls -la YTLearn-unsigned.ipa
+          rm -rf Payload build-sim build-dev *.log
+          cd .. && zip -qr ios/YTLearn-Xcode-project.zip ios -x "ios/*.ipa" -x "ios/*.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: |
+            ios/YTLearn-unsigned.ipa
+            ios/YTLearn-Xcode-project.zip
+
+  release:
+    needs: [mac-app, ios]
+    if: github.ref_name == 'claude/new-session-pxh22u'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Publish downloads
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete claudesnap-latest --yes --cleanup-tag || true
           (cd chrome-extension && zip -qr ../ClaudeSnap-Chrome.zip .)
           (cd youtube-to-claude && zip -qr ../YouTube-to-Claude.zip .)
-          gh release create claudesnap-latest ClaudeSnap/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
-            --title "ClaudeSnap (ready-to-use app)" \
-            --notes "Download ClaudeSnap.zip, unzip, drag ClaudeSnap into Applications." \
+          gh release delete claudesnap-latest --yes --cleanup-tag || true
+          gh release create claudesnap-latest \
+            dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
+            dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
+            --title "ClaudeSnap downloads" \
+            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (YT Learn)." \
             --target "${{ github.sha }}"

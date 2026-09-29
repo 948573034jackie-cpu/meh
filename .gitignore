@@ -1,0 +1,4 @@
+ios/build*/
+ios/*.xcodeproj/
+ios/*.ipa
+ios/*.zip
