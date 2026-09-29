@@ -184,14 +184,14 @@ if (!window.__ytToClaudeLoaded) {
       d.id = id; d.style.cssText = css; d.textContent = text || '';
       return d;
     };
-    el.appendChild(mk('yt2c-head', 'font-size:17px;color:#cfcfcf;margin-bottom:1.2%;flex:none;text-align:center', note));
+    el.appendChild(mk('yt2c-head', 'font-size:20px;color:#cfcfcf;flex:none;text-align:center', note));
     const wrap = mk('yt2c-wrap', 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column');
     const body = mk('yt2c-body', 'margin:auto 0;line-height:1.35;font-weight:600;text-align:left;text-shadow:0 2px 6px #000');
     if (seg) {
       // every full sentence gets its own block; tiny phrases stay with a neighbouring sentence
       groupSentences(seg.items).forEach((g) => {
         const block = document.createElement('div');
-        block.style.cssText = 'margin:0 0 .8em';
+        block.style.cssText = 'margin:0 0 .45em';
         g.idx.forEach((i) => {
           const sp = document.createElement('span');
           sp.dataset.i = String(i);
@@ -203,8 +203,8 @@ if (!window.__ytToClaudeLoaded) {
     }
     wrap.appendChild(body);
     el.appendChild(wrap);
-    el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#cfcfcf;margin-top:1.2%;flex:none;min-height:18px;text-align:center'));
-    el.appendChild(mk('yt2c-hint', 'font-size:15px;color:#9ad1ff;margin-top:.5%;flex:none;min-height:18px;text-align:center'));
+    el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#ff8a80;margin-top:1%;flex:none;text-align:center'));  // only shows if something goes wrong
+    el.appendChild(mk('yt2c-hint', 'display:none'));
     host.appendChild(el);
     if (seg) {
       body.style.fontSize = Math.max(16, el.clientHeight * levelShare(settings.textLevel)).toFixed(2) + 'px'; // no rounding: every step changes the size
@@ -212,21 +212,19 @@ if (!window.__ytToClaudeLoaded) {
     }
   }
 
+  // Only problems are written on the video; success shows nothing (you only want to see the subtitles).
   function setFoot(text, ok) {
     const f = document.getElementById('yt2c-foot');
-    if (!f) return;
-    f.textContent = text;
-    f.style.color = ok ? '#7CFC9A' : '#ff8a80';
+    if (f) f.textContent = ok ? '' : text;
   }
   function setHint(text) {
-    const h = document.getElementById('yt2c-hint');
-    if (h) h.textContent = text;
+    if (text && /blocked/i.test(text)) setFoot(text, false);
   }
 
-  // ---- pause → show the sentences + send them; "bye bye" / Enter → continue from the start of that part ----
+  // ---- pause → show the sentences + send them; "let's go" / Space / play → back to the start of that part, then keep playing ----
   let video = null;
   let handling = false;
-  let pending = null;     // the passage waiting for "bye bye" / Enter
+  let pending = null;     // the passage waiting for "let's go" / Space / Enter
   let replaying = null;   // { seg, timer } while the passage is being played again
   let ourPause = false;   // true while WE pause the video, so it does not count as "you paused"
   let deferredSend = null; // the message to Claude/ChatGPT, sent when the replay has stopped
@@ -256,9 +254,20 @@ if (!window.__ytToClaudeLoaded) {
   setInterval(bind, 1000);
   bind();
 
+  // Fetch the subtitles as soon as a video page is open, so the first pause is instant.
+  let preloadedFor = null;
+  setInterval(() => {
+    const id = location.pathname === '/watch' ? videoId() : null;
+    if (id && id !== preloadedFor) {
+      preloadedFor = id;
+      setTimeout(() => { if (videoId() === id) loadTranscript(); }, 1500);
+    }
+  }, 1000);
+
   function onPlay() {
     if (replaying) return;
-    endWaiting();          // you pressed play yourself: normal YouTube behaviour, we step aside
+    if (pending) { continueFromStart(); return; } // Space, the play arrow or a click on the video = "let's go"
+    endWaiting();
     hideOverlay();
   }
 
@@ -279,15 +288,12 @@ if (!window.__ytToClaudeLoaded) {
     }, 250);
   }
 
-  // ---- waiting for "bye bye" ----
+  // ---- waiting for "let's go" ----
   let rec = null;
   let recWanted = false;
 
   function beginWaiting(seg) {
     pending = seg;
-    setHint(settings.voiceOn
-      ? 'Say “bye bye” or press Enter → play again from the start of this part'
-      : 'Press Enter → play again from the start of this part');
     if (settings.voiceOn) startListening();
   }
 
@@ -326,10 +332,10 @@ if (!window.__ytToClaudeLoaded) {
 
   function onHeard(text) {
     if (!pending) return;
-    if (/\bbye[\s-]?bye\b|\bgood[\s-]?bye\b/i.test(text || '')) continueFromStart();
+    if (/\blet'?s\s+go\b|\blet\s+us\s+go\b/i.test(text || '')) continueFromStart();
   }
 
-  // back to the start of the passage, normal speed, keep playing to the end and beyond
+  // back to the start of the passage, then keep playing through the rest of the video
   function continueFromStart() {
     const seg = pending;
     if (!seg || !video) return;
@@ -365,8 +371,6 @@ if (!window.__ytToClaudeLoaded) {
         ourPause = true;
         video.pause();
         setActive(seg.items.length - 1);
-        const h = document.getElementById('yt2c-head');
-        if (h) h.textContent = '⏸ ' + fmtTime(seg.pausedAt) + '  ·  press Space to continue from here';
         beginWaiting(seg);
         runDeferredSend(); // (only if it was not sent already)
       }
@@ -382,33 +386,30 @@ if (!window.__ytToClaudeLoaded) {
       const t = video.currentTime;
       endWaiting();
       deferredSend = null;
-      showOverlay({ note: '⏸ ' + fmtTime(t) + '  ·  loading transcript…' });
+      showOverlay({ note: '…' });
       const d = await loadTranscript();
       if (!video.paused) { hideOverlay(); return; } // you pressed play again meanwhile
       if (!d.sentences.length) {
-        showOverlay({ note: 'No transcript found for this video (' + (d.errors[0] || '') + ')' });
+        showOverlay({ note: 'No subtitles found for this video' });
         return;
       }
       const seg = pickSegment(d.sentences, t);
-      showOverlay({
-        note: '⏸ ' + fmtTime(t) + '  ·  ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end),
-        seg
-      });
+      showOverlay({ seg });
       deferredSend = null;
       const sendNow = () => {
-        setFoot('Sending to ' + targetName() + '…', true);
+        
         try {
           chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
-              setFoot(ok ? '✓ ' + r.result.split(':')[0] : '✗ Not sent: ' + ((r && r.result) || 'no answer'), ok);
+              setFoot('Not sent to ' + targetName() + ': ' + ((r && r.result) || 'no answer'), ok);
             })
-            .catch(() => setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false));
-        } catch (e) { setFoot('✗ Not sent: refresh this YouTube page (Cmd+R)', false); }
+            .catch(() => setFoot('Not sent: refresh this YouTube page (Cmd+R)', false));
+        } catch (e) { setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
       };
       if (settings.replayOn) {
         deferredSend = sendNow;
-        setFoot('Playing this part again… I will send it to ' + targetName() + ' in its last second', true);
+        
         startReplay(seg);
       } else {
         beginWaiting(seg);

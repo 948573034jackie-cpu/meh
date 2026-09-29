@@ -96,14 +96,14 @@ if (!window.__ytChatLoaded) {
     sel.addRange(range);
     document.execCommand('delete');
     document.execCommand('insertText', false, text);
-    await sleep(250);
+    await sleep(120);
     if (boxText(el)) return 'insertText';
     // 2) pretend to paste (rich editors handle this themselves)
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
     el.focus();
     el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    await sleep(250);
+    await sleep(120);
     if (boxText(el)) return 'paste';
     // 3) last resort: set the text and announce it
     el.textContent = text;
@@ -136,19 +136,21 @@ if (!window.__ytChatLoaded) {
     if (msg.type !== 'chat-send') return;
     (async () => {
       const steps = [];
+      const t00 = Date.now();
+      const mark = (s) => steps.push(s + ' (' + ((Date.now() - t00) / 1000).toFixed(1) + 's)');
       try {
         const box = await waitFor(composer, 8000);
         if (!box) return sendResponse({ ok: false, error: 'no message box found on this page (is it in voice mode?)', steps, info: pageInfo() });
 
         let text = msg.text;
         if (msg.file) {
-          if (attachFile(msg.file.name, msg.file.text)) { steps.push('file attached'); await sleep(1200); }
-          else { steps.push('no file input; transcript pasted as text'); text += '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
+          if (attachFile(msg.file.name, msg.file.text)) { mark('file attached'); }
+          else { mark('no file input; transcript pasted as text'); text += '\n\n--- TRANSCRIPT ---\n' + msg.file.text; }
         }
 
         const how = await typeInto(box, text);
         if (!how) return sendResponse({ ok: false, error: 'could not type into the message box', steps, info: pageInfo() });
-        steps.push('typed (' + how + ')');
+        mark('typed via ' + how);
 
         // Send. Click the Send button when it is ready; if the page has none, press Enter.
         // After every try, check that the message really left the box.
@@ -158,13 +160,14 @@ if (!window.__ytChatLoaded) {
         let left = false, clicks = 0, enters = 0;
         while (!left && Date.now() < limit && clicks < 2 && enters < 2) {
           const btn = sendButton();
-          if (btn) { btn.click(); clicks++; steps.push('clicked Send'); left = await gone(3000); }
-          else if (!sendButtonAny() && Date.now() - t0 > 2500) { pressEnter(box); enters++; steps.push('pressed Enter'); left = await gone(); }
+          if (btn) { btn.click(); clicks++; mark('clicked Send'); left = await gone(3000); }
+          else if (!sendButtonAny() && Date.now() - t0 > 2500) { pressEnter(box); enters++; mark('pressed Enter'); left = await gone(); }
           else await sleep(400); // Send exists but is disabled (uploading), or still appearing
         }
-        if (!left) { pressEnter(box, { ctrlKey: true, metaKey: true }); steps.push('pressed Ctrl/Cmd+Enter'); left = await gone(1500); }
-        if (!left && enters === 0) { pressEnter(box); steps.push('pressed Enter'); left = await gone(); }
+        if (!left) { pressEnter(box, { ctrlKey: true, metaKey: true }); mark('pressed Ctrl/Cmd+Enter'); left = await gone(1500); }
+        if (!left && enters === 0) { pressEnter(box); mark('pressed Enter'); left = await gone(); }
         if (!left) return sendResponse({ ok: false, needsTrustedEnter: true, error: 'the message was typed but the page did not send it', steps, info: pageInfo() });
+        mark('done');
         sendResponse({ ok: true, steps });
       } catch (e) {
         sendResponse({ ok: false, error: String(e), steps, info: pageInfo() });

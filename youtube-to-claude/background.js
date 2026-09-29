@@ -125,6 +125,7 @@ function fmt(sec) {
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
 async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
+  const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
 
@@ -186,7 +187,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId }) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
   if (needTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
-  return 'Sent to ' + T.name + ': ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
+  return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
 
 async function sendVideo(tabId, targetId) {
