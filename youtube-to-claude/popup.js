@@ -24,6 +24,7 @@ go.addEventListener('click', async () => {
   go.textContent = 'Sending…';
   msg.classList.remove('err');
   msg.textContent = 'Working (up to 30 s)…';
+  await chrome.storage.local.set({ target: mode, sendOn: true }); // same as turning that button under the video green
   const { result } = await chrome.runtime.sendMessage({ type: 'send', target: mode });
   go.disabled = false;
   showMode(mode);
@@ -35,15 +36,10 @@ go.addEventListener('click', async () => {
 const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
 
 // ---- options ----
-for (const id of ['pauseOn', 'replayOn', 'sendTranscript', 'voiceOn', 'imageOn', 'barOn']) {
+for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
-}
-{ // off unless you switch it on
-  const box = document.getElementById('alwaysTranscript');
-  chrome.storage.local.get('alwaysTranscript').then((s) => { box.checked = s.alwaysTranscript === true; });
-  box.addEventListener('change', () => chrome.storage.local.set({ alwaysTranscript: box.checked }));
 }
 const slider = document.getElementById('textLevel');
 const sizeVal = document.getElementById('sizeVal');

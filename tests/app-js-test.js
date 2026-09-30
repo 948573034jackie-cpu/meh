@@ -18,7 +18,7 @@ const pr = JSON.stringify({ captions:{ playerCaptionsTracklistRenderer:{ caption
 const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><div id="movie_player" style="position:relative;width:800px;height:450px;background:#246"><video muted playsinline src="/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><div id="below"><h1 class="ytd-watch-metadata"><yt-formatted-string>English Lesson 1</yt-formatted-string></h1></div><script>var ytInitialPlayerResponse = ${pr};</script>`;
 const chatHtml = (kind) => `<!doctype html><title>${kind}</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" accept="image/*" id="fimg"><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const b=document.getElementById('box'),f=document.getElementById('f'),slot=document.getElementById('slot');
-function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name),imgs:[...document.getElementById('fimg').files].map(y=>y.name+':'+y.size)});const fi=document.getElementById('fimg');fi.value='';b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
+function upd(){ if(b.textContent.trim()){ if(!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','${kind==='claude'?'Send message':'Send prompt'}');${kind==='chatgpt'?"x.setAttribute('data-testid','send-button');":''}x.textContent='Send';x.onclick=()=>{window.__sent.push({text:b.textContent,files:[...f.files].map(y=>y.name),imgs:[...document.getElementById('fimg').files].map(y=>y.name+':'+y.size)});const fi=document.getElementById('fimg');fi.value='';f.value='';b.textContent='';slot.innerHTML=''};slot.appendChild(x)} } else slot.innerHTML='' }
 b.addEventListener('input',upd);</script>`;
 // 40 s of silence as a WAV file (8 kHz, 8-bit mono) so the <video> element has something to play
 const wav = (() => { const n = 8000 * 40, b = Buffer.alloc(44 + n, 128);
@@ -73,7 +73,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const ctx = await browser.newContext();
   const yt = await ctx.newPage(), chat = await ctx.newPage();
   for (const [n, p] of [['yt', yt], ['chat', chat]]) { p.on('pageerror', (e) => console.log('PAGE ERROR (' + n + '):', String(e.message || e).slice(0, 300), '|', String(e.stack || '').split('\n').slice(0, 3).join(' <- '))); }
-  const store = { target: 'chatgpt', pauseOn: true, replayOn: true, sendTranscript: true, voiceOn: true, textLevel: 6, tapOn: true, badgeOn: true };
+  const store = { target: 'chatgpt', pauseOn: true, replayOn: true, sendTranscript: true, voiceOn: true, textLevel: 6, tapOn: true, badgeOn: true, sendOn: true };
   const nativeLog = [];
   const native = async (m) => {
     nativeLog.push(m.kind + (m.op ? ':' + m.op : ''));
@@ -113,8 +113,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const got = await sent(chat);
   ok('replay finished and video stopped', (await vid()).paused === true, JSON.stringify(await vid()));
   ok('ChatGPT mock got exactly 1 message', got.length === 1, got.length);
-  ok('message has transcript file + no filler', got[0] && got[0].files.includes('transcript-English-Lesson-1.txt') && /explain this part to me like an English teacher/.test(got[0].text) && !/repeat this passage/.test(got[0].text));
-  ok('picked the general file input, not the image one', got[0] && got[0].files.length === 1);
+  ok('first pause: only the paused part, NO full transcript (that goes only with the button)', got[0] && got[0].files.length === 0 && !/Link:|TRANSCRIPT|transcript is attached/.test(got[0].text) && /explain this part to me like an English teacher/.test(got[0].text), got[0] && got[0].text.slice(0, 120));
   ok('speech listening started for "let\'s go"', nativeLog.includes('speech:start'), nativeLog.filter(x => x.startsWith('speech')).join(','));
   // 2) say "let's go" (iOS speech result comes from Swift)
   await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: "okay let's go" }));
@@ -317,20 +316,44 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   ok('the full subtitles are saved after the first download', !!(store.subsCache && store.subsCache.abc12345678 && store.subsCache.abc12345678.cues.length === 40), store.subsCache ? Object.keys(store.subsCache).join(',') : 'nothing saved');
   const second13 = await (async () => { await yt.goto('http://localhost:8767/panelok?v=abc12345678'); await injectYT(); await yt.waitForTimeout(400); return yt.evaluate(() => window.__ytcDebug.load()); })();
   ok('new window: the saved copy is used at once (no download)', /saved copy/.test(second13.source || '') && second13.lines === 40 && Math.round(second13.lastStart) === 585, JSON.stringify(second13).slice(0, 220));
-  // the bar
-  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT(); await yt.waitForTimeout(900);
-  const barInfo = await yt.evaluate(() => { const b = document.getElementById('yt2c-bar'); const p = document.getElementById('movie_player'); return b ? { parent: b.parentElement.id, below: !!(p.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING), h: Math.round(b.getBoundingClientRect().height), text: b.textContent } : null; });
-  ok('small bar sits right under the video (inside the area below the player)', barInfo && barInfo.parent === 'below' && barInfo.below && barInfo.h < 45 && /Claude/.test(barInfo.text) && /ChatGPT/.test(barInfo.text) && /Send video/.test(barInfo.text), JSON.stringify(barInfo));
-  await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
-  await yt.waitForTimeout(300);
-  ok('bar: choosing ChatGPT is saved as the target', store.target === 'chatgpt', store.target);
+  // the two on/off buttons under the video (green = on, red = off)
+  await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
+  await yt.evaluate(() => window.__ytcStorageChanged({ sendOn: false, target: 'chatgpt', replayOn: false, imageOn: true }));
+  await yt.waitForTimeout(900);
+  const btns = () => yt.evaluate(() => { const b = document.getElementById('yt2c-bar'); if (!b) return null; const col = (id) => { const e = document.getElementById(id); return { text: e.textContent, bg: getComputedStyle(e).backgroundColor }; }; const p = document.getElementById('movie_player'); return { parent: b.parentElement.id, below: !!(p.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING), h: Math.round(b.getBoundingClientRect().height), gpt: col('yt2c-b-chatgpt'), claude: col('yt2c-b-claude'), status: document.getElementById('yt2c-b-status').textContent }; });
+  const GREENC = 'rgb(30, 142, 62)', REDC = 'rgb(217, 48, 37)';
+  const pauseAt = async (t, wait) => { await yt.evaluate(async (x) => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = x; }, t); await yt.waitForTimeout(300); await yt.evaluate(() => document.querySelector('video').pause()); await yt.waitForTimeout(wait || 2200); };
+  let b0 = await btns();
+  ok('two buttons right under the video: ChatGPT and Claude, both red (off) at the start', b0 && b0.parent === 'below' && b0.below && b0.h < 45 && /ChatGPT ○ off/.test(b0.gpt.text) && /Claude ○ off/.test(b0.claude.text) && b0.gpt.bg === REDC && b0.claude.bg === REDC, JSON.stringify(b0));
   await chat.goto('http://localhost:8768/'); await injectChat();
-  const n13 = (await sent(chat)).length;
-  await yt.evaluate(() => document.getElementById('yt2c-b-send').click());
+  await pauseAt(5);
+  const foot0 = (await ov() || {}).foot || '';
+  ok('both off: a pause still shows the subtitles but sends NOTHING', (await sent(chat)).length === 0 && /press ChatGPT or Claude under the video/.test(foot0), foot0);
+  await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
   await yt.waitForTimeout(2500);
-  const m13 = await sent(chat);
-  const st13 = await yt.evaluate(() => document.getElementById('yt2c-b-status').textContent);
-  ok('bar: "Send video" sends the link + full subtitles and shows Sent ✓', m13.length === n13 + 1 && /Link:/.test(m13[m13.length - 1].text) && /Sent to ChatGPT/.test(st13), st13);
+  let b1 = await btns(); let m1 = await sent(chat);
+  ok('press ChatGPT: it turns green, Claude stays red', b1.gpt.bg === GREENC && /on/.test(b1.gpt.text) && b1.claude.bg === REDC && store.sendOn === true && store.target === 'chatgpt', JSON.stringify(b1));
+  ok('...and the link + FULL transcript go to ChatGPT once (as a file, general input)', m1.length === 1 && /Link:/.test(m1[0].text) && m1[0].files.length === 1 && /^transcript-/.test(m1[0].files[0]) && /full transcript sent to ChatGPT/.test(b1.status), JSON.stringify(m1).slice(0, 200) + ' | ' + b1.status);
+  await pauseAt(9); await pauseAt(13);
+  const m2 = await sent(chat);
+  ok('then every pause sends ONLY that part (no transcript, no link), twice in a row', m2.length === 3 && m2.slice(1).every((x) => x.files.length === 0 && !/Link:|TRANSCRIPT/.test(x.text) && /English teacher/.test(x.text)), JSON.stringify(m2.slice(1).map((x) => [x.files.length, x.text.slice(0, 60)])));
+  await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
+  await yt.waitForTimeout(400);
+  const b2 = await btns();
+  await pauseAt(6);
+  ok('press ChatGPT again: red, and pauses are not sent any more', b2.gpt.bg === REDC && b2.claude.bg === REDC && store.sendOn === false && (await sent(chat)).length === 3, JSON.stringify(b2));
+  await chat.goto('http://localhost:8765/'); await injectChat();
+  await yt.evaluate(() => document.getElementById('yt2c-b-claude').click());
+  await yt.waitForTimeout(2500);
+  const b3 = await btns(); const c3 = await sent(chat);
+  ok('press Claude: Claude green, ChatGPT red, full transcript sent to Claude once', b3.claude.bg === GREENC && b3.gpt.bg === REDC && store.target === 'claude' && c3.length === 1 && /Link:/.test(c3[0].text) && c3[0].files.length === 1, JSON.stringify(b3) + ' ' + c3.length);
+  await pauseAt(9, 4800);
+  const c4 = await sent(chat);
+  ok('Claude pause: only that part (+ the picture), no transcript again', c4.length === 2 && c4[1].files.length === 0 && !/Link:/.test(c4[1].text) && c4[1].imgs.length === 1, JSON.stringify(c4[1] || {}).slice(0, 160));
+  // back to ChatGPT (on) for the timeline check
+  await chat.goto('http://localhost:8768/'); await injectChat();
+  await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
+  await yt.waitForTimeout(2500);
   // timeline in the pause message
   await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: false, target: 'chatgpt' }));
   await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
@@ -344,7 +367,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
   await yt.evaluate(() => { Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { get: () => 640, configurable: true }); Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { get: () => 360, configurable: true }); });
   await chat.goto('http://localhost:8765/voice'); await injectChat();
-  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', replayOn: false, imageOn: true }));
+  await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', sendOn: true, replayOn: false, imageOn: true }));
   await yt.waitForTimeout(3500);
   await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
   await yt.waitForTimeout(300);

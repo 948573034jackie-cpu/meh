@@ -50,3 +50,9 @@ Claude | ChatGPT | Send video ▸ sits right under the player. It sends the link
 
 ## Claude voice mode
 Voice mode has no text box, so only a picture can be sent. In that case the extension sends one picture that contains the time, the sentences **and** the question, and Claude answers by voice.
+
+## Version 2.1: the full transcript goes only once, when you press a button
+* Under the video there are two buttons: **ChatGPT** and **Claude**. Red = off, green = on.
+* Press one (it turns green): the link + the **full transcript** go to that chat **once**. The other one turns red.
+* From then on, every pause sends **only the part you paused at** (about 30 seconds, complete sentences, one per line on the screen), never the whole transcript again.
+* Press the green one again: it turns red and pauses are not sent anywhere (the subtitles still show on the video).

@@ -76,7 +76,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let storage: [String: Any] = [
             "target": target, "pauseOn": pauseOn, "replayOn": replayOn,
             "sendTranscript": sendTranscript, "voiceOn": voiceOn, "textLevel": textLevel,
-            "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false
+            "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false, "sendOn": true
         ]
         self.youtube = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: true, storage: storage))
         self.chat = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: false, storage: storage))

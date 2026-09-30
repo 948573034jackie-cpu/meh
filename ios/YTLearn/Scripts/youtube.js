@@ -312,7 +312,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -321,15 +321,17 @@
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
     if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
     if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
+    if ('sendOn' in s) settings.sendOn = s.sendOn === true; // a button under the video is green: pauses are sent to that chat
     if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
     if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
     readSettings(s);
     if (ch.textLevel) rerender();
+    if (ch.target || ch.sendOn) { try { updateBar(); } catch (e) { /* ignore */ } }
   });
   const targetName = () => (settings.target === 'chatgpt' ? 'ChatGPT' : 'Claude');
 
@@ -532,8 +534,11 @@
     video.pause();                                // touching a playing video = pause -> show + send the sentences
   }
 
-  // ---- small bar just under the video: Claude | ChatGPT | Send video ----
+  // ---- two buttons just under the video: ChatGPT and Claude. Green = on, red = off. ----
+  // Turning one on sends the link + FULL transcript to that chat once. After that every pause sends
+  // only the part you paused at (about 30 s). Turning it off again: pauses are not sent anywhere.
   let bar = null;
+  const GREEN = '#1e8e3e', RED = '#d93025';
   function updateBar(r) {
     const want = settings.barOn && location.pathname === '/watch';
     if (!want) { if (bar) { bar.remove(); bar = null; } return; }
@@ -541,37 +546,48 @@
       bar = document.createElement('div');
       bar.id = 'yt2c-bar';
       bar.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 0;font:600 12px/1 system-ui,Arial,sans-serif;z-index:2147483000';
-      const mk = (id, text, extra) => { const b = document.createElement('button'); b.id = id; b.textContent = text; b.style.cssText = 'border:1px solid #888;border-radius:14px;padding:5px 11px;font:inherit;cursor:pointer;background:transparent;color:inherit;' + (extra || ''); return b; };
-      const claude = mk('yt2c-b-claude', 'Claude'), gpt = mk('yt2c-b-chatgpt', 'ChatGPT'), send = mk('yt2c-b-send', 'Send video ▸', 'margin-left:4px');
+      const mk = (id, text) => { const b = document.createElement('button'); b.id = id; b.textContent = text; b.style.cssText = 'border:0;border-radius:14px;padding:6px 12px;font:inherit;cursor:pointer;color:#fff;background:' + RED; return b; };
+      const gpt = mk('yt2c-b-chatgpt', 'ChatGPT'), claude = mk('yt2c-b-claude', 'Claude');
       const status = document.createElement('span');
       status.id = 'yt2c-b-status';
-      status.style.cssText = 'font-weight:400;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw';
-      const pick = (t) => { settings.target = t; chrome.storage.local.set({ target: t }); updateBar(); };
-      claude.onclick = () => pick('claude');
-      gpt.onclick = () => pick('chatgpt');
-      send.onclick = async () => {
-        status.textContent = 'Sending…';
+      status.style.cssText = 'font-weight:400;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw';
+      const toggle = async (t) => {
+        const isOn = settings.sendOn && settings.target === t;
+        if (isOn) { // green -> red: stop sending
+          settings.sendOn = false;
+          chrome.storage.local.set({ sendOn: false });
+          status.textContent = 'Off: pauses are not sent.';
+          updateBar();
+          return;
+        }
+        settings.target = t; settings.sendOn = true; // red -> green (the other one turns red)
+        chrome.storage.local.set({ target: t, sendOn: true });
+        updateBar();
+        const name = t === 'chatgpt' ? 'ChatGPT' : 'Claude';
+        status.textContent = 'Sending the full transcript to ' + name + '…';
         try {
-          const res = await chrome.runtime.sendMessage({ type: 'send', target: settings.target });
+          const res = await chrome.runtime.sendMessage({ type: 'send', target: t });
           const text = (res && res.result) || 'no answer';
-          status.textContent = /^Sent /.test(text) ? 'Sent to ' + targetName() + ' ✓' : text.slice(0, 120);
+          status.textContent = /^Sent /.test(text) ? 'On: full transcript sent to ' + name + ' ✓  Now every pause sends only that part.' : text.slice(0, 160);
         } catch (e) { status.textContent = 'Not sent: reload this YouTube page'; }
       };
-      bar.append(claude, gpt, send, status);
+      gpt.onclick = () => toggle('chatgpt');
+      claude.onclick = () => toggle('claude');
+      bar.append(gpt, claude, status);
     }
-    const on = settings.target === 'chatgpt' ? 'chatgpt' : 'claude';
-    for (const id of ['claude', 'chatgpt']) {
+    for (const id of ['chatgpt', 'claude']) {
       const b = bar.querySelector('#yt2c-b-' + id);
-      const active = id === on;
-      b.style.background = active ? (id === 'claude' ? '#d97757' : '#10a37f') : 'transparent';
-      b.style.color = active ? '#fff' : 'inherit';
-      b.style.borderColor = active ? 'transparent' : '#888';
+      const on = settings.sendOn && settings.target === id;
+      b.style.background = on ? GREEN : RED;
+      b.textContent = (id === 'chatgpt' ? 'ChatGPT' : 'Claude') + (on ? ' ● on' : ' ○ off');
+      b.title = on ? 'On: every pause is sent here. Click to turn off.' : 'Click to turn on: sends the full transcript once, then every pause.';
     }
     const below = document.querySelector('#below');   // desktop YouTube: right under the player, above the title
     if (below) {
       if (bar.parentElement !== below || below.firstChild !== bar) { bar.style.position = ''; below.insertBefore(bar, below.firstChild); }
     } else {                                           // other layouts: float just under the video
       if (bar.parentElement !== document.documentElement) document.documentElement.appendChild(bar);
+      if (!r) { const v = video; r = v ? v.getBoundingClientRect() : null; }
       bar.style.position = 'fixed';
       bar.style.left = (r && r.width > 80 ? Math.round(r.left) : 8) + 'px';
       bar.style.top = (r && r.height > 60 ? Math.round(r.bottom + 2) : 8) + 'px';
@@ -839,10 +855,16 @@
       const seg = pickSegment(d.sentences, t);
       showOverlay({ seg });
       // Claude only: 3 seconds after you stopped (the big subtitles are on screen by then) take the picture
-      const wantPicture = settings.target === 'claude' && settings.imageOn;
+      const wantPicture = settings.sendOn && settings.target === 'claude' && settings.imageOn;
       const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 3000)) : Promise.resolve(null);
       deferredSend = null;
       const sendNow = async () => {
+        if (!settings.sendOn) { // both buttons under the video are red: only watch, send nothing
+          lastSend = 'not sent (ChatGPT and Claude are off)';
+          const f = document.getElementById('yt2c-foot');
+          if (f) { f.textContent = 'Not sent: press ChatGPT or Claude under the video to turn it on (green).'; f.style.color = '#9aa0a6'; }
+          return;
+        }
         lastSend = 'sending…';
         const pics = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
         const image = pics && pics.shot, card = pics && pics.card;

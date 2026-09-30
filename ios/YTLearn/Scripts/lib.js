@@ -344,8 +344,8 @@
   // The sentence playing at time t plus the ones before it, filling about 30 seconds.
   function pickSegment(sentences, t, opts) {
     opts = opts || {};
-    const target = opts.target || 25;
-    const maxSentences = opts.maxSentences || 12;
+    const target = opts.target || 30;
+    const maxSentences = opts.maxSentences || 16;
     if (!sentences.length) return null;
     let cur = 0;
     for (let i = 0; i < sentences.length; i++) { if (sentences[i].start <= t) cur = i; else break; }

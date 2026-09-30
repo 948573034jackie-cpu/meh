@@ -39,7 +39,7 @@ struct ContentView: View {
             Button { model.cycleLayout() } label: { Label("AI", systemImage: "bubble.left.and.bubble.right").font(.footnote) }
 
             Menu {
-                Button { model.sendVideoNow() } label: { Label("Send video + transcript", systemImage: "paperplane") }
+                Button { model.sendVideoNow() } label: { Label("Send video + full transcript (once)", systemImage: "paperplane") }
                 Button { model.goHome() } label: { Label("YouTube home", systemImage: "house") }
                 Button { model.pasteLink() } label: { Label("Open copied YouTube link", systemImage: "link") }
                 Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
@@ -85,11 +85,10 @@ struct SettingsView: View {
                         Text("ChatGPT").tag("chatgpt")
                     }
                     .pickerStyle(.segmented)
-                    Toggle("First time for a video: also send the link + full transcript", isOn: $model.sendTranscript)
                     Toggle("Read the AI's answer out loud", isOn: $model.speakOn)
                 }
                 Section(header: Text("When I pause the video")) {
-                    Toggle("Show the last ~25 seconds as subtitles and send them", isOn: $model.pauseOn)
+                    Toggle("Show the last ~30 seconds as subtitles and send them", isOn: $model.pauseOn)
                     Toggle("Play those sentences again once", isOn: $model.replayOn)
                     Toggle("Say “let's go” to play that part again and keep going", isOn: $model.voiceOn)
                 }

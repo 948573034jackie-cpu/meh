@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "2.0",
+  "version": "2.1",
   "description": "One click sends the YouTube video link and its full transcript to your claude.ai chat, so Claude knows what you are watching.",
   "permissions": ["tabs", "scripting", "storage", "unlimitedStorage", "debugger"],
   "host_permissions": ["https://www.youtube.com/*", "https://claude.ai/*", "https://chatgpt.com/*"],

@@ -1,0 +1,56 @@
+// End-to-end: loads the REAL unpacked Chrome extension; fake youtube.com / chatgpt.com pages are served by routing.
+const pw = require(process.env.PWMOD || 'playwright');
+const path = require('path');
+const EXT = path.resolve(__dirname, '../youtube-to-claude');
+const json3 = JSON.stringify({ events: Array.from({ length: 15 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: 'This is complete sentence number ' + (i + 1) + ' of the lesson.' }] })) });
+const pr = JSON.stringify({ videoDetails: { videoId: 'abc12345678', title: 'English Lesson 1', lengthSeconds: '60' }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=abc12345678&lang=en', languageCode: 'en' }] } } });
+const wav = (() => { const n = 8000 * 60, b = Buffer.alloc(44 + n, 128); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
+const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><body style="background:#fff"><div id="movie_player" class="html5-video-player" style="position:relative;width:800px;height:450px;background:#123"><video muted playsinline src="https://www.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><div id="below"><h1 class="ytd-watch-metadata">English Lesson 1</h1></div><script>var ytInitialPlayerResponse = ${pr};</script></body>`;
+const chatHtml = `<!doctype html><title>ChatGPT</title><textarea id="prompt-textarea" style="width:500px;height:80px"></textarea><input type="file" multiple id="f"><div id="slot"></div>
+<script>window.__sent=[];const t=document.getElementById('prompt-textarea'),f=document.getElementById('f'),slot=document.getElementById('slot');
+t.addEventListener('input',()=>{ if(t.value.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{window.__sent.push({text:t.value,files:[...f.files].map(y=>y.name)});t.value='';f.value='';slot.innerHTML=''};slot.appendChild(x)} });</script>`;
+let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + x : '')); };
+(async () => {
+  const ctx = await pw.chromium.launchPersistentContext(require('os').tmpdir() + '/ytc-profile-' + Date.now(), {
+    executablePath: process.env.CHROME || undefined, headless: true,
+    args: ['--headless=new', '--no-sandbox', '--disable-extensions-except=' + EXT, '--load-extension=' + EXT, '--autoplay-policy=no-user-gesture-required'] });
+  await ctx.route('https://www.youtube.com/**', (route) => {
+    const u = route.request().url();
+    if (u.includes('/v.wav')) { const rg = route.request().headers()['range']; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; return route.fulfill({ status: 206, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-range': `bytes ${a}-${e}/${wav.length}` }, body: wav.slice(a, e + 1) }); } return route.fulfill({ status: 200, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes' }, body: wav }); }
+    if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
+    return route.fulfill({ status: 200, contentType: 'text/html', body: ytHtml });
+  });
+  await ctx.route('https://chatgpt.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: chatHtml }));
+  let sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
+  const extId = sw.url().split('/')[2];
+  console.log('extension loaded, id', extId, '| version', await sw.evaluate(() => chrome.runtime.getManifest().version));
+  const chat = await ctx.newPage(); await chat.goto('https://chatgpt.com/');
+  const yt = await ctx.newPage(); await yt.goto('https://www.youtube.com/watch?v=abc12345678');
+  await yt.bringToFront();
+  yt.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
+  await yt.waitForSelector('#yt2c-bar', { timeout: 8000 }).catch(() => {});
+  const state = () => yt.evaluate(() => { const g = document.getElementById('yt2c-b-chatgpt'), c = document.getElementById('yt2c-b-claude'); return g ? { gpt: g.textContent + ' ' + getComputedStyle(g).backgroundColor, claude: c.textContent + ' ' + getComputedStyle(c).backgroundColor, status: document.getElementById('yt2c-b-status').textContent, underVideo: document.getElementById('yt2c-bar').parentElement.id } : null; });
+  const s0 = await state();
+  ok('real extension: two red buttons under the video', s0 && s0.underVideo === 'below' && /off rgb\(217, 48, 37\)/.test(s0.gpt) && /off rgb\(217, 48, 37\)/.test(s0.claude), JSON.stringify(s0));
+  const sent = () => chat.evaluate(() => window.__sent);
+  const pauseAt = async (t) => { await yt.evaluate(async (x) => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = x; }, t); await yt.waitForTimeout(400); await yt.evaluate(() => document.querySelector('video').pause()); };
+  await pauseAt(10); await yt.waitForTimeout(12000);
+  ok('both off: pause shows the subtitles, sends nothing', (await sent()).length === 0 && !!(await yt.$('#yt2c-overlay')), JSON.stringify(await sent()));
+  await yt.evaluate(() => document.querySelector('video').play()); await yt.waitForTimeout(500);
+  await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(6000);
+  const s1 = await state(); const m1 = await sent();
+  ok('press ChatGPT: green + full transcript sent ONCE', /on rgb\(30, 142, 62\)/.test(s1.gpt) && m1.length === 1 && /Link:/.test(m1[0].text) && m1[0].files.length === 1, JSON.stringify(s1) + ' ' + JSON.stringify(m1).slice(0, 160));
+  for (const at of [38, 50]) { await pauseAt(at); await yt.waitForTimeout(36000); }
+  const m2 = await sent();
+  ok('two pauses: two short messages, no transcript, no link', m2.length === 3 && m2.slice(1).every((x) => x.files.length === 0 && !/Link:/.test(x.text) && /English teacher/.test(x.text)), JSON.stringify(m2.slice(1).map((x) => [x.files.length, x.text.slice(0, 70)])));
+  const o = await yt.evaluate(() => { const b = document.getElementById('yt2c-body'); return b ? { blocks: b.children.length, text: b.innerText.replace(/\n+/g, ' | '), font: getComputedStyle(b).fontSize } : null; });
+  console.log('   on screen:', JSON.stringify(o));
+  const part = /runs from (\d+):(\d+) to (\d+):(\d+)/.exec(m2[2] ? m2[2].text : '') || [];
+  const len = (+part[3] * 60 + +part[4]) - (+part[1] * 60 + +part[2]);
+  ok('the part sent is about 30 s of complete sentences, one sentence per line on screen', len >= 26 && len <= 34 && o && o.blocks >= 6 && /sentence number 13 of the lesson\.$/.test(o.text.split(' | ').pop()), 'part ' + (part[0] || '?') + ' = ' + len + ' s, ' + (o && o.blocks) + ' lines on screen');
+  await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(800);
+  await pauseAt(6); await yt.waitForTimeout(12000);
+  ok('press ChatGPT again: red, pauses not sent', /off rgb\(217, 48, 37\)/.test((await state()).gpt) && (await sent()).length === 3);
+  await ctx.close();
+  console.log(fails ? fails + ' FAILED' : 'REAL EXTENSION: ALL PASSED'); process.exit(fails ? 1 : 0);
+})().catch((e) => { console.error('ERR', e); process.exit(1); });

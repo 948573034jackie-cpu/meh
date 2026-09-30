@@ -171,3 +171,20 @@ const bc = L.parseSubtitleFile(big);
 assert.equal(bc.length, 2000); assert.equal(bc[1999].start, 9995);
 assert.equal(L.buildSentences(bc).length > 1000, true);
 console.log('subtitle file tests passed');
+// --- the paused part is about 30 seconds, made of complete sentences, also deep into a 2-hour video
+{
+  const lens = [3, 7, 4.5, 9, 2, 6, 5.5, 8, 3.5, 11, 4, 6.5];
+  const sents = []; let t = 0;
+  for (let i = 0; t < 7200; i++) { const d = lens[i % lens.length]; sents.push({ start: t, end: t + d - 0.3, text: 'Sentence ' + i + ' is complete.' }); t += d; }
+  const lengths = [];
+  for (const at of [95, 1234.5, 3600, 5432.1, 7100]) {
+    const sg = L.pickSegment(sents, at);
+    const cur = sents.filter((s) => s.start <= at).pop();
+    assert.equal(sg.items[sg.items.length - 1], cur, 'ends with the sentence playing when you paused');
+    assert(sg.items.every((s) => /\.$/.test(s.text)), 'complete sentences only');
+    const len = sg.end - sg.start; lengths.push(len.toFixed(1));
+    assert(len >= 24 && len <= 34, 'about 30 s, got ' + len);
+  }
+  console.log('  30-second parts at 1:35, 20:34, 1:00:00, 1:30:32, 1:58:20 ->', lengths.join('s, ') + 's');
+}
+console.log('30-second part tests passed');

@@ -148,15 +148,15 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   const sent = await getSent();
   const rec = sent[claudeTab.id];
   const sameChat = rec && rec.videoId === videoId && (rec.path === path || (isFreshPath(rec.path) && !isFreshPath(path)));
-  const { alwaysTranscript } = await chrome.storage.local.get('alwaysTranscript');
-  const needTranscript = force || !sameChat || (alwaysTranscript === true && !!passage && !noTranscript);
+  // The link + full transcript go ONLY when you press the ChatGPT / Claude button under the video (force).
+  // A pause sends just the part you paused at, never the whole transcript again.
+  const needTranscript = !!force && !noTranscript;
   if (sameChat && rec.path !== path) await saveSent(claudeTab.id, videoId, path);
 
-  const { sendTranscript } = await chrome.storage.local.get('sendTranscript');
   let text = passage || '';
   let file = null;
   let summary = 'passage only';
-  if (needTranscript && !noTranscript && (force || sendTranscript !== false)) {
+  if (needTranscript) {
     let info;
     try { info = await chrome.tabs.sendMessage(videoTabId, { type: 'yt-get' }); }
     catch (e) { return 'Refresh the YouTube page (Cmd+R) and try again. (' + e.message + ')'; }
@@ -194,7 +194,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   if (!res || !res.ok) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
-  if (needTranscript && !noTranscript && (force || sendTranscript !== false)) markSent(claudeTab.id, videoId, path);
+  if (needTranscript) markSent(claudeTab.id, videoId, path);
   if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
   else if (image && T.name === 'Claude') summary += ' + picture';
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
@@ -240,7 +240,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId,
           passage: String(msg.text || '').trim() + '\n\n(Answer in simple English, in short plain sentences, as if you are speaking to me. No headings, no bullet points, no bold.)',
-          force: false, targetId: msg.target, noTranscript: !videoId // no video open: just the question
+          force: false, targetId: msg.target, noTranscript: true // just the question
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Question: ' + result);
@@ -254,7 +254,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, image: msg.image || null, card: msg.card || null
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, image: msg.image || null, card: msg.card || null
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);
