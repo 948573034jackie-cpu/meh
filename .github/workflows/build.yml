@@ -62,7 +62,7 @@ jobs:
         run: |
           APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
           ls "$APP" | head -30
-          for f in shim-common shim-youtube shim-chat lib background youtube chat; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          for f in shim-common shim-youtube shim-chat lib background youtube chat mic-mix; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
       - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube + ChatGPT pages
         working-directory: ios
@@ -132,6 +132,9 @@ jobs:
       - name: Same test in Chromium
         if: always()
         run: ENGINE=chromium node tests/app-js-test.js
+      - name: Voice-call mixer test (the call hears what the app reads into it)
+        if: always()
+        run: node tests/mic-mix-test.js
 
   real-sites:
     runs-on: ubuntu-latest

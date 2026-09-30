@@ -712,7 +712,8 @@
 
   // Chrome: the microphone listens the whole time you are on a video (voice commands).
   // iPhone / iPad app: only while a paused part waits (the app has its own Ask button).
-  const ALWAYS_LISTEN = !window.__ytcShimYT;
+  const ALWAYS_LISTEN = true;
+  const IN_APP = !!window.__ytcShimYT; // the iPhone / iPad app
   let recSession = 0;
   const firedFor = new Set(); // (recognition result, command) pairs already acted on
   function beginWaiting(seg) {
@@ -738,22 +739,28 @@
     if (!SR || rec || recWanted === 'blocked') return;
     recWanted = true;
     try {
-      rec = new SR();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = 'en-US';
+      const r = new SR();
+      rec = r;
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = 'en-US';
       const session = ++recSession;
-      rec.onresult = (e) => {
+      r.onresult = (e) => {
+        if (rec !== r) return; // an old listener
         for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal, session + ':' + i);
       };
-      rec.onerror = (e) => {
+      r.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           recWanted = 'blocked';
           setHint('Microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (Enter still works.)');
         }
       };
-      rec.onend = () => { rec = null; if (recWanted === true && (pending || ALWAYS_LISTEN)) setTimeout(startListening, 300); }; // Chrome stops after silence
-      rec.start();
+      r.onend = () => { // Chrome stops after silence: listen again (a late "end" of an OLD listener changes nothing)
+        if (rec !== r) return;
+        rec = null;
+        if (recWanted === true && (pending || ALWAYS_LISTEN)) setTimeout(startListening, 300);
+      };
+      r.start();
     } catch (e) { rec = null; }
   }
 
@@ -801,10 +808,15 @@
     return true;
   }
 
-  function freshListen() {
+  function freshListen() { // throw away the current (growing) sentence and listen again from empty
     if (!rec) return;
     const r = rec;
-    setTimeout(() => { if (rec === r) { try { r.abort(); } catch (e) { /* ignore */ } } }, 50); // onend starts a new one
+    setTimeout(() => {
+      if (rec !== r) return;
+      rec = null;                                   // (the iPhone app never reports "end" after a stop)
+      try { r.abort(); } catch (e) { /* ignore */ }
+      if (recWanted === true) setTimeout(startListening, 300);
+    }, 50);
   }
 
   function onHeard(text, isFinal, key) {
@@ -820,7 +832,7 @@
     }
     if (pending && LETS_GO.test(text)) { if (once('go', key)) continueFromStart(); return; }
     // talk mode: while the video is stopped, what you say is a question for the AI
-    if (!ALWAYS_LISTEN || !isFinal || !pending || !settings.talkOn || !settings.sendOn) return;
+    if (IN_APP || !isFinal || !pending || !settings.talkOn || !settings.sendOn) return;
     if (aiSpeaking || Date.now() - aiSpeakingEnded < 800) return; // that was the answer being read aloud
     const q = text.trim();
     if (q.split(/\s+/).length < 2 || q === askedText) return;
@@ -905,7 +917,14 @@
     replaying = { seg, timer };
     quietUntil = Date.now() + 1500;
     video.currentTime = Math.max(0, seg.start - 0.3);
-    video.play().then(() => { if (intoCall && replaying && replaying.seg === seg) startFeed(); })
+    video.play().then(() => {
+      if (!intoCall || !replaying || replaying.seg !== seg) return;
+      if (startFeed()) return;
+      if (IN_APP) { // iPhone / iPad: the video's sound cannot be copied, so the app's own voice reads the part INTO the call
+        try { window.webkit.messageHandlers.ytc.postMessage({ kind: 'speakIntoCall', text: groupSentences(seg.items).map((g) => g.text).join(' ') }); } catch (e) { /* ignore */ }
+        lastSend = 'reading this part into the voice call';
+      }
+    })
       .catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
   }
 

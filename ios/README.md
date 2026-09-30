@@ -41,3 +41,9 @@ YouTube sometimes asks this on some internet connections. The small label in the
 * If Claude/ChatGPT change their web pages, the sending step may need an update.
 * Use a normal text chat, not voice mode, in Claude/ChatGPT.
 * The AI window starts as a small strip so the video is big. Tap the **AI** button to open it when you want to read the answer.
+
+## Version 3 (same as Chrome extension 2.5)
+* Top bar: **ChatGPT** and **Claude** buttons. Red = off: a normal YouTube player. Tap one → green: the link + full transcript go to that chat **once**; after that every pause (or "hi bro") sends only the ~30 s part (complete sentences) + a picture after 1 s.
+* Say **"hi bro"** to stop and send, **"shut up"** to replay that part once and keep playing.
+* **Voice call (Claude / ChatGPT website inside the app):** the app reads the paused part with its own voice straight into the call's microphone line, so the AI hears it and answers by voice. (An iPhone app cannot copy YouTube's sound, so the part is read, not replayed, into the call. You hear the real video.)
+* Why not the official Claude / ChatGPT apps or Chrome? iOS does not let one app type or send sound into another app, and Chrome on iOS has no extensions. Only this app, with both websites inside it, can do all of it.

@@ -12,6 +12,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var textLevel: Double { didSet { changed("textLevel", textLevel) } }
     @Published var tapOn: Bool { didSet { changed("tapOn", tapOn) } }
     @Published var badgeOn: Bool { didSet { changed("badgeOn", badgeOn) } }
+    @Published var sendOn: Bool { didSet { changed("sendOn", sendOn) } }   // a chat button is green: pauses are sent
     @Published var speakOn: Bool { didSet { defaults.set(speakOn, forKey: "speakOn"); if !speakOn { voice.stop() } } }
     @Published var listening = false     // the microphone is open for your question
     @Published var speaking = false      // the app is reading an answer aloud
@@ -25,6 +26,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     private let speech = SpeechListener()
     private let voice = Voice()
+    private let feeder = CallFeeder()
     private var dictating = false
     private var dictated = ""
     private var dictationTimer: Timer?
@@ -60,6 +62,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let tapOn = d.object(forKey: "tapOn") as? Bool ?? true
         let badgeOn = d.object(forKey: "badgeOn") as? Bool ?? true
         let speakOn = d.object(forKey: "speakOn") as? Bool ?? true
+        let sendOn = d.object(forKey: "sendOn") as? Bool ?? false   // both buttons start red (off) = plain YouTube
 
         self.target = target
         self.pauseOn = pauseOn
@@ -70,19 +73,21 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         self.tapOn = tapOn
         self.badgeOn = badgeOn
         self.speakOn = speakOn
+        self.sendOn = sendOn
 
         let bridge = Bridge()
         self.bridge = bridge
         let storage: [String: Any] = [
             "target": target, "pauseOn": pauseOn, "replayOn": replayOn,
             "sendTranscript": sendTranscript, "voiceOn": voiceOn, "textLevel": textLevel,
-            "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false, "sendOn": true
+            "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false, "sendOn": sendOn
         ]
         self.youtube = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: true, storage: storage))
         self.chat = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: false, storage: storage))
         super.init()
 
         bridge.model = self
+        feeder.chat = chat
         youtube.navigationDelegate = self
         chat.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
@@ -121,6 +126,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     // ---- automatic test (used by the build server: launch the app with the argument -selftest) ----
     private func runSelfTest() {
+        sendOn = true
         selfTestReport = ["ios": UIDevice.current.systemVersion, "device": UIDevice.current.model]
         if let url = URL(string: "https://m.youtube.com/watch?v=iG9CE55wbtY") { youtube.load(URLRequest(url: url)) }
         if let url = URL(string: "https://chatgpt.com/") { chat.load(URLRequest(url: url)) }
@@ -330,6 +336,20 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         poll(0)
     }
 
+    // ---- the two buttons: ChatGPT / Claude. Green = on (full transcript sent once), red = off (plain YouTube) ----
+    func toggleChat(_ t: String) {
+        if sendOn && target == t {
+            sendOn = false
+            show("Off: pauses are not sent. YouTube works normally.")
+            return
+        }
+        let switching = target != t
+        target = t          // (opens that chat if it was the other one)
+        sendOn = true
+        show("On: sending the full transcript to \(t == "chatgpt" ? "ChatGPT" : "Claude") once…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + (switching ? 3 : 0.2)) { [weak self] in self?.sendVideoNow() }
+    }
+
     // ---- toolbar actions ----
     func cycleLayout() { layoutIndex = (layoutIndex + 1) % 3 }
 
@@ -407,7 +427,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
                     DispatchQueue.main.async {
                         switch result {
                         case .success(let value):
-                            if readAnswer, let d = value as? [String: Any], (d["ok"] as? Bool) == true { self.followAnswer(baseline: baseline) }
+                            if readAnswer, let d = value as? [String: Any], (d["ok"] as? Bool) == true, (d["voiceMode"] as? Bool) != true { self.followAnswer(baseline: baseline) }
                             finish(value, nil)
                         case .failure(let error): finish(nil, "chat page not ready: \(error.localizedDescription)")
                         }
@@ -447,6 +467,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if let obj = body["obj"] as? [String: Any] {
                 for (key, value) in obj { defaults.set(value, forKey: key) }
             }
+            reply(nil, nil)
+
+        case "speakIntoCall":
+            feeder.speak(body["text"] as? String ?? "")
             reply(nil, nil)
 
         case "voice":
@@ -508,6 +532,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             source = ["shim-common", "shim-chat", "chat"].map(script).joined(separator: "\n;\n")
         }
         controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))
+        if !isYouTube {
+            // the voice call's microphone = your voice + the part the app reads into it
+            controller.addUserScript(WKUserScript(source: script("mic-mix"), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
+        }
         return config
     }
 }

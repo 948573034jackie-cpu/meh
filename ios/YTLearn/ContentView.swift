@@ -18,18 +18,15 @@ struct ContentView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Picker("Chat", selection: $model.target) {
-                Text("Claude").tag("claude")
-                Text("ChatGPT").tag("chatgpt")
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 210)
+            // green = on (the full transcript goes once, then every pause), red = off (plain YouTube)
+            chatToggle("chatgpt", "ChatGPT")
+            chatToggle("claude", "Claude")
 
             Spacer(minLength: 0)
 
             // the one big button: tap, say your question, and hear the answer
             Button { model.micTapped() } label: {
-                Label(model.listening ? "Listening… tap to send" : (model.speaking ? "Talking… tap to ask" : "Ask"),
+                Label(model.listening ? "Send" : "Ask",
                       systemImage: model.listening ? "waveform" : "mic.fill")
                     .font(.subheadline.weight(.semibold))
             }
@@ -47,6 +44,20 @@ struct ContentView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+    }
+
+    private func chatToggle(_ id: String, _ name: String) -> some View {
+        let on = model.sendOn && model.target == id
+        return Button { model.toggleChat(id) } label: {
+            Text((on ? "● " : "○ ") + name)
+                .font(.footnote.weight(.semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(on ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(name + (on ? " on" : " off"))
     }
 
     @ViewBuilder
