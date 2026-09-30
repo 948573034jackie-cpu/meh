@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ios-eyes-${{ github.ref }}
+  group: ios-eyes-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -37,7 +37,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm install --ignore-scripts
-      - run: npx playwright-core install --with-deps chromium webkit
+      - name: Install the test browsers (Chromium + WebKit)
+        timeout-minutes: 8
+        run: npx playwright-core install --with-deps chromium webkit
       - name: Attach script in WebKit (the iPad/iPhone engine)
         run: ENGINE=webkit node ios-eyes/tests/attach-engine.js
       - name: Attach script in Chromium
@@ -58,6 +60,13 @@ jobs:
           xcrun --sdk iphonesimulator swiftc -typecheck -parse-as-library \
             -target arm64-apple-ios15.0-simulator -sdk "$SDK" ios-eyes/ClaudeEyes/*.swift
           echo "All Swift files type-check."
+          # the test files too (as one module, without the @testable line)
+          mkdir -p /tmp/tc && cp ios-eyes/ClaudeEyes/*.swift /tmp/tc/
+          for f in ios-eyes/ClaudeEyesTests/*.swift; do grep -v '@testable import ClaudeEyes' "$f" > "/tmp/tc/$(basename "$f")"; done
+          FW="$(xcode-select -p)/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks"
+          xcrun --sdk iphonesimulator swiftc -typecheck -parse-as-library \
+            -target arm64-apple-ios15.0-simulator -sdk "$SDK" -F "$FW" /tmp/tc/*.swift
+          echo "The test files type-check too."
 
       - name: Install XcodeGen and generate the Xcode project
         if: env.STAGE != 'check'
