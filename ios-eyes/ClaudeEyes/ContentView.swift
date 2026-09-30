@@ -52,14 +52,14 @@ struct TopBar: View {
                 } label: {
                     Text("Wait \(model.intervalSec < 60 ? "\(model.intervalSec) s" : "\(model.intervalSec / 60) min")")
                 }
-                Picker("Chat", selection: $model.service) {
-                    ForEach(EyesModel.Service.allCases) { s in Text(s.title).tag(s) }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 220)
-                Button("Send test picture") { Task { await model.captureAndSend(reason: "test") } }
                 Spacer()
+                Button("Test picture") { Task { await model.captureAndSend(reason: "test") } }
             }
+            // second row, so everything also fits on an iPhone
+            Picker("Chat", selection: $model.service) {
+                ForEach(EyesModel.Service.allCases) { s in Text(s.title).tag(s) }
+            }
+            .pickerStyle(.segmented)
             Text(model.status).font(.footnote).foregroundColor(.secondary).lineLimit(2)
             Text(model.lastResult).font(.footnote).lineLimit(2)
         }
