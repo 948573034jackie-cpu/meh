@@ -716,7 +716,7 @@
 
   // ---- voice commands ----
   //   "hi bro"   -> stop the video and send this part (the same as pausing it yourself)
-  //   "shut up"  -> the AI stops talking, and the video keeps playing from where it is
+  //   "shut up"  -> the AI stops talking; the video goes back to the start of that part, plays it again and keeps going
   //   "let's go" -> play this part again from its start and keep going (as before)
   //   anything else you say while the video is stopped (talk mode) -> goes to the chat as your question
   const HI_BRO = /\b(hi|hey|high|hai|hay|yo)[\s,.!]*(bro|bruh|brah|bra|brother|bros)\b/i;
@@ -771,17 +771,21 @@
 
   // "shut up": the AI stops talking (its tab is muted until the next "hi bro"), the video plays on.
   function shutUp() {
-    lastHeard = 'shut up → quiet, keep playing';
+    lastHeard = 'shut up → quiet, replay the part, keep playing';
+    const seg = pending || (replaying && replaying.seg) || lastSeg;
     aiSpeaking = false;
     try { chrome.runtime.sendMessage({ type: 'shut-up' }).catch(() => {}); } catch (e) { /* ignore */ }
     deferredSend = null;       // nothing more goes out for this part
     cancelReplay();
     endWaiting();
     hideOverlay();
-    if (video && video.paused) { ourPlay = true; video.play().catch(() => {}); }
+    if (!video) return;
+    if (seg) video.currentTime = Math.max(0, seg.start - 0.3); // back to the start of that paragraph (~30 s of complete sentences)
+    if (video.paused) { ourPlay = true; video.play().catch(() => {}); }
   }
   let ourPlay = false;
   let lastHeard = '';
+  let lastSeg = null;
 
   // back to the start of the passage, then keep playing through the rest of the video
   function continueFromStart() {
@@ -933,10 +937,11 @@
         return;
       }
       const seg = pickSegment(d.sentences, t);
+      lastSeg = seg;
       showOverlay({ seg });
-      // Claude only: 3 seconds after you stopped (the big subtitles are on screen by then) take the picture
+      // Claude only: 1 second after you stopped (the big subtitles are on screen by then) take the picture
       const wantPicture = settings.sendOn && settings.target === 'claude' && settings.imageOn;
-      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 3000)) : Promise.resolve(null);
+      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 1000)) : Promise.resolve(null);
       deferredSend = null;
       const sendNow = async () => {
         if (!settings.sendOn) { // both buttons under the video are red: only watch, send nothing

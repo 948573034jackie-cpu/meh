@@ -152,12 +152,22 @@
     }
   }
 
+  // ---- voice call: find its "end" and "start" buttons (by their names, so small page changes do not matter) ----
+  const btnName = (b) => ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.innerText || '')).replace(/\s+/g, ' ').trim();
+  const allButtons = () => Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
+  const END_VOICE = /\b(end|stop|exit|close|leave|hang ?up)\b.{0,20}\b(voice|call|conversation|talking)\b|\bhang ?up\b|\bend call\b/i;
+  const START_VOICE = /\bvoice mode\b|\b(start|use|enter|open)\b.{0,12}\bvoice\b|\bvoice (conversation|chat|call)\b|\btalk to (claude|chatgpt)\b/i;
+  function findVoiceEnd() { return allButtons().find((b) => END_VOICE.test(btnName(b))) || null; }
+  function findVoiceStart() { return allButtons().find((b) => { const n = btnName(b); return START_VOICE.test(n) && !END_VOICE.test(n) && !/dictat/i.test(n); }) || null; }
+  const visibleComposer = () => { const c = composer(); return c && visible(c) ? c : null; };
+
   function pageInfo() {
     return {
       path: location.pathname,
       composer: (() => { const c = composer(); return c ? c.tagName.toLowerCase() + (c.id ? '#' + c.id : '') : null; })(),
       fileInputs: Array.from(document.querySelectorAll('input[type="file"]')).map((i) => i.accept || '*'),
-      sendButton: !!sendButton()
+      sendButton: !!sendButton(),
+      buttons: allButtons().map(btnName).filter(Boolean).slice(0, 40) // (so a changed page can be fixed quickly)
     };
   }
 
@@ -174,6 +184,12 @@
       sendResponse({ count: list.length, text: last ? String(last.innerText || last.textContent || '').trim() : '', busy: BUSY.some((q) => !!document.querySelector(q)) });
       return;
     }
+    if (msg.type === 'voice-restart') { // go back into the voice call after the text was sent
+      const b = findVoiceStart();
+      if (b) b.click();
+      sendResponse({ ok: !!b, label: b ? btnName(b) : null, info: b ? undefined : pageInfo() });
+      return;
+    }
     if (msg.type === 'chat-focus') { const b = composer(); if (b) b.focus(); sendResponse({ ok: !!b }); return; }
     if (msg.type !== 'chat-send') return;
     (async () => {
@@ -182,13 +198,26 @@
       const mark = (s) => steps.push(s + ' (' + ((Date.now() - t00) / 1000).toFixed(1) + 's)');
       try {
         const pic = msg.card || msg.image;
-        const box = await waitFor(composer, pic ? 2500 : 8000);
-        // Claude's voice mode has no text box: only a picture can go in. The card picture carries the sentences AND the question.
-        if ((!box || !visible(box)) && pic && pic.dataUrl && imageInput()) {
+        let bridged = false;
+        let box = await waitFor(visibleComposer, pic ? 2500 : 5000);
+        // Voice call: its screen has no text box. Step out of the call for a moment, send the text, step back in.
+        if (!box && msg.voiceBridge !== false) {
+          const end = findVoiceEnd();
+          if (end) {
+            mark('voice call: pressed "' + btnName(end).slice(0, 40) + '" for a moment');
+            end.click();
+            box = await waitFor(visibleComposer, 8000);
+            if (box) { bridged = true; mark('text box is back'); }
+            else mark('text box did not come back');
+          }
+        }
+        // Still no text box: only a picture can go in. The card picture carries the sentences AND the question.
+        if (!box && pic && pic.dataUrl && imageInput()) {
           mark('no visible message box (voice mode)');
           mark('picture with the words attached via ' + attachImage(pic, box));
-          return sendResponse({ ok: true, voiceMode: true, steps });
+          return sendResponse({ ok: true, voiceMode: true, steps, info: pageInfo() });
         }
+        if (!box) box = await waitFor(composer, 3000); // a hidden box: try it anyway
         if (!box) return sendResponse({ ok: false, error: 'no message box found on this page (is it in voice mode? then only a picture can be sent)', steps, info: pageInfo() });
 
         let text = msg.text;
@@ -225,7 +254,7 @@
         if (!left && enters === 0) { pressEnter(box); mark('pressed Enter'); left = await gone(); }
         if (!left) return sendResponse({ ok: false, needsTrustedEnter: true, error: 'the message was typed but the page did not send it', steps, info: pageInfo() });
         mark('done');
-        sendResponse({ ok: true, steps });
+        sendResponse({ ok: true, steps, bridged });
       } catch (e) {
         sendResponse({ ok: false, error: String(e), steps, info: pageInfo() });
       }

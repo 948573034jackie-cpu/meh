@@ -9,6 +9,15 @@ const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><body st
 const chatHtml = `<!doctype html><title>ChatGPT</title><textarea id="prompt-textarea" style="width:500px;height:80px"></textarea><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const t=document.getElementById('prompt-textarea'),f=document.getElementById('f'),slot=document.getElementById('slot');
 t.addEventListener('input',()=>{ if(t.value.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{const q=t.value;window.__sent.push({text:q,files:[...f.files].map(y=>y.name)});t.value='';f.value='';slot.innerHTML='';setTimeout(()=>{const a=document.createElement('div');a.setAttribute('data-message-author-role','assistant');a.textContent='Answer number '+window.__sent.length+'. This part means the speaker is happy.';document.body.appendChild(a);},700)};slot.appendChild(x)} });</script>`;
+const claudeCallHtml = `<!doctype html><title>Claude</title>
+<div id="call"><div>Voice call in progress…</div><button id="end" aria-label="End voice mode">✕</button></div>
+<div id="normal" style="display:none"><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><button id="start" aria-label="Voice mode">🎙</button><div id="slot"></div></div>
+<input type="file" id="files" multiple>
+<script>window.__sent=[];window.__events=[];let n=0;
+const call=document.getElementById('call'),normal=document.getElementById('normal'),b=document.getElementById('box'),slot=document.getElementById('slot'),files=document.getElementById('files');
+document.getElementById('end').onclick=()=>{__events.push('end');call.style.display='none';normal.style.display='block';};
+document.getElementById('start').onclick=()=>{__events.push('start');call.style.display='block';normal.style.display='none';};
+b.addEventListener('input',()=>{ if(b.textContent.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','Send message');x.textContent='Send';x.onclick=()=>{__events.push('sent');__sent.push({text:b.textContent,files:[...files.files].map(f=>f.name)});files.value='';b.textContent='';slot.innerHTML='';n++;const k=n;setTimeout(()=>{const a=document.createElement('div');a.className='font-claude-response';a.textContent='Claude explains part '+k+'. The speaker is talking about a dog.';document.body.appendChild(a);},700);};slot.appendChild(x);} });</script>`;
 let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + x : '')); };
 (async () => {
   const ctx = await pw.chromium.launchPersistentContext(require('os').tmpdir() + '/ytc-profile-' + Date.now(), {
@@ -20,6 +29,7 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
     if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
     return route.fulfill({ status: 200, contentType: 'text/html', body: ytHtml });
   });
+  await ctx.route('https://claude.ai/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: claudeCallHtml }));
   await ctx.route('https://chatgpt.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: chatHtml }));
   let sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
   const extId = sw.url().split('/')[2];
@@ -74,11 +84,16 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
   await yt.waitForTimeout(6000);
   const m4 = await sent(); const spoken2 = await store('lastSpoken');
   ok('talk mode: what you say while stopped goes to the chat as a question (once), answer read aloud', m4.length === n + 1 && /^what does happy mean/.test(m4[m4.length - 1].text) && /simple English/.test(m4[m4.length - 1].text) && spoken2 !== spoken1 && /^Answer number/.test(spoken2 || ''), JSON.stringify(m4[m4.length - 1]).slice(0, 120) + ' | ' + spoken2);
-  const tStop = (await vstate()).t;
+  const partStart = await yt.evaluate(() => { const m = /runs from (\d+):(\d+)/.exec(''); return null; });
+  const lastMsg = (await sent()).filter((x) => /runs from/.test(x.text)).pop();
+  const pm = /runs from (\d+):(\d+) to (\d+):(\d+)/.exec(lastMsg.text);
+  const from = +pm[1] * 60 + +pm[2];
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 30; }); // (stopped deeper in the video)
+  await yt.waitForTimeout(500);
   await hear('okay shut up', true);
   await yt.waitForTimeout(1500);
   const v2 = await vstate();
-  ok('"shut up": video keeps playing from where it stopped (no jump back), subtitles gone', !v2.paused && !v2.overlay && v2.t >= tStop, JSON.stringify(v2) + ' stopped at ' + tStop);
+  ok('"shut up": back to the START of that part, plays it again and keeps going, subtitles gone', !v2.paused && !v2.overlay && v2.t >= from - 0.5 && v2.t <= from + 3, JSON.stringify(v2) + ' part starts at ' + from);
   ok('"shut up": the AI tab is muted (its voice is silent)', (await chatMuted()) === true);
   n = (await sent()).length;
   await hear('I think it is fun', true); await yt.waitForTimeout(1500);
@@ -94,6 +109,26 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
   await hear('hi bro how are you', true); await yt.waitForTimeout(2000);
   const v3 = await vstate();
   ok('"hi bro" coming from the video itself (its subtitles say it) is ignored', !v3.paused && (await sent()).length === n, JSON.stringify(v3));
+
+  // ---- Claude VOICE CALL: step out for a moment, send the TEXT, read the answer, go back into the call ----
+  await hear('shut up', true); await yt.waitForTimeout(800);
+  const cl = await ctx.newPage(); await cl.goto('https://claude.ai/new');
+  await yt.bringToFront();
+  const clSent = () => cl.evaluate(() => window.__sent);
+  const clEvents = () => cl.evaluate(() => window.__events);
+  const inCall = () => cl.evaluate(() => document.getElementById('call').style.display !== 'none');
+  ok('Claude page starts in a voice call (no text box visible)', await inCall());
+  await yt.click('#yt2c-b-claude'); await yt.waitForTimeout(11000);     // Claude on: full transcript, once
+  const c1 = await clSent(); const e1 = await clEvents();
+  ok('turning Claude on during the call: transcript sent as TEXT, then back in the call', c1.length === 1 && /Link:/.test(c1[0].text) && e1.join(',') === 'end,sent,start' && await inCall(), JSON.stringify(e1) + ' ' + c1.length);
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 40; await v.play(); });
+  await yt.waitForTimeout(4500);
+  await hear('hi bro', true);
+  await yt.waitForTimeout(13000);
+  const c2 = await clSent(); const e2 = await clEvents(); const sp = await store('lastSpoken'); const vr = await store('lastVoiceRestart');
+  ok('"hi bro" during the call: the part goes to Claude as TEXT (+ picture)', c2.length === 2 && /English teacher/.test(c2[1].text) && /Paused at/.test(c2[1].text) && c2[1].files.length >= 1, JSON.stringify(c2[1] || {}).slice(0, 160));
+  ok('the answer (to the text) is read aloud', /^Claude explains part 2\./.test(sp || ''), sp);
+  ok('order: leave the call -> send the text -> go back into the call (twice)', e2.join(',') === 'end,sent,start,end,sent,start' && await inCall() && /back in the voice call/.test(vr || ''), JSON.stringify(e2) + ' | ' + vr);
   await ctx.close();
   console.log(fails ? fails + ' FAILED' : 'REAL EXTENSION: ALL PASSED'); process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error('ERR', e); process.exit(1); });

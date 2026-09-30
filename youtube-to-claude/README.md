@@ -63,3 +63,8 @@ Voice mode has no text box, so only a picture can be sent. In that case the exte
 * **Talk mode** (on by default): the AI's answer is read aloud by Chrome, and whatever you say while the video is stopped goes into the chat as your question (as text). This is a real conversation that works with Claude **and** ChatGPT, and Claude always gets text.
 * Say **"shut up"**: the voice stops at once, the AI tabs are muted (also Claude's own voice mode), and the video keeps playing from where it stopped. "hi bro" un-mutes them.
 * Use headphones, so the microphone does not hear the video or the answer.
+
+## Version 2.3: text into a voice call, "shut up" replays the part, picture after 1 s
+* **Voice call with Claude (or ChatGPT):** the call screen has no text box. When a pause is sent, the extension steps out of the call for a moment (presses "end voice"), types the text + picture into the normal box and sends it, reads the answer aloud (talk mode), then presses the voice button again, so you are back in the call and Claude knows the text. If the page's buttons cannot be found, the picture with the words is sent instead, and the status lists the buttons it saw.
+* **"shut up"** now goes back to the start of the paused part (~30 s of complete sentences), plays it again, and keeps playing to the end.
+* The picture for Claude is taken **1 second** after the pause.

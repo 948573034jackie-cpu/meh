@@ -176,7 +176,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   try {
     const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
     const sendCard = card && T.name === 'Claude' ? { name: 'question-' + Date.now() + '.jpg', dataUrl: card } : null; // for voice mode: the words are inside the picture
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard });
+    const { voiceBridge } = await chrome.storage.local.get('voiceBridge');
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard, voiceBridge: voiceBridge !== false });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
@@ -195,8 +196,14 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   if (!res || !res.ok) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
-  if (res && res.ok && !res.voiceMode && readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0);
+  if (res && res.ok && res.bridged) {
+    // we stepped out of the voice call to send the text: read the answer aloud first (talk mode), then go back into the call
+    pendingRestart = claudeTab.id;
+    if (readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0, true);
+    else setTimeout(() => restartVoice(), 1500);
+  } else if (res && res.ok && !res.voiceMode && readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0);
   if (needTranscript) markSent(claudeTab.id, videoId, path);
+  if (res && res.bridged) summary += ' (voice call: stepped out for a moment, sent the text, going back in)';
   if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
   else if (image && T.name === 'Claude') summary += ' + picture';
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
@@ -219,27 +226,36 @@ async function talkOn() {
   return talkOn !== false;
 }
 let followToken = 0;
+let pendingRestart = null; // the chat tab whose voice call we left for a moment
+async function restartVoice() {
+  const id = pendingRestart;
+  pendingRestart = null;
+  if (!id) return;
+  const r = await chrome.tabs.sendMessage(id, { type: 'voice-restart' }).catch(() => null);
+  await chrome.storage.local.set({ lastVoiceRestart: r && r.ok ? 'back in the voice call (' + r.label + ')' : 'could not find the voice button: ' + JSON.stringify((r && r.info && r.info.buttons) || []) });
+}
 function tellVideo(tabId, speaking) {
   if (tabId) chrome.tabs.sendMessage(tabId, { type: 'tts-state', speaking }).catch(() => {});
 }
-function speak(text, videoTabId) {
+function speak(text, videoTabId, done) {
   const clean = String(text || '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/https?:\/\/\S+/g, '').replace(/[*_#`>~]/g, '').replace(/\n{2,}/g, '\n').trim();
-  if (!clean) return;
+  if (!clean) { if (done) done(); return; }
   chrome.storage.local.set({ lastSpoken: clean.slice(0, 500) }); // for the tests / the status
-  if (!chrome.tts) return;
+  if (!chrome.tts) { if (done) done(); return; }
+  if (done) setTimeout(() => { if (done) { const d = done; done = null; d(); } }, Math.min(180000, 6000 + clean.length * 90)); // never wait forever
   try {
     chrome.tts.stop();
     chrome.tts.speak(clean, {
       lang: 'en-US', rate: 0.95,
       onEvent: (e) => {
         if (e.type === 'start') tellVideo(videoTabId, true);
-        if (['end', 'interrupted', 'cancelled', 'error'].includes(e.type)) tellVideo(videoTabId, false);
+        if (['end', 'interrupted', 'cancelled', 'error'].includes(e.type)) { tellVideo(videoTabId, false); if (done) { const d = done; done = null; d(); } }
       }
     });
-  } catch (e) { /* no voice available */ }
+  } catch (e) { if (done) done(); } // no voice available
 }
 // wait until the new answer is complete (it stopped growing), then read it
-async function followAnswer(chatTabId, videoTabId, baseline) {
+async function followAnswer(chatTabId, videoTabId, baseline, thenRestart) {
   const token = ++followToken;
   let lastText = '', stable = 0;
   for (let i = 0; i < 150; i++) { // about 3 minutes
@@ -248,8 +264,9 @@ async function followAnswer(chatTabId, videoTabId, baseline) {
     const st = await chrome.tabs.sendMessage(chatTabId, { type: 'chat-reply' }).catch(() => null);
     if (!st || st.count <= baseline || !st.text) continue;
     if (st.text === lastText) stable++; else { stable = 0; lastText = st.text; }
-    if ((!st.busy && stable >= 2) || stable >= 5) { speak(lastText, videoTabId); return; }
+    if ((!st.busy && stable >= 2) || stable >= 5) { speak(lastText, videoTabId, thenRestart ? restartVoice : null); return; }
   }
+  if (thenRestart) restartVoice(); // no answer came: go back into the call anyway
 }
 async function chatTabs() {
   const out = [];
@@ -275,6 +292,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     followToken++;
     try { if (chrome.tts) chrome.tts.stop(); } catch (e) { /* ignore */ }
     if (sender.tab) tellVideo(sender.tab.id, false);
+    restartVoice();
     setChatMuted(true).then(() => sendResponse({ ok: true }));
     return true;
   }
