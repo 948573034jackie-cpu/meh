@@ -688,6 +688,7 @@
 
   function onPause() {
     if (ourPause) { ourPause = false; return; }
+    lastUserPause = Date.now();
     if (replaying) { // you paused during the replay: leave it there and send now
       const seg = replaying.seg;
       cancelReplay();
@@ -850,12 +851,15 @@
   let lastHeard = '';
   let lastSeg = null;
   let quietUntil = 0;
+  let lastUserPause = 0;
   function jumpAndPlay(t, quiet) { // go to t and play on (and make sure it really plays)
     if (!video) return;
     if (quiet) quietUntil = Date.now() + 2000;
     video.currentTime = Math.max(0, t);
     if (video.paused) { ourPlay = true; video.play().catch(() => {}); }
-    setTimeout(() => { if (video && video.paused && !pending && !replaying) { ourPlay = true; video.play().catch(() => {}); } }, 900);
+    const at = Date.now();
+    // after "shut up" only: if the player stayed stopped (and nobody paused it since), start it
+    if (quiet) setTimeout(() => { if (video && video.paused && !pending && !replaying && lastUserPause < at) { ourPlay = true; video.play().catch(() => {}); } }, 900);
   }
 
   // back to the start of the passage, then keep playing through the rest of the video
