@@ -66,6 +66,7 @@ function buildMessage(info, hasFile, askReady) {
   } else {
     lines.push('(I could not get a transcript automatically, so please use the title and link as context.)');
   }
+  lines.push('When I pause the video, I will send you the part I paused at (as text, as a picture, or by playing it to you in our voice call). Then explain that part to me like an English teacher, and repeat its sentences once.');
   if (askReady) lines.push('For now, just reply "Ready".');
   return lines.join('\n').replace(/\n+$/, '');
 }
@@ -128,7 +129,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card, readAloud }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card, readAloud, inCall }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -176,7 +177,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
     const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
     const sendCard = card && T.name === 'Claude' ? { name: 'question-' + Date.now() + '.jpg', dataUrl: card } : null; // for voice mode: the words are inside the picture
     const { voiceBridge } = await chrome.storage.local.get('voiceBridge');
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard, voiceBridge: voiceBridge !== false });
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard, voiceBridge: voiceBridge !== false && !inCall });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
@@ -203,7 +204,8 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   } else if (res && res.ok && !res.voiceMode && readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0);
   if (needTranscript) markSent(claudeTab.id, videoId, path);
   if (res && res.bridged) summary += ' (voice call: stepped out for a moment, sent the text, going back in)';
-  if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
+  if (inCall && res && res.voiceMode) summary = 'voice call: the part is played into the call (Claude hears it) + the picture was sent';
+  else if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
   else if (image && T.name === 'Claude') summary += ' + picture';
   return 'Sent to ' + T.name + ' in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s: ' + summary + (opened ? ' (opened a new ' + T.name + ' tab)' : '') + '.';
 }
@@ -225,6 +227,7 @@ async function talkOn() {
   return talkOn !== false;
 }
 let followToken = 0;
+let feedTab = null; // the chat tab whose voice call hears the replay
 let pendingRestart = null; // the chat tab whose voice call we left for a moment
 async function restartVoice() {
   const id = pendingRestart;
@@ -299,6 +302,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     setChatMuted(false).then(() => sendResponse({ ok: true }));
     return true;
   }
+  if (msg.type === 'call-state') { // is the chosen chat in a voice call? (then the replay is played into the call)
+    (async () => {
+      const { feedOn } = await chrome.storage.local.get('feedOn');
+      if (feedOn === false) return sendResponse({ inCall: false });
+      const T = await getTarget(msg.target);
+      const tabs = await chrome.tabs.query({ url: T.url });
+      tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
+      for (const t of tabs) {
+        const r = await chrome.tabs.sendMessage(t.id, { type: 'call-state' }).catch(() => null);
+        if (r && r.inCall) { feedTab = t.id; return sendResponse({ inCall: true }); }
+      }
+      sendResponse({ inCall: false });
+    })();
+    return true;
+  }
+  if (msg.type === 'feed') { // live sound chunks from the video -> the chat tab's microphone line
+    if (feedTab) chrome.tabs.sendMessage(feedTab, msg).catch(() => {});
+    return;
+  }
   if (msg.type === 'capture' && sender.tab) { // real screenshot of the YouTube tab (only if you are looking at it)
     (async () => {
       try {
@@ -334,7 +356,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, readAloud: await talkOn(), image: msg.image || null, card: msg.card || null
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, readAloud: await talkOn(), image: msg.image || null, card: msg.card || null, inCall: !!msg.inCall
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

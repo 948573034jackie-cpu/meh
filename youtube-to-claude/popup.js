@@ -36,7 +36,7 @@ go.addEventListener('click', async () => {
 const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
 
 // ---- options ----
-for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'talkOn', 'imageOn', 'barOn']) {
+for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'feedOn', 'talkOn', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
   chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));

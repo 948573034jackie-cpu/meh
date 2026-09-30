@@ -4,7 +4,7 @@ const path = require('path');
 const EXT = path.resolve(__dirname, '../youtube-to-claude');
 const json3 = JSON.stringify({ events: Array.from({ length: 15 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: i === 5 ? 'Hi bro, how are you doing today my friend?' : 'This is complete sentence number ' + (i + 1) + ' of the lesson.' }] })) });
 const pr = JSON.stringify({ videoDetails: { videoId: 'abc12345678', title: 'English Lesson 1', lengthSeconds: '60' }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=abc12345678&lang=en', languageCode: 'en' }] } } });
-const wav = (() => { const n = 8000 * 60, b = Buffer.alloc(44 + n, 128); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
+const wav = (() => { const n = 8000 * 60, b = Buffer.alloc(44 + n, 128); for (let i = 0; i < n; i++) b[44 + i] = 128 + Math.round(70 * Math.sin(2 * Math.PI * 440 * i / 8000)); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
 const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><body style="background:#fff"><div id="movie_player" class="html5-video-player" style="position:relative;width:800px;height:450px;background:#123"><video muted playsinline src="https://www.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><div id="below"><h1 class="ytd-watch-metadata">English Lesson 1</h1></div><script>var ytInitialPlayerResponse = ${pr};</script></body>`;
 const chatHtml = `<!doctype html><title>ChatGPT</title><textarea id="prompt-textarea" style="width:500px;height:80px"></textarea><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const t=document.getElementById('prompt-textarea'),f=document.getElementById('f'),slot=document.getElementById('slot');
@@ -17,12 +17,17 @@ const claudeCallHtml = `<!doctype html><title>Claude</title>
 const call=document.getElementById('call'),normal=document.getElementById('normal'),b=document.getElementById('box'),slot=document.getElementById('slot'),files=document.getElementById('files');
 document.getElementById('end').onclick=()=>{__events.push('end');call.style.display='none';normal.style.display='block';};
 document.getElementById('start').onclick=()=>{__events.push('start');call.style.display='block';normal.style.display='none';};
+files.addEventListener('change',()=>{ if(call.style.display!=='none'&&files.files.length) __events.push('picture'); });
+navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true}}).then((mic)=>{ const ac=new AudioContext(); const an=ac.createAnalyser(); an.fftSize=2048; ac.createMediaStreamSource(mic).connect(an); window.__level=()=>{ const d=new Float32Array(2048); an.getFloatTimeDomainData(d); let m=0; for(const v of d) m=Math.max(m,Math.abs(v)); return m; }; }).catch((e)=>{ window.__micError=String(e); });
 b.addEventListener('input',()=>{ if(b.textContent.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','Send message');x.textContent='Send';x.onclick=()=>{__events.push('sent');__sent.push({text:b.textContent,files:[...files.files].map(f=>f.name)});files.value='';b.textContent='';slot.innerHTML='';n++;const k=n;setTimeout(()=>{const a=document.createElement('div');a.className='font-claude-response';a.textContent='Claude explains part '+k+'. The speaker is talking about a dog.';document.body.appendChild(a);},700);};slot.appendChild(x);} });</script>`;
 let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + x : '')); };
+const micWav = (() => { const rate = 16000, n = rate * 5, b = Buffer.alloc(44 + n * 2, 0); b.write('RIFF', 0); b.writeUInt32LE(36 + n * 2, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(n * 2, 40); return b; })();
+const micPath = require('os').tmpdir() + '/ytc-silent-mic.wav';
+require('fs').writeFileSync(micPath, micWav);
 (async () => {
   const ctx = await pw.chromium.launchPersistentContext(require('os').tmpdir() + '/ytc-profile-' + Date.now(), {
     executablePath: process.env.CHROME || undefined, headless: true,
-    args: ['--headless=new', '--no-sandbox', '--disable-extensions-except=' + EXT, '--load-extension=' + EXT, '--autoplay-policy=no-user-gesture-required'] });
+    args: ['--headless=new', '--no-sandbox', '--disable-extensions-except=' + EXT, '--load-extension=' + EXT, '--autoplay-policy=no-user-gesture-required', '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--use-file-for-fake-audio-capture=' + micPath] });
   await ctx.route('https://www.youtube.com/**', (route) => {
     const u = route.request().url();
     if (u.includes('/v.wav')) { const rg = route.request().headers()['range']; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; return route.fulfill({ status: 206, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-range': `bytes ${a}-${e}/${wav.length}` }, body: wav.slice(a, e + 1) }); } return route.fulfill({ status: 200, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes' }, body: wav }); }
@@ -45,7 +50,7 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
   const sent = () => chat.evaluate(() => window.__sent);
   const pauseAt = async (t) => { await yt.evaluate(async (x) => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = x; }, t); await yt.waitForTimeout(400); await yt.evaluate(() => document.querySelector('video').pause()); };
   await pauseAt(10); await yt.waitForTimeout(12000);
-  ok('both off: pause shows the subtitles, sends nothing', (await sent()).length === 0 && !!(await yt.$('#yt2c-overlay')), JSON.stringify(await sent()));
+  ok('both off: a normal YouTube pause (no subtitle screen, no replay), sends nothing', (await sent()).length === 0 && !(await yt.$('#yt2c-overlay')) && await yt.evaluate(() => document.querySelector('video').paused), JSON.stringify(await sent()));
   await yt.evaluate(() => document.querySelector('video').play()); await yt.waitForTimeout(500);
   await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(6000);
   const s1 = await state(); const m1 = await sent();
@@ -121,14 +126,24 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
   await yt.click('#yt2c-b-claude'); await yt.waitForTimeout(11000);     // Claude on: full transcript, once
   const c1 = await clSent(); const e1 = await clEvents();
   ok('turning Claude on during the call: transcript sent as TEXT, then back in the call', c1.length === 1 && /Link:/.test(c1[0].text) && e1.join(',') === 'end,sent,start' && await inCall(), JSON.stringify(e1) + ' ' + c1.length);
+  // "hi bro" DURING the call: the call is NOT left; the replay's own sound goes INTO the call (Claude hears it)
+  await sw.evaluate(() => chrome.storage.local.set({ replayOn: true }));
+  const levelFor = async (ms) => { let m = 0; const end = Date.now() + ms; while (Date.now() < end) { m = Math.max(m, await cl.evaluate(() => window.__level ? window.__level() : -1)); await new Promise((r) => setTimeout(r, 150)); } return +m.toFixed(3); };
+  const micInfo = await cl.evaluate(() => ({ mixed: window.__ytcMixedCount || 0, err: window.__micError || null }));
+  ok('the call page\'s microphone goes through the mixer', micInfo.mixed >= 1 && !micInfo.err, JSON.stringify(micInfo));
   await yt.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 40; await v.play(); });
-  await yt.waitForTimeout(4500);
+  await yt.waitForTimeout(3000);
+  const before = await levelFor(1500);
   await hear('hi bro', true);
-  await yt.waitForTimeout(13000);
-  const c2 = await clSent(); const e2 = await clEvents(); const sp = await store('lastSpoken'); const vr = await store('lastVoiceRestart');
-  ok('"hi bro" during the call: the part goes to Claude as TEXT (+ picture)', c2.length === 2 && /English teacher/.test(c2[1].text) && /Paused at/.test(c2[1].text) && c2[1].files.length >= 1, JSON.stringify(c2[1] || {}).slice(0, 160));
-  ok('the answer (to the text) is read aloud', /^Claude explains part 2\./.test(sp || ''), sp);
-  ok('order: leave the call -> send the text -> go back into the call (twice)', e2.join(',') === 'end,sent,start,end,sent,start' && await inCall() && /back in the voice call/.test(vr || ''), JSON.stringify(e2) + ' | ' + vr);
+  await yt.waitForTimeout(2500);
+  const during = await levelFor(4000);
+  const e2 = await clEvents(); const c2 = await clSent();
+  ok('the call hears silence before (only your microphone)', before < 0.02, 'level ' + before);
+  ok('during the replay the call HEARS the video part (fed into its microphone line)', during > 0.1, 'level ' + during);
+  ok('the call is NOT left this time; the picture goes in (after 1 s)', e2.join(',') === 'end,sent,start,picture' && c2.length === 1 && await inCall(), JSON.stringify(e2));
+  await yt.waitForTimeout(30000); // the replay (~28 s) ends
+  const after = await levelFor(1500);
+  ok('after the replay the call hears only your microphone again', after < 0.02 && await yt.evaluate(() => document.querySelector('video').paused), 'level ' + after);
   await ctx.close();
   console.log(fails ? fails + ' FAILED' : 'REAL EXTENSION: ALL PASSED'); process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error('ERR', e); process.exit(1); });

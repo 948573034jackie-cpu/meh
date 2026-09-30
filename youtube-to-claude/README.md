@@ -68,3 +68,7 @@ Voice mode has no text box, so only a picture can be sent. In that case the exte
 * **Voice call with Claude (or ChatGPT):** the call screen has no text box. When a pause is sent, the extension steps out of the call for a moment (presses "end voice"), types the text + picture into the normal box and sends it, reads the answer aloud (talk mode), then presses the voice button again, so you are back in the call and Claude knows the text. If the page's buttons cannot be found, the picture with the words is sent instead, and the status lists the buttons it saw.
 * **"shut up"** now goes back to the start of the paused part (~30 s of complete sentences), plays it again, and keeps playing to the end.
 * The picture for Claude is taken **1 second** after the pause.
+
+## Version 2.4: Claude HEARS the part in a voice call; off = plain YouTube
+* **Voice call:** when you pause (or say "hi bro"), the ~30 s part replays, and its own sound is played **into the call's microphone line**. You and Claude hear it at the same time; Claude then answers by voice. The mixing happens inside Chrome after echo cancellation, so Chrome cannot silence it. The picture is sent 1 second after the pause. (Reload the Claude tab once after installing, before you start the call.)
+* **Both buttons red (off):** the extension does nothing. Pausing is a normal YouTube pause: no subtitle screen, no replay, no microphone, no sending.

@@ -184,6 +184,8 @@
       sendResponse({ count: list.length, text: last ? String(last.innerText || last.textContent || '').trim() : '', busy: BUSY.some((q) => !!document.querySelector(q)) });
       return;
     }
+    if (msg.type === 'call-state') { sendResponse({ inCall: !!findVoiceEnd() && !visibleComposer(), mixer: !!document.documentElement.dataset.ytcMicMix }); return; }
+    if (msg.type === 'feed') { window.postMessage({ __ytcFeed: msg.op, seq: msg.seq, data: msg.data, mime: msg.mime }, '*'); return; }
     if (msg.type === 'voice-restart') { // go back into the voice call after the text was sent
       const b = findVoiceStart();
       if (b) b.click();

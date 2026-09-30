@@ -327,8 +327,13 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   ok('two buttons right under the video: ChatGPT and Claude, both red (off) at the start', b0 && b0.parent === 'below' && b0.below && b0.h < 45 && /ChatGPT ○ off/.test(b0.gpt.text) && /Claude ○ off/.test(b0.claude.text) && b0.gpt.bg === REDC && b0.claude.bg === REDC, JSON.stringify(b0));
   await chat.goto('http://localhost:8768/'); await injectChat();
   await pauseAt(5);
-  const foot0 = (await ov() || {}).foot || '';
-  ok('both off: a pause still shows the subtitles but sends NOTHING', (await sent(chat)).length === 0 && /press ChatGPT or Claude under the video/.test(foot0), foot0);
+  const ov0 = await ov(); const v0 = await vid();
+  ok('both off: a pause is a normal YouTube pause (no subtitles screen, no replay, nothing sent)', (await sent(chat)).length === 0 && ov0 === null && v0.paused && Math.abs(v0.t - 5) < 0.7, JSON.stringify(ov0) + ' ' + JSON.stringify(v0));
+  await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: 'hi bro' }));
+  await yt.evaluate(async () => { await document.querySelector('video').play(); }); await yt.waitForTimeout(300);
+  await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: 'hi bro' })); await yt.waitForTimeout(1200);
+  ok('both off: "hi bro" does nothing either (video keeps playing)', !(await vid()).paused && (await sent(chat)).length === 0);
+  await yt.evaluate(() => document.querySelector('video').pause());
   await yt.evaluate(() => document.getElementById('yt2c-b-chatgpt').click());
   await yt.waitForTimeout(2500);
   let b1 = await btns(); let m1 = await sent(chat);

@@ -484,6 +484,48 @@
   }
   function cancelReplay() {
     if (replaying) { clearInterval(replaying.timer); replaying = null; }
+    stopFeed();
+  }
+  let sendTimer = null;
+
+  function askCallState() {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => resolve(false), 800);
+      try {
+        chrome.runtime.sendMessage({ type: 'call-state', target: settings.target })
+          .then((r) => { clearTimeout(t); resolve(!!(r && r.inCall)); }, () => { clearTimeout(t); resolve(false); });
+      } catch (e) { clearTimeout(t); resolve(false); }
+    });
+  }
+
+  // ---- the replay's own sound, sent live into the chat's voice call (Chrome's echo cancellation cannot remove it) ----
+  let feedRec = null, feedChain = Promise.resolve(), feedSeq = 0;
+  const toB64 = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => res(''); r.readAsDataURL(blob); });
+  function feedSend(msg) { try { chrome.runtime.sendMessage(Object.assign({ type: 'feed' }, msg)).catch(() => {}); } catch (e) { /* ignore */ } }
+  function startFeed() {
+    stopFeed();
+    try {
+      if (!video || !video.captureStream || !window.MediaRecorder) return false;
+      const tracks = video.captureStream().getAudioTracks();
+      if (!tracks.length) return false;
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const r = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, audioBitsPerSecond: 64000 });
+      feedSeq = 0;
+      feedSend({ op: 'start', mime });
+      r.ondataavailable = (e) => {
+        if (!e.data || !e.data.size) return;
+        const seq = feedSeq++;
+        feedChain = feedChain.then(() => toB64(e.data)).then((data) => feedSend({ op: 'chunk', seq, data }));
+      };
+      r.onstop = () => { feedChain = feedChain.then(() => feedSend({ op: 'stop' })); };
+      r.start(250);
+      feedRec = r;
+      lastSend = 'playing this part into the voice call';
+      return true;
+    } catch (e) { return false; }
+  }
+  function stopFeed() {
+    if (feedRec) { try { if (feedRec.state !== 'inactive') feedRec.stop(); } catch (e) { /* ignore */ } feedRec = null; }
   }
 
   function isAd() {
@@ -606,7 +648,7 @@
     const ok = !!r && r.width > 80 && r.height > 60 && location.pathname === '/watch';
     try { updateBar(r); } catch (e) { /* ignore */ }
     // the touch area: the middle of the picture (the buttons on the edges keep working)
-    if (settings.tapOn && ok) {
+    if (settings.tapOn && settings.sendOn && ok) {
       if (!tapLayer) {
         tapLayer = document.createElement('div');
         tapLayer.id = 'yt2c-tap';
@@ -654,6 +696,7 @@
       return;
     }
     if (!settings.pauseOn) return;
+    if (!settings.sendOn) return; // both buttons red: plain YouTube, the extension does nothing
     const v = video;
     // wait a moment: ignore pauses caused by seeking, the video ending, or ads
     setTimeout(() => {
@@ -680,7 +723,7 @@
 
   if (ALWAYS_LISTEN) {
     setInterval(() => {
-      const want = settings.voiceOn && location.pathname === '/watch' && !!video;
+      const want = settings.voiceOn && settings.sendOn && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
     }, 1500);
@@ -745,6 +788,7 @@
   }
 
   function onHeard(text, isFinal) {
+    if (!settings.sendOn) return; // both buttons red: no voice commands
     text = String(text || '');
     if (SHUT_UP.test(text)) { if (once('shut')) shutUp(); return; }
     if (HI_BRO.test(text)) {
@@ -776,6 +820,7 @@
     aiSpeaking = false;
     try { chrome.runtime.sendMessage({ type: 'shut-up' }).catch(() => {}); } catch (e) { /* ignore */ }
     deferredSend = null;       // nothing more goes out for this part
+    if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
     cancelReplay();
     endWaiting();
     hideOverlay();
@@ -811,7 +856,7 @@
   });
 
   // play the passage once at normal speed, then stop
-  function startReplay(seg) {
+  function startReplay(seg, intoCall) {
     cancelReplay();
     const timer = setInterval(() => {
       const ct = video.currentTime;
@@ -830,7 +875,8 @@
     }, 50);
     replaying = { seg, timer };
     video.currentTime = Math.max(0, seg.start - 0.3);
-    video.play().catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
+    video.play().then(() => { if (intoCall && replaying && replaying.seg === seg) startFeed(); })
+      .catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
   }
 
   // ---- the picture for Claude: the subtitle screen, taken 3 seconds after you stop the video ----
@@ -941,9 +987,9 @@
       showOverlay({ seg });
       // Claude only: 1 second after you stopped (the big subtitles are on screen by then) take the picture
       const wantPicture = settings.sendOn && settings.target === 'claude' && settings.imageOn;
-      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 1000)) : Promise.resolve(null);
+      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 900)) : Promise.resolve(null);
       deferredSend = null;
-      const sendNow = async () => {
+      const sendNow = async (inCall) => {
         if (!settings.sendOn) { // both buttons under the video are red: only watch, send nothing
           lastSend = 'not sent (ChatGPT and Claude are off)';
           const f = document.getElementById('yt2c-foot');
@@ -954,7 +1000,7 @@
         const pics = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
         const image = pics && pics.shot, card = pics && pics.card;
         try {
-          chrome.runtime.sendMessage({ type: 'pause-send', videoId: videoId(), title: d.title, url: d.url, seg, image, card, lines: groupSentences(seg.items).map((g) => g.text) })
+          chrome.runtime.sendMessage({ type: 'pause-send', inCall: !!inCall, videoId: videoId(), title: d.title, url: d.url, seg, image, card, lines: groupSentences(seg.items).map((g) => g.text) })
             .then((r) => {
               const ok = !!(r && /^Sent /.test(r.result));
               lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');
@@ -963,13 +1009,13 @@
             .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); });
         } catch (e) { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
       };
+      // Is the chat in a voice call right now? Then the replay is also played INTO the call (Claude hears it).
+      const inCall = await askCallState();
+      sendTimer = setTimeout(() => { sendTimer = null; sendNow(inCall); }, 1000); // 1 s after the pause (picture ready)
       if (settings.replayOn) {
-        deferredSend = sendNow;
-        
-        startReplay(seg);
+        startReplay(seg, inCall);
       } else {
         beginWaiting(seg);
-        sendNow();
       }
     } finally {
       handling = false;
