@@ -65,6 +65,7 @@ const voiceHtml = `<!doctype html><title>Claude voice</title><div>Voice call in 
 const s2 = serve(8765, (q, r) => { r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/voice') ? voiceHtml : chatHtml('claude')); });
 const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.end(q.url.startsWith('/mobile') ? mobileHtml : chatHtml('chatgpt')); });
 
+setTimeout(() => { console.log('FAIL  test took longer than 9 minutes (stuck) - stopping'); process.exit(1); }, 9 * 60 * 1000).unref();
 (async () => {
   const browser = engine === 'webkit'
     ? await pw.webkit.launch()
@@ -102,7 +103,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   console.log('subtitle preload:', JSON.stringify(await yt.evaluate(() => window.__ytcDebug.load())));
 
   // 1) pause -> subtitles, replay, message in the last second
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 5; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
   await yt.waitForTimeout(700);
@@ -178,7 +179,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.goto('http://localhost:8767/odd?v=abc12345678'); await injectYT();
   await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: false, target: 'chatgpt' }));
   await yt.waitForTimeout(3500);
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 5; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
   await yt.waitForTimeout(1200);
@@ -196,7 +197,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const hit = (fx, fy) => yt.evaluate(([x, y]) => { const e = document.elementFromPoint(x, y); return e ? e.id || e.tagName : null; }, [rect.x + rect.w * fx, rect.y + rect.h * fy]);
   ok('middle of the picture is the touch area', (await hit(0.5, 0.45)) === 'yt2c-tap', await hit(0.5, 0.45));
   ok('bottom bar of the player is NOT covered', (await hit(0.5, 0.95)) !== 'yt2c-tap', await hit(0.5, 0.95));
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 5; });
   await yt.waitForTimeout(400);
   const before = (await sent(chat)).length;
   await yt.mouse.click(rect.x + rect.w * 0.5, rect.y + rect.h * 0.45);
@@ -244,7 +245,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await chat.goto('http://localhost:8765/'); await injectChat();
   await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', replayOn: false, imageOn: true }));
   await yt.waitForTimeout(3500);
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 5; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 5; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
   await yt.waitForTimeout(500);
@@ -322,7 +323,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.waitForTimeout(900);
   const btns = () => yt.evaluate(() => { const b = document.getElementById('yt2c-bar'); if (!b) return null; const col = (id) => { const e = document.getElementById(id); return { text: e.textContent, bg: getComputedStyle(e).backgroundColor }; }; const p = document.getElementById('movie_player'); return { parent: b.parentElement.id, below: !!(p.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING), h: Math.round(b.getBoundingClientRect().height), gpt: col('yt2c-b-chatgpt'), claude: col('yt2c-b-claude'), status: document.getElementById('yt2c-b-status').textContent }; });
   const GREENC = 'rgb(30, 142, 62)', REDC = 'rgb(217, 48, 37)';
-  const pauseAt = async (t, wait) => { await yt.evaluate(async (x) => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = x; }, t); await yt.waitForTimeout(300); await yt.evaluate(() => document.querySelector('video').pause()); await yt.waitForTimeout(wait || 2200); };
+  const pauseAt = async (t, wait) => { await yt.evaluate(async (x) => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = x; }, t); await yt.waitForTimeout(300); await yt.evaluate(() => document.querySelector('video').pause()); await yt.waitForTimeout(wait || 2200); };
   let b0 = await btns();
   ok('two buttons right under the video: ChatGPT and Claude, both red (off) at the start', b0 && b0.parent === 'below' && b0.below && b0.h < 45 && /ChatGPT ○ off/.test(b0.gpt.text) && /Claude ○ off/.test(b0.claude.text) && b0.gpt.bg === REDC && b0.claude.bg === REDC, JSON.stringify(b0));
   await chat.goto('http://localhost:8768/'); await injectChat();
@@ -330,7 +331,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   const ov0 = await ov(); const v0 = await vid();
   ok('both off: a pause is a normal YouTube pause (no subtitles screen, no replay, nothing sent)', (await sent(chat)).length === 0 && ov0 === null && v0.paused && Math.abs(v0.t - 5) < 0.7, JSON.stringify(ov0) + ' ' + JSON.stringify(v0));
   await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: 'hi bro' }));
-  await yt.evaluate(async () => { await document.querySelector('video').play(); }); await yt.waitForTimeout(300);
+  await yt.evaluate(async () => { await Promise.race([document.querySelector('video').play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); }); await yt.waitForTimeout(300);
   await yt.evaluate(() => window.__ytcSpeech({ type: 'result', text: 'hi bro' })); await yt.waitForTimeout(1200);
   ok('both off: "hi bro" does nothing either (video keeps playing)', !(await vid()).paused && (await sent(chat)).length === 0);
   await yt.evaluate(() => document.querySelector('video').pause());
@@ -361,7 +362,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await yt.waitForTimeout(2500);
   // timeline in the pause message
   await yt.evaluate(() => window.__ytcStorageChanged({ replayOn: false, target: 'chatgpt' }));
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 9; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
   await yt.waitForTimeout(2500);
@@ -374,7 +375,7 @@ const s3 = serve(8768, (q, r) => { r.setHeader('content-type','text/html'); r.en
   await chat.goto('http://localhost:8765/voice'); await injectChat();
   await yt.evaluate(() => window.__ytcStorageChanged({ target: 'claude', sendOn: true, replayOn: false, imageOn: true }));
   await yt.waitForTimeout(3500);
-  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await v.play(); v.currentTime = 9; });
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; await Promise.race([v.play().catch(() => {}), new Promise((r) => setTimeout(r, 3000))]); v.currentTime = 9; });
   await yt.waitForTimeout(300);
   await yt.evaluate(() => document.querySelector('video').pause());
   await yt.waitForTimeout(8500);
