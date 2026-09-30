@@ -2,13 +2,13 @@
 const pw = require(process.env.PWMOD || 'playwright');
 const path = require('path');
 const EXT = path.resolve(__dirname, '../youtube-to-claude');
-const json3 = JSON.stringify({ events: Array.from({ length: 15 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: 'This is complete sentence number ' + (i + 1) + ' of the lesson.' }] })) });
+const json3 = JSON.stringify({ events: Array.from({ length: 15 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: i === 5 ? 'Hi bro, how are you doing today my friend?' : 'This is complete sentence number ' + (i + 1) + ' of the lesson.' }] })) });
 const pr = JSON.stringify({ videoDetails: { videoId: 'abc12345678', title: 'English Lesson 1', lengthSeconds: '60' }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=abc12345678&lang=en', languageCode: 'en' }] } } });
 const wav = (() => { const n = 8000 * 60, b = Buffer.alloc(44 + n, 128); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; })();
 const ytHtml = `<!doctype html><title>English Lesson 1 - YouTube</title><body style="background:#fff"><div id="movie_player" class="html5-video-player" style="position:relative;width:800px;height:450px;background:#123"><video muted playsinline src="https://www.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div><div id="below"><h1 class="ytd-watch-metadata">English Lesson 1</h1></div><script>var ytInitialPlayerResponse = ${pr};</script></body>`;
 const chatHtml = `<!doctype html><title>ChatGPT</title><textarea id="prompt-textarea" style="width:500px;height:80px"></textarea><input type="file" multiple id="f"><div id="slot"></div>
 <script>window.__sent=[];const t=document.getElementById('prompt-textarea'),f=document.getElementById('f'),slot=document.getElementById('slot');
-t.addEventListener('input',()=>{ if(t.value.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{window.__sent.push({text:t.value,files:[...f.files].map(y=>y.name)});t.value='';f.value='';slot.innerHTML=''};slot.appendChild(x)} });</script>`;
+t.addEventListener('input',()=>{ if(t.value.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('data-testid','send-button');x.textContent='Send';x.onclick=()=>{const q=t.value;window.__sent.push({text:q,files:[...f.files].map(y=>y.name)});t.value='';f.value='';slot.innerHTML='';setTimeout(()=>{const a=document.createElement('div');a.setAttribute('data-message-author-role','assistant');a.textContent='Answer number '+window.__sent.length+'. This part means the speaker is happy.';document.body.appendChild(a);},700)};slot.appendChild(x)} });</script>`;
 let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + x : '')); };
 (async () => {
   const ctx = await pw.chromium.launchPersistentContext(require('os').tmpdir() + '/ytc-profile-' + Date.now(), {
@@ -51,6 +51,49 @@ let fails = 0; const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS
   await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(800);
   await pauseAt(6); await yt.waitForTimeout(12000);
   ok('press ChatGPT again: red, pauses not sent', /off rgb\(217, 48, 37\)/.test((await state()).gpt) && (await sent()).length === 3);
+
+  // ---- voice commands + talk mode (the words below are what the microphone would hear) ----
+  const hear = (text, final) => sw.evaluate(async ([t, f]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: f }); }, [text, final !== false]);
+  const store = (k) => sw.evaluate((key) => chrome.storage.local.get(key).then((o) => o[key]), k);
+  const chatMuted = () => sw.evaluate(async () => { const [t] = await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); return t.mutedInfo.muted; });
+  const vstate = () => yt.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(1), paused: v.paused, overlay: !!document.getElementById('yt2c-overlay') }; });
+  await sw.evaluate(() => chrome.storage.local.set({ replayOn: false }));
+  await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(5000);          // ChatGPT on (green) again
+  let n = (await sent()).length;
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; v.currentTime = 30; await v.play(); });
+  await yt.waitForTimeout(1500);
+  await hear('hi', false); await hear('hi bro', false); await hear('hi bro', true); // interim + final results
+  await yt.waitForTimeout(3000);
+  const v1 = await vstate(); const m3 = await sent();
+  ok('"hi bro" (your voice): video stops, subtitles show, that part is sent ONCE (not 3 times)', v1.paused && v1.overlay && m3.length === n + 1 && /English teacher/.test(m3[m3.length - 1].text) && m3[m3.length - 1].files.length === 0, JSON.stringify(v1) + ' msgs +' + (m3.length - n));
+  await yt.waitForTimeout(4000);
+  const spoken1 = await store('lastSpoken');
+  ok('talk mode: the AI answer is read aloud when it is complete', /^Answer number \d+\. This part means the speaker is happy\.$/.test(spoken1 || ''), spoken1);
+  n = (await sent()).length;
+  await hear('what does happy mean', false); await hear('what does happy mean', true);
+  await yt.waitForTimeout(6000);
+  const m4 = await sent(); const spoken2 = await store('lastSpoken');
+  ok('talk mode: what you say while stopped goes to the chat as a question (once), answer read aloud', m4.length === n + 1 && /^what does happy mean/.test(m4[m4.length - 1].text) && /simple English/.test(m4[m4.length - 1].text) && spoken2 !== spoken1 && /^Answer number/.test(spoken2 || ''), JSON.stringify(m4[m4.length - 1]).slice(0, 120) + ' | ' + spoken2);
+  const tStop = (await vstate()).t;
+  await hear('okay shut up', true);
+  await yt.waitForTimeout(1500);
+  const v2 = await vstate();
+  ok('"shut up": video keeps playing from where it stopped (no jump back), subtitles gone', !v2.paused && !v2.overlay && v2.t >= tStop, JSON.stringify(v2) + ' stopped at ' + tStop);
+  ok('"shut up": the AI tab is muted (its voice is silent)', (await chatMuted()) === true);
+  n = (await sent()).length;
+  await hear('I think it is fun', true); await yt.waitForTimeout(1500);
+  ok('after "shut up", talking while the video plays sends nothing', (await sent()).length === n);
+  await hear('hi bro', true); await yt.waitForTimeout(2500);
+  ok('"hi bro" again: the AI tab is un-muted, video stops, the new part is sent', (await chatMuted()) === false && (await vstate()).paused && (await sent()).length === n + 1);
+  await hear('shut up', true); await yt.waitForTimeout(1000);
+  // the VIDEO says "Hi bro" at 0:20-0:24: that must not stop it
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 21; await v.play(); });
+  await yt.waitForTimeout(1200);
+  n = (await sent()).length;
+  await yt.evaluate(() => { window.__t = 0; }); await new Promise((r) => setTimeout(r, 4100)); // (the "hi bro" command waits 4 s before it can repeat)
+  await hear('hi bro how are you', true); await yt.waitForTimeout(2000);
+  const v3 = await vstate();
+  ok('"hi bro" coming from the video itself (its subtitles say it) is ignored', !v3.paused && (await sent()).length === n, JSON.stringify(v3));
   await ctx.close();
   console.log(fails ? fails + ' FAILED' : 'REAL EXTENSION: ALL PASSED'); process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error('ERR', e); process.exit(1); });

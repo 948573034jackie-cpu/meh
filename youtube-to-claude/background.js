@@ -128,7 +128,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card, readAloud }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -171,6 +171,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   }
 
   let res;
+  const before = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-reply' }).catch(() => null);
   try {
     const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
     const sendCard = card && T.name === 'Claude' ? { name: 'question-' + Date.now() + '.jpg', dataUrl: card } : null; // for voice mode: the words are inside the picture
@@ -193,6 +194,7 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
   if (!res || !res.ok) {
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
+  if (res && res.ok && !res.voiceMode && readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0);
   if (needTranscript) markSent(claudeTab.id, videoId, path);
   if (res && res.voiceMode) summary = 'voice mode: Claude has no text box there, so the picture with the sentences and the question was sent';
   else if (image && T.name === 'Claude') summary += ' + picture';
@@ -208,6 +210,55 @@ async function sendVideo(tabId, targetId) {
   return sendToClaude({ videoTabId: tab.id, videoId, passage: null, force: true, targetId });
 }
 
+
+// ---- talk mode: read the AI's answer aloud (Chrome's own voice), "shut up" silences everything ----
+async function talkOn() {
+  if (typeof window !== 'undefined' && window.__ytcShimYT) return false; // iPhone / iPad app: the app reads answers itself
+  const { talkOn } = await chrome.storage.local.get('talkOn');
+  return talkOn !== false;
+}
+let followToken = 0;
+function tellVideo(tabId, speaking) {
+  if (tabId) chrome.tabs.sendMessage(tabId, { type: 'tts-state', speaking }).catch(() => {});
+}
+function speak(text, videoTabId) {
+  const clean = String(text || '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/https?:\/\/\S+/g, '').replace(/[*_#`>~]/g, '').replace(/\n{2,}/g, '\n').trim();
+  if (!clean) return;
+  chrome.storage.local.set({ lastSpoken: clean.slice(0, 500) }); // for the tests / the status
+  if (!chrome.tts) return;
+  try {
+    chrome.tts.stop();
+    chrome.tts.speak(clean, {
+      lang: 'en-US', rate: 0.95,
+      onEvent: (e) => {
+        if (e.type === 'start') tellVideo(videoTabId, true);
+        if (['end', 'interrupted', 'cancelled', 'error'].includes(e.type)) tellVideo(videoTabId, false);
+      }
+    });
+  } catch (e) { /* no voice available */ }
+}
+// wait until the new answer is complete (it stopped growing), then read it
+async function followAnswer(chatTabId, videoTabId, baseline) {
+  const token = ++followToken;
+  let lastText = '', stable = 0;
+  for (let i = 0; i < 150; i++) { // about 3 minutes
+    await sleep(1000);
+    if (token !== followToken) return; // "shut up" or a newer message
+    const st = await chrome.tabs.sendMessage(chatTabId, { type: 'chat-reply' }).catch(() => null);
+    if (!st || st.count <= baseline || !st.text) continue;
+    if (st.text === lastText) stable++; else { stable = 0; lastText = st.text; }
+    if ((!st.busy && stable >= 2) || stable >= 5) { speak(lastText, videoTabId); return; }
+  }
+}
+async function chatTabs() {
+  const out = [];
+  for (const T of Object.values(TARGETS)) out.push(...await chrome.tabs.query({ url: T.url }));
+  return out;
+}
+async function setChatMuted(muted) {
+  for (const t of await chatTabs()) { try { await chrome.tabs.update(t.id, { muted }); } catch (e) { /* ignore */ } }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
   if (msg.type === 'send') {
@@ -217,6 +268,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await setLast(result);
       sendResponse({ result });
     })();
+    return true;
+  }
+  if (msg.type === 'shut-up') { // stop reading, forget the answer we were waiting for, mute the AI tabs (its voice mode too)
+    followToken++;
+    try { if (chrome.tts) chrome.tts.stop(); } catch (e) { /* ignore */ }
+    if (sender.tab) tellVideo(sender.tab.id, false);
+    setChatMuted(true).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === 'voice-wake') { // "hi bro": the AI may talk again
+    setChatMuted(false).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (msg.type === 'capture' && sender.tab) { // real screenshot of the YouTube tab (only if you are looking at it)
@@ -239,7 +301,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId,
           passage: String(msg.text || '').trim() + '\n\n(Answer in simple English, in short plain sentences, as if you are speaking to me. No headings, no bullet points, no bold.)',
-          force: false, targetId: msg.target, noTranscript: true // just the question
+          force: false, targetId: msg.target, noTranscript: true, readAloud: await talkOn() // just the question
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Question: ' + result);
@@ -249,11 +311,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'pause-send' && sender.tab) {
     (async () => {
+      await setChatMuted(false).catch(() => {});
       let result;
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, image: msg.image || null, card: msg.card || null
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, readAloud: await talkOn(), image: msg.image || null, card: msg.card || null
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

@@ -56,3 +56,10 @@ Voice mode has no text box, so only a picture can be sent. In that case the exte
 * Press one (it turns green): the link + the **full transcript** go to that chat **once**. The other one turns red.
 * From then on, every pause sends **only the part you paused at** (about 30 seconds, complete sentences, one per line on the screen), never the whole transcript again.
 * Press the green one again: it turns red and pauses are not sent anywhere (the subtitles still show on the video).
+
+## Version 2.2: "hi bro" / "shut up" and talk mode
+* The microphone listens while you watch (allow the microphone for youtube.com the first time).
+* Say **"hi bro"**: the video stops and that part (~30 s) is sent, exactly like pausing it. If the video itself says "bro" at that moment, it is ignored.
+* **Talk mode** (on by default): the AI's answer is read aloud by Chrome, and whatever you say while the video is stopped goes into the chat as your question (as text). This is a real conversation that works with Claude **and** ChatGPT, and Claude always gets text.
+* Say **"shut up"**: the voice stops at once, the AI tabs are muted (also Claude's own voice mode), and the video keeps playing from where it stopped. "hi bro" un-mutes them.
+* Use headphones, so the microphone does not hear the video or the answer.

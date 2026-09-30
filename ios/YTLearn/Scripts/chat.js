@@ -165,6 +165,15 @@
     if (!msg) return;
     if (msg.type === 'chat-ping') { sendResponse({ ok: true, path: location.pathname }); return; }
     if (msg.type === 'chat-state') { const b = composer(); sendResponse({ boxText: b ? boxText(b).length : -1 }); return; }
+    if (msg.type === 'chat-reply') { // the newest answer of the AI (to read it aloud)
+      const ANSWER = ['[data-message-author-role="assistant"]', '[data-testid="assistant-message"]', '.font-claude-response', '.font-claude-message', '[class*="font-claude-message"]'];
+      const BUSY = ['[data-testid="stop-button"]', 'button[aria-label="Stop streaming"]', 'button[aria-label="Stop generating"]', 'button[aria-label="Stop response"]', 'button[aria-label="Stop"]', '[data-is-streaming="true"]'];
+      let list = [];
+      for (const q of ANSWER) { list = document.querySelectorAll(q); if (list.length) break; }
+      const last = list.length ? list[list.length - 1] : null;
+      sendResponse({ count: list.length, text: last ? String(last.innerText || last.textContent || '').trim() : '', busy: BUSY.some((q) => !!document.querySelector(q)) });
+      return;
+    }
     if (msg.type === 'chat-focus') { const b = composer(); if (b) b.focus(); sendResponse({ ok: !!b }); return; }
     if (msg.type !== 'chat-send') return;
     (async () => {

@@ -259,6 +259,7 @@
 
   // ---- transcript, loaded once per video and cached ----
   let cache = { id: null, promise: null };
+  let lastLoaded = null;
 
   function loadTranscript() {
     const id = videoId();
@@ -284,6 +285,7 @@
       }
       if (best) {
         const cues = best.cues;
+        lastLoaded = { cues };
         return { ...info, cues, sentences: buildSentences(cues), transcript: formatTranscript(cues), source: best.source, lines: cues.length, errors };
       }
       cache.promise = null; // nothing found: try again next time
@@ -312,7 +314,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: true };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -321,11 +323,12 @@
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
     if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
     if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
+    if ('talkOn' in s) settings.talkOn = s.talkOn !== false; // read the answers aloud; what you say after "hi bro" goes to the chat
     if ('sendOn' in s) settings.sendOn = s.sendOn === true; // a button under the video is green: pauses are sent to that chat
     if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
     if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn', 'talkOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
@@ -627,13 +630,14 @@
       }
       badge.style.left = (r && r.width > 80 ? Math.round(r.left) : 0) + 'px';
       badge.style.top = (r && r.height > 60 ? Math.round(r.top) : 0) + 'px';
-      badge.textContent = 'YT Learn · ' + (video ? 'video ✓' : 'no video') + ' · subtitles: ' + subState + (lastSend ? ' · ' + lastSend : '');
+      badge.textContent = 'YT Learn · ' + (video ? 'video ✓' : 'no video') + ' · subtitles: ' + subState + (lastSend ? ' · ' + lastSend : '') + (lastHeard ? ' · heard: ' + lastHeard : '');
     } else if (badge) { badge.remove(); badge = null; }
   }
   setInterval(updateTapLayer, 300);
   window.addEventListener('scroll', updateTapLayer, true);
 
   function onPlay() {
+    if (ourPlay) { ourPlay = false; return; } // "shut up": keep playing from here
     if (replaying) return;
     if (pending) { continueFromStart(); return; } // Space, the play arrow or a click on the video = "let's go"
     endWaiting();
@@ -661,6 +665,9 @@
   let rec = null;
   let recWanted = false;
 
+  // Chrome: the microphone listens the whole time you are on a video (voice commands).
+  // iPhone / iPad app: only while a paused part waits (the app has its own Ask button).
+  const ALWAYS_LISTEN = !window.__ytcShimYT;
   function beginWaiting(seg) {
     pending = seg;
     if (settings.voiceOn) startListening();
@@ -668,12 +675,20 @@
 
   function endWaiting() {
     pending = null;
-    stopListening();
+    if (!ALWAYS_LISTEN) stopListening();
+  }
+
+  if (ALWAYS_LISTEN) {
+    setInterval(() => {
+      const want = settings.voiceOn && location.pathname === '/watch' && !!video;
+      if (want && !rec && recWanted !== 'blocked') startListening();
+      if (!want && rec) stopListening();
+    }, 1500);
   }
 
   function startListening() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR || rec) return;
+    if (!SR || rec || recWanted === 'blocked') return;
     recWanted = true;
     try {
       rec = new SR();
@@ -681,28 +696,92 @@
       rec.interimResults = true;
       rec.lang = 'en-US';
       rec.onresult = (e) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript);
+        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal);
       };
       rec.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-          recWanted = false;
+          recWanted = 'blocked';
           setHint('Microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (Enter still works.)');
         }
       };
-      rec.onend = () => { rec = null; if (recWanted && pending) setTimeout(startListening, 300); }; // Chrome stops after silence
+      rec.onend = () => { rec = null; if (recWanted === true && (pending || ALWAYS_LISTEN)) setTimeout(startListening, 300); }; // Chrome stops after silence
       rec.start();
     } catch (e) { rec = null; }
   }
 
   function stopListening() {
-    recWanted = false;
+    if (recWanted !== 'blocked') recWanted = false;
     if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
   }
 
-  function onHeard(text) {
-    if (!pending) return;
-    if (/\blet'?s\s+go\b|\blet\s+us\s+go\b/i.test(text || '')) continueFromStart();
+  // ---- voice commands ----
+  //   "hi bro"   -> stop the video and send this part (the same as pausing it yourself)
+  //   "shut up"  -> the AI stops talking, and the video keeps playing from where it is
+  //   "let's go" -> play this part again from its start and keep going (as before)
+  //   anything else you say while the video is stopped (talk mode) -> goes to the chat as your question
+  const HI_BRO = /\b(hi|hey|high|hai|hay|yo)[\s,.!]*(bro|bruh|brah|bra|brother|bros)\b/i;
+  const SHUT_UP = /\bshut[\s-]*up\b/i;
+  const LETS_GO = /\blet'?s\s+go\b|\blet\s+us\s+go\b/i;
+  let lastCommand = { what: '', at: 0 };
+  let aiSpeaking = false;          // the extension is reading an answer aloud (so we do not hear ourselves)
+  let aiSpeakingEnded = 0;
+  let askedText = '';
+
+  // What the video itself is saying right now: if its own subtitles say "bro", that "hi bro" was not you.
+  function videoIsSaying(re) {
+    try {
+      const d = cache.promise && cache.id === videoId() ? lastLoaded : null;
+      if (!d || !video) return false;
+      const t = video.currentTime;
+      return d.cues.some((c) => c.start <= t + 1 && (c.end || c.start + 5) >= t - 6 && re.test(c.text));
+    } catch (e) { return false; }
   }
+
+  function once(what) { // interim results repeat the same words many times: act once
+    const now = Date.now();
+    if (lastCommand.what === what && now - lastCommand.at < 4000) return false;
+    lastCommand = { what, at: now };
+    return true;
+  }
+
+  function onHeard(text, isFinal) {
+    text = String(text || '');
+    if (SHUT_UP.test(text)) { if (once('shut')) shutUp(); return; }
+    if (HI_BRO.test(text)) {
+      if (!video || videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
+      if (!once('hi')) return;
+      try { chrome.runtime.sendMessage({ type: 'voice-wake' }).catch(() => {}); } catch (e) { /* ignore */ }
+      if (!video.paused && !replaying) { lastHeard = 'hi bro → stop + send'; video.pause(); } // -> onPause -> show + send this part
+      return;
+    }
+    if (pending && LETS_GO.test(text)) { continueFromStart(); return; }
+    // talk mode: while the video is stopped, what you say is a question for the AI
+    if (!ALWAYS_LISTEN || !isFinal || !pending || !settings.talkOn || !settings.sendOn) return;
+    if (aiSpeaking || Date.now() - aiSpeakingEnded < 800) return; // that was the answer being read aloud
+    const q = text.trim();
+    if (q.split(/\s+/).length < 2 || q === askedText) return;
+    askedText = q;
+    lastHeard = 'asked: ' + q;
+    try {
+      chrome.runtime.sendMessage({ type: 'ask', text: q, target: settings.target })
+        .then((r) => { lastSend = r && /^Sent /.test(r.result) ? 'question sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer'); })
+        .catch(() => {});
+    } catch (e) { /* ignore */ }
+  }
+
+  // "shut up": the AI stops talking (its tab is muted until the next "hi bro"), the video plays on.
+  function shutUp() {
+    lastHeard = 'shut up → quiet, keep playing';
+    aiSpeaking = false;
+    try { chrome.runtime.sendMessage({ type: 'shut-up' }).catch(() => {}); } catch (e) { /* ignore */ }
+    deferredSend = null;       // nothing more goes out for this part
+    cancelReplay();
+    endWaiting();
+    hideOverlay();
+    if (video && video.paused) { ourPlay = true; video.play().catch(() => {}); }
+  }
+  let ourPlay = false;
+  let lastHeard = '';
 
   // back to the start of the passage, then keep playing through the rest of the video
   function continueFromStart() {
@@ -723,7 +802,8 @@
   }, true);
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === 'heard') onHeard(msg.text); // used by tests / other parts of the extension
+    if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false); // used by tests / other parts of the extension
+    if (msg && msg.type === 'tts-state') { aiSpeaking = !!msg.speaking; if (!msg.speaking) aiSpeakingEnded = Date.now(); }
   });
 
   // play the passage once at normal speed, then stop
