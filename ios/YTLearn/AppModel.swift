@@ -510,7 +510,12 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     static func script(_ name: String) -> String {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "js"),
+        #if SWIFT_PACKAGE
+        let bundle = Bundle.module   // Swift Playgrounds (iPad) package: the scripts are its resources
+        #else
+        let bundle = Bundle.main     // Xcode app
+        #endif
+        guard let url = bundle.url(forResource: name, withExtension: "js"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return "/* missing \(name).js */" }
         return text
     }
