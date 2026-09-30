@@ -19,7 +19,7 @@ document.addEventListener('change', async (e) => { if (e.target.type !== 'file')
   require('../e2e/make-wav')(wav);
   const ctx = await chromium.launchPersistentContext(fs.mkdtempSync(path.join(os.tmpdir(), 'ce-chrome-')), {
     executablePath: require('./chrome-path'), headless: false,
-    args: ['--no-sandbox', `--disable-extensions-except=${path.resolve('extension')}`, `--load-extension=${path.resolve('extension')}`],
+    args: ['--no-sandbox', '--disable-features=DisableLoadExtensionCommandLineSwitch', `--disable-extensions-except=${path.resolve('extension')}`, `--load-extension=${path.resolve('extension')}`],
   });
   await ctx.route('https://claude.ai/**', (r) => r.fulfill({ contentType: 'text/html', body: CLAUDE_HTML }));
   await ctx.route('https://reader.example/**', (r) => r.fulfill({ contentType: 'text/html', body: '<title>Reader</title><textarea id=t>hello</textarea>' }));

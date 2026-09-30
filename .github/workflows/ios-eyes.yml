@@ -1,0 +1,138 @@
+name: iOS app (Claude Eyes)
+
+# Mac build minutes are scarce (they count 10x), so:
+#  - a push that touches the app only runs the quick check (about 1-2 Mac minutes)
+#  - the real tests / the installable app only run when started by hand: Actions > "iOS app" > Run workflow
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "check = quick syntax check | test = + unit tests + iPad self-test | full = + iPhone self-test + .ipa + release"
+        type: choice
+        options: [check, test, full]
+        default: check
+  push:
+    paths:
+      - 'ios-eyes/**'
+      - 'extension/attach.js'
+      - '.github/workflows/ios-eyes.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-eyes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.stage || 'check' }}
+
+jobs:
+  web-engine:
+    # Cheap (Linux): the "attach the picture" script in Safari's engine (WebKit) and Chrome's engine.
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install --ignore-scripts
+      - run: npx playwright-core install --with-deps chromium webkit
+      - name: Attach script in WebKit (the iPad/iPhone engine)
+        run: ENGINE=webkit node ios-eyes/tests/attach-engine.js
+      - name: Attach script in Chromium
+        if: always()
+        run: ENGINE=chromium node ios-eyes/tests/attach-engine.js
+
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Quick check - do all Swift files compile? (type check only)
+        run: |
+          xcodebuild -version
+          sh ios-eyes/sync-scripts.sh
+          SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          xcrun --sdk iphonesimulator swiftc -typecheck -parse-as-library \
+            -target arm64-apple-ios15.0-simulator -sdk "$SDK" ios-eyes/ClaudeEyes/*.swift
+          echo "All Swift files type-check."
+
+      - name: Install XcodeGen and generate the Xcode project
+        if: env.STAGE != 'check'
+        working-directory: ios-eyes
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          # XcodeGen writes the newest project format; Xcode 14/15 need 56
+          sed -i '' -E 's/objectVersion = [0-9]+;/objectVersion = 56;/; s/preferredProjectObjectVersion = [0-9]+;/preferredProjectObjectVersion = 56;/' ClaudeEyes.xcodeproj/project.pbxproj
+
+      - name: Unit tests on an iPad Simulator (voice detector, level meter)
+        if: env.STAGE != 'check'
+        working-directory: ios-eyes
+        shell: bash
+        run: |
+          UDID=$(xcrun simctl list devices available | grep -F "iPad" | head -1 | grep -oE "[0-9A-F-]{36}")
+          echo "iPad simulator: $UDID"; test -n "$UDID"
+          xcodebuild test -project ClaudeEyes.xcodeproj -scheme ClaudeEyes \
+            -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath build-sim \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log | tail -60
+
+      - name: Run the app in an iPad Simulator and let it test itself
+        if: env.STAGE != 'check'
+        working-directory: ios-eyes
+        shell: bash
+        run: |
+          mkdir -p ../shots
+          bash selftest.sh "iPad" ../shots/ipad.png
+
+      - name: Run the app in an iPhone Simulator and let it test itself
+        if: env.STAGE == 'full'
+        working-directory: ios-eyes
+        shell: bash
+        run: bash selftest.sh "iPhone 15 (" ../shots/iphone.png
+
+      - uses: actions/upload-artifact@v4
+        if: always() && env.STAGE != 'check'
+        with:
+          name: ios-test-output
+          path: |
+            shots/*.png
+            ios-eyes/test.log
+          if-no-files-found: ignore
+
+      - name: Build the installable app (not signed) and pack it as an .ipa
+        if: env.STAGE == 'full'
+        working-directory: ios-eyes
+        shell: bash
+        run: |
+          xcodebuild -project ClaudeEyes.xcodeproj -scheme ClaudeEyes -sdk iphoneos \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -20
+          mkdir -p Payload
+          cp -R build-dev/Build/Products/Release-iphoneos/ClaudeEyes.app Payload/
+          zip -qr ClaudeEyes-unsigned.ipa Payload
+          rm -rf Payload build-sim build-dev *.log
+          cd .. && zip -qr ios-eyes/ClaudeEyes-Xcode-project.zip ios-eyes extension/attach.js -x "ios-eyes/*.ipa" -x "ios-eyes/*.zip"
+          ls -la ios-eyes/*.ipa ios-eyes/*.zip
+
+      - uses: actions/upload-artifact@v4
+        if: env.STAGE == 'full'
+        with:
+          name: ios-app
+          path: |
+            ios-eyes/ClaudeEyes-unsigned.ipa
+            ios-eyes/ClaudeEyes-Xcode-project.zip
+
+      - name: Publish the downloads (release page)
+        if: env.STAGE == 'full'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete claude-eyes-ios-latest --yes --cleanup-tag || true
+          gh release create claude-eyes-ios-latest \
+            ios-eyes/ClaudeEyes-unsigned.ipa ios-eyes/ClaudeEyes-Xcode-project.zip \
+            --title "Claude Eyes for iPad and iPhone" \
+            --notes "Unsigned app (.ipa, install with Sideloadly or AltStore) and the Xcode project (build it yourself with Xcode). See ios-eyes/README.md." \
+            --target "${{ github.sha }}"

@@ -26,6 +26,8 @@ jobs:
         run: npm run test:voice
 
   package:
+    # Mac/Windows installers are built by hand (Actions > Run workflow): Mac build minutes are scarce
+    if: github.event_name == 'workflow_dispatch'
     needs: test
     strategy:
       fail-fast: false

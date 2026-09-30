@@ -1,0 +1,24 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mock chat</title></head>
+<body style="font:16px -apple-system,sans-serif;padding:12px">
+<div>Mock chat (self-test): a message box and a hidden "attach a file" input, like the real chat pages.</div>
+<div class="ProseMirror" contenteditable="true" style="border:1px solid #888;min-height:60px;margin:8px 0"></div>
+<input type="file" accept="image/*,.pdf" hidden>
+<script>
+window.__attached = [];
+// one listener at the document, the way the real pages react to a chosen file
+document.addEventListener('change', async (e) => {
+  if (!e.target || e.target.type !== 'file') return;
+  for (const f of e.target.files) {
+    const item = { type: f.type, size: f.size, w: 0, h: 0, r: 0, g: 0, b: 0 };
+    try {
+      const bm = await createImageBitmap(f);
+      item.w = bm.width; item.h = bm.height;
+      const c = document.createElement('canvas'); c.width = bm.width; c.height = bm.height;
+      const x = c.getContext('2d'); x.drawImage(bm, 0, 0);
+      const p = x.getImageData(Math.floor(bm.width * 0.9), Math.floor(bm.height * 0.9), 1, 1).data;
+      item.r = p[0]; item.g = p[1]; item.b = p[2];
+    } catch (err) { item.err = String(err); }
+    window.__attached.push(item);
+  }
+});
+</script></body></html>

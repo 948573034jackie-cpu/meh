@@ -61,7 +61,8 @@ function inCapsule(x, y, x0, y0, x1, y1, r) {
 
 // state: 'on' (green wave) | 'off' (yellow pause) | 'sent' (green check, flashed after a send).
 // Returns a PNG Buffer of size `size` x `size`.
-function renderIcon(state, size) {
+function renderIcon(state, size, opts = {}) {
+  const opaque = !!opts.opaque; // full-square background (app icons must not be transparent)
   const color = state === 'off' ? YELLOW : GREEN;
   const glyph = state === 'off' ? [70, 50, 0] : [255, 255, 255];
   const bars =
@@ -85,7 +86,7 @@ function renderIcon(state, size) {
           const d = Math.hypot(x - 0.5, y - 0.5);
           let c = null;
           if (d <= 0.48) {
-            c = d > 0.44 ? [0, 0, 0, 0.35] : null; // thin dark rim so yellow shows on light bars
+            c = d > 0.44 && !opaque ? [0, 0, 0, 0.35] : null; // thin dark rim so yellow shows on light bars
             if (!c) {
               c = [...color, 1];
               for (const [x0, y0, x1, y1] of bars) {
@@ -94,6 +95,7 @@ function renderIcon(state, size) {
               if (state === 'sent' && (inCapsule(x, y, 0.28, 0.52, 0.44, 0.68, 0.055) || inCapsule(x, y, 0.44, 0.68, 0.73, 0.33, 0.055))) c = [...glyph, 1];
             }
           }
+          if (!c && opaque) c = [...color, 1];
           if (c) {
             const w = c[3];
             r += c[0] * w; g += c[1] * w; b += c[2] * w; a += w;

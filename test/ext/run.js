@@ -43,7 +43,7 @@ const READER_HTML = `<!doctype html><title>Reader</title><body><textarea id=t>re
   const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ce-chrome-'));
   const ctx = await chromium.launchPersistentContext(userDir, {
     executablePath: CHROME, headless: false,
-    args: ['--no-sandbox', `--disable-extensions-except=${path.resolve('extension')}`, `--load-extension=${path.resolve('extension')}`],
+    args: ['--no-sandbox', '--disable-features=DisableLoadExtensionCommandLineSwitch', `--disable-extensions-except=${path.resolve('extension')}`, `--load-extension=${path.resolve('extension')}`],
   });
   const serve = (host, html) => ctx.route(`https://${host}/**`, (r) => r.fulfill({ contentType: 'text/html', body: html }));
   await serve('claude.ai', CLAUDE_HTML); await serve('chatgpt.com', CHATGPT_HTML); await serve('reader.example', READER_HTML);

@@ -1,0 +1,50 @@
+name: ClaudeEyes
+options:
+  bundleIdPrefix: local.claudeeyes
+  xcodeVersion: "14.3"   # keeps the project file readable by Xcode 14 and 15
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+schemes:
+  ClaudeEyes:
+    build:
+      targets:
+        ClaudeEyes: all
+        ClaudeEyesTests: [test]
+    test:
+      targets:
+        - ClaudeEyesTests
+targets:
+  ClaudeEyes:
+    type: application
+    platform: iOS
+    sources:
+      - path: ClaudeEyes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.claudeeyes.app
+        PRODUCT_NAME: ClaudeEyes
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "Claude Eyes"
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Claude Eyes listens to the microphone only to notice when you start speaking. Nothing is recorded or sent anywhere."
+  ClaudeEyesTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ClaudeEyesTests
+    dependencies:
+      - target: ClaudeEyes
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.claudeeyes.tests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
