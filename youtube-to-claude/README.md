@@ -72,3 +72,7 @@ Voice mode has no text box, so only a picture can be sent. In that case the exte
 ## Version 2.4: Claude HEARS the part in a voice call; off = plain YouTube
 * **Voice call:** when you pause (or say "hi bro"), the ~30 s part replays, and its own sound is played **into the call's microphone line**. You and Claude hear it at the same time; Claude then answers by voice. The mixing happens inside Chrome after echo cancellation, so Chrome cannot silence it. The picture is sent 1 second after the pause. (Reload the Claude tab once after installing, before you start the call.)
 * **Both buttons red (off):** the extension does nothing. Pausing is a normal YouTube pause: no subtitle screen, no replay, no microphone, no sending.
+
+## Version 2.5: no more "repeating a few seconds"
+* The microphone keeps one growing sentence while the video talks ("shut up and then the speaker says …"). Every update still contained "shut up", so the video jumped back again and again. Now each command acts **once** per sentence and the listener starts fresh.
+* "shut up" (or pressing play after the part) goes back to the start of that part (~30 s, complete sentences) **once**, and plays on to the end of the video.

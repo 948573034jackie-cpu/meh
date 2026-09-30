@@ -696,6 +696,7 @@
       return;
     }
     if (!settings.pauseOn) return;
+    if (Date.now() < quietUntil) return; // a pause right after our own jump/play is the player settling, not you
     if (!settings.sendOn) return; // both buttons red: plain YouTube, the extension does nothing
     const v = video;
     // wait a moment: ignore pauses caused by seeking, the video ending, or ads
@@ -711,6 +712,8 @@
   // Chrome: the microphone listens the whole time you are on a video (voice commands).
   // iPhone / iPad app: only while a paused part waits (the app has its own Ask button).
   const ALWAYS_LISTEN = !window.__ytcShimYT;
+  let recSession = 0;
+  const firedFor = new Set(); // (recognition result, command) pairs already acted on
   function beginWaiting(seg) {
     pending = seg;
     if (settings.voiceOn) startListening();
@@ -738,8 +741,9 @@
       rec.continuous = true;
       rec.interimResults = true;
       rec.lang = 'en-US';
+      const session = ++recSession;
       rec.onresult = (e) => {
-        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal);
+        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal, session + ':' + i);
       };
       rec.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
@@ -780,25 +784,40 @@
     } catch (e) { return false; }
   }
 
-  function once(what) { // interim results repeat the same words many times: act once
+  // A spoken sentence keeps GROWING while sound goes on (e.g. the video after "shut up"), and every update
+  // still contains the command. Act once per sentence, then start the recognizer fresh (empty sentence).
+  function once(what, key) {
+    if (key) {
+      if (firedFor.has(key + '|' + what)) return false;
+      firedFor.add(key + '|' + what);
+      if (firedFor.size > 200) firedFor.clear();
+      freshListen();
+      return true;
+    }
     const now = Date.now();
     if (lastCommand.what === what && now - lastCommand.at < 4000) return false;
     lastCommand = { what, at: now };
     return true;
   }
 
-  function onHeard(text, isFinal) {
+  function freshListen() {
+    if (!rec) return;
+    const r = rec;
+    setTimeout(() => { if (rec === r) { try { r.abort(); } catch (e) { /* ignore */ } } }, 50); // onend starts a new one
+  }
+
+  function onHeard(text, isFinal, key) {
     if (!settings.sendOn) return; // both buttons red: no voice commands
     text = String(text || '');
-    if (SHUT_UP.test(text)) { if (once('shut')) shutUp(); return; }
+    if (SHUT_UP.test(text)) { if (once('shut', key)) shutUp(); return; }
     if (HI_BRO.test(text)) {
       if (!video || videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
-      if (!once('hi')) return;
+      if (!once('hi', key)) return;
       try { chrome.runtime.sendMessage({ type: 'voice-wake' }).catch(() => {}); } catch (e) { /* ignore */ }
       if (!video.paused && !replaying) { lastHeard = 'hi bro → stop + send'; video.pause(); } // -> onPause -> show + send this part
       return;
     }
-    if (pending && LETS_GO.test(text)) { continueFromStart(); return; }
+    if (pending && LETS_GO.test(text)) { if (once('go', key)) continueFromStart(); return; }
     // talk mode: while the video is stopped, what you say is a question for the AI
     if (!ALWAYS_LISTEN || !isFinal || !pending || !settings.talkOn || !settings.sendOn) return;
     if (aiSpeaking || Date.now() - aiSpeakingEnded < 800) return; // that was the answer being read aloud
@@ -825,12 +844,19 @@
     endWaiting();
     hideOverlay();
     if (!video) return;
-    if (seg) video.currentTime = Math.max(0, seg.start - 0.3); // back to the start of that paragraph (~30 s of complete sentences)
-    if (video.paused) { ourPlay = true; video.play().catch(() => {}); }
+    jumpAndPlay(seg ? seg.start - 0.3 : video.currentTime, true); // back to the start of that paragraph (~30 s of complete sentences), then on to the end
   }
   let ourPlay = false;
   let lastHeard = '';
   let lastSeg = null;
+  let quietUntil = 0;
+  function jumpAndPlay(t, quiet) { // go to t and play on (and make sure it really plays)
+    if (!video) return;
+    if (quiet) quietUntil = Date.now() + 2000;
+    video.currentTime = Math.max(0, t);
+    if (video.paused) { ourPlay = true; video.play().catch(() => {}); }
+    setTimeout(() => { if (video && video.paused && !pending && !replaying) { ourPlay = true; video.play().catch(() => {}); } }, 900);
+  }
 
   // back to the start of the passage, then keep playing through the rest of the video
   function continueFromStart() {
@@ -838,8 +864,7 @@
     if (!seg || !video) return;
     endWaiting();
     hideOverlay();
-    video.currentTime = Math.max(0, seg.start - 0.3);
-    video.play().catch(() => {});
+    jumpAndPlay(seg.start - 0.3);
   }
 
   document.addEventListener('keydown', (e) => {
@@ -851,7 +876,7 @@
   }, true);
 
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false); // used by tests / other parts of the extension
+    if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false, msg.key); // used by tests / other parts of the extension
     if (msg && msg.type === 'tts-state') { aiSpeaking = !!msg.speaking; if (!msg.speaking) aiSpeakingEnded = Date.now(); }
   });
 
@@ -874,6 +899,7 @@
       }
     }, 50);
     replaying = { seg, timer };
+    quietUntil = Date.now() + 1500;
     video.currentTime = Math.max(0, seg.start - 0.3);
     video.play().then(() => { if (intoCall && replaying && replaying.seg === seg) startFeed(); })
       .catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });

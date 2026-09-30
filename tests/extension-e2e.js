@@ -68,7 +68,7 @@ require('fs').writeFileSync(micPath, micWav);
   ok('press ChatGPT again: red, pauses not sent', /off rgb\(217, 48, 37\)/.test((await state()).gpt) && (await sent()).length === 3);
 
   // ---- voice commands + talk mode (the words below are what the microphone would hear) ----
-  const hear = (text, final) => sw.evaluate(async ([t, f]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: f }); }, [text, final !== false]);
+  const hear = (text, final, key) => sw.evaluate(async ([t, f, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: f, key: k }); }, [text, final !== false, key || null]);
   const store = (k) => sw.evaluate((key) => chrome.storage.local.get(key).then((o) => o[key]), k);
   const chatMuted = () => sw.evaluate(async () => { const [t] = await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); return t.mutedInfo.muted; });
   const vstate = () => yt.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(1), paused: v.paused, overlay: !!document.getElementById('yt2c-overlay') }; });
@@ -114,6 +114,43 @@ require('fs').writeFileSync(micPath, micWav);
   await hear('hi bro how are you', true); await yt.waitForTimeout(2000);
   const v3 = await vstate();
   ok('"hi bro" coming from the video itself (its subtitles say it) is ignored', !v3.paused && (await sent()).length === n, JSON.stringify(v3));
+
+
+  // ---- BUG FIX: the recognizer keeps ONE growing sentence while the video talks ("shut up and then the video says ...").
+  // Every update still contains "shut up" / "hi bro": it must act ONCE, not jump back every few seconds.
+  await yt.evaluate(async () => { const v = document.querySelector('video'); v.currentTime = 40; await v.play(); });
+  await yt.waitForTimeout(1500);
+  let nG = (await sent()).length;
+  await hear('hi bro', false, 'g1:0');
+  await yt.waitForTimeout(5000);
+  await hear('hi bro what is this part about', false, 'g1:0');
+  await yt.waitForTimeout(5000);
+  await hear('hi bro what is this part about the dog', true, 'g1:0');
+  await yt.waitForTimeout(1500);
+  ok('growing sentence with "hi bro": stops and sends ONCE', (await sent()).length === nG + 1, '+' + ((await sent()).length - nG) + ' messages');
+  const partMsg = (await sent()).filter((x) => /runs from/.test(x.text)).pop();
+  const pm2 = /runs from (\d+):(\d+)/.exec(partMsg.text); const partFrom = +pm2[1] * 60 + +pm2[2];
+  await yt.waitForTimeout(500);
+  await hear('shut up', false, 'g2:0');
+  const times = [];
+  for (let k = 0; k < 22; k++) {
+    await yt.waitForTimeout(500);
+    if (k === 8) await hear('shut up and then the speaker keeps talking', false, 'g2:0');
+    if (k === 16) await hear('shut up and then the speaker keeps talking about the dog', true, 'g2:0');
+    times.push((await vstate()).t);
+  }
+  const backJumps = times.slice(1).filter((t, i) => t < times[i] - 0.3).length;
+  ok('growing sentence with "shut up": jumps back to the start of the part ONCE, then plays forward to the end (no loop)', Math.abs(times[0] - partFrom) < 2 && backJumps === 0 && times[times.length - 1] > times[0] + 8 && !(await vstate()).paused, 'part starts ' + partFrom + ' | times ' + times.join(','));
+  // pressing play instead of "shut up": also back to the start of the part once, then on
+  await yt.evaluate(() => { document.querySelector('video').currentTime = 44; }); await yt.waitForTimeout(1500); // (away from the video's own "Hi bro" line)
+  await hear('hi bro', true, 'g3:0'); await yt.waitForTimeout(2500);
+  const partMsg3 = (await sent()).filter((x) => /runs from/.test(x.text)).pop();
+  const from3 = +(/runs from (\d+):(\d+)/.exec(partMsg3.text)[1]) * 60 + +(/runs from (\d+):(\d+)/.exec(partMsg3.text)[2]);
+  await yt.waitForTimeout(31000); // the replay ends and waits
+  await yt.evaluate(() => document.querySelector('video').play());
+  const t3 = [];
+  for (let k = 0; k < 12; k++) { await yt.waitForTimeout(500); t3.push((await vstate()).t); }
+  ok('press play after the part: back to its start once, then forward (no loop)', Math.abs(t3[0] - from3) < 2 && t3.slice(1).every((t, i) => t >= t3[i] - 0.3) && t3[11] > t3[0] + 4, 'from ' + from3 + ' | ' + t3.join(','));
 
   // ---- Claude VOICE CALL: step out for a moment, send the TEXT, read the answer, go back into the call ----
   await hear('shut up', true); await yt.waitForTimeout(800);
