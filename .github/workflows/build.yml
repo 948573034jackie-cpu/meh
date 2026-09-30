@@ -22,6 +22,8 @@ jobs:
         run: |
           npm run test:ext
           npm run test:full
+      - name: Only-my-voice (real app, fake microphone conversation, real speaker-recognition model)
+        run: npm run test:voice
 
   package:
     needs: test

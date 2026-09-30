@@ -8,6 +8,8 @@ const DEFAULTS = {
   sensitivity: 'normal', // low | normal | high
   allScreens: true, // capture every monitor, not just the one under the mouse
   intervalSec: 60, // wait between screenshots
+  voiceOnly: false, // only react to my voice (needs "Learn my voice" first)
+  voiceStrictness: 'normal', // relaxed | normal | strict
   launchAtLogin: true,
 };
 

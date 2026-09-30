@@ -2,7 +2,7 @@
 const path = require('path');
 const {
   app, BrowserWindow, Tray, Menu, nativeImage, session, systemPreferences,
-  powerMonitor, Notification, shell, clipboard, ipcMain, dialog,
+  powerMonitor, Notification, shell, clipboard, ipcMain, dialog, net,
 } = require('electron');
 const { Vad, SENSITIVITY } = require('./vad');
 const { Settings } = require('./settings');
@@ -12,6 +12,8 @@ const { screenGranted } = require('./layout');
 const { pasteIntoApp } = require('./deliver');
 const { Bridge } = require('./bridge');
 const fs = require('fs');
+const crypto = require('crypto');
+const voiceid = require('./voice/voiceid');
 const { execFile } = require('child_process');
 
 const TARGETS = [
@@ -21,6 +23,10 @@ const TARGETS = [
   ['clipboard', "Only copy it (I'll paste myself)"],
 ];
 const DESKTOP_APPS = { claude: 'Claude', chatgpt: 'ChatGPT' };
+// The speaker-recognition model (NVIDIA TitaNet-small, 40 MB) is downloaded once, only if you turn on "only my voice".
+const VOICE_MODEL_URL = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx';
+const VOICE_MODEL_SHA = 'ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e';
+const VOICE_SENTENCE = 'I like to read pages and ask questions about them. Please look at this screen and tell me what the second paragraph means. I would like a simple explanation, with an easy example, in plain English.';
 const RETRY_MS = 5000;
 const STALL_MS = 4000;
 
@@ -31,6 +37,8 @@ function start(overrides = {}) {
     screenAccess,
     platform: process.platform, // tests may pretend to be macOS
     paste: pasteIntoApp,
+    voiceModelPath: undefined, // tests: use this model file instead of downloading
+    voiceProfileFile: undefined,
     bridge: undefined, // undefined = create the real Chrome link; false = none; or pass a Bridge (tests)
     settingsFile: path.join(app.getPath('userData'), 'settings.json'),
     manageLoginItem: app.isPackaged,
@@ -63,6 +71,7 @@ function start(overrides = {}) {
   let watchdog = null;
   let lastResult = '';
   let chromeUp = false;
+  let learning = false;
   let bridge = null;
 
   const icons = {
@@ -134,6 +143,20 @@ function start(overrides = {}) {
         type: 'checkbox', checked: settings.get('allScreens'),
         click: (mi) => { settings.set('allScreens', mi.checked); refreshTray(); },
       },
+      {
+        label: 'Only react to my voice',
+        type: 'checkbox', checked: !!(settings.get('voiceOnly') && voiceProfile),
+        click: (mi) => { if (mi.checked && !voiceProfile) learnVoice(); else { settings.set('voiceOnly', mi.checked); refreshTray(); } },
+      },
+      { label: voiceProfile ? 'Learn my voice again…' : 'Learn my voice…', click: () => learnVoice() },
+      {
+        label: 'Voice match',
+        submenu: [['relaxed', 'Relaxed (accepts me more often)'], ['normal', 'Normal'], ['strict', 'Strict (ignores other voices more)']].map(([id, label]) => ({
+          label, type: 'radio', checked: settings.get('voiceStrictness') === id,
+          click: () => { settings.set('voiceStrictness', id); refreshTray(); },
+        })),
+      },
+      ...(voiceProfile ? [{ label: 'Forget my voice', click: () => forgetVoice() }] : []),
       { type: 'separator' },
       { label: 'Send a test screenshot now', click: () => sendScreenshot('test') },
       {
@@ -163,6 +186,13 @@ function start(overrides = {}) {
   }
 
   // ---------- microphone listener ----------
+  let listenerLoaded = null;
+  // Commands sent before the hidden page has finished loading would be lost, so everything waits for it.
+  async function ensureListener() {
+    if (!listener) await createListener();
+    else await listenerLoaded;
+  }
+
   function createListener() {
     listener = new BrowserWindow({
       show: false,
@@ -179,8 +209,10 @@ function start(overrides = {}) {
     session.defaultSession.setPermissionCheckHandler((wc, permission) => {
       return permission === 'media' && !!listener && !!wc && wc === listener.webContents;
     });
+    listener.webContents.on('console-message', (_e, level, message) => o.onEvent({ type: 'console', level, message }));
     listener.loadFile(path.join(__dirname, 'listener.html'));
-    return new Promise((resolve) => listener.webContents.once('did-finish-load', resolve));
+    listenerLoaded = new Promise((resolve) => listener.webContents.once('did-finish-load', resolve));
+    return listenerLoaded;
   }
 
   ipcMain.on('level', (e, db) => {
@@ -195,6 +227,7 @@ function start(overrides = {}) {
     o.onEvent({ type: 'mic', state, message });
     if (state === 'listening') {
       micState = 'listening'; micMessage = ''; lastLevelTs = Date.now();
+      if (settings.get('voiceOnly') && voiceProfile) initVoice().catch(() => {});
     } else if (state === 'error') {
       micState = 'error'; micMessage = message || 'unknown';
       scheduleRetry();
@@ -212,7 +245,7 @@ function start(overrides = {}) {
 
   async function startListening() {
     clearTimeout(retryTimer);
-    if (!listener) await createListener();
+    await ensureListener();
     if (process.platform === 'darwin') {
       const ok = await systemPreferences.askForMediaAccess('microphone');
       if (!ok) {
@@ -239,6 +272,147 @@ function start(overrides = {}) {
     o.onEvent({ type: 'enabled', value: on });
     if (on) startListening(); else stopListening();
     refreshTray();
+  }
+
+  // ---------- "only react to my voice" ----------
+  const voiceFile = o.voiceProfileFile || path.join(app.getPath('userData'), 'voice.json');
+  const modelPath = o.voiceModelPath || path.join(app.getPath('userData'), 'voice', 'nemo_en_titanet_small.onnx');
+  let voiceProfile = null; // { vec: [192 numbers], selfMean, ... }  your voiceprint; stays on this computer
+  try {
+    const v = JSON.parse(fs.readFileSync(voiceFile, 'utf8'));
+    if (Array.isArray(v.vec) && v.vec.length === 192) voiceProfile = v;
+  } catch (_) { /* none saved yet */ }
+  let voiceReady = false;
+  let voiceLoading = null;
+  let voiceSeq = 0;
+  const voiceWaiters = new Map();
+  const readyWaiters = [];
+
+  ipcMain.on('voice-result', (e, msg) => {
+    if (!listener || e.sender !== listener.webContents) return;
+    if (msg.ready !== undefined) {
+      voiceReady = !!msg.ready;
+      o.onEvent({ type: 'voice-ready', ready: voiceReady, error: msg.error });
+      readyWaiters.splice(0).forEach((f) => f(voiceReady));
+      return;
+    }
+    const w = voiceWaiters.get(msg.id);
+    if (!w) return;
+    if (msg.progress !== undefined) { if (w.onProgress) w.onProgress(msg.progress); return; }
+    voiceWaiters.delete(msg.id);
+    clearTimeout(w.timer);
+    w.resolve(msg);
+  });
+
+  function askListener(cmd, timeoutMs, onProgress) {
+    const id = ++voiceSeq;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { voiceWaiters.delete(id); resolve({ id, error: 'timeout' }); }, timeoutMs);
+      voiceWaiters.set(id, { resolve, timer, onProgress });
+      listener.webContents.send('command', { ...cmd, id });
+    });
+  }
+
+  async function ensureVoiceModel() {
+    const good = (buf) => crypto.createHash('sha256').update(buf).digest('hex') === VOICE_MODEL_SHA;
+    try { const b = fs.readFileSync(modelPath); if (good(b)) return b; } catch (_) { /* not downloaded yet */ }
+    const res = await net.fetch(VOICE_MODEL_URL);
+    if (!res.ok) throw new Error(`download failed (${res.status})`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!good(buf)) throw new Error('the downloaded file is damaged');
+    fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+    fs.writeFileSync(modelPath, buf);
+    return buf;
+  }
+
+  // Loads the model into the hidden page (about a second). Safe to call many times.
+  function initVoice() {
+    if (voiceReady) return Promise.resolve(true);
+    if (!voiceLoading) {
+      voiceLoading = (async () => {
+        try {
+          const bytes = await ensureVoiceModel();
+          await ensureListener();
+          const ready = new Promise((resolve) => { readyWaiters.push(resolve); setTimeout(() => resolve(false), 30000).unref(); });
+          listener.webContents.send('command', { cmd: 'voice-model', bytes });
+          return await ready;
+        } finally { voiceLoading = null; }
+      })();
+    }
+    return voiceLoading;
+  }
+
+  // -> { ok, score, threshold, speechSec } or { ok:false, reason }
+  async function verifyVoice() {
+    let ready = false;
+    try { ready = await initVoice(); } catch (e) { return { ok: false, reason: 'model-unavailable', detail: String(e.message || e) }; }
+    if (!ready) return { ok: false, reason: 'model-unavailable' };
+    const r = await askListener({ cmd: 'verify', sec: 2 }, 8000);
+    if (r.error) return { ok: false, reason: r.error, speechSec: r.speechSec };
+    return { ...voiceid.decide(voiceProfile, Float32Array.from(r.emb), settings.get('voiceStrictness')), speechSec: r.speechSec };
+  }
+
+  function forgetVoice() {
+    voiceProfile = null;
+    try { fs.unlinkSync(voiceFile); } catch (_) { /* nothing saved */ }
+    settings.set('voiceOnly', false);
+    refreshTray();
+  }
+
+  // Menu: "Learn my voice…" -> read a paragraph aloud for ~15 s -> your voiceprint is saved on this computer.
+  async function learnVoice() {
+    if (learning) return { ok: false, error: 'busy' };
+    learning = true;
+    const say = (title, body) => { if (o.notify) return dialog.showMessageBox({ type: 'info', title, message: title, detail: body, buttons: ['OK'] }); return null; };
+    try {
+      await ensureListener();
+      if (micState !== 'listening') {
+        await startListening();
+        for (let i = 0; i < 60 && micState !== 'listening'; i++) await new Promise((r) => setTimeout(r, 200));
+        if (micState !== 'listening') throw new Error('mic');
+      }
+      setResult('getting ready to learn your voice…');
+      refreshTray();
+      try { await initVoice(); } catch (e) { throw new Error('download:' + (e.message || e)); }
+      if (!voiceReady) throw new Error('model');
+      if (o.notify) {
+        await dialog.showMessageBox({
+          type: 'info', title: 'Learn my voice', message: 'Read this aloud in your normal voice',
+          detail: `Click the button, then read this text (about 12 seconds). Sit where you usually sit, in a quiet room. Turn off any sound from the speakers, and stay with your normal microphone.\n\n“${VOICE_SENTENCE}”\n\nIf it is not enough, keep talking naturally; it stops by itself.`,
+          buttons: ['Start listening'],
+        });
+      }
+      if (process.platform === 'darwin' && tray) tray.setTitle(' listening…');
+      const r = await askListener({ cmd: 'enroll', targetSec: 12, maxSec: 50 }, 70000, (sec) => {
+        setResult(`learning your voice… ${Math.min(12, Math.round(sec))}/12 s`);
+        if (process.platform === 'darwin' && tray) tray.setTitle(` ${Math.min(12, Math.round(sec))}/12 s`);
+        o.onEvent({ type: 'voice-progress', seconds: sec });
+      });
+      if (r.error) throw new Error(r.error);
+      const profile = voiceid.buildProfile(r.embs.map((e) => Float32Array.from(e)));
+      voiceProfile = { ...profile, createdAt: Date.now() };
+      fs.mkdirSync(path.dirname(voiceFile), { recursive: true });
+      fs.writeFileSync(voiceFile, JSON.stringify(voiceProfile));
+      settings.set('voiceOnly', true);
+      setResult(`your voice is saved ✓ (consistency ${profile.selfMean.toFixed(2)})`);
+      o.onEvent({ type: 'voice-learned', selfMean: profile.selfMean, pieces: profile.count });
+      await say('Your voice is saved ✓', 'Claude Eyes will now only take a screenshot when it hears YOU.\nOther people, and voices coming out of the speakers, are ignored. Change "Voice match" in the menu if it ignores you too often.');
+      return { ok: true, selfMean: profile.selfMean, pieces: profile.count };
+    } catch (e) {
+      const m = String(e.message || e);
+      const why = m === 'not-enough-speech' ? "I didn't hear enough speech. Try again and keep reading until it stops by itself."
+        : m === 'inconsistent' ? 'The recording was too noisy, or more than one voice was heard. Try again in a quiet room, alone.'
+        : m.startsWith('download') ? `I couldn't download the voice model (${m.slice(9)}). Check your internet connection and try again.`
+        : m === 'mic' ? "The microphone isn't working yet. Check the microphone permission." : `Something went wrong (${m}).`;
+      setResult(`voice not saved: ${why}`);
+      o.onEvent({ type: 'voice-failed', error: m });
+      await say("Couldn't learn your voice", why);
+      return { ok: false, error: m };
+    } finally {
+      learning = false;
+      if (process.platform === 'darwin' && tray) tray.setTitle('');
+      refreshTray();
+    }
   }
 
   // ---------- the actual job: screenshot -> Claude ----------
@@ -271,9 +445,23 @@ function start(overrides = {}) {
         return;
       }
       const tCaptured = Date.now();
+      let voice = null;
+      if (reason === 'speech' && settings.get('voiceOnly') && voiceProfile) {
+        // The picture is already taken (at your first word). Send it only if it really was YOU speaking.
+        voice = await verifyVoice();
+        if (!voice.ok) {
+          vad.forgetLastTrigger(); // nothing was sent, so the next speech may trigger straight away
+          setResult(voice.score !== undefined ? `ignored: not your voice (${voice.score.toFixed(2)}, needs ${voice.threshold})`
+            : voice.reason === 'too-short' ? 'ignored: too short to recognise your voice'
+            : `ignored: could not check your voice (${voice.reason})`);
+          o.onEvent({ type: 'ignored', reason: 'not-your-voice', voice });
+          return;
+        }
+      }
       const res = await deliver(image);
       report(res);
-      o.onEvent({ type: 'sent', reason, captureMs: tCaptured - t0, totalMs: Date.now() - t0, route: res.route, ok: res.ok, where: res.where, pasted: res.pasted, chrome: res.chrome, size: image.getSize() });
+      if (voice && res.ok) lastResult += `  [voice ${voice.score.toFixed(2)}]`;
+      o.onEvent({ type: 'sent', reason, captureMs: tCaptured - t0, totalMs: Date.now() - t0, route: res.route, ok: res.ok, where: res.where, pasted: res.pasted, chrome: res.chrome, voice, size: image.getSize() });
     } catch (e) {
       setResult('not sent: ' + String(e.message || e));
       o.onEvent({ type: 'error', reason, error: String(e.message || e) });
@@ -467,7 +655,7 @@ function start(overrides = {}) {
     refreshTray();
     applyLoginItem();
 
-    if (settings.get('enabled')) await startListening(); else await createListener();
+    if (settings.get('enabled')) await startListening(); else await ensureListener();
     if (process.platform === 'darwin' && o.showFirstRun !== false && (settings.isNew || o.screenAccess() !== 'granted')) {
       // First launch (or still missing screen access): walk through the permissions BEFORE the first call.
       if (settings.isNew) settings.set('launchAtLogin', settings.get('launchAtLogin')); // creates settings.json so this shows once
@@ -489,7 +677,7 @@ function start(overrides = {}) {
   app.on('window-all-closed', (e) => e.preventDefault()); // tray app: never quit when windows close
   app.on('before-quit', () => { clearInterval(watchdog); clearTimeout(retryTimer); if (bridge && !o.bridge) bridge.close(); });
 
-  return { settings, vad, setEnabled, sendScreenshot, showPermissions, deliver, getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
+  return { settings, vad, setEnabled, sendScreenshot, showPermissions, deliver, learnVoice, forgetVoice, initVoice, getVoice: () => ({ profile: voiceProfile, ready: voiceReady }), getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
 }
 
 module.exports = { start };

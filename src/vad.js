@@ -36,6 +36,11 @@ class Vad {
     Object.assign(this.opts, preset);
   }
 
+  // the picture was not actually sent (e.g. not the user's voice): let the next speech trigger at once
+  forgetLastTrigger() {
+    this.lastTriggerTs = -Infinity;
+  }
+
   setMinInterval(ms) {
     if (!(ms >= 0)) throw new Error('bad interval');
     this.opts.minIntervalMs = ms;

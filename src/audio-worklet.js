@@ -22,3 +22,24 @@ class Meter extends AudioWorkletProcessor {
   }
 }
 registerProcessor('meter', Meter);
+
+// Raw microphone audio in 20 ms pieces (16 kHz) for the optional "only my voice" check.
+// It stays inside this page: it is never saved and never leaves the app.
+class Pcm extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(320);
+    this.n = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      for (let i = 0; i < ch.length; i++) {
+        this.buf[this.n++] = ch[i];
+        if (this.n === 320) { this.port.postMessage(this.buf.slice()); this.n = 0; }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('pcm', Pcm);

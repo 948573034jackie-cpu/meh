@@ -11,7 +11,8 @@
     "icons": "node scripts/make-icons.js",
     "dist": "electron-builder",
     "test:ext": "xvfb-run -a --server-args='-screen 0 1280x800x24' node test/ext/run.js",
-    "test:full": "xvfb-run -a --server-args='-screen 0 1280x800x24' node test/ext/full.js"
+    "test:full": "xvfb-run -a --server-args='-screen 0 1280x800x24' node test/ext/full.js",
+    "test:voice": "sh test/e2e/run.sh test/e2e/voice-run.js"
   },
   "license": "MIT",
   "devDependencies": {
