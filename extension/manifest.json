@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Eyes",
+  "version": "1.0.0",
+  "description": "Receives the screenshot from the Claude Eyes app and puts it into your claude.ai / chatgpt.com chat without switching tabs.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwKLxUGEcg+MyjiUPaIsPmC73I2JFlnh9gKlhmAFiNW5A7pMuu9QMWyLa9ZGjMSkxX0LkRoeG8dcqoym90ebrLudmIy+j0UdPexLmPrYoStFs1e3Ns4ZaOmxXmSa9Uttwv2+EpQGUSpURXbA5jWiawtLtMscQKgoowkV5ixfoHwpqxOiFTTrhhkAUPPIFD/K5VvMj4t1V+el2lVEiMxWvmrVIEU/3bNa4qxM7aDIb0NNK+k1oqqMk/v21BEEqvFsAo9cKZ+S+Tv1tJEpUi1DbIXKIfzXLgZdztEoPXz4m/gg4pk4ztYgRE8o4v8numNdwU40hJ+/5maRA5HPb6BiMswIDAQAB",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "scripting",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Claude Eyes"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}

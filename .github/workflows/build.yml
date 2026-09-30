@@ -17,6 +17,11 @@ jobs:
       - run: npm test
       - name: End-to-end (real app, fake microphone, virtual screen, real window switching)
         run: npm run test:e2e
+      - run: npx playwright-core install --with-deps chromium
+      - name: Chrome extension (real Chromium + mock chat pages) and full chain
+        run: |
+          npm run test:ext
+          npm run test:full
 
   package:
     needs: test

@@ -43,3 +43,9 @@ test('glyph differs between states (wave vs pause)', () => {
   assert.deepEqual(on.px(64, 64).slice(0, 3), [255, 255, 255]); // centre wave bar, white
   assert.notDeepEqual(off.px(64, 64).slice(0, 3), [255, 255, 255]);
 });
+
+test('"sent" flash icon is a green badge with a white check mark', () => {
+  const d = decode(renderIcon('sent', 128));
+  assert.deepEqual(d.px(20, 64).slice(0, 3), GREEN);
+  assert.deepEqual(d.px(64, 78).slice(0, 3), [255, 255, 255]); // on the check mark
+});

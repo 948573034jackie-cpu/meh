@@ -10,7 +10,17 @@ const { renderIcon } = require('./icons');
 const { captureScreen, screenAccess } = require('./screenshot');
 const { screenGranted } = require('./layout');
 const { pasteIntoApp } = require('./deliver');
+const { Bridge } = require('./bridge');
+const fs = require('fs');
+const { execFile } = require('child_process');
 
+const TARGETS = [
+  ['chrome', 'Chrome: claude.ai / chatgpt.com (in the background)'],
+  ['claude', 'Claude desktop app'],
+  ['chatgpt', 'ChatGPT desktop app'],
+  ['clipboard', "Only copy it (I'll paste myself)"],
+];
+const DESKTOP_APPS = { claude: 'Claude', chatgpt: 'ChatGPT' };
 const RETRY_MS = 5000;
 const STALL_MS = 4000;
 
@@ -21,6 +31,7 @@ function start(overrides = {}) {
     screenAccess,
     platform: process.platform, // tests may pretend to be macOS
     paste: pasteIntoApp,
+    bridge: undefined, // undefined = create the real Chrome link; false = none; or pass a Bridge (tests)
     settingsFile: path.join(app.getPath('userData'), 'settings.json'),
     manageLoginItem: app.isPackaged,
     notify: true,
@@ -50,11 +61,16 @@ function start(overrides = {}) {
   let busy = false;
   let retryTimer = null;
   let watchdog = null;
+  let lastResult = '';
+  let chromeUp = false;
+  let bridge = null;
 
   const icons = {
     on: nativeImage.createFromBuffer(renderIcon('on', 44), { scaleFactor: 2 }),
     off: nativeImage.createFromBuffer(renderIcon('off', 44), { scaleFactor: 2 }),
+    sent: nativeImage.createFromBuffer(renderIcon('sent', 44), { scaleFactor: 2 }),
   };
+  let flashUntil = 0;
 
   const isWorking = () => settings.get('enabled') && micState === 'listening';
 
@@ -73,7 +89,7 @@ function start(overrides = {}) {
 
   function refreshTray() {
     if (!tray) return;
-    tray.setImage(isWorking() ? icons.on : icons.off);
+    tray.setImage(Date.now() < flashUntil ? icons.sent : isWorking() ? icons.on : icons.off);
     tray.setToolTip(`Claude Eyes: ${statusText()}`);
     tray.setContextMenu(buildMenu());
   }
@@ -89,10 +105,14 @@ function start(overrides = {}) {
         click: () => setEnabled(!settings.get('enabled')),
       },
       {
-        label: `Paste into ${settings.get('targetApp')} app automatically`,
-        type: 'checkbox', checked: settings.get('paste'),
-        click: (mi) => { settings.set('paste', mi.checked); refreshTray(); },
+        label: 'Send the picture to',
+        submenu: TARGETS.map(([id, label]) => ({
+          label, type: 'radio', checked: settings.get('target') === id,
+          click: () => { settings.set('target', id); refreshTray(); },
+        })),
       },
+      { label: chromeUp ? 'Chrome extension: connected ✓' : 'Chrome extension: not connected', enabled: false },
+      { label: chromeUp ? 'Chrome extension setup…' : 'Set up the Chrome extension…', click: () => installExtension() },
       {
         label: 'Microphone sensitivity',
         submenu: Object.keys(SENSITIVITY).map((name) => ({
@@ -123,7 +143,7 @@ function start(overrides = {}) {
       },
       { type: 'separator' },
       ...(process.platform === 'darwin' ? [{ label: 'Check permissions…', click: () => showPermissions() }] : []),
-      { label: lastSent ? `Last screenshot: ${lastSent}` : 'No screenshot sent yet', enabled: false },
+      { label: lastResult || 'No screenshot sent yet', enabled: false },
     ];
     if (micState === 'error' && /NotAllowed|denied|Permission/i.test(micMessage)) {
       items.splice(2, 0, { label: 'Fix: allow microphone access…', click: openMicSettings });
@@ -237,28 +257,25 @@ function start(overrides = {}) {
         // Without Screen Recording permission macOS only returns the wallpaper. Never send that.
         if (access === 'not-determined') o.capture({ all: false }).catch(() => {}); // makes macOS show its permission prompt
         handleScreenDenied(access);
+        setResult('not sent: Screen Recording is not allowed yet');
         o.onEvent({ type: 'blocked', reason: 'screen-permission', access });
         return;
       }
-      const image = await o.capture({ all: settings.get('allScreens') }); // grab the screen FIRST, before anything else moves
-      const tCaptured = Date.now();
-      const before = { text: clipboard.readText(), image: clipboard.readImage() };
-      clipboard.writeImage(image);
-      let pasted = null;
-      if (settings.get('paste')) {
-        pasted = await o.paste({ appName: settings.get('targetApp') });
-        if (!pasted.ok) handlePasteProblem(pasted);
-        else if (!pasted.focusRestored) complain('Claude Eyes', "The screenshot was sent, but I couldn't switch you back to your page automatically. Click your page to continue.");
-        // put back whatever was on the clipboard before (best effort, text/image only)
-        setTimeout(() => {
-          if (!before.image.isEmpty()) clipboard.writeImage(before.image);
-          else if (before.text) clipboard.writeText(before.text);
-        }, 300);
+      let image;
+      try {
+        image = await o.capture({ all: settings.get('allScreens') }); // grab the screen FIRST, before anything else moves
+      } catch (e) {
+        handleCaptureProblem(e);
+        setResult('not sent: could not capture the screen');
+        o.onEvent({ type: 'error', reason, error: String(e.message || e) });
+        return;
       }
-      lastSent = new Date().toLocaleTimeString();
-      o.onEvent({ type: 'sent', reason, captureMs: tCaptured - t0, totalMs: Date.now() - t0, pasted, size: image.getSize() });
+      const tCaptured = Date.now();
+      const res = await deliver(image);
+      report(res);
+      o.onEvent({ type: 'sent', reason, captureMs: tCaptured - t0, totalMs: Date.now() - t0, route: res.route, ok: res.ok, where: res.where, pasted: res.pasted, chrome: res.chrome, size: image.getSize() });
     } catch (e) {
-      handleCaptureProblem(e);
+      setResult('not sent: ' + String(e.message || e));
       o.onEvent({ type: 'error', reason, error: String(e.message || e) });
     } finally {
       busy = false;
@@ -266,22 +283,135 @@ function start(overrides = {}) {
     }
   }
 
+  // Desktop app route: picture -> clipboard -> paste into the app -> straight back to your page.
+  async function pasteDesktop(image, appName) {
+    const before = { text: clipboard.readText(), image: clipboard.readImage() };
+    clipboard.writeImage(image);
+    let r;
+    try { r = await o.paste({ appName }); } catch (e) { r = { ok: false, reason: 'failed', detail: String(e.message || e) }; }
+    // give the user's old clipboard back, but ONLY if the paste worked (otherwise the picture stays for a manual paste)
+    if (r.ok) {
+      setTimeout(() => {
+        if (!before.image.isEmpty()) clipboard.writeImage(before.image);
+        else if (before.text) clipboard.writeText(before.text);
+      }, 300);
+    }
+    return r;
+  }
+
+  // -> { ok, route: 'chrome'|'claude'|'chatgpt'|'clipboard'|null, where?, chrome?, pasted?, note? }
+  async function deliver(image) {
+    const target = settings.get('target');
+    const res = { ok: false, route: null };
+    if (target === 'clipboard') {
+      clipboard.writeImage(image);
+      return { ok: true, route: 'clipboard' };
+    }
+    if (target === 'chrome') {
+      if (bridge && bridge.connected) {
+        res.chrome = await bridge.send({ mime: 'image/jpeg', data: image.toJPEG(85).toString('base64'), name: 'screenshot.jpg' });
+        if (res.chrome.ok) return { ...res, ok: true, route: 'chrome', where: res.chrome.where };
+      } else {
+        res.chrome = { ok: false, error: 'not-connected' };
+      }
+      // Chrome could not take it: fall back to whichever desktop app is open
+      for (const name of Object.values(DESKTOP_APPS)) {
+        const r = await pasteDesktop(image, name);
+        res.pasted = r;
+        if (r.ok) return { ...res, ok: true, route: name.toLowerCase(), where: name, viaFallback: true };
+        if (r.reason !== 'not-running') break;
+      }
+      clipboard.writeImage(image); // nothing worked: leave the picture on the clipboard
+      return res;
+    }
+    const name = DESKTOP_APPS[target] || 'Claude';
+    const r = await pasteDesktop(image, name);
+    res.pasted = r;
+    if (r.ok) return { ...res, ok: true, route: target, where: name };
+    return res;
+  }
+
+  function setResult(text) {
+    lastResult = `${new Date().toLocaleTimeString()}  ${text}`;
+    lastSent = lastResult;
+  }
+
+  function report(res) {
+    if (res.ok) {
+      flashUntil = Date.now() + 1500;
+      setTimeout(refreshTray, 1600);
+      if (res.route === 'chrome') setResult(`sent to ${res.where} in Chrome ✓`);
+      else if (res.route === 'clipboard') setResult('copied to your clipboard ✓');
+      else setResult(`sent to the ${res.where} app ✓${res.viaFallback ? ' (Chrome was not available)' : ''}`);
+      if (res.pasted && res.pasted.ok && !res.pasted.focusRestored) complain('Claude Eyes', "The screenshot was sent, but I couldn't switch you back to your page automatically. Click your page to continue.");
+      if (res.viaFallback) complain('Claude Eyes', `Chrome wasn't available (${chromeReason(res.chrome)}), so I used the ${res.where} app.`);
+      return;
+    }
+    const why = res.chrome && !res.chrome.ok ? chromeReason(res.chrome) : pasteReason(res.pasted || {});
+    setResult(`not sent: ${why}`);
+    if (res.chrome && !res.chrome.ok) complain('Claude Eyes', `The picture was not sent: ${chromeReason(res.chrome)}. It is on your clipboard.`);
+    else if (res.pasted) handlePasteProblem(res.pasted, settings.get('target'));
+  }
+
+  function chromeReason(c) {
+    const e = c && c.error;
+    if (e === 'no-tab') return 'open claude.ai or chatgpt.com in Chrome';
+    if (e === 'not-connected') return "the Chrome extension isn't connected (menu: Set up the Chrome extension)";
+    if (e === 'no-message-box') return "couldn't find the message box on the page";
+    if (e === 'timeout') return 'Chrome did not answer in time';
+    return e || 'unknown problem';
+  }
+  function pasteReason(r) {
+    if (r.reason === 'not-running') return 'the desktop app is not open';
+    if (r.reason === 'wrong-window') return "the desktop app didn't come forward in time";
+    if (r.reason === 'no-accessibility') return 'Accessibility permission is missing';
+    return r.reason || 'unknown problem';
+  }
+
   let lastComplaint = 0;
   let lastPaneOpen = 0;
   function complain(title, body) {
-    if (Date.now() - lastComplaint < 60000) return; // don't nag on every sentence
+    if (Date.now() - lastComplaint < 20000) return; // don't nag on every sentence
     lastComplaint = Date.now();
     notify(title, body);
   }
 
-  function handlePasteProblem(r) {
-    const app_ = settings.get('targetApp');
+  function handlePasteProblem(r, target) {
+    const app_ = DESKTOP_APPS[target] || 'Claude';
     if (r.reason === 'wrong-window') complain('Claude Eyes', `The ${app_} app didn't come forward in time, so nothing was pasted (your page was left alone). The screenshot is on your clipboard.`);
     else if (r.reason === 'not-running') complain('Claude Eyes', `The ${app_} app isn't open, so the screenshot is only on your clipboard.`);
     else if (r.reason === 'no-accessibility') {
       complain('Claude Eyes needs permission', 'Allow Claude Eyes under System Settings > Privacy & Security > Accessibility so it can paste.');
       if (process.platform === 'darwin') shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility');
     } else complain('Claude Eyes', `Couldn't paste into ${app_} (${r.reason}). The screenshot is on your clipboard.`);
+  }
+
+  // ---------- Chrome extension ----------
+  function extensionSource() {
+    return app.isPackaged ? path.join(process.resourcesPath, 'extension') : path.join(__dirname, '..', 'extension');
+  }
+  function extensionFolder() {
+    return path.join(app.getPath('home'), 'Claude Eyes Chrome Extension');
+  }
+  function syncExtension() {
+    try { fs.cpSync(extensionSource(), extensionFolder(), { recursive: true, force: true }); return true; } catch (_) { return false; }
+  }
+  async function installExtension() {
+    if (!syncExtension()) { notify('Claude Eyes', "Couldn't prepare the Chrome extension folder."); return; }
+    shell.showItemInFolder(path.join(extensionFolder(), 'manifest.json'));
+    const open = process.platform === 'darwin' ? ['open', ['-a', 'Google Chrome', 'chrome://extensions']]
+      : process.platform === 'win32' ? ['cmd', ['/c', 'start', 'chrome', 'chrome://extensions']] : null;
+    if (open) execFile(open[0], open[1], () => {});
+    if (o.notify) {
+      await dialog.showMessageBox({
+        type: 'info', title: 'Chrome extension', message: 'Add the extension to Chrome (one time, 3 clicks)',
+        detail: '1. In the Chrome page that just opened, turn on "Developer mode" (top right).\n' +
+          '2. Click "Load unpacked".\n' +
+          '3. Choose the folder "Claude Eyes Chrome Extension" (it is open in Finder for you).\n\n' +
+          'A green "ON" badge appears on the extension when it is connected. After that, screenshots go into your claude.ai / chatgpt.com tab without leaving your page.',
+        buttons: ['Done'],
+      });
+    }
   }
 
   const PANE = (name) => `x-apple.systempreferences:com.apple.preference.security?Privacy_${name}`;
@@ -322,6 +452,16 @@ function start(overrides = {}) {
 
   // ---------- boot ----------
   app.whenReady().then(async () => {
+    // link to the Chrome extension (127.0.0.1 only)
+    if (o.bridge !== false) {
+      const onChange = (up) => { chromeUp = up; o.onEvent({ type: 'chrome', connected: up }); refreshTray(); };
+      if (o.bridge) { bridge = o.bridge; bridge.onChange = onChange; chromeUp = bridge.connected; }
+      else {
+        bridge = new Bridge({ onChange });
+        bridge.start().catch((e) => o.onEvent({ type: 'bridge-error', error: String(e.message || e) }));
+      }
+    }
+    if (fs.existsSync(extensionFolder())) syncExtension(); // keep an installed extension folder up to date
     tray = new Tray(isWorking() ? icons.on : icons.off);
     if (process.platform !== 'darwin') tray.on('click', () => tray.popUpContextMenu());
     refreshTray();
@@ -347,9 +487,9 @@ function start(overrides = {}) {
   });
 
   app.on('window-all-closed', (e) => e.preventDefault()); // tray app: never quit when windows close
-  app.on('before-quit', () => { clearInterval(watchdog); clearTimeout(retryTimer); });
+  app.on('before-quit', () => { clearInterval(watchdog); clearTimeout(retryTimer); if (bridge && !o.bridge) bridge.close(); });
 
-  return { settings, vad, setEnabled, sendScreenshot, showPermissions, getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
+  return { settings, vad, setEnabled, sendScreenshot, showPermissions, deliver, getState: () => ({ micState, micMessage, working: isWorking(), lastSent }) };
 }
 
 module.exports = { start };

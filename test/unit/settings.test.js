@@ -35,11 +35,11 @@ test('corrupt file falls back to defaults', () => {
 test('wrong-typed values in the file are ignored', () => {
   const f = tmp();
   fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify({ enabled: 'yes', sensitivity: 5, paste: false }));
+  fs.writeFileSync(f, JSON.stringify({ enabled: 'yes', sensitivity: 5, allScreens: false }));
   const s = new Settings(f);
   assert.equal(s.get('enabled'), true);
   assert.equal(s.get('sensitivity'), 'normal');
-  assert.equal(s.get('paste'), false);
+  assert.equal(s.get('allScreens'), false);
 });
 
 test('unknown keys rejected; unwritable path does not throw', () => {
@@ -47,4 +47,8 @@ test('unknown keys rejected; unwritable path does not throw', () => {
   const s = new Settings(path.join(blocker, 'child', 's.json')); // parent is a file => cannot write
   assert.throws(() => s.set('bogus', 1));
   assert.doesNotThrow(() => s.set('enabled', false));
+});
+
+test('picture goes to Chrome by default', () => {
+  assert.equal(new Settings(tmp()).get('target'), 'chrome');
 });

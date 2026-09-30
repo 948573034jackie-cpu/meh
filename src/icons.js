@@ -53,16 +53,26 @@ function inRoundRect(x, y, x0, y0, x1, y1, r) {
   return (x - cx) ** 2 + (y - cy) ** 2 <= r * r;
 }
 
-// state: 'on' | 'off'.  Returns a PNG Buffer of size `size` x `size`.
+function inCapsule(x, y, x0, y0, x1, y1, r) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const t = Math.max(0, Math.min(1, ((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(x - (x0 + t * dx), y - (y0 + t * dy)) <= r;
+}
+
+// state: 'on' (green wave) | 'off' (yellow pause) | 'sent' (green check, flashed after a send).
+// Returns a PNG Buffer of size `size` x `size`.
 function renderIcon(state, size) {
-  const color = state === 'on' ? GREEN : YELLOW;
-  const glyph = state === 'on' ? [255, 255, 255] : [70, 50, 0];
+  const color = state === 'off' ? YELLOW : GREEN;
+  const glyph = state === 'off' ? [70, 50, 0] : [255, 255, 255];
   const bars =
-    state === 'on'
-      ? [ // voice-wave: [center x, half height]
+    state === 'off'
+      ? [[0.34, 0.27, 0.46, 0.73], [0.54, 0.27, 0.66, 0.73]] // pause
+      : state === 'sent'
+      ? [] // check mark is drawn as capsules below
+      : [ // voice-wave: [center x, half height]
           [0.30, 0.10], [0.40, 0.20], [0.50, 0.28], [0.60, 0.18], [0.70, 0.09],
         ].map(([cx, hh]) => [cx - 0.035, 0.5 - hh, cx + 0.035, 0.5 + hh])
-      : [[0.34, 0.27, 0.46, 0.73], [0.54, 0.27, 0.66, 0.73]]; // pause
+    ;
   const rgba = Buffer.alloc(size * size * 4);
   const S = 4;
   for (let py = 0; py < size; py++) {
@@ -81,6 +91,7 @@ function renderIcon(state, size) {
               for (const [x0, y0, x1, y1] of bars) {
                 if (inRoundRect(x, y, x0, y0, x1, y1, 0.035)) c = [...glyph, 1];
               }
+              if (state === 'sent' && (inCapsule(x, y, 0.28, 0.52, 0.44, 0.68, 0.055) || inCapsule(x, y, 0.44, 0.68, 0.73, 0.33, 0.055))) c = [...glyph, 1];
             }
           }
           if (c) {

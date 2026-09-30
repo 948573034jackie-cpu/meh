@@ -9,36 +9,60 @@
     "test": "node --test test/unit/*.test.js",
     "test:e2e": "sh test/e2e/run.sh",
     "icons": "node scripts/make-icons.js",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "test:ext": "xvfb-run -a --server-args='-screen 0 1280x800x24' node test/ext/run.js",
+    "test:full": "xvfb-run -a --server-args='-screen 0 1280x800x24' node test/ext/full.js"
   },
   "license": "MIT",
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "playwright-core": "^1.63.0"
   },
   "build": {
     "appId": "com.claudeeyes.app",
     "productName": "Claude Eyes",
-    "files": ["src/**/*", "assets/**/*", "package.json"],
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dmg", "zip"],
+      "target": [
+        "zip"
+      ],
       "icon": "build/icon.png",
       "extendInfo": {
         "LSUIElement": true,
         "NSMicrophoneUsageDescription": "Claude Eyes listens to your microphone only to detect when you start speaking.",
         "NSScreenCaptureUsageDescription": "Claude Eyes takes a screenshot when you start speaking so Claude can see your screen.",
         "NSAppleEventsUsageDescription": "Claude Eyes pastes the screenshot into the Claude app."
-      }
+      },
+      "minimumSystemVersion": "10.15.0"
     },
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.png"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "build/icon.png",
       "category": "Utility"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "extension",
+        "to": "extension"
+      }
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
   }
 }

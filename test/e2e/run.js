@@ -33,7 +33,7 @@ function launch(intervalSec, extra = {}) {
   const t0 = Date.now();
   const pasteCalls = [];
   const handle = require('../../src/app').start({
-    settingsFile, notify: false, manageLoginItem: false, allowMultiple: true,
+    settingsFile, notify: false, manageLoginItem: false, allowMultiple: true, bridge: false,
     paste: async (a) => { pasteCalls.push(a); return { ok: true }; },
     ...extra,
     onEvent: (e) => { if (e.type !== 'level') events.push({ ...e, at: Date.now() - t0 }); else events.levelCount = (events.levelCount || 0) + 1; },
@@ -138,6 +138,90 @@ async function focusScenarios() {
   }
   check('5 rounds in a row: always back on the page, fast', away.length === 5 && Math.max(...away) < 1000, away.join(',') + 'ms');
 
+  // ---- 6. Chrome route: the picture goes to the browser IN THE BACKGROUND (no switching, clipboard untouched)
+  console.log('\n# Chrome route (stand-in extension)');
+  const WebSocket = require('ws');
+  const { Bridge } = require('../../src/bridge');
+  const { EXT_ID } = require('../../src/ext-id');
+  const br = new Bridge({ ports: [47690] });
+  await br.start();
+  const got = [];
+  let mode = 'ok';
+  const fake = new WebSocket('ws://127.0.0.1:47690', { origin: `chrome-extension://${EXT_ID}` });
+  fake.on('message', (raw) => {
+    const m = JSON.parse(raw);
+    if (m.type !== 'shot') return;
+    got.push(m);
+    fake.send(JSON.stringify({ type: 'result', id: m.id, ...(mode === 'ok' ? { ok: true, where: 'claude.ai', method: 'file-input' } : { ok: false, error: 'no-tab' }) }));
+  });
+  for (let i = 0; i < 25 && !br.connected; i++) await sleep(200);
+  check('Chrome link is up (extension connected)', br.connected);
+  const C = launch(60, { bridge: br, paste: (a) => pasteIntoApp(a) });
+  C.handle.setEnabled(false);
+  await sleep(300);
+  const sendC = async () => { const b = C.events.length; await C.handle.sendScreenshot('test'); return C.events.slice(b).find((e) => e.type === 'sent' || e.type === 'error'); };
+  const { clipboard: cb } = require('electron');
+  await activate(reader);
+  cb.writeText('KEEP ME');
+  const claudeCount0 = await pastedCount(claude);
+  ev = await sendC();
+  await sleep(300);
+  const jpgHead = got[0] && Buffer.from(got[0].data, 'base64');
+  check('picture went to Chrome as a real JPEG', ev.route === 'chrome' && ev.ok && jpgHead && jpgHead[0] === 0xff && jpgHead[1] === 0xd8 && jpgHead.length > 2000, `${jpgHead && jpgHead.length} bytes`);
+  check('Chrome route never touched the desktop apps or your windows', !ev.pasted && active() === id(reader) && (await pastedCount(claude)) === claudeCount0 && (await pastedCount(reader)) === 0);
+  check('Chrome route left your clipboard exactly as it was', cb.readText() === 'KEEP ME' && cb.readImage().isEmpty());
+
+  // Chrome answers "no chat tab" -> falls back to the Claude desktop app, then returns to your page
+  mode = 'no-tab';
+  const claudeBefore = claudeCount0;
+  ev = await sendC();
+  await sleep(300);
+  check('no chat tab in Chrome -> falls back to the Claude app', ev.ok && ev.route === 'claude' && (await pastedCount(claude)) === claudeBefore + 1, JSON.stringify(ev.chrome) + ' ' + ev.route);
+  check('...and you are back on your page', active() === id(reader));
+  check('...and your old clipboard is put back after a successful paste', await (async () => { await sleep(500); return cb.readText() === 'KEEP ME'; })());
+
+  // Chrome not connected and no desktop app open -> nothing to paste into: picture stays on the clipboard
+  fake.close();
+  await sleep(500);
+  claude.hide();
+  await sleep(300);
+  await activate(reader);
+  cb.writeText('OLD');
+  ev = await sendC();
+  await sleep(500);
+  check('nothing available: reported as not sent', ev.ok === false && ev.route === null);
+  check('...but the picture is on your clipboard so you can paste it yourself', !cb.readImage().isEmpty());
+  check('...and you are still on your page', active() === id(reader));
+  claude.show();
+  await sleep(300);
+
+  // "Only copy it" option
+  await activate(reader);
+  C.handle.settings.set('target', 'clipboard');
+  cb.writeText('X');
+  ev = await sendC();
+  check('"Only copy it" puts the picture on the clipboard and switches nothing', ev.ok && ev.route === 'clipboard' && !cb.readImage().isEmpty() && active() === id(reader));
+
+  // Paste keystroke fails inside the desktop app -> you must STILL be sent back to your page
+  const shim2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ce-shim2-'));
+  fs.writeFileSync(path.join(shim2, 'xdotool'), `#!/bin/sh\nif [ "$1" = key ]; then exit 1; fi\nexec ${real} "$@"\n`, { mode: 0o755 });
+  const failRun = (cmd, args) => new Promise((resolve) => execFile(cmd, args, { env: { ...process.env, PATH: `${shim2}:${process.env.PATH}` }, timeout: 8000 },
+    (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout), stderr: String(stderr) })));
+  C.handle.settings.set('target', 'claude');
+  await activate(reader);
+  const F = launch(60, { paste: (a) => pasteIntoApp({ ...a, run: failRun }) });
+  F.handle.setEnabled(false);
+  F.handle.settings.set('target', 'claude');
+  await sleep(300);
+  const bF = F.events.length;
+  await F.handle.sendScreenshot('test');
+  const evF = F.events.slice(bF).find((e) => e.type === 'sent');
+  await sleep(400);
+  check('paste failed inside Claude -> reported as failed, not "sent"', evF && evF.ok === false && evF.pasted && evF.pasted.reason === 'failed', JSON.stringify(evF && evF.pasted));
+  check('paste failed -> you are STILL sent back to your page', active() === id(reader));
+  check('paste failed -> the picture stays on the clipboard for a manual paste', !cb.readImage().isEmpty());
+
+  br.close();
   handleBox.handle.setEnabled(false);
   reader.destroy(); claude.destroy();
 }

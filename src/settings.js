@@ -4,12 +4,11 @@ const path = require('path');
 
 const DEFAULTS = {
   enabled: true, // the on/off switch
-  paste: true, // paste the screenshot into the Claude app
+  target: 'chrome', // where the picture goes: chrome | claude | chatgpt | clipboard
   sensitivity: 'normal', // low | normal | high
   allScreens: true, // capture every monitor, not just the one under the mouse
   intervalSec: 60, // wait between screenshots
   launchAtLogin: true,
-  targetApp: 'Claude',
 };
 
 class Settings {

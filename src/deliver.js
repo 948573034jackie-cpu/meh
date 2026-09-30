@@ -74,10 +74,19 @@ if not isFront then
   return "wrong-window"
 end if
 
-tell application "System Events" to keystroke "v" using command down
-delay 0.08
+-- let the app finish coming forward so it is ready for the keystroke, then paste
+delay 0.18
+set pasteErr to ""
+try
+  tell application "System Events" to keystroke "v" using command down
+on error errMsg
+  set pasteErr to errMsg
+end try
+delay 0.12
+-- ALWAYS go back to the page you were on, even if pasting failed
 set wentBack to my restorePrev(prevName, prevWinName)
 set elapsedMs to (my nowMs()) - t0
+if pasteErr is not "" then error pasteErr
 if wentBack then return "ok " & elapsedMs
 return "ok-nofocus " & elapsedMs
 `.trim();
@@ -121,14 +130,16 @@ if ([CE]::GetForegroundWindow() -ne $target) {
   [void][CE]::Focus($prev)
   Write-Output 'wrong-window'; exit 0
 }
-$ws.SendKeys('^v')
-Start-Sleep -Milliseconds 80
+Start-Sleep -Milliseconds 180
+try { $ws.SendKeys('^v') } catch { $pasteErr = $_.Exception.Message }
+Start-Sleep -Milliseconds 120
 $back = $false
 for ($n = 0; $n -lt 3 -and -not $back; $n++) {
   [void][CE]::Focus($prev)
   for ($i = 0; $i -lt 10 -and [CE]::GetForegroundWindow() -ne $prev; $i++) { Start-Sleep -Milliseconds 30 }
   $back = ([CE]::GetForegroundWindow() -eq $prev)
 }
+if ($pasteErr) { [Console]::Error.WriteLine($pasteErr); exit 1 }
 if ($back) { Write-Output ('ok ' + $sw.ElapsedMilliseconds) } else { Write-Output ('ok-nofocus ' + $sw.ElapsedMilliseconds) }
 `;
 }
@@ -149,8 +160,9 @@ if [ "$(active)" != "$w" ]; then
   [ -n "$prev" ] && xdotool windowactivate "$prev"
   echo wrong-window; exit 0
 fi
-xdotool key --clearmodifiers ctrl+v
-sleep 0.08
+sleep 0.18
+xdotool key --clearmodifiers ctrl+v || pasteFailed=1
+sleep 0.12
 back=0
 if [ -z "$prev" ]; then back=1; fi
 n=0; while [ $back -eq 0 ] && [ $n -lt 3 ]; do
@@ -159,6 +171,7 @@ n=0; while [ $back -eq 0 ] && [ $n -lt 3 ]; do
   [ "$(active)" = "$prev" ] && back=1
 done
 t1=$(now)
+if [ -n "$pasteFailed" ]; then echo "paste-failed" >&2; exit 1; fi
 if [ $back -eq 1 ]; then echo "ok $((t1-t0))"; else echo "ok-nofocus $((t1-t0))"; fi
 `.trim();
 }
