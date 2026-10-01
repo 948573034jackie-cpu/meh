@@ -1,0 +1,19 @@
+/* Dark modes on light pages: invert the whole page, including its background. */
+html[data-eyecare-invert] {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+
+/* ...then flip photos and videos back so they keep their real colors. */
+html[data-eyecare-invert] :is(img, video, canvas, embed, object, svg image, [style*="url("],
+  iframe[src*="youtube"], iframe[src*="youtu.be"], iframe[src*="vimeo"], iframe[src*="bilibili"],
+  iframe[src*="dailymotion"], iframe[src*="twitch"], iframe[src*="player"]) {
+  filter: invert(1) hue-rotate(180deg) !important;
+}
+html[data-eyecare-invert] [style*="url("] :is(img, video, canvas, embed, object) {
+  filter: none !important;
+}
+
+/* Dialogs and popovers render outside the page's filter, so they need their own. */
+html[data-eyecare-invert] :is(dialog:modal, [popover]:popover-open):not(eyecare-overlay) {
+  filter: invert(1) hue-rotate(180deg) !important;
+}

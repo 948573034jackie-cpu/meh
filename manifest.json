@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Eye Care Colors",
+  "short_name": "Eye Care",
+  "version": "1.0.0",
+  "description": "Repaint any web page — text, books, videos — in eye-friendly colors: Paper, Book, Blue-light filter, Dark and Night.",
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "activeTab"],
+  "background": { "service_worker": "src/background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/modes.js", "src/content.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Eye Care Colors",
+    "default_popup": "popup/popup.html",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "commands": {
+    "toggle": {
+      "suggested_key": { "default": "Alt+Shift+E" },
+      "description": "Switch between Original and your last eye-care mode"
+    },
+    "next-mode": {
+      "suggested_key": { "default": "Alt+Shift+N" },
+      "description": "Cycle to the next color mode"
+    }
+  }
+}

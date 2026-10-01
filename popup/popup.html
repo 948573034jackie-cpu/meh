@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Eye Care Colors</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="../icons/icon32.png" alt="" width="20" height="20">
+    <h1>Eye Care Colors</h1>
+  </header>
+
+  <div class="modes" id="modes" role="radiogroup" aria-label="Color mode"></div>
+
+  <label class="row slider">
+    <span>Brightness</span>
+    <input type="range" id="brightness" min="40" max="100" step="5">
+    <output id="brightnessValue"></output>
+  </label>
+
+  <label class="row toggle" id="siteRow" hidden>
+    <span>Pause on <b id="siteName"></b></span>
+    <input type="checkbox" id="siteOff" role="switch">
+  </label>
+
+  <footer>
+    <p><b>20-20-20:</b> every 20 minutes, look at something 20 feet (6 m) away for 20 seconds.</p>
+    <p class="keys"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> on/off · <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> next mode</p>
+  </footer>
+
+  <script src="../src/modes.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
