@@ -314,7 +314,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: true };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -323,7 +323,7 @@
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
     if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
     if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
-    if ('talkOn' in s) settings.talkOn = s.talkOn !== false; // read the answers aloud; what you say after "hi bro" goes to the chat
+    if ('talkOn' in s) settings.talkOn = s.talkOn === true; // read the answers aloud; what you say after "hi bro" goes to the chat
     if ('sendOn' in s) settings.sendOn = s.sendOn === true; // a button under the video is green: pauses are sent to that chat
     if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
     if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video

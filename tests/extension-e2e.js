@@ -72,7 +72,8 @@ require('fs').writeFileSync(micPath, micWav);
   const store = (k) => sw.evaluate((key) => chrome.storage.local.get(key).then((o) => o[key]), k);
   const chatMuted = () => sw.evaluate(async () => { const [t] = await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); return t.mutedInfo.muted; });
   const vstate = () => yt.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(1), paused: v.paused, overlay: !!document.getElementById('yt2c-overlay') }; });
-  await sw.evaluate(() => chrome.storage.local.set({ replayOn: false }));
+  ok('Chrome voice (talk mode) is OFF by default', (await store('talkOn')) !== true);
+  await sw.evaluate(() => chrome.storage.local.set({ replayOn: false, talkOn: true })); // turn talk mode on for these checks
   await yt.click('#yt2c-b-chatgpt'); await yt.waitForTimeout(5000);          // ChatGPT on (green) again
   let n = (await sent()).length;
   await yt.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; v.currentTime = 30; await v.play(); });
@@ -160,6 +161,7 @@ require('fs').writeFileSync(micPath, micWav);
   const clEvents = () => cl.evaluate(() => window.__events);
   const inCall = () => cl.evaluate(() => document.getElementById('call').style.display !== 'none');
   ok('Claude page starts in a voice call (no text box visible)', await inCall());
+  const spokenBeforeCall = await store('lastSpoken');
   await yt.click('#yt2c-b-claude'); await yt.waitForTimeout(11000);     // Claude on: full transcript, once
   const c1 = await clSent(); const e1 = await clEvents();
   ok('turning Claude on during the call: transcript sent as TEXT, then back in the call', c1.length === 1 && /Link:/.test(c1[0].text) && e1.join(',') === 'end,sent,start' && await inCall(), JSON.stringify(e1) + ' ' + c1.length);
@@ -179,6 +181,10 @@ require('fs').writeFileSync(micPath, micWav);
   ok('during the replay the call HEARS the video part (fed into its microphone line)', during > 0.1, 'level ' + during);
   ok('the call is NOT left this time; the picture goes in (after 1 s)', e2.join(',') === 'end,sent,start,picture' && c2.length === 1 && await inCall(), JSON.stringify(e2));
   await yt.waitForTimeout(30000); // the replay (~28 s) ends
+  ok('during the Claude voice call Chrome\'s voice NEVER speaks (Claude keeps its own voice), even with talk mode on', (await store('lastSpoken')) === spokenBeforeCall, 'lastSpoken: ' + (await store('lastSpoken')));
+  const nAsk = (await clSent()).length;
+  await hear('what does dog mean', false); await hear('what does dog mean', true); await yt.waitForTimeout(4000);
+  ok('during the call, what you say is NOT typed into the chat (Claude hears you already)', (await clSent()).length === nAsk && await inCall(), (await clSent()).length + ' vs ' + nAsk);
   const after = await levelFor(1500);
   ok('after the replay the call hears only your microphone again', after < 0.02 && await yt.evaluate(() => document.querySelector('video').paused), 'level ' + after);
   await ctx.close();

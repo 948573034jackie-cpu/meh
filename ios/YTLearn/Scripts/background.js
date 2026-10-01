@@ -198,10 +198,10 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
     return T.name + ' page problem: ' + ((res && res.error) || 'unknown') + ' | steps: ' + JSON.stringify((res && res.steps) || []) + ' | page: ' + JSON.stringify((res && res.info) || {});
   }
   if (res && res.ok && res.bridged) {
-    // we stepped out of the voice call to send the text: read the answer aloud first (talk mode), then go back into the call
+    // we stepped out of the voice call to send the text: go straight back into the call, Claude answers in its OWN voice
+    // (never Chrome's voice here)
     pendingRestart = claudeTab.id;
-    if (readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0, true);
-    else setTimeout(() => restartVoice(), 1500);
+    setTimeout(() => restartVoice(), 1500);
   } else if (res && res.ok && !res.voiceMode && readAloud) followAnswer(claudeTab.id, videoTabId, before ? before.count : 0);
   if (needTranscript) markSent(claudeTab.id, videoId, path);
   if (res && res.bridged) summary += ' (voice call: stepped out for a moment, sent the text, going back in)';
@@ -225,7 +225,16 @@ async function sendVideo(tabId, targetId) {
 async function talkOn() {
   if (typeof window !== 'undefined' && window.__ytcShimYT) return false; // iPhone / iPad app: the app reads answers itself
   const { talkOn } = await chrome.storage.local.get('talkOn');
-  return talkOn !== false;
+  return talkOn === true; // off unless you turn it on in the extension window
+}
+async function chatInCall(tabId) { // is this chat tab in a voice call right now? (then the AI speaks with its own voice)
+  const r = await chrome.tabs.sendMessage(tabId, { type: 'call-state' }).catch(() => null);
+  return !!(r && r.inCall);
+}
+async function anyCall(targetId) {
+  const T = await getTarget(targetId);
+  for (const t of await chrome.tabs.query({ url: T.url })) if (await chatInCall(t.id)) return true;
+  return false;
 }
 let followToken = 0;
 let feedTab = null; // the chat tab whose voice call hears the replay
@@ -267,7 +276,11 @@ async function followAnswer(chatTabId, videoTabId, baseline, thenRestart) {
     const st = await chrome.tabs.sendMessage(chatTabId, { type: 'chat-reply' }).catch(() => null);
     if (!st || st.count <= baseline || !st.text) continue;
     if (st.text === lastText) stable++; else { stable = 0; lastText = st.text; }
-    if ((!st.busy && stable >= 2) || stable >= 5) { speak(lastText, videoTabId, thenRestart ? restartVoice : null); return; }
+    if ((!st.busy && stable >= 2) || stable >= 5) {
+      if (token !== followToken) return;
+      if (await chatInCall(chatTabId)) { await chrome.storage.local.set({ lastSkippedSpeak: Date.now() }); if (thenRestart) restartVoice(); return; } // the AI's own voice is talking: stay quiet
+      speak(lastText, videoTabId, thenRestart ? restartVoice : null); return;
+    }
   }
   if (thenRestart) restartVoice(); // no answer came: go back into the call anyway
 }
@@ -337,6 +350,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'ask' && sender.tab) { // a question you said out loud (iPhone / iPad app): goes into the same chat
     (async () => {
       let result;
+      if (await anyCall(msg.target)) { // in a voice call Claude already hears you: do not type it into the chat too
+        sendResponse({ result: 'skipped: in a voice call' });
+        return;
+      }
       try {
         const videoId = new URL(sender.tab.url).searchParams.get('v');
         result = await sendToClaude({

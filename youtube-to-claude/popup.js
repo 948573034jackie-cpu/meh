@@ -38,7 +38,7 @@ const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
 // ---- options ----
 for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'feedOn', 'talkOn', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
-  chrome.storage.local.get(id).then((s) => { box.checked = s[id] !== false; });
+  chrome.storage.local.get(id).then((s) => { box.checked = id === 'talkOn' ? s[id] === true : s[id] !== false; }); // talk mode is off unless turned on
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
 const slider = document.getElementById('textLevel');
