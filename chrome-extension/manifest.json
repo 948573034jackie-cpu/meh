@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "ClaudeSnap Voice",
+  "version": "1.0",
+  "description": "When you speak, screenshots the page you are reading and attaches it to your Claude chat on claude.ai.",
+  "minimum_chrome_version": "116",
+  "permissions": ["tabs", "offscreen", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "ClaudeSnap Voice",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content-claude.js"]
+    }
+  ],
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}

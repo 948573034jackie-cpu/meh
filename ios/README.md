@@ -1,0 +1,49 @@
+# YT Learn — iPhone & iPad app
+
+The same idea as the Chrome extension, as a real iPhone/iPad app. Inside the app there are two browser windows:
+
+* **YouTube** (top / left) — watch any video.
+* **Claude or ChatGPT** (bottom / right) — your chat. Pick which one with the switch at the top.
+
+When you **pause** a video, the app shows the last ~25 seconds as big subtitles (complete sentences), plays that part once, and — in the last second — sends the text to your chat with one plain instruction (explain it like an English teacher, then repeat the sentences). Say **“let's go”** (or press ▶ / tap the video) to play that part again and keep going.
+
+It runs the *same JavaScript* as the Chrome extension (`youtube-to-claude/`), so both behave the same.
+
+## Install on your iPhone / iPad
+
+Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pick one way:
+
+### Way A — with Xcode (free Apple ID, works 7 days, then reinstall)
+1. On your Mac install **Xcode** (free, Mac App Store). Open it once and let it finish installing.
+2. Download `YTLearn-Xcode-project.zip` from the release page, unzip it, open `ios/YTLearn.xcodeproj`.
+3. Click **YTLearn** (top of the left list) → **Signing & Capabilities** → tick *Automatically manage signing* → **Team**: choose your Apple ID (add it in Xcode ▸ Settings ▸ Accounts if needed). If it complains about the name, change the **Bundle Identifier** to something unique, e.g. `local.ytlearn.yourname`.
+4. Plug in your iPhone/iPad, unlock it, choose it at the top of Xcode, press **Run ▶**.
+5. On the phone: **Settings ▸ General ▸ VPN & Device Management** ▸ your Apple ID ▸ **Trust**. (If you don't see "Developer Mode": **Settings ▸ Privacy & Security ▸ Developer Mode ▸ On**, restart.)
+6. With a free Apple ID the app stops working after 7 days: plug in and press Run again. A paid Apple Developer account (99 USD/year) lasts a year and allows TestFlight.
+
+### Way B — without Xcode (Sideloadly or AltStore)
+1. Download `YTLearn-unsigned.ipa` from the release page.
+2. Install **Sideloadly** (sideloadly.io) or **AltStore** (altstore.io) on your Mac, sign in with your Apple ID, and install the `.ipa` on your phone. They sign it for you. Same 7-day rule for free Apple IDs.
+
+## First run
+* Sign in to **Claude** or **ChatGPT** inside the app's chat window (use *email* login — “Sign in with Google” is blocked by Google inside apps).
+* The first time you say “let's go”, iOS asks for the **microphone** and **speech recognition**. Allow both. (Space/▶/tap always work too.)
+
+## Buttons (top bar)
+**Ask** (big blue button): tap, say your question, and hear the answer · Claude | ChatGPT switch · **AI** = make the AI window small / half / big · **…** menu: send video + transcript, YouTube home, open a copied link, settings (text size, replay, voice).
+
+## If the video says “Sign in to confirm you're not a bot”
+YouTube sometimes asks this on some internet connections. The small label in the corner of the video shows it too (“subtitles: none (Sign in…)”). Sign in to YouTube in the video window (the account picture, top right), then open the video again. Subtitles are read with your own YouTube session.
+
+## Limits (honest)
+* Needs an Apple ID for signing (see above). The app is not on the App Store.
+* Works with videos that have captions or YouTube's *Show transcript*.
+* If Claude/ChatGPT change their web pages, the sending step may need an update.
+* Use a normal text chat, not voice mode, in Claude/ChatGPT.
+* The AI window starts as a small strip so the video is big. Tap the **AI** button to open it when you want to read the answer.
+
+## Version 3 (same as Chrome extension 2.5)
+* Top bar: **ChatGPT** and **Claude** buttons. Red = off: a normal YouTube player. Tap one → green: the link + full transcript go to that chat **once**; after that every pause (or "hi bro") sends only the ~30 s part (complete sentences) + a picture after 1 s.
+* Say **"hi bro"** to stop and send, **"shut up"** to replay that part once and keep playing.
+* **Voice call (Claude / ChatGPT website inside the app):** the app reads the paused part with its own voice straight into the call's microphone line, so the AI hears it and answers by voice. (An iPhone app cannot copy YouTube's sound, so the part is read, not replayed, into the call. You hear the real video.)
+* Why not the official Claude / ChatGPT apps or Chrome? iOS does not let one app type or send sound into another app, and Chrome on iOS has no extensions. Only this app, with both websites inside it, can do all of it.

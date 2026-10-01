@@ -1,0 +1,182 @@
+name: Build ClaudeSnap
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      send_real_message:
+        description: 'Also send ONE real test message to ChatGPT from the simulator (off by default)'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac-app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile ClaudeSnap for macOS 12+ (Intel + Apple Silicon)
+        working-directory: ClaudeSnap
+        run: |
+          swiftc -O -target x86_64-apple-macos12.0 main.swift -o snap-x86_64
+          swiftc -O -target arm64-apple-macos12.0 main.swift -o snap-arm64
+          plutil -lint Info.plist
+          mkdir -p ClaudeSnap.app/Contents/MacOS
+          lipo -create snap-x86_64 snap-arm64 -output ClaudeSnap.app/Contents/MacOS/ClaudeSnap
+          cp Info.plist ClaudeSnap.app/Contents/Info.plist
+          codesign --force --deep --sign - ClaudeSnap.app
+          ditto -c -k --keepParent ClaudeSnap.app ClaudeSnap.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: ClaudeSnap/ClaudeSnap.zip
+
+  ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: |
+          ./sync-scripts.sh
+          xcodegen generate
+          xcodebuild -version
+          # XcodeGen writes the newest project file format (77, Xcode 16). Xcode 14/15 cannot open that: use format 56.
+          grep -n "objectVersion\|preferredProjectObjectVersion\|compatibilityVersion" YTLearn.xcodeproj/project.pbxproj
+          sed -i '' -E 's/objectVersion = [0-9]+;/objectVersion = 56;/; s/preferredProjectObjectVersion = [0-9]+;/preferredProjectObjectVersion = 56;/' YTLearn.xcodeproj/project.pbxproj
+          grep -n "objectVersion\|preferredProjectObjectVersion" YTLearn.xcodeproj/project.pbxproj
+      - name: Compile for iPhone/iPad Simulator (checks the code)
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -project YTLearn.xcodeproj -scheme YTLearn -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build-sim.log | tail -40
+      - name: Check the JavaScript files are inside the app
+        working-directory: ios
+        run: |
+          APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
+          ls "$APP" | head -30
+          for f in shim-common shim-youtube shim-chat lib background youtube chat mic-mix; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
+      - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube + ChatGPT pages
+        working-directory: ios
+        shell: bash
+        run: |
+          mkdir -p ../shots
+          for KIND in "iPhone 15 (" "iPad"; do
+            UDID=$(xcrun simctl list devices available | grep -F "$KIND" | head -1 | grep -oE "[0-9A-F-]{36}")
+            echo "=================== simulator for '$KIND': $UDID"
+            if [ -z "$UDID" ]; then echo "NO SIMULATOR FOUND for $KIND"; xcrun simctl list devices available; exit 1; fi
+            xcrun simctl list devices available | grep "$UDID"
+            xcrun simctl boot "$UDID"
+            xcrun simctl bootstatus "$UDID" -b
+            xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
+            EXTRA=""; if [ "${{ inputs.send_real_message }}" = "true" ]; then EXTRA="-selftest-send"; fi
+            xcrun simctl launch "$UDID" local.ytlearn.app -selftest $EXTRA
+            sleep 75
+            xcrun simctl io "$UDID" screenshot "../shots/simulator-$(echo "$KIND" | tr -cd 'A-Za-z0-9').png"
+            DATA=$(xcrun simctl get_app_container "$UDID" local.ytlearn.app data)
+            echo "----- self-test report ($KIND) -----"
+            cat "$DATA/Documents/selftest.json" || echo "NO REPORT WRITTEN"
+            xcrun simctl shutdown "$UDID"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-screenshot
+          path: shots/*.png
+          if-no-files-found: ignore
+      - name: Build the iPhone/iPad app (not signed) and pack it as an .ipa
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -project YTLearn.xcodeproj -scheme YTLearn -sdk iphoneos \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -20
+          mkdir -p Payload
+          cp -R build-dev/Build/Products/Release-iphoneos/YTLearn.app Payload/
+          zip -qr YTLearn-unsigned.ipa Payload
+          ls -la YTLearn-unsigned.ipa
+          rm -rf Payload build-sim build-dev *.log
+          cd .. && zip -qr ios/YTLearn-Xcode-project.zip ios -x "ios/*.ipa" -x "ios/*.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: |
+            ios/YTLearn-unsigned.ipa
+            ios/YTLearn-Xcode-project.zip
+
+  js-webkit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright (Chromium + WebKit = Safari's engine)
+        run: |
+          npm init -y >/dev/null
+          npm i playwright@1.56.1 >/dev/null
+          npx playwright install --with-deps chromium webkit >/dev/null
+      - name: Unit tests (sentences, subtitle-list formats)
+        run: node tests/lib-unit.js
+      - name: App JavaScript test in WebKit (the iPhone/iPad engine)
+        run: ENGINE=webkit node tests/app-js-test.js
+      - name: Same test in Chromium
+        if: always()
+        run: ENGINE=chromium node tests/app-js-test.js
+      - name: Voice-call mixer test (the call hears what the app reads into it)
+        if: always()
+        run: node tests/mic-mix-test.js
+
+  real-sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i playwright@1.56.1 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Test the extension on the real YouTube / ChatGPT / Claude pages
+        run: node tests/real-sites.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-site-screenshots
+          path: /tmp/*.png
+
+  release:
+    needs: [mac-app, ios]
+    if: github.ref_name == 'claude/new-session-pxh22u'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Publish downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd chrome-extension && zip -qr ../ClaudeSnap-Chrome.zip .)
+          (cd youtube-to-claude && zip -qr ../YouTube-to-Claude.zip .)
+          gh release delete claudesnap-latest --yes --cleanup-tag || true
+          gh release create claudesnap-latest \
+            dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
+            dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
+            --title "ClaudeSnap downloads" \
+            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (YT Learn)." \
+            --target "${{ github.sha }}"
