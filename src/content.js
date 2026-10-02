@@ -23,7 +23,7 @@
   const SPEED_PRESETS = [0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 40, 50, 60, 70, 80, 90];
   const TRAINER_GOALS = [70, 80, 90, 100, 110, 120];
-  const TRAINER_REPS = [5, 10, 20, 30, 40, 50];
+  const TRAINER_REPS = [15, 30, 50];
   const TRAINER_AFTER = [0, 5, 10, 20, 30]; // full-speed plays before stopping; 0 = never stop
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -77,7 +77,7 @@
     gap: 0,
     trainerStart: 50,
     trainerGoal: 100,
-    trainerReps: 10,
+    trainerReps: 15,
     trainerAfter: 10,
     seenHelp: false,
   };
@@ -1128,7 +1128,7 @@
         h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
         h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
-        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%), how many loops to get there (e.g. 20), and how many times to play at full speed before it stops (e.g. 10). Every loop gets a little faster.'),
+        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%), how many loops to get there (15, 30 or 50), and how many times to play at full speed before it stops (e.g. 10). Every loop gets a little faster.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       h('ul', {},
@@ -2079,6 +2079,11 @@
   function init() {
     storage.get('ytl:settings').then((r) => {
       Object.assign(settings, r['ytl:settings'] || {});
+      // Older versions had other loop counts: snap to the closest one we offer.
+      if (!TRAINER_REPS.includes(settings.trainerReps)) {
+        settings.trainerReps = TRAINER_REPS.reduce((best, n) =>
+          Math.abs(n - settings.trainerReps) < Math.abs(best - settings.trainerReps) ? n : best);
+      }
       buildPanel();
       postToPage({ type: 'hello' });
       syncVideo();

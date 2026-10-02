@@ -9,12 +9,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FX = path.join(ROOT, 'test', 'fixtures');
 const SHOTS = process.env.SHOTS || path.join(os.tmpdir(), 'ytl-shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 const CHROME = process.env.CHROME || ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome'].find((p) => fs.existsSync(p));
+const Core = createRequire(import.meta.url)('../src/core.js');
 const manifest = JSON.parse(fs.readFileSync(path.join(FX, 'manifest.json'), 'utf8'));
 const DUR = manifest.duration;
 
@@ -278,11 +280,23 @@ await step('speed survives YouTube resetting it, but follows YouTube menu choice
   await shadowClick('button.speed', '100%');
 });
 
-await step('speed trainer: 50% to 100% over 5 loops', async () => {
+await step('speed trainer offers 15, 30 or 50 loops', async () => {
   await shadowClick('button', 'Auto speed-up: start slow and reach full speed over N loops');
+  const values = await page.evaluate(() => [...[...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')]
+    .find((e) => e.title === 'How many loops to reach the goal').options].map((o) => o.value));
+  assert(JSON.stringify(values) === '["15","30","50"]', `options ${values}`);
+});
+
+await step('speed trainer: 50% to 100% over 15 loops', async () => {
+  // A short 1 s loop keeps the test quick. (Not at 5 s: clicking right on the
+  // existing A flag would grab the flag instead of starting a new loop.)
+  await clickWaveAt(3);
+  await clickWaveAt(4);
+  const h0 = await host();
+  assert(Math.abs(Number(h0.a) - 3) < 0.2 && Math.abs(Number(h0.b) - 4) < 0.2, `loop 3-4 (got ${h0.a}-${h0.b})`);
   await shadowSelect('Starting speed', 50);
   await shadowSelect('Goal speed', 100);
-  await shadowSelect('How many loops to reach the goal', 5);
+  await shadowSelect('How many loops to reach the goal', 15);
   await shadowSelect('What to do after reaching the goal speed', 0);
   await shadowClick('button', 'Start the speed trainer');
   const seen = [];
@@ -290,26 +304,26 @@ await step('speed trainer: 50% to 100% over 5 loops', async () => {
     const r = (await vstate()).rate;
     if (!seen.length || seen[seen.length - 1] !== r) seen.push(r);
     const h = await host();
-    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 6;
-  }, 30000, 'trainer reaches goal');
+    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 16;
+  }, 60000, 'trainer reaches goal');
   await page.screenshot({ path: path.join(SHOTS, '4-trainer.png') });
-  const want = [0.5, 0.63, 0.75, 0.88, 1];
-  assert(JSON.stringify(seen.slice(0, 5)) === JSON.stringify(want), `rates ${JSON.stringify(seen)}`);
+  const want = [...new Set(Array.from({ length: 15 }, (_, i) => Core.trainerRate(0.5, 1, 15, i + 1)))];
+  assert(JSON.stringify(seen.slice(0, want.length)) === JSON.stringify(want), `rates ${JSON.stringify(seen)} want ${JSON.stringify(want)}`);
   const h = await host();
   assert(h.loop === 'true', 'still looping at the goal');
 });
 
 await step('speed trainer: after the goal, plays N times at full speed and then stops', async () => {
   await shadowClick('button', 'Stop the speed trainer');
-  await shadowSelect('How many loops to reach the goal', 5);
+  await shadowSelect('How many loops to reach the goal', 15);
   await shadowSelect('What to do after reaching the goal speed', 5);
   await shadowClick('button', 'Start the speed trainer');
   const start = Number((await host()).reps);
-  await waitFor(async () => (await host()).trainer === '', 40000, 'trainer finishes by itself');
+  await waitFor(async () => (await host()).trainer === '', 70000, 'trainer finishes by itself');
   const h = await host();
   const v = await vstate();
-  // 4 ramp loops + 5 full-speed loops = 9 plays, then it stops at A.
-  assert(Number(h.reps) - start === 9, `plays ${Number(h.reps) - start}`);
+  // 14 ramp loops + 5 full-speed loops = 19 plays, then it stops at A.
+  assert(Number(h.reps) - start === 19, `plays ${Number(h.reps) - start}`);
   assert(v.paused, 'stopped (paused)');
   assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
   assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');
@@ -338,8 +352,9 @@ await step('drag the B flag to make the loop longer', async () => {
   await page.mouse.move(b.x + (9 / DUR) * b.w, y, { steps: 5 });
   await page.mouse.up();
   const h2 = await host();
+  const zoomedNow = await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button[title="Show the whole song"]').disabled);
   assert(Math.abs(Number(h2.b) - 9) < 0.2, `B dragged to ~9 (got ${h2.b})`);
-  assert(Math.abs(Number(h2.a) - Number(h.a)) < 0.001, 'A unchanged');
+  assert(Math.abs(Number(h2.a) - Number(h.a)) < 0.001, `A unchanged (before ${h.a}-${h.b}, after ${h2.a}-${h2.b}, view zoomed=${zoomedNow})`);
 });
 
 await step('nudge buttons move A by 0.05 s', async () => {

@@ -7,7 +7,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 - **See the whole song as a DJ waveform** in a panel at the bottom of the page. Colours show the sound: orange/red = bass, green = mids, blue = highs.
 - **Loop any part:** click where it starts, then click where it ends. It loops forever.
 - **Slow it down:** 50%, 75% and 100% buttons, plus − / + in 5% steps. The key stays the same, so you can still sing along.
-- **Speed trainer:** start slow (30–90%) and get faster every loop until you reach 100%, over 5, 10, 20, 30, 40 or 50 loops. Then it plays 5, 10, 20 or 30 more times at full speed and stops by itself (or keeps looping, if you prefer).
+- **Speed trainer:** start slow (30–90%) and get faster every loop until you reach 100%, over 15, 30 or 50 loops. Then it plays 5, 10, 20 or 30 more times at full speed and stops by itself (or keeps looping, if you prefer).
 - **Pause between loops** (0.5–3 s) to breathe before each repeat.
 - **Saved parts** (Verse, Chorus…). Your loop and speed are remembered for every video.
 
@@ -62,4 +62,4 @@ npm run e2e                   # loads the real extension in Chromium on a simula
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
 
-The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 29 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
+The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 30 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
