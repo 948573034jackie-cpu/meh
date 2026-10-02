@@ -24,7 +24,7 @@
   const TRAINER_STARTS = [30, 40, 50, 60, 70, 80, 90];
   const TRAINER_GOALS = [70, 80, 90, 100, 110, 120];
   const TRAINER_REPS = [15, 30, 50];
-  const TRAINER_AFTER = [0, 5, 10, 20, 30]; // full-speed plays before stopping; 0 = never stop
+  const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
   const WAVE_CACHE_MAX = 80;
@@ -78,7 +78,6 @@
     trainerStart: 50,
     trainerGoal: 100,
     trainerReps: 15,
-    trainerAfter: 10,
     seenHelp: false,
   };
   function saveSettings() {
@@ -664,7 +663,7 @@
     tr.start = settings.trainerStart / 100;
     tr.goal = settings.trainerGoal / 100;
     tr.reps = settings.trainerReps;
-    tr.after = settings.trainerAfter;
+    tr.after = TRAINER_AFTER;
     tr.rep = 1;
     tr.done = false;
     tr.running = true;
@@ -1058,8 +1057,6 @@
     ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, (v) => { settings.trainerStart = v; saveSettings(); renderUI(); }, 'Starting speed');
     ui.tGoal = select(TRAINER_GOALS, pct, settings.trainerGoal, (v) => { settings.trainerGoal = v; saveSettings(); renderUI(); }, 'Goal speed');
     ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, (v) => { settings.trainerReps = v; saveSettings(); renderUI(); }, 'How many loops to reach the goal');
-    ui.tAfter = select(TRAINER_AFTER, (v) => (v ? `${v} times, then stop` : 'keep looping'), settings.trainerAfter,
-      (v) => { settings.trainerAfter = v; saveSettings(); renderUI(); }, 'What to do after reaching the goal speed');
     ui.tGo = btn('Start', 'Start the speed trainer', () => (S.trainer.running ? stopTrainer() : startTrainer()), 'primary', 'play');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
@@ -1068,7 +1065,6 @@
       h('span', { class: 'label', text: 'from' }), ui.tStart,
       h('span', { class: 'label', text: 'to' }), ui.tGoal,
       h('span', { class: 'label', text: 'over' }), ui.tReps,
-      h('span', { class: 'label', text: 'then play' }), ui.tAfter,
       ui.tGo,
       h('div', { class: 'progress' }, ui.tBar),
       ui.tStat);
@@ -1128,7 +1124,7 @@
         h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
         h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
-        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%), how many loops to get there (15, 30 or 50), and how many times to play at full speed before it stops (e.g. 10). Every loop gets a little faster.'),
+        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%), how many loops to get there (15, 30 or 50), and Every loop gets a little faster. At full speed it plays 10 more times, then stops by itself.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       h('ul', {},
@@ -1409,7 +1405,7 @@
     const tr = S.trainer;
     ui.tGo.replaceChildren(icon(tr.running ? 'stop' : 'play'), tr.running ? 'Stop' : 'Start');
     ui.tGo.title = tr.running ? 'Stop the speed trainer' : 'Start the speed trainer';
-    for (const s of [ui.tStart, ui.tGoal, ui.tReps, ui.tAfter]) s.disabled = tr.running;
+    for (const s of [ui.tStart, ui.tGoal, ui.tReps]) s.disabled = tr.running;
     if (tr.running) {
       const total = tr.after > 0 ? tr.reps + tr.after - 1 : tr.reps;
       ui.tBar.style.width = `${Math.round((Math.min(tr.rep, total) / total) * 100)}%`;
@@ -1422,7 +1418,7 @@
       ui.tBar.style.width = '0%';
       const s = settings.trainerStart, g = settings.trainerGoal, n = settings.trainerReps;
       const stepPct = n > 1 ? (g - s) / (n - 1) : 0;
-      const a = settings.trainerAfter;
+      const a = TRAINER_AFTER;
       ui.tStat.textContent = `${s}% → ${g}% (+${Math.max(0, stepPct).toFixed(1)}% per loop)` +
         (a ? `, then ${a}× at ${g}% and stop` : '');
     }

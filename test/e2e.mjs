@@ -297,7 +297,6 @@ await step('speed trainer: 50% to 100% over 15 loops', async () => {
   await shadowSelect('Starting speed', 50);
   await shadowSelect('Goal speed', 100);
   await shadowSelect('How many loops to reach the goal', 15);
-  await shadowSelect('What to do after reaching the goal speed', 0);
   await shadowClick('button', 'Start the speed trainer');
   const seen = [];
   await waitFor(async () => {
@@ -310,20 +309,19 @@ await step('speed trainer: 50% to 100% over 15 loops', async () => {
   const want = [...new Set(Array.from({ length: 15 }, (_, i) => Core.trainerRate(0.5, 1, 15, i + 1)))];
   assert(JSON.stringify(seen.slice(0, want.length)) === JSON.stringify(want), `rates ${JSON.stringify(seen)} want ${JSON.stringify(want)}`);
   const h = await host();
-  assert(h.loop === 'true', 'still looping at the goal');
+  assert(h.loop === 'true', 'loop still set');
 });
 
 await step('speed trainer: after the goal, plays N times at full speed and then stops', async () => {
-  await shadowClick('button', 'Stop the speed trainer');
+  if ((await host()).trainer) await shadowClick('button', 'Stop the speed trainer');
   await shadowSelect('How many loops to reach the goal', 15);
-  await shadowSelect('What to do after reaching the goal speed', 5);
   await shadowClick('button', 'Start the speed trainer');
   const start = Number((await host()).reps);
-  await waitFor(async () => (await host()).trainer === '', 70000, 'trainer finishes by itself');
+  await waitFor(async () => (await host()).trainer === '', 90000, 'trainer finishes by itself');
   const h = await host();
   const v = await vstate();
-  // 14 ramp loops + 5 full-speed loops = 19 plays, then it stops at A.
-  assert(Number(h.reps) - start === 19, `plays ${Number(h.reps) - start}`);
+  // 14 ramp loops + 10 full-speed loops = 24 plays, then it stops at A.
+  assert(Number(h.reps) - start === 24, `plays ${Number(h.reps) - start}`);
   assert(v.paused, 'stopped (paused)');
   assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
   assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');

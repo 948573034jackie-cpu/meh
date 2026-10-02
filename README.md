@@ -7,7 +7,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 - **See the whole song as a DJ waveform** in a panel at the bottom of the page. Colours show the sound: orange/red = bass, green = mids, blue = highs.
 - **Loop any part:** click where it starts, then click where it ends. It loops forever.
 - **Slow it down:** 50%, 75% and 100% buttons, plus − / + in 5% steps. The key stays the same, so you can still sing along.
-- **Speed trainer:** start slow (30–90%) and get faster every loop until you reach 100%, over 15, 30 or 50 loops. Then it plays 5, 10, 20 or 30 more times at full speed and stops by itself (or keeps looping, if you prefer).
+- **Speed trainer:** start slow (30–90%) and get faster every loop until you reach 100%, over 15, 30 or 50 loops. Then it plays 10 times at full speed and stops by itself.
 - **Pause between loops** (0.5–3 s) to breathe before each repeat.
 - **Saved parts** (Verse, Chorus…). Your loop and speed are remembered for every video.
 
@@ -32,7 +32,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 | Set A/B while listening | Press **[** at the start and **]** at the end. |
 | Loop on/off | **Loop** button or **\\**. |
 | Slow down | **50% / 75% / 100%**, or − / +. Click the big % number to reset to 100%. |
-| Speed trainer | **Trainer** → pick *from*, *to*, *over N loops*, and *then play* (e.g. 10 times at full speed, then it stops by itself) → **Start**. |
+| Speed trainer | **Trainer** → pick *from*, *to*, *over N loops* → **Start**. After reaching full speed it plays 10 times, then stops by itself. |
 | Breathing pause, pitch | ⚙ settings. Turn **Keep pitch** off for tape-style slow-down (50% = one octave lower, handy for working out fast solos). |
 | Undo a loop change | ↶ button. |
 | Turn it all off | ✕ closes the panel and resets speed to 100%. |
