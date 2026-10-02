@@ -1,0 +1,16 @@
+{
+  "name": "dj-wave-looper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chrome extension: DJ waveform A-B looper and speed trainer for YouTube",
+  "scripts": {
+    "fixtures": "node tools/make-fixtures.js",
+    "icons": "node tools/make-icons.js",
+    "test": "node --test test/unit.test.js",
+    "e2e": "node test/e2e.mjs",
+    "zip": "node tools/package.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

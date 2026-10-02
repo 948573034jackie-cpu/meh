@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fake YouTube watch page (test)</title>
+<style>
+  body { margin: 0; background: #0f0f0f; color: #fff; font-family: Roboto, Arial, sans-serif; }
+  #movie_player { position: relative; width: 854px; height: 480px; background: #000; margin: 56px auto 0; }
+  #movie_player video { width: 100%; height: 100%; }
+  .ytp-chrome-bottom { position: absolute; left: 0; right: 0; bottom: 0; height: 48px; display: flex; justify-content: flex-end; background: linear-gradient(transparent, #000a); }
+  .ytp-right-controls { display: flex; height: 48px; }
+  .ytp-button { width: 48px; height: 48px; background: none; border: 0; color: #fff; cursor: pointer; padding: 0; }
+  #below { width: 854px; margin: 12px auto; height: 1400px; }
+</style>
+</head>
+<body>
+<div id="movie_player" class="html5-video-player">
+  <video class="html5-main-video" playsinline></video>
+  <div class="ytp-chrome-bottom">
+    <div class="ytp-right-controls"><button class="ytp-button ytp-settings-button" id="yt-settings">⚙</button></div>
+    <div class="ytp-popup ytp-settings-menu" style="display:none"><div class="ytp-menuitem" id="yt-speed-item">Playback speed</div></div>
+  </div>
+</div>
+<div id="below"><h1 id="title">Test song</h1><button id="fs-btn" onclick="document.getElementById('movie_player').requestFullscreen()">fullscreen</button><p>Comments and recommendations would be here.</p></div>
+<script>
+// A tiny DASH player that behaves like YouTube's: MSE, separate audio and
+// video SourceBuffers, init segment first, ~10 s read-ahead, refetch on seek.
+(async () => {
+  const M = await (await fetch('/__fx/manifest.json')).json();
+  const player = document.getElementById('movie_player');
+  const video = player.querySelector('video');
+  let currentVid = new URL(location.href).searchParams.get('v');
+  player.getVideoData = () => ({ video_id: currentVid, title: 'Test ' + currentVid });
+  window.__fake = { appended: [], loads: 0, playerClicks: 0 };
+  player.addEventListener('click', () => window.__fake.playerClicks++);
+
+  let session = 0;
+  async function load() {
+    const my = ++session;
+    window.__fake.loads++;
+    const ms = new MediaSource();
+    video.src = URL.createObjectURL(ms);
+    await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
+    ms.duration = M.duration;
+    const tracks = [M.audio, M.video].map((t) => ({ t, sb: ms.addSourceBuffer(t.mime), busy: false, inited: false }));
+    const get = async (u) => new Uint8Array(await (await fetch('/__fx/' + u)).arrayBuffer());
+    const append = (tr, bytes) => new Promise((res) => {
+      tr.sb.addEventListener('updateend', res, { once: true });
+      tr.sb.appendBuffer(bytes);
+    });
+    const buffered = (sb, x) => { for (let i = 0; i < sb.buffered.length; i++) if (x >= sb.buffered.start(i) && x < sb.buffered.end(i)) return true; return false; };
+    async function pump(tr) {
+      if (tr.busy || my !== session || ms.readyState !== 'open') return;
+      tr.busy = true;
+      try {
+        if (!tr.inited) { await append(tr, await get(tr.t.init)); tr.inited = true; }
+        const t = video.currentTime;
+        const seg = tr.t.segs.find((s) => s.end > t && s.start < t + 10 && !buffered(tr.sb, (s.start + s.end) / 2));
+        if (seg) {
+          const bytes = await get(seg.url);
+          if (my !== session) return;
+          // Like SABR, sometimes hand the bytes over in two pieces.
+          if (tr.t === M.audio && seg.url.endsWith('3.webm')) {
+            const cut = Math.floor(bytes.length / 2);
+            await append(tr, bytes.slice(0, cut));
+            await append(tr, bytes.slice(cut));
+          } else {
+            await append(tr, bytes);
+          }
+          if (tr.t === M.audio) window.__fake.appended.push(seg.url);
+        } else if (tr.t.segs.every((s) => buffered(tr.sb, (s.start + s.end) / 2) || s.end <= t) && ms.readyState === 'open' && t > M.duration - 5) {
+          if (tracks.every((x) => !x.sb.updating)) { try { ms.endOfStream(); } catch (e) {} }
+        }
+        // Evict old data like a real player does.
+        if (t > 20 && tr.sb.buffered.length && tr.sb.buffered.start(0) < t - 15 && !tr.sb.updating) {
+          await new Promise((res) => { tr.sb.addEventListener('updateend', res, { once: true }); tr.sb.remove(0, t - 15); });
+        }
+      } catch (e) {
+        console.log('pump error', e.message);
+      } finally {
+        tr.busy = false;
+      }
+    }
+    const timer = setInterval(() => { if (my !== session) return clearInterval(timer); tracks.forEach(pump); }, 100);
+  }
+
+  // SPA navigation like YouTube: same <video>, new MediaSource, new id.
+  window.__navigate = (vid) => {
+    history.pushState({}, '', '/watch?v=' + vid);
+    currentVid = vid;
+    load().then(() => document.dispatchEvent(new CustomEvent('yt-navigate-finish', { bubbles: true })));
+  };
+  window.__ytResetSpeed = () => {
+    // Simulates YouTube resetting the speed right after an unrelated click on the player.
+    document.getElementById('yt-settings').click();
+    video.playbackRate = 1;
+  };
+  window.__ytSpeedMenu = (rate) => {
+    // Simulates the user picking a speed in YouTube's own settings menu.
+    document.getElementById('yt-speed-item').click();
+    video.playbackRate = rate;
+  };
+
+  await load();
+  video.muted = false;
+  video.play().catch((e) => console.log('autoplay blocked', e.message));
+})();
+</script>
+</body>
+</html>

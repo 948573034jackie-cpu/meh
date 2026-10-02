@@ -1,0 +1,2017 @@
+/*
+ * DJ Wave Looper: content script (the panel, loop engine, speed and trainer).
+ *
+ * Pieces:
+ *   - Video tracking: finds YouTube's main <video> and the current video id.
+ *   - Waveform: peaks arrive from src/inject.js (page world) and go into a
+ *     PeakStore. "Scan" plays the song muted at high speed so YouTube downloads
+ *     every part, then puts you back where you were.
+ *   - Loop engine: jumps from B back to A, with an optional breath pause.
+ *   - Speed: 50/75/100% presets, fine +/- and the auto speed-up trainer.
+ *   - Panel UI: built with DOM calls only, because YouTube enforces Trusted
+ *     Types and innerHTML would throw.
+ */
+(() => {
+  'use strict';
+  if (window.__ytlContent) return;
+  window.__ytlContent = true;
+
+  const C = globalThis.YTLCore;
+  const TAG = '__ytlooper__';
+  const IS_MUSIC = location.hostname === 'music.youtube.com';
+  const BIN_RATE = 50;
+  const SPEED_PRESETS = [0.5, 0.75, 1];
+  const TRAINER_STARTS = [30, 40, 50, 60, 70, 80, 90];
+  const TRAINER_GOALS = [70, 80, 90, 100, 110, 120];
+  const TRAINER_REPS = [5, 10, 20, 30, 40, 50];
+  const GAPS = [0, 0.5, 1, 2, 3];
+  const SCAN_RATE = 16;
+  const WAVE_CACHE_MAX = 80;
+
+  // ---------------------------------------------------------------------------
+  // Storage (chrome.storage.local, safe after the extension reloads)
+  // ---------------------------------------------------------------------------
+  function alive() {
+    try {
+      return !!(chrome && chrome.runtime && chrome.runtime.id);
+    } catch (e) {
+      return false;
+    }
+  }
+  const storage = {
+    get(keys) {
+      return new Promise((resolve) => {
+        if (!alive()) return resolve({});
+        try {
+          chrome.storage.local.get(keys, (r) => resolve(r || {}));
+        } catch (e) {
+          resolve({});
+        }
+      });
+    },
+    set(obj) {
+      if (!alive()) return;
+      try {
+        chrome.storage.local.set(obj, () => void chrome.runtime.lastError);
+      } catch (e) {
+        /* ignore */
+      }
+    },
+    remove(keys) {
+      if (!alive()) return;
+      try {
+        chrome.storage.local.remove(keys, () => void chrome.runtime.lastError);
+      } catch (e) {
+        /* ignore */
+      }
+    },
+  };
+
+  const settings = {
+    open: false,
+    collapsed: false,
+    height: 0,
+    autoScan: true,
+    keepPitch: true,
+    gap: 0,
+    trainerStart: 50,
+    trainerGoal: 100,
+    trainerReps: 10,
+    seenHelp: false,
+  };
+  function saveSettings() {
+    storage.set({ 'ytl:settings': { ...settings } });
+  }
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  const S = {
+    vid: null,
+    mainVid: null,
+    video: null,
+    peaks: new C.PeakStore(BIN_RATE),
+    orphan: null, // peaks that arrived for a video we haven't switched to yet
+    a: null,
+    b: null,
+    pendingA: null, // first click done, waiting for the end click
+    loopOn: false,
+    reps: 0,
+    rate: 1,
+    rateOwned: false, // true once the user picked a speed in our panel
+    trainer: { running: false, rep: 1, reps: 10, start: 0.5, goal: 1, done: false },
+    saved: [],
+    history: [],
+    scan: null,
+    scannedVids: new Set(),
+    noHook: false,
+    live: null,
+    view: null, // {s, e} in seconds while zoomed, null = whole song
+    lastViewTouch: 0,
+    lastYTUserAction: 0,
+    gapTimer: 0,
+    wrapTimer: 0,
+    wrapping: false,
+    lastWrapAt: 0,
+    adWas: false,
+    hintOverride: null,
+    hintUntil: 0,
+    dirty: true,
+    loadToken: 0,
+  };
+
+  // ---------------------------------------------------------------------------
+  // Video and player helpers
+  // ---------------------------------------------------------------------------
+  function player() {
+    return document.getElementById('movie_player');
+  }
+
+  function findVideo() {
+    const p = player();
+    return (p && p.querySelector('video')) || null;
+  }
+
+  function isAd() {
+    const p = player();
+    return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
+  }
+
+  function urlVid() {
+    try {
+      const u = new URL(location.href);
+      if (u.pathname === '/watch') return u.searchParams.get('v');
+    } catch (e) {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function currentVid() {
+    return S.mainVid || urlVid();
+  }
+
+  function dur() {
+    const v = S.video;
+    return v && isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+  }
+
+  function now() {
+    return performance.now();
+  }
+
+  function miniplayerActive() {
+    const app = document.querySelector('ytd-app');
+    return !!app && (app.hasAttribute('miniplayer-is-active') || app.hasAttribute('miniplayer-active'));
+  }
+
+  function onWatchSurface() {
+    return IS_MUSIC || location.pathname === '/watch' || miniplayerActive();
+  }
+
+  function attachVideo(v) {
+    if (S.video === v) return;
+    if (S.video) {
+      for (const [ev, fn] of videoListeners) S.video.removeEventListener(ev, fn);
+    }
+    S.video = v;
+    if (v) {
+      for (const [ev, fn] of videoListeners) v.addEventListener(ev, fn);
+      S.peaks.setDuration(dur());
+      applyRate();
+    }
+    S.dirty = true;
+  }
+
+  const videoListeners = [
+    ['ratechange', onRateChange],
+    ['ended', onEnded],
+    ['play', onPlay],
+    ['durationchange', () => {
+      S.peaks.setDuration(dur());
+      S.dirty = true;
+      renderUI();
+    }],
+    ['loadedmetadata', () => {
+      applyRate();
+      S.peaks.setDuration(dur());
+      S.dirty = true;
+      renderUI();
+    }],
+    ['playing', () => applyRate()],
+    ['seeked', () => (S.dirty = true)],
+  ];
+
+  // ---------------------------------------------------------------------------
+  // Messages from the page-world tap (src/inject.js)
+  // ---------------------------------------------------------------------------
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data[TAG] !== true) return;
+    const m = e.data;
+    if (m.type === 'video') {
+      S.mainVid = m.vid || null;
+      syncVideo();
+    } else if (m.type === 'peaks') {
+      onPeaks(m);
+    }
+  });
+
+  function postToPage(msg) {
+    msg[TAG] = 'cs';
+    window.postMessage(msg, location.origin);
+  }
+
+  function onPeaks(m) {
+    if (!m.vid || !(m.peak instanceof Uint8Array)) return;
+    if (m.vid !== S.vid) {
+      if (!S.orphan || S.orphan.vid !== m.vid) S.orphan = { vid: m.vid, list: [] };
+      if (S.orphan.list.length < 400) S.orphan.list.push(m);
+      return;
+    }
+    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high);
+    S.dirty = true;
+    saveWaveSoon();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Switching videos
+  // ---------------------------------------------------------------------------
+  function syncVideo() {
+    const v = findVideo();
+    if (v !== S.video) attachVideo(v);
+    const vid = currentVid();
+    if (vid !== S.vid) switchVideo(vid);
+    const ad = isAd();
+    if (S.adWas && !ad) applyRate(); // ad finished: put the user's speed back
+    S.adWas = ad;
+    updateVisibility();
+    maybeAutoScan();
+  }
+
+  function switchVideo(vid) {
+    if (S.scan) endScan('switched');
+    saveVideoStateNow();
+    saveWaveNow();
+    stopTrainer(true);
+    clearTimeout(S.gapTimer);
+    clearTimeout(S.wrapTimer);
+    S.wrapping = false;
+    stopLive();
+
+    S.vid = vid;
+    S.peaks = new C.PeakStore(BIN_RATE);
+    S.peaks.setDuration(dur());
+    S.a = S.b = S.pendingA = null;
+    S.loopOn = false;
+    S.reps = 0;
+    S.saved = [];
+    S.history = [];
+    S.view = null;
+    S.hintOverride = null;
+    if (S.noHook) setTimeout(startLive, 1000);
+    if (S.rateOwned || S.rate !== 1) {
+      S.rate = 1;
+      S.rateOwned = false;
+      applyRate();
+    }
+    if (S.orphan && S.orphan.vid === vid) {
+      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high);
+    }
+    S.orphan = null;
+    S.dirty = true;
+    renderUI();
+    if (vid) loadVideoData(vid);
+  }
+
+  async function loadVideoData(vid) {
+    const token = ++S.loadToken;
+    const r = await storage.get(['ytl:v:' + vid, 'ytl:w:' + vid]);
+    if (token !== S.loadToken || S.vid !== vid) return;
+    const w = r['ytl:w:' + vid];
+    if (w && w.data) {
+      try {
+        S.peaks.merge(C.PeakStore.deserialize(w));
+      } catch (e) {
+        /* bad cache entry: ignore */
+      }
+    }
+    const st = r['ytl:v:' + vid];
+    if (st) {
+      const num = Number.isFinite;
+      if (Array.isArray(st.saved)) S.saved = st.saved.filter((x) => x && num(x.a) && num(x.b) && x.b > x.a).slice(0, 30);
+      if (num(st.a) && num(st.b) && st.b > st.a) {
+        S.a = st.a;
+        S.b = st.b;
+        // A closed looper is "off": remember the loop but don't run it.
+        S.loopOn = !!st.loopOn && settings.open;
+      }
+      if (settings.open && st.rateOwned && num(st.rate)) {
+        S.rate = C.roundRate(st.rate);
+        S.rateOwned = true;
+        applyRate();
+      }
+    }
+    S.dirty = true;
+    renderUI();
+    maybeAutoScan();
+  }
+
+  let videoStateTimer = 0;
+  function saveVideoStateSoon() {
+    clearTimeout(videoStateTimer);
+    videoStateTimer = setTimeout(saveVideoStateNow, 600);
+  }
+  function saveVideoStateNow() {
+    clearTimeout(videoStateTimer);
+    if (!S.vid) return;
+    const hasLoop = S.a != null && S.b != null;
+    if (!hasLoop && !S.saved.length && !S.rateOwned) {
+      storage.remove('ytl:v:' + S.vid);
+      return;
+    }
+    storage.set({
+      ['ytl:v:' + S.vid]: {
+        a: hasLoop ? S.a : null,
+        b: hasLoop ? S.b : null,
+        loopOn: S.loopOn,
+        rate: S.rate,
+        rateOwned: S.rateOwned,
+        saved: S.saved,
+        t: Date.now(),
+      },
+    });
+  }
+
+  let waveTimer = 0;
+  let waveSaved = { peaks: null, version: -1 };
+  function saveWaveSoon() {
+    if (waveTimer) return;
+    waveTimer = setTimeout(saveWaveNow, 4000);
+  }
+  async function saveWaveNow() {
+    clearTimeout(waveTimer);
+    waveTimer = 0;
+    const vid = S.vid;
+    const peaks = S.peaks;
+    if (!vid || !peaks.n || (waveSaved.peaks === peaks && waveSaved.version === peaks.version)) return;
+    if (peaks.coverage(dur() || peaks.n / BIN_RATE) < 0.02) return;
+    waveSaved = { peaks, version: peaks.version };
+    const key = 'ytl:w:' + vid;
+    storage.set({ [key]: peaks.serialize() });
+    const r = await storage.get('ytl:widx');
+    const idx = r['ytl:widx'] || {};
+    idx[vid] = Date.now();
+    const ids = Object.keys(idx).sort((x, y) => idx[y] - idx[x]);
+    const drop = ids.slice(WAVE_CACHE_MAX);
+    for (const id of drop) delete idx[id];
+    if (drop.length) storage.remove(drop.map((id) => 'ytl:w:' + id));
+    storage.set({ 'ytl:widx': idx });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Speed
+  // ---------------------------------------------------------------------------
+  function applyRate() {
+    const v = S.video;
+    if (!v || S.scan || isAd()) return;
+    try {
+      if (v.preservesPitch !== settings.keepPitch) v.preservesPitch = settings.keepPitch;
+      if (Math.abs(v.playbackRate - S.rate) > 0.001) v.playbackRate = S.rate;
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function setRate(r, fromTrainer) {
+    S.rate = C.roundRate(r);
+    S.rateOwned = true;
+    if (!fromTrainer && S.trainer.running) {
+      stopTrainer();
+      flash('Speed trainer stopped because you picked a speed.');
+    }
+    applyRate();
+    renderUI();
+    saveVideoStateSoon();
+  }
+
+  function onRateChange() {
+    const v = S.video;
+    if (!v || S.scan || isAd()) return;
+    const r = v.playbackRate;
+    if (Math.abs(r - S.rate) < 0.001) return;
+    const userChangedInYouTube = now() - S.lastYTUserAction < 1500;
+    if (S.trainer.running || (S.rateOwned && !userChangedInYouTube)) {
+      // YouTube reset the speed by itself; put ours back.
+      setTimeout(applyRate, 0);
+      return;
+    }
+    S.rate = C.roundRate(r);
+    if (userChangedInYouTube) S.rateOwned = false;
+    renderUI();
+  }
+
+  const YT_MENU_CLASSES = ['ytp-settings-menu', 'ytp-popup', 'ytp-panel', 'ytp-menuitem', 'ytp-speedslider'];
+  // Remember when the user touches YouTube's own controls so we follow their
+  // speed choice there instead of fighting it.
+  document.addEventListener(
+    'click',
+    (e) => {
+      for (const el of e.composedPath()) {
+        if (el === hostEl) return;
+        const cls = el && el.classList;
+        if (cls && YT_MENU_CLASSES.some((c) => cls.contains(c))) {
+          S.lastYTUserAction = now();
+          return;
+        }
+        if (el && el.tagName === 'YTMUSIC-PLAYER-BAR') {
+          S.lastYTUserAction = now();
+          return;
+        }
+      }
+    },
+    true
+  );
+
+  // ---------------------------------------------------------------------------
+  // Loop engine
+  // ---------------------------------------------------------------------------
+  function hasLoop() {
+    return S.a != null && S.b != null;
+  }
+
+  function loopActive() {
+    return settings.open && S.loopOn && hasLoop() && !!S.video && !S.scan && !isAd();
+  }
+
+  function effEnd() {
+    return C.loopEnd(S.b, dur());
+  }
+
+  function seek(t) {
+    const v = S.video;
+    if (!v) return;
+    try {
+      v.currentTime = Math.max(0, t);
+    } catch (e) {
+      /* ignore */
+    }
+    S.dirty = true;
+  }
+
+  function play() {
+    const v = S.video;
+    if (!v) return;
+    try {
+      const p = v.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function engineTick() {
+    if (!loopActive() || S.wrapping) return;
+    const v = S.video;
+    if (v.paused || v.seeking) return;
+    const t = v.currentTime;
+    const end = effEnd();
+    if (t >= end - 0.004 && t > S.a) {
+      wrap();
+      return;
+    }
+    // Fire a precise timer just before B instead of waiting for the next frame.
+    const remain = (end - t) / Math.max(0.05, v.playbackRate);
+    if (remain > 0 && remain < 0.12 && !S.wrapTimer) {
+      S.wrapTimer = setTimeout(() => {
+        S.wrapTimer = 0;
+        if (loopActive() && !S.wrapping && !v.paused && v.currentTime >= effEnd() - 0.03 && v.currentTime > S.a) wrap();
+      }, Math.max(0, remain * 1000 - 3));
+    }
+  }
+
+  function wrap() {
+    const v = S.video;
+    clearTimeout(S.wrapTimer);
+    S.wrapTimer = 0;
+    if (now() - S.lastWrapAt < 60) return; // already wrapping this pass
+    S.lastWrapAt = now();
+    S.reps++;
+    if (S.trainer.running) {
+      const tr = S.trainer;
+      tr.rep++;
+      if (tr.rep >= tr.reps && !tr.done) {
+        tr.done = true;
+        flash(`Reached ${Math.round(tr.goal * 100)}%! Keeps looping at full speed.`, 6000);
+      }
+      S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
+      applyRate();
+    }
+    const gap = settings.gap;
+    if (gap > 0) {
+      S.wrapping = true;
+      try {
+        v.pause();
+      } catch (e) {
+        /* ignore */
+      }
+      seek(S.a);
+      clearTimeout(S.gapTimer);
+      S.gapTimer = setTimeout(() => {
+        S.wrapping = false;
+        if (S.video === v) play();
+      }, gap * 1000);
+    } else {
+      seek(S.a);
+    }
+    renderUI();
+  }
+
+  function onEnded() {
+    // Backup: the loop ran to the very end (should be rare thanks to END_GUARD).
+    if (loopActive()) {
+      wrap();
+      if (!settings.gap) play();
+    }
+  }
+
+  function onPlay() {
+    if (S.wrapping) {
+      // The user pressed play during the breath pause: just go.
+      clearTimeout(S.gapTimer);
+      S.wrapping = false;
+    }
+    applyRate();
+  }
+
+  function pushHistory() {
+    S.history.push({ a: S.a, b: S.b, loopOn: S.loopOn });
+    if (S.history.length > 40) S.history.shift();
+  }
+
+  function setLoop(a, b, opts = {}) {
+    const n = C.normalizeLoop(a, b, dur());
+    if (!n) {
+      flash('That loop is too short. Pick two points further apart.');
+      return false;
+    }
+    if (!opts.noHistory) pushHistory();
+    const isNew = !hasLoop() || opts.fresh;
+    S.a = n.a;
+    S.b = n.b;
+    S.pendingA = null;
+    S.loopOn = true;
+    if (isNew) S.reps = 0;
+    const v = S.video;
+    if (v && !opts.noSeek) {
+      const t = v.currentTime;
+      if (t < S.a - 0.01 || t >= effEnd()) seek(S.a);
+      if (opts.play && v.paused) play();
+    }
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
+    return true;
+  }
+
+  function clearLoop() {
+    if (!hasLoop() && S.pendingA == null) return;
+    pushHistory();
+    S.a = S.b = S.pendingA = null;
+    S.loopOn = false;
+    S.reps = 0;
+    stopTrainer();
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
+  }
+
+  function undo() {
+    const h = S.history.pop();
+    if (!h) return flash('Nothing to undo.');
+    S.a = h.a;
+    S.b = h.b;
+    S.loopOn = h.loopOn;
+    S.pendingA = null;
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
+  }
+
+  function toggleLoop() {
+    if (!hasLoop()) return flash('Set a loop first: click the start and the end on the wave.');
+    S.loopOn = !S.loopOn;
+    if (S.loopOn && S.video) {
+      const t = S.video.currentTime;
+      if (t < S.a - 0.01 || t >= effEnd()) seek(S.a);
+    }
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
+  }
+
+  function nowTime() {
+    return S.video ? S.video.currentTime : 0;
+  }
+
+  function markA() {
+    const t = nowTime();
+    if (S.b != null && t < S.b - C.MIN_LOOP) setLoop(t, S.b, { noSeek: true });
+    else {
+      S.pendingA = t;
+      S.dirty = true;
+      renderUI();
+    }
+  }
+
+  function markB() {
+    const t = nowTime();
+    const a = S.pendingA != null ? S.pendingA : S.a;
+    if (a == null) return flash('Set the start first: press [ or click the A button.');
+    setLoop(a, t, { fresh: S.pendingA != null });
+  }
+
+  function nudge(which, delta) {
+    if (!hasLoop()) return;
+    const a = which === 'a' ? S.a + delta : S.a;
+    const b = which === 'b' ? S.b + delta : S.b;
+    if (b - a < C.MIN_LOOP) return;
+    setLoop(a, b, { noSeek: which === 'b' });
+    if (which === 'a' && S.video && S.loopOn) seek(S.a); // hear the new start right away
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto speed-up trainer
+  // ---------------------------------------------------------------------------
+  function startTrainer() {
+    if (!S.video || !dur()) return flash('Start a video first.');
+    if (!hasLoop()) {
+      // No loop yet: practise the whole song.
+      S.a = 0;
+      S.b = dur();
+      S.pendingA = null;
+    }
+    const tr = S.trainer;
+    tr.start = settings.trainerStart / 100;
+    tr.goal = settings.trainerGoal / 100;
+    tr.reps = settings.trainerReps;
+    tr.rep = 1;
+    tr.done = false;
+    tr.running = true;
+    S.loopOn = true;
+    S.reps = 0;
+    S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, 1);
+    S.rateOwned = true;
+    applyRate();
+    seek(S.a);
+    play();
+    S.dirty = true;
+    renderUI();
+  }
+
+  function stopTrainer(silent) {
+    if (!S.trainer.running) return;
+    S.trainer.running = false;
+    if (!silent) renderUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Whole-song scan
+  // ---------------------------------------------------------------------------
+  let autoScanTimer = 0;
+  function autoScanWanted() {
+    return settings.autoScan && settings.open && !!S.vid && !S.scan && !S.noHook && !S.scannedVids.has(S.vid) &&
+      !isAd() && dur() > 0 && isFinite(S.video.duration) && S.video.readyState >= 2 && hostVisible() &&
+      S.peaks.coverage(dur()) <= 0.985;
+  }
+  // Called often (every sync tick); it only acts once the player has settled.
+  function maybeAutoScan() {
+    if (autoScanTimer || !autoScanWanted()) return;
+    const vid = S.vid;
+    // Wait for the player to settle (ads, autoplay) before taking over.
+    autoScanTimer = setTimeout(() => {
+      autoScanTimer = 0;
+      if (S.vid === vid && autoScanWanted()) startScan();
+    }, 1200);
+  }
+
+  function startScan() {
+    const v = S.video;
+    const d = dur();
+    if (!v || !d || S.scan || isAd()) return;
+    if (!isFinite(v.duration)) return flash('Live streams have no full waveform.');
+    clearTimeout(S.gapTimer);
+    clearTimeout(S.wrapTimer);
+    S.wrapping = false;
+    S.scannedVids.add(S.vid);
+    S.scan = {
+      vid: S.vid,
+      video: v,
+      t0: v.currentTime,
+      paused: v.paused,
+      muted: v.muted,
+      startedAt: now(),
+      lastCov: S.peaks.coverage(d),
+      lastProgressAt: now(),
+      lastJumpAt: 0,
+      skip: [],
+      timer: 0,
+      everGotData: S.peaks.coverage(d) > 0,
+    };
+    try {
+      v.muted = true;
+      v.playbackRate = SCAN_RATE;
+    } catch (e) {
+      try {
+        v.playbackRate = 4;
+      } catch (e2) {
+        /* ignore */
+      }
+    }
+    const g = S.peaks.nextGap(v.currentTime, d);
+    if (g) seek(g.start);
+    play();
+    S.scan.timer = setInterval(scanTick, 100);
+    renderUI();
+  }
+
+  function scanTick() {
+    const sc = S.scan;
+    const v = S.video;
+    if (!sc) return;
+    if (S.vid !== sc.vid || v !== sc.video) return endScan('switched');
+    if (isAd()) return endScan('ad');
+    const d = dur();
+    const cov = S.peaks.coverage(d);
+    if (cov > sc.lastCov + 0.0005) {
+      sc.lastCov = cov;
+      sc.lastProgressAt = now();
+      sc.everGotData = true;
+    }
+    const gaps = S.peaks.gaps(d).filter((g) => !sc.skip.some((s) => Math.abs(s - g.start) < 0.5));
+    if (!gaps.length) return endScan('done');
+    if (now() - sc.startedAt > Math.max(90000, (d / SCAN_RATE) * 4000 + 30000)) return endScan('timeout');
+    if (!sc.everGotData && now() - sc.startedAt > 7000) return endScan('nohook');
+    try {
+      if (v.playbackRate < SCAN_RATE - 0.5) v.playbackRate = SCAN_RATE;
+      if (!v.muted) v.muted = true;
+    } catch (e) {
+      /* ignore */
+    }
+    const t = v.currentTime;
+    // Never let YouTube reach the end (it would autoplay the next video).
+    if (t > d - 2.5 && !v.paused) v.pause();
+    const inGap = gaps.find((g) => t >= g.start - 0.05 && t < g.end);
+    const stuck = now() - sc.lastProgressAt > 6000;
+    if (stuck && inGap) {
+      sc.skip.push(inGap.start); // this part won't load; don't wait forever
+      sc.lastProgressAt = now();
+    }
+    const nearEnd = t > d - 2.5;
+    if (!inGap || nearEnd || stuck) {
+      if (now() - sc.lastJumpAt > 900 || !inGap) {
+        const ahead = gaps.find((g) => g.end > t + 0.1 && !(inGap && g.start === inGap.start)) || gaps[0];
+        if (ahead) {
+          sc.lastJumpAt = now();
+          seek(ahead.start);
+        }
+      }
+    }
+    if (v.paused && v.currentTime < d - 2.5) play();
+    S.dirty = true;
+    renderScanOverlay();
+  }
+
+  function endScan(reason) {
+    const sc = S.scan;
+    if (!sc) return;
+    clearInterval(sc.timer);
+    S.scan = null;
+    const v = sc.video;
+    if (v && reason !== 'switched') {
+      try {
+        v.playbackRate = S.rate;
+        v.muted = sc.muted;
+        v.currentTime = sc.t0;
+        if (sc.paused) v.pause();
+        else play();
+      } catch (e) {
+        /* ignore */
+      }
+    } else if (v) {
+      try {
+        v.muted = sc.muted;
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    if (reason === 'nohook') {
+      S.noHook = true;
+      flash('Could not read the audio directly. The wave will draw itself while the song plays.', 7000);
+      startLive();
+    } else if (reason === 'timeout') {
+      flash('Some parts of the song did not load. The wave fills in as they play.', 5000);
+    } else if (reason === 'cancel') {
+      flash('Scan cancelled. The wave keeps filling in while you listen.');
+    }
+    saveWaveNow();
+    S.dirty = true;
+    renderUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live fallback: draw the wave from what is playing
+  // ---------------------------------------------------------------------------
+  function startLive() {
+    const v = S.video;
+    if (!v || S.live) return;
+    try {
+      const stream = v.captureStream ? v.captureStream() : null;
+      if (!stream || !stream.getAudioTracks().length) return;
+      const ctx = new AudioContext();
+      const src = ctx.createMediaStreamSource(stream);
+      const an = ctx.createAnalyser();
+      an.fftSize = 2048;
+      an.smoothingTimeConstant = 0;
+      src.connect(an);
+      ctx.resume().catch(() => {});
+      S.live = { ctx, an, td: new Float32Array(an.fftSize), fd: new Uint8Array(an.frequencyBinCount), lastT: null };
+    } catch (e) {
+      S.live = null;
+    }
+  }
+
+  function stopLive() {
+    if (!S.live) return;
+    try {
+      S.live.ctx.close();
+    } catch (e) {
+      /* ignore */
+    }
+    S.live = null;
+  }
+
+  function liveTick() {
+    const L = S.live;
+    const v = S.video;
+    if (!L || !v || v.paused || v.seeking || isAd()) {
+      if (L) L.lastT = null;
+      return;
+    }
+    const t = v.currentTime;
+    if (L.lastT == null || t < L.lastT || t - L.lastT > 0.5) {
+      L.lastT = t;
+      return;
+    }
+    L.an.getFloatTimeDomainData(L.td);
+    let pk = 0;
+    for (let i = 0; i < L.td.length; i++) {
+      const a = Math.abs(L.td[i]);
+      if (a > pk) pk = a;
+    }
+    L.an.getByteFrequencyData(L.fd);
+    const hz = L.ctx.sampleRate / L.an.fftSize;
+    let lo = 0, mi = 0, hi = 0, nl = 0, nm = 0, nh = 0;
+    for (let i = 1; i < L.fd.length; i++) {
+      const f = i * hz;
+      if (f < 250) { lo += L.fd[i]; nl++; } else if (f < 2500) { mi += L.fd[i]; nm++; } else if (f < 8000) { hi += L.fd[i]; nh++; }
+    }
+    const b0 = Math.floor(L.lastT * BIN_RATE);
+    const b1 = Math.max(b0 + 1, Math.floor(t * BIN_RATE));
+    const n = b1 - b0;
+    const fill = (x) => new Uint8Array(n).fill(Math.max(0, Math.min(255, Math.round(x))));
+    S.peaks.add(b0, fill(pk * 255), fill(nl ? lo / nl : 0), fill(nm ? mi / nm : 0), fill(nh ? hi / nh : 0));
+    L.lastT = t;
+    S.dirty = true;
+    saveWaveSoon();
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI building helpers
+  // ---------------------------------------------------------------------------
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const ICONS = {
+    wave: 'M3 10h2v4H3zM7 6h2v12H7zM11 3h2v18h-2zM15 7h2v10h-2zM19 10h2v4h-2z',
+    loop: 'M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z',
+    bolt: 'M7 2v11h3v9l7-12h-4l4-8z',
+    close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    gear: 'M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.47.47 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z',
+    undo: 'M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z',
+    zoom: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zM12 10h-2v2H9v-2H7V9h2V7h1v2h2z',
+    fit: 'M3 12l4-4v3h10V8l4 4-4 4v-3H7v3z',
+    down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
+    up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
+    play: 'M8 5v14l11-7z',
+    stop: 'M6 6h12v12H6z',
+    plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+    minus: 'M19 13H5v-2h14z',
+    left: 'M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z',
+    right: 'M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+    help: 'M11 18h2v-2h-2v2zm1-16a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm0-14a4 4 0 0 0-4 4h2a2 2 0 1 1 4 0c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5a4 4 0 0 0-4-4z',
+    scan: 'M3 5v4h2V5h4V3H5a2 2 0 0 0-2 2zm2 10H3v4a2 2 0 0 0 2 2h4v-2H5v-4zm14 4h-4v2h4a2 2 0 0 0 2-2v-4h-2v4zm0-16h-4v2h4v4h2V5a2 2 0 0 0-2-2zM7 11h2v2H7zm4-3h2v8h-2zm4 2h2v4h-2z',
+  };
+
+  function icon(name) {
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS(SVGNS, 'path');
+    p.setAttribute('d', ICONS[name]);
+    svg.appendChild(p);
+    return svg;
+  }
+
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+      else if (k === 'hidden') el.hidden = !!v;
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) {
+      if (kid == null || kid === false) continue;
+      el.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid);
+    }
+    if (tag === 'button') {
+      el.type = 'button';
+      el.tabIndex = -1;
+      // Keep focus on the page so Space still means play/pause in YouTube.
+      el.addEventListener('mousedown', (e) => e.preventDefault());
+    }
+    return el;
+  }
+
+  function btn(label, title, onclick, cls = '', iconName = null) {
+    return h('button', { class: cls, title, 'aria-label': title, onclick }, iconName ? icon(iconName) : null, label || null);
+  }
+
+  function select(values, fmt, value, onchange, title) {
+    const el = h('select', { title, 'aria-label': title });
+    for (const v of values) {
+      const o = h('option', { value: String(v), text: fmt(v) });
+      if (v === value) o.selected = true;
+      el.appendChild(o);
+    }
+    el.addEventListener('change', () => {
+      onchange(Number(el.value));
+      el.blur();
+    });
+    return el;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Panel
+  // ---------------------------------------------------------------------------
+  let hostEl = null;
+  let shadow = null;
+  const ui = {};
+
+  function buildPanel() {
+    hostEl = document.createElement('div');
+    hostEl.id = 'ytl-wave-looper';
+    hostEl.style.cssText =
+      'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;display:none;';
+    shadow = hostEl.attachShadow({ mode: 'open' });
+    for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'contextmenu', 'wheel', 'touchstart']) {
+      hostEl.addEventListener(ev, (e) => e.stopPropagation());
+    }
+    const style = document.createElement('style');
+    style.textContent = globalThis.YTL_PANEL_CSS || '';
+    shadow.appendChild(style);
+
+    // --- toolbar ---
+    ui.aTime = h('span', { class: 'time', text: '--:--.--' });
+    ui.bTime = h('span', { class: 'time', text: '--:--.--' });
+    ui.aMark = h('div', { class: 'mark a' },
+      btn('A', 'Set loop START at the current time  [', markA, 'set'),
+      btn(null, 'Move start earlier (Shift = fine, Alt = big)', (e) => nudge('a', -step(e)), 'icon', 'left'),
+      ui.aTime,
+      btn(null, 'Move start later (Shift = fine, Alt = big)', (e) => nudge('a', step(e)), 'icon', 'right'));
+    ui.bMark = h('div', { class: 'mark b' },
+      btn('B', 'Set loop END at the current time  ]', markB, 'set'),
+      btn(null, 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
+      ui.bTime,
+      btn(null, 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
+    ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
+    ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
+    ui.undoBtn = btn(null, 'Undo the last loop change', undo, 'icon', 'undo');
+
+    ui.speedBtns = SPEED_PRESETS.map((r) =>
+      btn(`${Math.round(r * 100)}%`, `Play at ${Math.round(r * 100)}% speed`, () => setRate(r), 'speed'));
+    ui.rate = h('span', { class: 'rate', title: 'Current speed (click for 100%)', text: '100%' });
+    ui.rate.addEventListener('click', () => setRate(1));
+    const slower = btn(null, 'Slower by 5%', () => setRate(Math.round((S.rate - 0.05) * 100) / 100), 'icon', 'minus');
+    const faster = btn(null, 'Faster by 5%', () => setRate(Math.round((S.rate + 0.05) * 100) / 100), 'icon', 'plus');
+    ui.trainerBtn = btn('Trainer', 'Auto speed-up: start slow and reach full speed over N loops', () => toggleSub('trainer'), '', 'bolt');
+
+    ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon', 'zoom');
+    ui.fitBtn = btn(null, 'Show the whole song', fitView, 'icon', 'fit');
+    ui.gearBtn = btn(null, 'Settings', () => toggleSub('settings'), 'icon', 'gear');
+    ui.helpBtn = btn(null, 'How to use', () => toggleHelp(), 'icon', 'help');
+    ui.collapseBtn = btn(null, 'Minimise', toggleCollapse, 'icon', 'down');
+    const closeBtn = btn(null, 'Close the looper (turns loop and speed off)', closePanel, 'icon', 'close');
+
+    const bar = h('div', { class: 'row bar' },
+      h('div', { class: 'brand', title: 'DJ Wave Looper' }, icon('wave'), h('span', { class: 'brand-name', text: 'Wave Looper' })),
+      h('div', { class: 'group' }, ui.aMark, ui.bMark),
+      h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn),
+      h('div', { class: 'sep' }),
+      h('div', { class: 'group' }, h('span', { class: 'label hide-narrow', text: 'Speed' }), ...ui.speedBtns, slower, ui.rate, faster),
+      h('div', { class: 'sep' }),
+      ui.trainerBtn,
+      h('div', { class: 'spacer' }),
+      h('div', { class: 'group' }, ui.zoomLoopBtn, ui.fitBtn, ui.gearBtn, ui.helpBtn, ui.collapseBtn, closeBtn));
+
+    // --- trainer row ---
+    const pct = (v) => `${v}%`;
+    ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, (v) => { settings.trainerStart = v; saveSettings(); renderUI(); }, 'Starting speed');
+    ui.tGoal = select(TRAINER_GOALS, pct, settings.trainerGoal, (v) => { settings.trainerGoal = v; saveSettings(); renderUI(); }, 'Goal speed');
+    ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, (v) => { settings.trainerReps = v; saveSettings(); renderUI(); }, 'How many loops to reach the goal');
+    ui.tGo = btn('Start', 'Start the speed trainer', () => (S.trainer.running ? stopTrainer() : startTrainer()), 'primary', 'play');
+    ui.tBar = h('i');
+    ui.tStat = h('span', { class: 'tstat' });
+    ui.trainerRow = h('div', { class: 'row sub', hidden: true },
+      h('span', { class: 'label', text: 'Auto speed-up' }),
+      h('span', { class: 'label', text: 'from' }), ui.tStart,
+      h('span', { class: 'label', text: 'to' }), ui.tGoal,
+      h('span', { class: 'label', text: 'over' }), ui.tReps,
+      ui.tGo,
+      h('div', { class: 'progress' }, ui.tBar),
+      ui.tStat);
+
+    // --- settings row ---
+    ui.gapSel = select(GAPS, (v) => (v ? `${v}s` : 'none'), settings.gap, (v) => { settings.gap = v; saveSettings(); }, 'Pause before each repeat (time to breathe)');
+    ui.pitchChk = h('input', { type: 'checkbox' });
+    ui.pitchChk.checked = settings.keepPitch;
+    ui.pitchChk.addEventListener('change', () => { settings.keepPitch = ui.pitchChk.checked; saveSettings(); applyRate(); ui.pitchChk.blur(); });
+    ui.scanChk = h('input', { type: 'checkbox' });
+    ui.scanChk.checked = settings.autoScan;
+    ui.scanChk.addEventListener('change', () => { settings.autoScan = ui.scanChk.checked; saveSettings(); ui.scanChk.blur(); if (settings.autoScan) maybeAutoScan(); });
+    ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
+    ui.settingsRow = h('div', { class: 'row sub', hidden: true },
+      h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
+      h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
+      h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
+      ui.rescanBtn);
+
+    // --- waveform ---
+    ui.canvas = h('canvas');
+    ui.tip = h('div', { class: 'tip', hidden: true });
+    ui.scanText = h('span');
+    ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
+    ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
+    ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
+
+    // --- status ---
+    ui.hint = h('div', { class: 'hint' });
+    ui.chips = h('div', { class: 'chips' });
+    ui.count = h('div', { class: 'count' });
+    const status = h('div', { class: 'status' }, ui.hint, ui.chips, ui.count);
+
+    ui.help = buildHelp();
+    const resize = h('div', { class: 'resize', title: 'Drag to resize' });
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.waveWrap, status, ui.help);
+    shadow.appendChild(ui.panel);
+
+    setupResize(resize);
+    setupCanvas();
+    (document.body || document.documentElement).appendChild(hostEl);
+    new ResizeObserver(() => (S.dirty = true)).observe(ui.waveWrap);
+    new ResizeObserver(updateBodyPad).observe(hostEl);
+  }
+
+  function step(e) {
+    return e && e.shiftKey ? 0.01 : e && e.altKey ? 0.5 : 0.05;
+  }
+
+  function buildHelp() {
+    const k = (t) => h('kbd', { text: t });
+    return h('div', { class: 'help', hidden: true },
+      btn(null, 'Close help', () => toggleHelp(false), 'icon close', 'close'),
+      h('h3', { text: 'How to use Wave Looper' }),
+      h('ol', {},
+        h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
+        h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
+        h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
+        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%) and how many loops to get there (e.g. 20). Every loop gets a little faster.'),
+        h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.')),
+      h('ul', {},
+        h('li', {}, k('['), ' set start here   ', k(']'), ' set end here   ', k('\\'), ' loop on/off   ', k('Esc'), ' cancel a half-made loop'),
+        h('li', {}, k('Alt'), '+', k('L'), ' open or close the looper. Space and the arrow keys still control YouTube.'),
+        h('li', {}, 'Your loops and speed are saved for each video. "Pause between loops" in ⚙ gives you time to breathe.')));
+  }
+
+  function toggleHelp(force) {
+    const show = force != null ? force : ui.help.hidden;
+    ui.help.hidden = !show;
+    if (show && !settings.seenHelp) {
+      settings.seenHelp = true;
+      saveSettings();
+    }
+  }
+
+  function toggleSub(which) {
+    const row = which === 'trainer' ? ui.trainerRow : ui.settingsRow;
+    row.hidden = !row.hidden;
+    if (settings.collapsed && !row.hidden) toggleCollapse();
+    applyLayout();
+    renderUI();
+    S.dirty = true;
+  }
+
+  function toggleCollapse() {
+    settings.collapsed = !settings.collapsed;
+    saveSettings();
+    applyLayout();
+    renderUI();
+  }
+
+  // settings.height is the height of the wave area; the rows around it add to it.
+  function waveHeight() {
+    const def = Math.round(window.innerHeight * 0.2) - 30;
+    const want = settings.height || def;
+    return Math.round(C.clamp(want, 90, Math.max(120, window.innerHeight * 0.6)));
+  }
+
+  function panelHeight() {
+    return hostEl && hostEl.style.display !== 'none' ? Math.ceil(hostEl.getBoundingClientRect().height) : 0;
+  }
+
+  function bottomOffset() {
+    if (!IS_MUSIC) return 0;
+    const bar = document.querySelector('ytmusic-player-bar');
+    if (!bar) return 0;
+    const r = bar.getBoundingClientRect();
+    return r.height > 0 && r.top < window.innerHeight ? Math.max(0, window.innerHeight - r.top) : 0;
+  }
+
+  function applyLayout() {
+    if (!hostEl) return;
+    ui.panel.classList.toggle('collapsed', settings.collapsed);
+    ui.waveWrap.style.height = waveHeight() + 'px';
+    hostEl.style.bottom = bottomOffset() + 'px';
+    ui.collapseBtn.replaceChildren(icon(settings.collapsed ? 'up' : 'down'));
+    ui.collapseBtn.title = settings.collapsed ? 'Expand' : 'Minimise';
+    updateBodyPad();
+    S.dirty = true;
+  }
+
+  // Let the page scroll above the panel so nothing on YouTube is hidden under it.
+  function updateBodyPad() {
+    if (IS_MUSIC || !document.body || !hostEl) return;
+    const visible = hostEl.style.display !== 'none' && !document.fullscreenElement;
+    const want = visible ? panelHeight() + 'px' : '';
+    if (document.body.style.paddingBottom !== want) document.body.style.paddingBottom = want;
+  }
+
+  function setupResize(handle) {
+    let startY = 0;
+    let startH = 0;
+    handle.addEventListener('pointerdown', (e) => {
+      if (settings.collapsed) return;
+      startY = e.clientY;
+      startH = waveHeight();
+      handle.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    handle.addEventListener('pointermove', (e) => {
+      if (!handle.hasPointerCapture(e.pointerId)) return;
+      settings.height = Math.round(C.clamp(startH + (startY - e.clientY), 90, window.innerHeight * 0.6));
+      applyLayout();
+    });
+    handle.addEventListener('pointerup', (e) => {
+      if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
+      saveSettings();
+    });
+  }
+
+  function hostVisible() {
+    return !!hostEl && hostEl.style.display !== 'none';
+  }
+
+  function updateVisibility() {
+    if (!hostEl) return;
+    const show = settings.open && !!S.vid && onWatchSurface();
+    const was = hostEl.style.display !== 'none';
+    if (show !== was) {
+      hostEl.style.display = show ? 'block' : 'none';
+      applyLayout();
+      if (show) {
+        S.dirty = true;
+        renderUI();
+        maybeAutoScan();
+      }
+    } else if (show) {
+      const off = bottomOffset() + 'px';
+      if (hostEl.style.bottom !== off) hostEl.style.bottom = off;
+    }
+    // Keep the panel visible in fullscreen by moving it into the fullscreen element.
+    const fs = document.fullscreenElement;
+    const parent = fs && fs !== document.documentElement ? fs : document.body || document.documentElement;
+    if (hostEl.parentNode !== parent) {
+      parent.appendChild(hostEl);
+      applyLayout();
+    }
+    updateYTButton();
+  }
+
+  function openPanel() {
+    settings.open = true;
+    saveSettings();
+    if (!hostEl) buildPanel();
+    updateVisibility();
+    if (!settings.seenHelp && S.vid) toggleHelp(true);
+  }
+
+  function closePanel() {
+    settings.open = false;
+    saveSettings();
+    if (S.scan) endScan('cancel');
+    stopTrainer(true);
+    clearTimeout(S.gapTimer);
+    S.wrapping = false;
+    S.loopOn = false;
+    S.pendingA = null;
+    if (S.rate !== 1 || S.rateOwned) {
+      S.rate = 1;
+      S.rateOwned = false;
+      applyRate();
+    }
+    saveVideoStateNow();
+    updateVisibility();
+    renderUI();
+  }
+
+  function togglePanel() {
+    if (settings.open && hostEl && hostEl.style.display !== 'none') closePanel();
+    else openPanel();
+  }
+
+  // ---------------------------------------------------------------------------
+  // YouTube player button
+  // ---------------------------------------------------------------------------
+  function updateYTButton() {
+    const ctr = document.querySelector('#movie_player .ytp-right-controls') ||
+      (IS_MUSIC ? document.querySelector('ytmusic-player-bar .right-controls-buttons') : null);
+    if (!ctr) return;
+    let b = ctr.querySelector('.ytl-yt-btn');
+    if (!b) {
+      b = document.createElement('button');
+      b.className = IS_MUSIC ? 'ytl-yt-btn' : 'ytp-button ytl-yt-btn';
+      b.type = 'button';
+      b.title = 'Wave Looper (Alt+L)';
+      b.setAttribute('aria-label', 'Wave Looper');
+      b.style.cssText = IS_MUSIC
+        ? 'background:none;border:0;cursor:pointer;width:40px;height:40px;padding:8px;color:#fff;'
+        : 'display:inline-flex;align-items:center;justify-content:center;vertical-align:top;';
+      const svg = icon('wave');
+      svg.setAttribute('width', IS_MUSIC ? '24' : '60%');
+      svg.setAttribute('height', IS_MUSIC ? '24' : '60%');
+      svg.style.fill = '#fff';
+      b.appendChild(svg);
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        togglePanel();
+      });
+      ctr.insertBefore(b, ctr.firstChild);
+    }
+    const on = settings.open;
+    const svg = b.querySelector('svg');
+    if (svg) svg.style.fill = on ? '#19d3ff' : '#fff';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rendering the controls
+  // ---------------------------------------------------------------------------
+  function flash(msg, ms = 3500) {
+    S.hintOverride = msg;
+    S.hintUntil = now() + ms;
+    renderUI();
+  }
+
+  function setHint(parts) {
+    ui.hint.replaceChildren(...parts.map((p) => (Array.isArray(p) ? h('b', { text: p[0] }) : document.createTextNode(p))));
+  }
+
+  function renderUI() {
+    if (!hostEl) return;
+    const F = C.formatTime;
+    const pending = S.pendingA != null;
+    ui.aTime.textContent = pending ? F(S.pendingA) : S.a != null ? F(S.a) : '--:--.--';
+    ui.bTime.textContent = !pending && S.b != null ? F(S.b) : '--:--.--';
+    ui.aMark.classList.toggle('pending', pending);
+    ui.loopBtn.classList.toggle('on', S.loopOn && hasLoop());
+    ui.loopBtn.disabled = !hasLoop();
+    ui.clearBtn.disabled = !hasLoop() && !pending;
+    ui.undoBtn.disabled = !S.history.length;
+    ui.zoomLoopBtn.disabled = !hasLoop();
+    ui.fitBtn.disabled = !S.view;
+    for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
+    ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
+    ui.trainerBtn.classList.toggle('on', !ui.trainerRow.hidden || S.trainer.running);
+    ui.gearBtn.classList.toggle('on', !ui.settingsRow.hidden);
+
+    // Trainer
+    const tr = S.trainer;
+    ui.tGo.replaceChildren(icon(tr.running ? 'stop' : 'play'), tr.running ? 'Stop' : 'Start');
+    ui.tGo.title = tr.running ? 'Stop the speed trainer' : 'Start the speed trainer';
+    for (const s of [ui.tStart, ui.tGoal, ui.tReps]) s.disabled = tr.running;
+    if (tr.running) {
+      const shown = Math.min(tr.rep, tr.reps);
+      ui.tBar.style.width = `${Math.round((shown / tr.reps) * 100)}%`;
+      ui.tStat.replaceChildren(
+        tr.done ? `Done! Loop ${tr.rep} at ` : `Loop ${shown} of ${tr.reps} at `,
+        h('b', { text: `${Math.round(S.rate * 100)}%` }));
+    } else {
+      ui.tBar.style.width = '0%';
+      const s = settings.trainerStart, g = settings.trainerGoal, n = settings.trainerReps;
+      const stepPct = n > 1 ? (g - s) / (n - 1) : 0;
+      ui.tStat.textContent = `${s}% → ${g}% (about ${stepPct >= 0 ? '+' : ''}${stepPct.toFixed(1)}% per loop)`;
+    }
+
+    // Settings
+    ui.rescanBtn.disabled = !!S.scan || !dur();
+
+    // Hint line
+    if (S.hintOverride && now() < S.hintUntil) {
+      setHint([S.hintOverride]);
+    } else if (S.scan) {
+      setHint(['Reading the whole song… it plays muted for a moment, then goes back to where you were.']);
+    } else if (!dur()) {
+      setHint(['Waiting for the video…']);
+    } else if (pending) {
+      setHint([['Now click where the loop should END'], '  (Esc to cancel)']);
+    } else if (hasLoop()) {
+      const len = S.b - S.a;
+      setHint([
+        [S.loopOn ? 'Looping ' : 'Loop off: '],
+        `${F(S.a)} → ${F(S.b)} (${len.toFixed(2)}s)`,
+        '. Drag the A/B flags to adjust. Scroll to zoom.',
+      ]);
+    } else {
+      setHint([['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
+    }
+
+    // Saved loops
+    renderChips();
+    ui.count.replaceChildren(hasLoop() ? 'Repeats ' : '', hasLoop() ? h('b', { text: String(S.reps) }) : '');
+
+    renderScanOverlay();
+
+    // Test and debug hooks: plain data on the host element.
+    const d = hostEl.dataset;
+    d.vid = S.vid || '';
+    d.a = S.a != null ? S.a.toFixed(3) : '';
+    d.b = S.b != null ? S.b.toFixed(3) : '';
+    d.pending = pending ? S.pendingA.toFixed(3) : '';
+    d.loop = String(S.loopOn && hasLoop());
+    d.rate = String(S.rate);
+    d.reps = String(S.reps);
+    d.trainer = tr.running ? `${tr.rep}/${tr.reps}` : '';
+    d.scanning = String(!!S.scan);
+    d.cov = dur() ? S.peaks.coverage(dur()).toFixed(3) : '0';
+  }
+
+  let chipsKey = '';
+  function renderChips() {
+    const key = JSON.stringify([S.saved, hasLoop() && [S.a, S.b]]);
+    if (key === chipsKey) return;
+    chipsKey = key;
+    const kids = S.saved.map((s, i) => {
+      const active = hasLoop() && Math.abs(s.a - S.a) < 0.005 && Math.abs(s.b - S.b) < 0.005;
+      const name = h('button', {
+        title: `${C.formatTime(s.a)} → ${C.formatTime(s.b)}. Click to loop, double-click to rename.`,
+        text: s.name,
+        onclick: () => setLoop(s.a, s.b, { play: true, fresh: true }),
+        ondblclick: () => {
+          const n = window.prompt('Name this loop', s.name);
+          if (n && n.trim()) {
+            s.name = n.trim().slice(0, 30);
+            chipsKey = '';
+            saveVideoStateSoon();
+            renderUI();
+          }
+        },
+      });
+      const x = h('button', {
+        class: 'x', title: 'Delete this saved loop', text: '×',
+        onclick: () => { S.saved.splice(i, 1); saveVideoStateSoon(); renderUI(); },
+      });
+      return h('span', { class: 'chip' + (active ? ' active' : '') }, name, x);
+    });
+    if (hasLoop()) {
+      kids.push(h('span', { class: 'chip add' }, h('button', {
+        title: 'Save this loop so you can come back to it (e.g. Verse, Chorus)',
+        text: '+ Save loop',
+        onclick: () => {
+          S.saved.push({ name: `Part ${S.saved.length + 1}`, a: S.a, b: S.b });
+          saveVideoStateSoon();
+          renderUI();
+        },
+      })));
+    }
+    ui.chips.replaceChildren(...kids);
+  }
+
+  function renderScanOverlay() {
+    if (!hostEl) return;
+    const d = dur();
+    const cov = d ? S.peaks.coverage(d) : 0;
+    if (S.scan) {
+      ui.overlay.hidden = false;
+      ui.scanText.textContent = `Reading the whole song… ${Math.floor(cov * 100)}%`;
+      ui.scanBtn.hidden = true;
+      ui.cancelBtn.hidden = false;
+    } else if (d && cov < 0.9 && !S.noHook && !isAd()) {
+      ui.overlay.hidden = false;
+      ui.scanText.textContent = cov > 0 ? `Wave ${Math.floor(cov * 100)}% loaded` : 'No wave yet';
+      ui.scanBtn.hidden = false;
+      ui.cancelBtn.hidden = true;
+    } else if (d && S.noHook && cov < 0.05) {
+      ui.overlay.hidden = false;
+      ui.scanText.textContent = 'Play the song and the wave draws itself';
+      ui.scanBtn.hidden = true;
+      ui.cancelBtn.hidden = true;
+    } else {
+      ui.overlay.hidden = true;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Waveform canvas
+  // ---------------------------------------------------------------------------
+  const RULER = 18;
+  const MINI = 12;
+  const HANDLE_PX = 8;
+  const layers = { key: '', bright: null, dim: null, mini: null };
+  const pointer = { x: -1, y: -1, inside: false };
+  let drag = null;
+
+  function geom() {
+    const r = ui.canvas.getBoundingClientRect();
+    const zoomed = !!S.view;
+    const miniH = zoomed ? MINI : 0;
+    return { w: r.width, h: r.height, left: r.left, top: r.top, waveTop: RULER, waveH: Math.max(10, r.height - RULER - miniH), miniH, zoomed };
+  }
+
+  function viewRange() {
+    const d = dur();
+    if (S.view && d) return { s: S.view.s, e: Math.min(S.view.e, d) };
+    return { s: 0, e: d || 1 };
+  }
+
+  function timeAt(x, g) {
+    const { s, e } = viewRange();
+    return C.clamp(s + (x / g.w) * (e - s), 0, dur() || 0);
+  }
+
+  function xAt(t, g) {
+    const { s, e } = viewRange();
+    return ((t - s) / (e - s)) * g.w;
+  }
+
+  function setView(s, e) {
+    const d = dur();
+    if (!d) return;
+    let len = C.clamp(e - s, Math.min(1, d), d);
+    if (len >= d - 1e-6) {
+      S.view = null;
+    } else {
+      s = C.clamp(s, 0, d - len);
+      S.view = { s, e: s + len };
+    }
+    S.dirty = true;
+    renderUI();
+  }
+
+  function fitView() {
+    S.view = null;
+    S.dirty = true;
+    renderUI();
+  }
+
+  function zoomToLoop() {
+    if (!hasLoop()) return;
+    const len = S.b - S.a;
+    const pad = Math.max(0.25, len * 0.12);
+    setView(S.a - pad, S.b + pad);
+  }
+
+  function drawLayers(g, dpr) {
+    const W = Math.max(1, Math.round(g.w * dpr));
+    const H = Math.max(1, Math.round(g.waveH * dpr));
+    const { s, e } = viewRange();
+    const key = [W, H, s.toFixed(4), e.toFixed(4), S.peaks.version, S.peaks.n, g.miniH].join('|');
+    if (key === layers.key) return;
+    layers.key = key;
+    for (const k of ['bright', 'dim']) {
+      if (!layers[k]) layers[k] = document.createElement('canvas');
+      layers[k].width = W;
+      layers[k].height = H;
+    }
+    const P = S.peaks;
+    const br = P.binRate;
+    const norm = P.maxPeak > 0 ? 1 / P.maxPeak : 0;
+    const mid = H / 2;
+    const amp = mid - 2 * dpr;
+    const bctx = layers.bright.getContext('2d');
+    const dctx = layers.dim.getContext('2d');
+    bctx.clearRect(0, 0, W, H);
+    dctx.clearRect(0, 0, W, H);
+    const span = e - s;
+    for (let x = 0; x < W; x++) {
+      const t0 = s + (x / W) * span;
+      const t1 = s + ((x + 1) / W) * span;
+      let b0 = Math.floor(t0 * br);
+      let b1 = Math.max(b0 + 1, Math.floor(t1 * br));
+      b1 = Math.min(b1, P.n);
+      let pk = 0, lo = 0, mi = 0, hi = 0, c = 0;
+      for (let b = b0; b < b1; b++) {
+        if (!P.cov[b]) continue;
+        if (P.peak[b] > pk) pk = P.peak[b];
+        lo += P.low[b];
+        mi += P.mid[b];
+        hi += P.high[b];
+        c++;
+      }
+      if (!c) {
+        bctx.fillStyle = 'rgba(140,150,170,0.18)';
+        bctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
+        dctx.fillStyle = 'rgba(140,150,170,0.12)';
+        dctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
+        continue;
+      }
+      const v = Math.pow(pk * norm, 0.85);
+      const hh = Math.max(dpr, v * amp);
+      const [r, gg, bb] = C.bandColor(lo / c, mi / c, hi / c);
+      bctx.fillStyle = `rgb(${r},${gg},${bb})`;
+      bctx.fillRect(x, mid - hh, 1, hh * 2);
+      dctx.fillStyle = `rgba(${r},${gg},${bb},0.62)`;
+      dctx.fillRect(x, mid - hh, 1, hh * 2);
+    }
+    // Bright core line in the middle, like a DJ deck.
+    bctx.fillStyle = 'rgba(255,255,255,0.10)';
+    bctx.fillRect(0, mid - dpr * 0.5, W, dpr);
+
+    // Mini map of the whole song when zoomed.
+    if (g.miniH) {
+      const MW = W;
+      const MH = Math.max(1, Math.round(g.miniH * dpr));
+      if (!layers.mini) layers.mini = document.createElement('canvas');
+      layers.mini.width = MW;
+      layers.mini.height = MH;
+      const m = layers.mini.getContext('2d');
+      m.clearRect(0, 0, MW, MH);
+      const d = dur();
+      for (let x = 0; x < MW; x++) {
+        const b0 = Math.floor(((x / MW) * d) * br);
+        const b1 = Math.min(P.n, Math.max(b0 + 1, Math.floor((((x + 1) / MW) * d) * br)));
+        let pk = 0;
+        for (let b = b0; b < b1; b++) if (P.cov[b] && P.peak[b] > pk) pk = P.peak[b];
+        const hh = Math.max(1, pk * norm * (MH - 2));
+        m.fillStyle = 'rgba(160,175,200,0.55)';
+        m.fillRect(x, MH - hh, 1, hh);
+      }
+    }
+  }
+
+  function draw() {
+    const g = geom();
+    if (g.w < 2 || g.h < 2) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cv = ui.canvas;
+    const W = Math.round(g.w * dpr);
+    const H = Math.round(g.h * dpr);
+    if (cv.width !== W || cv.height !== H) {
+      cv.width = W;
+      cv.height = H;
+    }
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#0b0e14';
+    ctx.fillRect(0, 0, W, H);
+    const d = dur();
+    if (!d) return;
+    drawLayers(g, dpr);
+    ctx.scale(dpr, dpr);
+
+    const v = S.video;
+    const t = v ? v.currentTime : 0;
+    const px = xAt(t, g);
+    const top = g.waveTop;
+    const wh = g.waveH;
+
+    // Waveform: dim after the playhead, bright before it.
+    ctx.drawImage(layers.dim, 0, top, g.w, wh);
+    if (px > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, top, Math.min(g.w, px), wh);
+      ctx.clip();
+      ctx.drawImage(layers.bright, 0, top, g.w, wh);
+      ctx.restore();
+    }
+
+    // Loop region
+    const showA = S.pendingA != null ? S.pendingA : S.a;
+    if (hasLoop() && S.pendingA == null) {
+      const xa = xAt(S.a, g);
+      const xb = xAt(S.b, g);
+      ctx.fillStyle = S.loopOn ? 'rgba(5,8,14,0.45)' : 'rgba(5,8,14,0.2)';
+      if (xa > 0) ctx.fillRect(0, top, Math.min(g.w, xa), wh);
+      if (xb < g.w) ctx.fillRect(Math.max(0, xb), top, g.w - Math.max(0, xb), wh);
+      ctx.fillStyle = S.loopOn ? 'rgba(25,211,255,0.10)' : 'rgba(255,255,255,0.05)';
+      ctx.fillRect(xa, top, xb - xa, wh);
+      drawFlag(ctx, xa, top, wh, '#3ddc84', 'A', false);
+      drawFlag(ctx, xb, top, wh, '#ff6b4a', 'B', true);
+    } else if (showA != null) {
+      const xa = xAt(showA, g);
+      if (pointer.inside && pointer.y > top && !drag) {
+        const xh = pointer.x;
+        ctx.fillStyle = 'rgba(61,220,132,0.12)';
+        ctx.fillRect(Math.min(xa, xh), top, Math.abs(xh - xa), wh);
+      }
+      drawFlag(ctx, xa, top, wh, '#3ddc84', 'A', false);
+    }
+    if (drag && drag.mode === 'select' && drag.moved) {
+      const x0 = xAt(drag.t0, g);
+      const x1 = xAt(drag.t1, g);
+      ctx.fillStyle = 'rgba(25,211,255,0.18)';
+      ctx.fillRect(Math.min(x0, x1), top, Math.abs(x1 - x0), wh);
+    }
+
+    // Ruler
+    ctx.fillStyle = '#121722';
+    ctx.fillRect(0, 0, g.w, RULER);
+    ctx.fillStyle = '#262f42';
+    ctx.fillRect(0, RULER - 1, g.w, 1);
+    drawRuler(ctx, g);
+
+    // Playhead
+    if (px >= 0 && px <= g.w) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(Math.round(px) - 1, 0, 2, top + wh);
+      ctx.beginPath();
+      ctx.moveTo(px - 5, 0);
+      ctx.lineTo(px + 5, 0);
+      ctx.lineTo(px, 7);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Hover line
+    if (pointer.inside && !drag) {
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillRect(Math.round(pointer.x), pointer.y < RULER ? 0 : top, 1, pointer.y < RULER ? RULER : wh);
+    }
+
+    // Mini map
+    if (g.miniH && layers.mini) {
+      const my = top + wh;
+      ctx.fillStyle = '#0f1420';
+      ctx.fillRect(0, my, g.w, g.miniH);
+      ctx.drawImage(layers.mini, 0, my, g.w, g.miniH);
+      const { s, e } = viewRange();
+      ctx.strokeStyle = '#19d3ff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect((s / d) * g.w + 0.5, my + 0.5, Math.max(3, ((e - s) / d) * g.w) - 1, g.miniH - 1);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect((t / d) * g.w, my, 1, g.miniH);
+    }
+  }
+
+  function drawFlag(ctx, x, top, wh, color, label, right) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x) - 1, top, 2, wh);
+    const fw = 16;
+    const fh = 15;
+    const fx = right ? x - fw : x;
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(fx, top, fw, fh, right ? [4, 0, 0, 4] : [0, 4, 4, 0]) : ctx.rect(fx, top, fw, fh);
+    ctx.fill();
+    ctx.fillStyle = '#05140b';
+    ctx.font = 'bold 11px Roboto, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, fx + fw / 2, top + fh / 2 + 0.5);
+  }
+
+  function drawRuler(ctx, g) {
+    const { s, e } = viewRange();
+    const span = e - s;
+    const steps = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+    const minPx = 64;
+    let st = steps[steps.length - 1];
+    for (const x of steps) {
+      if ((x / span) * g.w >= minPx) {
+        st = x;
+        break;
+      }
+    }
+    ctx.font = '10.5px Roboto, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const first = Math.ceil(s / st) * st;
+    for (let tt = first; tt <= e + 1e-9; tt += st) {
+      const x = xAt(tt, g);
+      ctx.fillStyle = '#3a4560';
+      ctx.fillRect(Math.round(x), RULER - 6, 1, 5);
+      ctx.fillStyle = '#8b95a8';
+      let label = C.formatTime(tt, false);
+      if (st < 1) label = C.formatTime(tt, true).replace(/(\.\d)\d$/, '$1');
+      ctx.fillText(label, x + 3, RULER / 2 - 1);
+    }
+    // Loop markers on the ruler too.
+    if (hasLoop() && S.pendingA == null) {
+      ctx.fillStyle = S.loopOn ? 'rgba(25,211,255,0.55)' : 'rgba(255,255,255,0.25)';
+      const xa = xAt(S.a, g);
+      const xb = xAt(S.b, g);
+      ctx.fillRect(xa, RULER - 3, xb - xa, 3);
+    }
+  }
+
+  function setupCanvas() {
+    const cv = ui.canvas;
+    const local = (e) => {
+      const g = geom();
+      return { g, x: e.clientX - g.left, y: e.clientY - g.top };
+    };
+
+    cv.addEventListener('pointermove', (e) => {
+      const { g, x, y } = local(e);
+      pointer.x = x;
+      pointer.y = y;
+      pointer.inside = true;
+      S.dirty = true;
+      if (drag) return onDragMove(e, g, x, y);
+      // Cursor + tooltip
+      const t = timeAt(x, g);
+      let cursor = y < RULER ? 'pointer' : 'crosshair';
+      if (y >= g.waveTop + g.waveH && g.miniH) cursor = 'grab';
+      else if (y >= RULER && handleAt(x, g)) cursor = 'ew-resize';
+      cv.style.cursor = cursor;
+      ui.tip.hidden = false;
+      ui.tip.textContent = y < RULER ? `Jump to ${C.formatTime(t)}` : C.formatTime(t);
+      ui.tip.style.left = `${C.clamp(x, 30, g.w - 30)}px`;
+    });
+    cv.addEventListener('pointerleave', () => {
+      pointer.inside = false;
+      ui.tip.hidden = true;
+      S.dirty = true;
+    });
+    cv.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || !dur()) return;
+      const { g, x, y } = local(e);
+      cv.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      S.lastViewTouch = now();
+      const t = timeAt(x, g);
+      if (y < RULER) {
+        drag = { mode: 'seek' };
+        userSeek(t);
+      } else if (g.miniH && y >= g.waveTop + g.waveH) {
+        drag = { mode: 'mini' };
+        panMiniTo(x, g);
+      } else {
+        const hnd = handleAt(x, g);
+        if (hnd) {
+          pushHistory();
+          drag = { mode: 'handle', which: hnd };
+        } else {
+          drag = { mode: 'select', x0: x, t0: t, t1: t, moved: false };
+        }
+      }
+      S.dirty = true;
+    });
+    cv.addEventListener('pointerup', (e) => {
+      if (cv.hasPointerCapture(e.pointerId)) cv.releasePointerCapture(e.pointerId);
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      const { g, x } = local(e);
+      if (d.mode === 'select') {
+        if (d.moved) {
+          setLoop(d.t0, timeAt(x, g), { play: true, fresh: true });
+        } else {
+          waveClick(d.t0);
+        }
+      } else if (d.mode === 'handle') {
+        const v = S.video;
+        if (v && S.loopOn && (v.currentTime < S.a - 0.01 || v.currentTime >= effEnd())) seek(S.a);
+        renderUI();
+        saveVideoStateSoon();
+      }
+      S.dirty = true;
+    });
+    cv.addEventListener('pointercancel', () => {
+      drag = null;
+      S.dirty = true;
+    });
+    cv.addEventListener(
+      'wheel',
+      (e) => {
+        const d = dur();
+        if (!d) return;
+        e.preventDefault();
+        S.lastViewTouch = now();
+        const { g, x } = local(e);
+        const { s, e: en } = viewRange();
+        const span = en - s;
+        const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
+        if (horiz) {
+          const delta = (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) || 0;
+          setView(s + (delta / g.w) * span, en + (delta / g.w) * span);
+          return;
+        }
+        const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+        const factor = Math.pow(1.0018, e.deltaY * unit);
+        const tAt = s + (x / g.w) * span;
+        const ns = Math.max(Math.min(1, d), span * factor);
+        setView(tAt - (x / g.w) * ns, tAt + (1 - x / g.w) * ns);
+      },
+      { passive: false }
+    );
+  }
+
+  function handleAt(x, g) {
+    if (!hasLoop() || S.pendingA != null) return null;
+    const da = Math.abs(x - xAt(S.a, g));
+    const db = Math.abs(x - xAt(S.b, g));
+    if (Math.min(da, db) > HANDLE_PX) return null;
+    return da <= db ? 'a' : 'b';
+  }
+
+  function onDragMove(e, g, x) {
+    const t = timeAt(x, g);
+    if (drag.mode === 'seek') {
+      userSeek(t);
+    } else if (drag.mode === 'mini') {
+      panMiniTo(x, g);
+    } else if (drag.mode === 'handle') {
+      let a = S.a;
+      let b = S.b;
+      if (drag.which === 'a') a = t;
+      else b = t;
+      if (a > b) {
+        [a, b] = [b, a];
+        drag.which = drag.which === 'a' ? 'b' : 'a';
+      }
+      if (b - a >= C.MIN_LOOP) {
+        S.a = a;
+        S.b = b;
+        renderUI();
+      }
+    } else if (drag.mode === 'select') {
+      if (Math.abs(x - drag.x0) > 4) drag.moved = true;
+      drag.t1 = t;
+    }
+    S.lastViewTouch = now();
+    S.dirty = true;
+  }
+
+  function panMiniTo(x, g) {
+    const d = dur();
+    const { s, e } = viewRange();
+    const len = e - s;
+    const c = (x / g.w) * d;
+    setView(c - len / 2, c + len / 2);
+  }
+
+  function waveClick(t) {
+    if (S.pendingA == null) {
+      pushHistory();
+      S.pendingA = t;
+      S.dirty = true;
+      renderUI();
+    } else {
+      const a = S.pendingA;
+      if (Math.abs(t - a) < C.MIN_LOOP) {
+        flash('Click a bit further away to set the END.');
+        return;
+      }
+      setLoop(a, t, { play: true, fresh: true, noHistory: true });
+    }
+  }
+
+  function userSeek(t) {
+    if (S.loopOn && hasLoop() && t >= effEnd()) {
+      S.loopOn = false;
+      flash('Loop paused because you jumped past it. Press Loop to turn it back on.', 4500);
+    }
+    seek(t);
+    renderUI();
+  }
+
+  function followPlayhead() {
+    if (!S.view || !S.video || S.video.paused || drag) return;
+    if (now() - S.lastViewTouch < 2000) return;
+    const t = S.video.currentTime;
+    const { s, e } = viewRange();
+    const len = e - s;
+    if (t > e - len * 0.02 || t < s) {
+      // When looping inside the view, don't page away from it.
+      if (S.loopOn && hasLoop() && S.a >= s && S.b <= e) return;
+      setView(t - len * 0.1, t + len * 0.9);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Keyboard
+  // ---------------------------------------------------------------------------
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (!settings.open || !S.vid || !hostEl || hostEl.style.display === 'none') return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      for (const el of e.composedPath()) {
+        if (!el || !el.tagName) continue;
+        const tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return;
+      }
+      let handled = true;
+      if (e.key === '[') markA();
+      else if (e.key === ']') markB();
+      else if (e.key === '\\') toggleLoop();
+      else if (e.key === 'Escape' && (S.pendingA != null || !ui.help.hidden)) {
+        if (!ui.help.hidden) toggleHelp(false);
+        else {
+          S.pendingA = null;
+          S.dirty = true;
+          renderUI();
+        }
+      } else if (e.key === '<' || e.key === '>') {
+        S.lastYTUserAction = now(); // YouTube's own speed keys
+        handled = false;
+      } else handled = false;
+      if (handled) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    },
+    true
+  );
+
+  // ---------------------------------------------------------------------------
+  // Main loops
+  // ---------------------------------------------------------------------------
+  let lastUIRefresh = 0;
+  function frame() {
+    try {
+      engineTick();
+      liveTick();
+      if (hostEl && hostEl.style.display !== 'none') {
+        followPlayhead();
+        const playing = S.video && !S.video.paused;
+        if (S.dirty || playing || drag) {
+          S.dirty = false;
+          draw();
+        }
+        if (now() - lastUIRefresh > 500) {
+          lastUIRefresh = now();
+          if (S.hintOverride && now() >= S.hintUntil) S.hintOverride = null;
+          renderUI();
+        }
+      }
+    } catch (err) {
+      console.debug('[Wave Looper]', err);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function init() {
+    storage.get('ytl:settings').then((r) => {
+      Object.assign(settings, r['ytl:settings'] || {});
+      buildPanel();
+      postToPage({ type: 'hello' });
+      syncVideo();
+      requestAnimationFrame(frame);
+      // Backup ticker: rAF stops in background tabs, timers keep running for
+      // tabs that play audio.
+      setInterval(() => {
+        try {
+          engineTick();
+        } catch (e) {
+          /* ignore */
+        }
+      }, 20);
+      setInterval(syncVideo, 500);
+      window.addEventListener('resize', applyLayout);
+      document.addEventListener('fullscreenchange', updateVisibility);
+      document.addEventListener('yt-navigate-finish', syncVideo, true);
+    });
+  }
+
+  if (alive()) {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg && msg.type === 'ytl-toggle') {
+        togglePanel();
+        sendResponse({ ok: true, open: settings.open });
+      }
+    });
+  }
+
+  init();
+})();

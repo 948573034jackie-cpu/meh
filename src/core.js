@@ -1,0 +1,244 @@
+/*
+ * DJ Wave Looper: pure logic with no DOM, shared by the content script and
+ * the Node unit tests.
+ */
+(function (root) {
+  'use strict';
+
+  const SPEED_MIN = 0.25;
+  const SPEED_MAX = 2;
+  const END_GUARD = 0.3; // never let a loop touch the real end (YouTube would autoplay next)
+  const MIN_LOOP = 0.1;
+
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function roundRate(r) {
+    return Math.round(clamp(r, SPEED_MIN, SPEED_MAX) * 100) / 100;
+  }
+
+  /** 83.456 -> "1:23.45"; 3725.1 -> "1:02:05.10". `cs=false` drops hundredths. */
+  function formatTime(sec, cs = true) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const totalCs = Math.floor(sec * 100 + 1e-6);
+    const h = Math.floor(totalCs / 360000);
+    const m = Math.floor((totalCs % 360000) / 6000);
+    const s = Math.floor((totalCs % 6000) / 100);
+    const c = totalCs % 100;
+    const ss = String(s).padStart(2, '0');
+    let out = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+    if (cs) out += '.' + String(c).padStart(2, '0');
+    return out;
+  }
+
+  /**
+   * Speed for repetition `rep` (1-based) of the auto speed-up trainer.
+   * Rep 1 plays at `start`, rep `reps` plays at `goal`, linear in between,
+   * and every rep after that stays at `goal`.
+   */
+  function trainerRate(start, goal, reps, rep) {
+    reps = Math.max(1, Math.round(reps));
+    if (reps === 1 || rep >= reps) return roundRate(goal);
+    const k = clamp((rep - 1) / (reps - 1), 0, 1);
+    return roundRate(start + (goal - start) * k);
+  }
+
+  /** Effective loop end: before the guard zone at the end of the video. */
+  function loopEnd(b, duration) {
+    if (!isFinite(duration) || duration <= 0) return b;
+    return Math.min(b, Math.max(0, duration - END_GUARD));
+  }
+
+  /** Orders, clamps and validates an A/B pair. Returns null if unusable. */
+  function normalizeLoop(a, b, duration) {
+    if (a == null || b == null || !isFinite(a) || !isFinite(b)) return null;
+    let lo = Math.min(a, b);
+    let hi = Math.max(a, b);
+    const max = isFinite(duration) && duration > 0 ? duration : Infinity;
+    lo = clamp(lo, 0, max);
+    hi = clamp(hi, 0, max);
+    if (hi - lo < MIN_LOOP) return null;
+    return { a: lo, b: hi };
+  }
+
+  // ---------------------------------------------------------------------------
+  // PeakStore: the song's waveform, filled piece by piece
+  // ---------------------------------------------------------------------------
+  class PeakStore {
+    constructor(binRate = 50) {
+      this.binRate = binRate;
+      this.n = 0;
+      this.peak = new Uint8Array(0);
+      this.low = new Uint8Array(0);
+      this.mid = new Uint8Array(0);
+      this.high = new Uint8Array(0);
+      this.cov = new Uint8Array(0);
+      this.version = 0;
+      this.maxPeak = 0;
+    }
+
+    ensure(n) {
+      if (n <= this.peak.length) {
+        if (n > this.n) this.n = n;
+        return;
+      }
+      const cap = Math.max(n, Math.ceil(this.peak.length * 1.5), 1024);
+      for (const k of ['peak', 'low', 'mid', 'high', 'cov']) {
+        const a = new Uint8Array(cap);
+        a.set(this[k]);
+        this[k] = a;
+      }
+      this.n = n;
+    }
+
+    setDuration(sec) {
+      if (isFinite(sec) && sec > 0) this.ensure(Math.ceil(sec * this.binRate));
+    }
+
+    /** Merge a chunk of bins (max-merge, so repeated chunks are harmless). */
+    add(startBin, peak, low, mid, high) {
+      if (!peak || !peak.length || startBin < 0) return;
+      const end = startBin + peak.length;
+      this.ensure(end);
+      for (let i = 0; i < peak.length; i++) {
+        const j = startBin + i;
+        if (peak[i] > this.peak[j]) this.peak[j] = peak[i];
+        if (low && low[i] > this.low[j]) this.low[j] = low[i];
+        if (mid && mid[i] > this.mid[j]) this.mid[j] = mid[i];
+        if (high && high[i] > this.high[j]) this.high[j] = high[i];
+        this.cov[j] = 1;
+        if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
+      }
+      this.version++;
+    }
+
+    /** Merge another store's covered bins into this one. */
+    merge(other) {
+      if (!other || other.binRate !== this.binRate || !other.n) return;
+      this.ensure(other.n);
+      for (let j = 0; j < other.n; j++) {
+        if (!other.cov[j]) continue;
+        if (other.peak[j] > this.peak[j]) this.peak[j] = other.peak[j];
+        if (other.low[j] > this.low[j]) this.low[j] = other.low[j];
+        if (other.mid[j] > this.mid[j]) this.mid[j] = other.mid[j];
+        if (other.high[j] > this.high[j]) this.high[j] = other.high[j];
+        this.cov[j] = 1;
+        if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
+      }
+      this.version++;
+    }
+
+    /** Fraction (0..1) of [0, durationSec) that has waveform data. */
+    coverage(durationSec) {
+      const n = Math.ceil(durationSec * this.binRate);
+      if (!(n > 0)) return 0;
+      const m = Math.min(n, this.n);
+      let c = 0;
+      for (let i = 0; i < m; i++) c += this.cov[i];
+      return c / n;
+    }
+
+    isCovered(sec) {
+      const i = Math.floor(sec * this.binRate);
+      return i >= 0 && i < this.n && this.cov[i] === 1;
+    }
+
+    /**
+     * Gaps without data in [0, durationSec - tail), each longer than minGap
+     * seconds: [{start, end}] in seconds.
+     */
+    gaps(durationSec, minGap = 0.4, tail = 0.6) {
+      const out = [];
+      const n = Math.floor(Math.max(0, durationSec - tail) * this.binRate);
+      const minBins = Math.max(1, Math.round(minGap * this.binRate));
+      let s = -1;
+      for (let i = 0; i <= n; i++) {
+        const empty = i < n && !(i < this.n && this.cov[i]);
+        if (empty && s < 0) s = i;
+        else if (!empty && s >= 0) {
+          if (i - s >= minBins) out.push({ start: s / this.binRate, end: i / this.binRate });
+          s = -1;
+        }
+      }
+      return out;
+    }
+
+    /** Next gap that starts at or after `sec` (wrapping to the first). */
+    nextGap(sec, durationSec) {
+      const g = this.gaps(durationSec);
+      if (!g.length) return null;
+      return g.find((x) => x.end > sec + 0.05) || g[0];
+    }
+
+    serialize() {
+      const n = this.n;
+      const out = new Uint8Array(n * 5);
+      out.set(this.peak.subarray(0, n), 0);
+      out.set(this.low.subarray(0, n), n);
+      out.set(this.mid.subarray(0, n), 2 * n);
+      out.set(this.high.subarray(0, n), 3 * n);
+      out.set(this.cov.subarray(0, n), 4 * n);
+      return { binRate: this.binRate, n, data: bytesToBase64(out) };
+    }
+
+    static deserialize(obj) {
+      const s = new PeakStore(obj.binRate || 50);
+      const n = obj.n | 0;
+      const raw = base64ToBytes(obj.data || '');
+      if (raw.length !== n * 5) return s;
+      s.ensure(n);
+      s.peak.set(raw.subarray(0, n));
+      s.low.set(raw.subarray(n, 2 * n));
+      s.mid.set(raw.subarray(2 * n, 3 * n));
+      s.high.set(raw.subarray(3 * n, 4 * n));
+      s.cov.set(raw.subarray(4 * n, 5 * n));
+      for (let i = 0; i < n; i++) if (s.peak[i] > s.maxPeak) s.maxPeak = s.peak[i];
+      s.version++;
+      return s;
+    }
+  }
+
+  function bytesToBase64(u8) {
+    if (typeof Buffer !== 'undefined' && typeof btoa === 'undefined') {
+      return Buffer.from(u8).toString('base64');
+    }
+    let s = '';
+    const CH = 0x8000;
+    for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+    return btoa(s);
+  }
+
+  function base64ToBytes(b64) {
+    if (typeof Buffer !== 'undefined' && typeof atob === 'undefined') {
+      return new Uint8Array(Buffer.from(b64, 'base64'));
+    }
+    const s = atob(b64);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+
+  /**
+   * DJ-style colour for a bin from its band energies (0..255 each):
+   * bass leans red/orange, mids green, highs blue/cyan.
+   */
+  function bandColor(low, mid, high) {
+    const l = low * 1.0;
+    const m = mid * 1.25;
+    const h = high * 1.9;
+    const max = Math.max(l, m, h, 1);
+    const r = Math.round(60 + 195 * (l / max));
+    const g = Math.round(50 + 205 * (m / max) * 0.85 + 30 * (l / max) * 0.4);
+    const b = Math.round(70 + 185 * (h / max));
+    return [Math.min(255, r), Math.min(255, g), Math.min(255, b)];
+  }
+
+  const api = {
+    SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
+    clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
+    PeakStore, bandColor, bytesToBase64, base64ToBytes,
+  };
+  root.YTLCore = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
