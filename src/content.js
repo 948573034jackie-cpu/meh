@@ -79,6 +79,8 @@
     trainerGoal: 100,
     trainerReps: 15,
     seenHelp: false,
+    zoomFocus: false, // "Zoom in": the wave follows the playhead in a short window
+    focusLen: 30,
   };
   function saveSettings() {
     storage.set({ 'ytl:settings': { ...settings } });
@@ -1032,7 +1034,7 @@
     ui.trainerBtn = btn('Trainer', 'Auto speed-up: start slow and reach full speed over N loops', () => toggleSub('trainer'), '', 'bolt');
 
     ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon', 'zoom');
-    ui.fitBtn = btn(null, 'Show the whole song', fitView, 'icon', 'fit');
+    ui.zoomBtn = btn('Zoom in', ZOOM_IN_TITLE, toggleZoom, 'zoom-toggle', 'zoom');
     ui.biggerBtn = btn(null, 'Make the wave bigger (or drag the top edge of the panel)', () => resizeWave(Math.round(window.innerHeight * 0.1)), 'icon', 'taller');
     ui.smallerBtn = btn(null, 'Make the wave smaller', () => resizeWave(-Math.round(window.innerHeight * 0.1)), 'icon', 'shorter');
     ui.gearBtn = btn(null, 'Settings', () => toggleSub('settings'), 'icon', 'gear');
@@ -1050,7 +1052,8 @@
       ui.trainerBtn,
       h('div', { class: 'spacer' }),
       h('div', { class: 'group' }, ui.smallerBtn, ui.biggerBtn),
-      h('div', { class: 'group' }, ui.zoomLoopBtn, ui.fitBtn, ui.gearBtn, ui.helpBtn, ui.collapseBtn, closeBtn));
+      ui.zoomBtn,
+      h('div', { class: 'group' }, ui.zoomLoopBtn, ui.gearBtn, ui.helpBtn, ui.collapseBtn, closeBtn));
 
     // --- trainer row ---
     const pct = (v) => `${v}%`;
@@ -1390,7 +1393,11 @@
     ui.clearBtn.disabled = !hasLoop() && !pending;
     ui.undoBtn.disabled = !S.history.length;
     ui.zoomLoopBtn.disabled = !hasLoop();
-    ui.fitBtn.disabled = !S.view;
+    const zoomed = !!S.view;
+    ui.zoomBtn.classList.toggle('on', zoomed);
+    ui.zoomBtn.replaceChildren(icon(zoomed ? 'fit' : 'zoom'), zoomed ? 'Whole song' : 'Zoom in');
+    ui.zoomBtn.title = zoomed ? 'Show the whole song' : ZOOM_IN_TITLE;
+    ui.zoomBtn.disabled = !dur();
     if (ui.biggerBtn) {
       const wh = waveHeight();
       ui.biggerBtn.disabled = !settings.collapsed && wh >= maxWaveHeight() - 1;
@@ -1464,6 +1471,7 @@
     d.trainer = tr.running ? `${tr.rep}/${tr.reps}` : '';
     d.scanning = String(!!S.scan);
     d.cov = dur() ? S.peaks.coverage(dur()).toFixed(3) : '0';
+    d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
   }
 
   let chipsKey = '';
@@ -1564,7 +1572,7 @@
     return ((t - s) / (e - s)) * g.w;
   }
 
-  function setView(s, e) {
+  function setView(s, e, quiet) {
     const d = dur();
     if (!d) return;
     let len = C.clamp(e - s, Math.min(1, d), d);
@@ -1575,13 +1583,58 @@
       S.view = { s, e: s + len };
     }
     S.dirty = true;
-    renderUI();
+    if (!quiet) renderUI();
   }
 
   function fitView() {
     S.view = null;
+    if (settings.zoomFocus) {
+      settings.zoomFocus = false;
+      saveSettings();
+    }
     S.dirty = true;
     renderUI();
+  }
+
+  const ZOOM_IN_TITLE = 'Zoom in: show only the part that is playing now (about 30 s); the wave scrolls with the song';
+
+  // The "Zoom in" window: 30 s, or half the song if it is short.
+  function focusLen() {
+    const d = dur();
+    return Math.max(2, Math.min(settings.focusLen || 30, d >= 60 ? d : d * 0.5));
+  }
+
+  function toggleZoom() {
+    if (S.view) return fitView();
+    const d = dur();
+    if (!d) return;
+    settings.zoomFocus = true;
+    settings.focusLen = 30;
+    saveSettings();
+    S.lastViewTouch = 0;
+    focusFollow(true);
+    renderUI();
+  }
+
+  // Keeps the playhead about a quarter of the way in, so you see what's coming.
+  function focusFollow(force) {
+    if (!settings.zoomFocus || !S.video || drag) return;
+    const d = dur();
+    if (!d) return;
+    const len = Math.min(focusLen(), d);
+    if (len >= d) return;
+    if (!force && now() - S.lastViewTouch < 2000) return;
+    const t = S.video.currentTime;
+    if (!force && S.view) {
+      const { s, e } = viewRange();
+      // While looping a part that fits on screen, hold still on it.
+      if (S.loopOn && hasLoop() && S.a >= s && S.b <= e && S.b - S.a < len) return;
+      if (S.video.paused && t >= s && t <= e) return;
+    }
+    const s0 = t - len * 0.25;
+    const was = S.view;
+    setView(s0, s0 + len, true);
+    if (!was !== !S.view) renderUI();
   }
 
   function zoomToLoop() {
@@ -1922,6 +1975,11 @@
         const tAt = s + (x / g.w) * span;
         const ns = Math.max(Math.min(1, d), span * factor);
         setView(tAt - (x / g.w) * ns, tAt + (1 - x / g.w) * ns);
+        if (settings.zoomFocus) {
+          if (!S.view) settings.zoomFocus = false;
+          else settings.focusLen = S.view.e - S.view.s;
+          saveSettings();
+        }
       },
       { passive: false }
     );
@@ -1997,6 +2055,7 @@
   }
 
   function followPlayhead() {
+    if (settings.zoomFocus) return focusFollow(false);
     if (!S.view || !S.video || S.video.paused || drag) return;
     if (now() - S.lastViewTouch < 2000) return;
     const t = S.video.currentTime;

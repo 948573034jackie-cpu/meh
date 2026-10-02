@@ -63,6 +63,7 @@ button.icon { padding: 0; width: 28px; }
 button svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
 button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 button.speed { min-width: 50px; font-weight: 600; }
+button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 button.danger { color: #ffb4a6; }

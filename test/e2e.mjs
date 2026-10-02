@@ -339,7 +339,7 @@ await step('picking a speed by hand stops the trainer', async () => {
 });
 
 await step('drag the B flag to make the loop longer', async () => {
-  await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button[title="Show the whole song"]').click());
+  if ((await host()).zoom) await shadowClick('button', 'Show the whole song');
   const b = await waveBox();
   const h = await host();
   const xb = b.x + (Number(h.b) / DUR) * b.w;
@@ -350,7 +350,7 @@ await step('drag the B flag to make the loop longer', async () => {
   await page.mouse.move(b.x + (9 / DUR) * b.w, y, { steps: 5 });
   await page.mouse.up();
   const h2 = await host();
-  const zoomedNow = await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button[title="Show the whole song"]').disabled);
+  const zoomedNow = (await host()).zoom;
   assert(Math.abs(Number(h2.b) - 9) < 0.2, `B dragged to ~9 (got ${h2.b})`);
   assert(Math.abs(Number(h2.a) - Number(h.a)) < 0.001, `A unchanged (before ${h.a}-${h.b}, after ${h2.a}-${h2.b}, view zoomed=${zoomedNow})`);
 });
@@ -378,13 +378,46 @@ await step('zoom with the mouse wheel and back to the whole song', async () => {
     for (let i = 0; i < 6; i++) cv.dispatchEvent(new WheelEvent('wheel', { deltaY: -200, clientX: x, clientY: y, bubbles: true, cancelable: true }));
   }, [b.x + b.w * 0.25, b.y + b.h * 0.6]);
   await sleep(200);
-  const zoomed = await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button[title="Show the whole song"]').disabled);
+  const zoomed = !!(await host()).zoom;
   assert(zoomed, 'zoomed in');
   await page.screenshot({ path: path.join(SHOTS, '5-zoomed.png') });
   await shadowClick('button', 'Zoom to the loop');
   await sleep(150);
   await page.screenshot({ path: path.join(SHOTS, '6-zoom-loop.png') });
   await shadowClick('button', 'Show the whole song');
+});
+
+await step('Zoom in button: short window that scrolls with the song; Whole song zooms out', async () => {
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash'); // free playback so the view scrolls
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 2; v.play(); });
+  await shadowClick('button.zoom-toggle');
+  let h = await host();
+  assert(Math.abs(Number(h.zoom) - DUR / 2) < 0.1, `zoomed to half of a short song (got ${h.zoom})`);
+  const label = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.zoom-toggle').textContent);
+  assert(label === 'Whole song', `button now says "${label}"`);
+  // The window follows the playhead: it is always inside the view, about a quarter of the way in.
+  for (let i = 0; i < 3; i++) {
+    await sleep(1500);
+    const pos = await page.evaluate(() => {
+      const h = document.getElementById('ytl-wave-looper');
+      return { t: document.querySelector('#movie_player video').currentTime };
+    });
+    const b = await waveBox();
+    const px = await page.evaluate(([bx, bw]) => {
+      // read the white playhead column from the ruler row
+      const cv = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas');
+      const g = cv.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const row = g.getImageData(0, Math.round(10 * dpr), cv.width, 1).data;
+      for (let x = 0; x < cv.width; x++) if (row[x * 4] > 240 && row[x * 4 + 1] > 240 && row[x * 4 + 2] > 240) return x / cv.width;
+      return -1;
+    }, [b.x, b.w]);
+    if (pos.t > DUR / 2 * 0.3 && pos.t < DUR - DUR / 2 * 0.8) assert(px > 0.15 && px < 0.4, `playhead at ${px.toFixed(2)} of the view (t=${pos.t.toFixed(1)})`);
+  }
+  await page.screenshot({ path: path.join(SHOTS, '5b-zoom-in.png') });
+  await shadowClick('button.zoom-toggle');
+  h = await host();
+  assert(h.zoom === '', 'zoomed out to the whole song');
 });
 
 await step('keyboard: [ and ] set the loop from the playhead, \\ toggles it', async () => {
@@ -406,8 +439,11 @@ await step('keyboard: [ and ] set the loop from the playhead, \\ toggles it', as
 });
 
 await step('breath pause between loops', async () => {
-  await clickWaveAt(14);
-  await clickWaveAt(15.5);
+  // Away from the previous loop's flags (clicking a flag grabs it instead).
+  await clickWaveAt(17);
+  await clickWaveAt(18.5);
+  const hl = await host();
+  assert(Math.abs(Number(hl.a) - 17) < 0.2 && Math.abs(Number(hl.b) - 18.5) < 0.2, `loop 17-18.5 (got ${hl.a}-${hl.b})`);
   await shadowClick('button', 'Settings');
   await shadowSelect('Pause before each repeat (time to breathe)', 1);
   const r0 = Number((await host()).reps);
