@@ -283,6 +283,7 @@ await step('speed trainer: 50% to 100% over 5 loops', async () => {
   await shadowSelect('Starting speed', 50);
   await shadowSelect('Goal speed', 100);
   await shadowSelect('How many loops to reach the goal', 5);
+  await shadowSelect('What to do after reaching the goal speed', 0);
   await shadowClick('button', 'Start the speed trainer');
   const seen = [];
   await waitFor(async () => {
@@ -296,6 +297,25 @@ await step('speed trainer: 50% to 100% over 5 loops', async () => {
   assert(JSON.stringify(seen.slice(0, 5)) === JSON.stringify(want), `rates ${JSON.stringify(seen)}`);
   const h = await host();
   assert(h.loop === 'true', 'still looping at the goal');
+});
+
+await step('speed trainer: after the goal, plays N times at full speed and then stops', async () => {
+  await shadowClick('button', 'Stop the speed trainer');
+  await shadowSelect('How many loops to reach the goal', 5);
+  await shadowSelect('What to do after reaching the goal speed', 5);
+  await shadowClick('button', 'Start the speed trainer');
+  const start = Number((await host()).reps);
+  await waitFor(async () => (await host()).trainer === '', 40000, 'trainer finishes by itself');
+  const h = await host();
+  const v = await vstate();
+  // 4 ramp loops + 5 full-speed loops = 9 plays, then it stops at A.
+  assert(Number(h.reps) - start === 9, `plays ${Number(h.reps) - start}`);
+  assert(v.paused, 'stopped (paused)');
+  assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
+  assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');
+  await page.screenshot({ path: path.join(SHOTS, '4b-trainer-done.png') });
+  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await sleep(300);
 });
 
 await step('picking a speed by hand stops the trainer', async () => {
@@ -356,13 +376,15 @@ await step('zoom with the mouse wheel and back to the whole song', async () => {
 
 await step('keyboard: [ and ] set the loop from the playhead, \\ toggles it', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash'); // else the loop bounces the seek back
+  await waitFor(async () => (await host()).loop === 'false', 2000, 'loop off before seeking');
   await page.evaluate(() => (document.querySelector('#movie_player video').currentTime = 12));
   await sleep(300);
   await page.keyboard.press('BracketLeft');
   await sleep(1500);
+  const mid = await host();
   await page.keyboard.press('BracketRight');
   const h = await host();
-  assert(Number(h.a) > 11.8 && Number(h.a) < 12.8, `A from playhead (${h.a})`);
+  assert(Number(h.a) > 11.8 && Number(h.a) < 12.8, `A from playhead (${h.a}) mid=${JSON.stringify(mid)} t=${(await vstate()).t}`);
   assert(Number(h.b) - Number(h.a) > 1 && Number(h.b) - Number(h.a) < 2.5, `B from playhead (${h.b})`);
   await page.keyboard.press('Backslash');
   assert((await host()).loop === 'false', 'loop toggled off');
