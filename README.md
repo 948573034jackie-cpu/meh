@@ -26,6 +26,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 | Make a loop | Click the wave at the start, then click at the end. Or drag across the part. |
 | Fine-tune the loop | Drag the green **A** / red **B** flags, or use the ‹ › buttons (0.05 s; Shift = 0.01 s, Alt = 0.5 s). |
 | Zoom in for precision | Scroll on the wave. 🔍 zooms to the loop, ↔ shows the whole song. |
+| Make the wave bigger | Press the ↕ buttons (top right of the panel), or drag the top edge of the panel up. |
 | Jump somewhere | Click the time ruler at the top of the wave. |
 | Set A/B while listening | Press **[** at the start and **]** at the end. |
 | Loop on/off | **Loop** button or **\\**. |
@@ -60,4 +61,4 @@ npm run e2e                   # loads the real extension in Chromium on a simula
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
 
-The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 26 steps: scan and position restore, waveform accuracy, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
+The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 27 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.

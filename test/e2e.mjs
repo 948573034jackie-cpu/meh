@@ -176,6 +176,26 @@ await step('waveform shows loud and quiet parts in the right places', async () =
   await page.screenshot({ path: path.join(SHOTS, '2-full-wave.png') });
 });
 
+await step('the wave can be made bigger and smaller', async () => {
+  const h0 = (await waveBox()).h;
+  await shadowClick('button', 'Make the wave bigger (or drag the top edge of the panel)');
+  const h1 = (await waveBox()).h;
+  assert(h1 > h0 + 40, `bigger: ${h0} -> ${h1}`);
+  await shadowClick('button', 'Make the wave smaller');
+  const h2 = (await waveBox()).h;
+  assert(Math.abs(h2 - h0) < 2, `back: ${h2} vs ${h0}`);
+  // dragging the top edge up also makes it bigger
+  const top = await page.evaluate(() => document.getElementById('ytl-wave-looper').getBoundingClientRect().top);
+  await page.mouse.move(640, top + 1);
+  await page.mouse.down();
+  await page.mouse.move(640, top - 120, { steps: 6 });
+  await page.mouse.up();
+  const h3 = (await waveBox()).h;
+  assert(h3 > h0 + 100, `drag: ${h0} -> ${h3}`);
+  await page.screenshot({ path: path.join(SHOTS, '2b-big-wave.png') });
+  await shadowClick('button', 'Make the wave smaller');
+});
+
 await step('two clicks on the wave make a loop that repeats', async () => {
   await clickWaveAt(5);
   let h = await host();

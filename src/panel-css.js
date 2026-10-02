@@ -29,13 +29,14 @@ globalThis.YTL_PANEL_CSS = `
   -webkit-user-select: none;
 }
 .resize {
-  position: absolute; left: 0; right: 0; top: -5px; height: 10px;
+  position: absolute; left: 0; right: 0; top: -8px; height: 16px;
   cursor: ns-resize; z-index: 3;
 }
 .resize::after {
-  content: ""; position: absolute; left: 50%; top: 3px; width: 44px; height: 4px;
-  margin-left: -22px; border-radius: 2px; background: #3a4458; opacity: .8;
+  content: ""; position: absolute; left: 50%; top: 5px; width: 72px; height: 6px;
+  margin-left: -36px; border-radius: 3px; background: #4a5670; transition: background .12s;
 }
+.resize:hover::after { background: var(--accent); }
 .row {
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 6px 10px; padding: 6px 10px;

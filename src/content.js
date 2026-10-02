@@ -898,6 +898,8 @@
     undo: 'M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z',
     zoom: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14zM12 10h-2v2H9v-2H7V9h2V7h1v2h2z',
     fit: 'M3 12l4-4v3h10V8l4 4-4 4v-3H7v3z',
+    taller: 'M12 2 7 7h3.5v10H7l5 5 5-5h-3.5V7H17z',
+    shorter: 'M7 2l5 5 5-5zM7 22l5-5 5 5zM3 11h18v2H3z',
     down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
     up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
     play: 'M8 5v14l11-7z',
@@ -1008,6 +1010,8 @@
 
     ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon', 'zoom');
     ui.fitBtn = btn(null, 'Show the whole song', fitView, 'icon', 'fit');
+    ui.biggerBtn = btn(null, 'Make the wave bigger (or drag the top edge of the panel)', () => resizeWave(Math.round(window.innerHeight * 0.1)), 'icon', 'taller');
+    ui.smallerBtn = btn(null, 'Make the wave smaller', () => resizeWave(-Math.round(window.innerHeight * 0.1)), 'icon', 'shorter');
     ui.gearBtn = btn(null, 'Settings', () => toggleSub('settings'), 'icon', 'gear');
     ui.helpBtn = btn(null, 'How to use', () => toggleHelp(), 'icon', 'help');
     ui.collapseBtn = btn(null, 'Minimise', toggleCollapse, 'icon', 'down');
@@ -1022,6 +1026,7 @@
       h('div', { class: 'sep' }),
       ui.trainerBtn,
       h('div', { class: 'spacer' }),
+      h('div', { class: 'group' }, ui.smallerBtn, ui.biggerBtn),
       h('div', { class: 'group' }, ui.zoomLoopBtn, ui.fitBtn, ui.gearBtn, ui.helpBtn, ui.collapseBtn, closeBtn));
 
     // --- trainer row ---
@@ -1072,7 +1077,7 @@
     const status = h('div', { class: 'status' }, ui.hint, ui.chips, ui.count);
 
     ui.help = buildHelp();
-    const resize = h('div', { class: 'resize', title: 'Drag to resize' });
+    const resize = h('div', { class: 'resize', title: 'Drag up or down to make the wave bigger or smaller' });
     ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.waveWrap, status, ui.help);
     shadow.appendChild(ui.panel);
 
@@ -1097,7 +1102,8 @@
         h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
         h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%) and how many loops to get there (e.g. 20). Every loop gets a little faster.'),
-        h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.')),
+        h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
+        h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       h('ul', {},
         h('li', {}, k('['), ' set start here   ', k(']'), ' set end here   ', k('\\'), ' loop on/off   ', k('Esc'), ' cancel a half-made loop'),
         h('li', {}, k('Alt'), '+', k('L'), ' open or close the looper. Space and the arrow keys still control YouTube.'),
@@ -1130,10 +1136,22 @@
   }
 
   // settings.height is the height of the wave area; the rows around it add to it.
+  function maxWaveHeight() {
+    return Math.max(160, window.innerHeight * 0.75);
+  }
+
   function waveHeight() {
-    const def = Math.round(window.innerHeight * 0.2) - 30;
+    const def = Math.round(window.innerHeight * 0.3);
     const want = settings.height || def;
-    return Math.round(C.clamp(want, 90, Math.max(120, window.innerHeight * 0.6)));
+    return Math.round(C.clamp(want, 90, maxWaveHeight()));
+  }
+
+  function resizeWave(delta) {
+    settings.height = Math.round(C.clamp(waveHeight() + delta, 90, maxWaveHeight()));
+    saveSettings();
+    if (settings.collapsed) toggleCollapse();
+    else applyLayout();
+    renderUI();
   }
 
   function panelHeight() {
@@ -1179,7 +1197,7 @@
     });
     handle.addEventListener('pointermove', (e) => {
       if (!handle.hasPointerCapture(e.pointerId)) return;
-      settings.height = Math.round(C.clamp(startH + (startY - e.clientY), 90, window.innerHeight * 0.6));
+      settings.height = Math.round(C.clamp(startH + (startY - e.clientY), 90, maxWaveHeight()));
       applyLayout();
     });
     handle.addEventListener('pointerup', (e) => {
@@ -1309,6 +1327,11 @@
     ui.undoBtn.disabled = !S.history.length;
     ui.zoomLoopBtn.disabled = !hasLoop();
     ui.fitBtn.disabled = !S.view;
+    if (ui.biggerBtn) {
+      const wh = waveHeight();
+      ui.biggerBtn.disabled = !settings.collapsed && wh >= maxWaveHeight() - 1;
+      ui.smallerBtn.disabled = settings.collapsed || wh <= 91;
+    }
     for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
     ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
     ui.trainerBtn.classList.toggle('on', !ui.trainerRow.hidden || S.trainer.running);
