@@ -1272,6 +1272,47 @@
   // YouTube player button
   // ---------------------------------------------------------------------------
   function updateYTButton() {
+    updatePlayerButton();
+    updateBelowVideoButton();
+  }
+
+  // A labelled pill under the video, next to Like / Share (www.youtube.com).
+  function updateBelowVideoButton() {
+    if (IS_MUSIC) return;
+    const row = document.querySelector('ytd-watch-metadata #actions-inner') ||
+      document.querySelector('ytd-watch-metadata #actions') ||
+      document.querySelector('#info #menu-container');
+    if (!row) return;
+    let b = row.querySelector(':scope > .ytl-below-btn');
+    if (!b) {
+      b = document.createElement('button');
+      b.className = 'ytl-below-btn';
+      b.type = 'button';
+      b.title = 'Open the Wave Looper: DJ waveform, A-B loop and speed (Alt+L)';
+      b.style.cssText = [
+        'display:inline-flex', 'align-items:center', 'gap:6px', 'flex:none',
+        'height:36px', 'padding:0 16px 0 12px', 'margin-right:8px', 'border-radius:18px', 'border:0',
+        'cursor:pointer', 'font:500 14px/36px Roboto, Arial, sans-serif', 'white-space:nowrap',
+        'background:var(--yt-spec-badge-chip-background, rgba(255,255,255,0.1))',
+        'color:var(--yt-spec-text-primary, #f1f1f1)',
+      ].join(';');
+      const svg = icon('wave');
+      svg.setAttribute('width', '22');
+      svg.setAttribute('height', '22');
+      b.append(svg, document.createTextNode('Wave Looper'));
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        togglePanel();
+      });
+      row.insertBefore(b, row.firstChild);
+    }
+    const on = settings.open && hostVisible();
+    const svg = b.querySelector('svg');
+    if (svg) svg.style.fill = on ? '#19d3ff' : 'currentColor';
+    b.style.boxShadow = on ? 'inset 0 0 0 2px #19d3ff' : 'none';
+  }
+
+  function updatePlayerButton() {
     const ctr = document.querySelector('#movie_player .ytp-right-controls') ||
       (IS_MUSIC ? document.querySelector('ytmusic-player-bar .right-controls-buttons') : null);
     if (!ctr) return;

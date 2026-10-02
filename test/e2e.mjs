@@ -139,6 +139,22 @@ await step('player button opens the panel (and help shows the first time)', asyn
 });
 
 let tBeforeScan = 0;
+await step('button below the video (next to Like/Share) opens and closes the panel', async () => {
+  await page.waitForSelector('ytd-watch-metadata #actions-inner > .ytl-below-btn', { timeout: 5000 });
+  const txt = await page.textContent('.ytl-below-btn');
+  assert(txt.includes('Wave Looper'), `label "${txt}"`);
+  const box = await page.evaluate(() => {
+    const r = document.querySelector('.ytl-below-btn').getBoundingClientRect();
+    const v = document.getElementById('movie_player').getBoundingClientRect();
+    return { below: r.top >= v.bottom, rightHalf: r.left > v.left + v.width / 2 };
+  });
+  assert(box.below && box.rightHalf, `placed below the video on the right: ${JSON.stringify(box)}`);
+  await page.click('.ytl-below-btn');
+  await waitFor(async () => (await host()).display === 'none', 2000, 'closed');
+  await page.click('.ytl-below-btn');
+  await waitFor(async () => (await host()).display === 'block', 2000, 'open again');
+});
+
 await step('auto scan reads the whole song and puts playback back', async () => {
   tBeforeScan = (await vstate()).t;
   await waitFor(async () => (await host()).scanning === 'true', 5000, 'scan started');

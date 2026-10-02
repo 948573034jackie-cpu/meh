@@ -21,7 +21,10 @@
     <div class="ytp-popup ytp-settings-menu" style="display:none"><div class="ytp-menuitem" id="yt-speed-item">Playback speed</div></div>
   </div>
 </div>
-<div id="below"><h1 id="title">Test song</h1><button id="fs-btn" onclick="document.getElementById('movie_player').requestFullscreen()">fullscreen</button><p>Comments and recommendations would be here.</p></div>
+<div id="below"><ytd-watch-metadata><h1 id="title">Test song</h1>
+  <div id="actions"><div id="actions-inner" style="display:flex;justify-content:flex-end;align-items:center;gap:8px">
+    <div id="menu"><button class="fake-like">👍 Like</button> <button class="fake-share">Share</button></div>
+  </div></div></ytd-watch-metadata><button id="fs-btn" onclick="document.getElementById('movie_player').requestFullscreen()">fullscreen</button><p>Comments and recommendations would be here.</p></div>
 <script>
 // A tiny DASH player that behaves like YouTube's: MSE, separate audio and
 // video SourceBuffers, init segment first, ~10 s read-ahead, refetch on seek.

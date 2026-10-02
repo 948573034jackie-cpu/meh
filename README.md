@@ -26,6 +26,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 | Make a loop | Click the wave at the start, then click at the end. Or drag across the part. |
 | Fine-tune the loop | Drag the green **A** / red **B** flags, or use the ‹ › buttons (0.05 s; Shift = 0.01 s, Alt = 0.5 s). |
 | Zoom in for precision | Scroll on the wave. 🔍 zooms to the loop, ↔ shows the whole song. |
+| Open the looper | Waveform button in the video controls (bottom right), the **Wave Looper** button under the video next to Like/Share, the extension icon, or **Alt+L**. |
 | Make the wave bigger | Press the ↕ buttons (top right of the panel), or drag the top edge of the panel up. |
 | Jump somewhere | Click the time ruler at the top of the wave. |
 | Set A/B while listening | Press **[** at the start and **]** at the end. |
