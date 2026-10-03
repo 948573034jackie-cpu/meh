@@ -466,12 +466,12 @@
   // Player helpers
   // ---------------------------------------------------------------------------
   function player() {
-    return document.getElementById('movie_player');
+    return document.getElementById('movie_player') || document.querySelector('#player-container-id .html5-video-player');
   }
 
   function mainVideo() {
     const p = player();
-    return p ? p.querySelector('video') : null;
+    return (p && p.querySelector('video')) || document.querySelector('#player-container-id video') || null;
   }
 
   function isAd() {

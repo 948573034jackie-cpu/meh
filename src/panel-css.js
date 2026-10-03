@@ -148,4 +148,39 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 @media (max-width: 900px) {
   .chips { max-width: 40%; }
 }
+/* Fingers: bigger targets (iPad, iPhone, touch laptops). */
+@media (any-pointer: coarse) {
+  button { height: 38px; min-width: 38px; border-radius: 10px; font-size: 14px; }
+  button.icon { width: 38px; }
+  button svg { width: 20px; height: 20px; }
+  .mark { height: 38px; }
+  .mark button { height: 36px; min-width: 30px; }
+  select { height: 38px; font-size: 14px; }
+  .chip { height: 30px; border-radius: 15px; }
+  .chip button { height: 28px; font-size: 13px; }
+  .resize { top: -12px; height: 24px; }
+  .resize::after { top: 9px; width: 90px; margin-left: -45px; }
+  .help { font-size: 14px; }
+}
+/* Phones: compact rows so the wave keeps most of the space. */
+@media (max-width: 600px) {
+  .brand, .sep, .label.hide-narrow, .size-btns, .hide-phone { display: none !important; }
+  .row { padding: 5px 6px; gap: 5px; }
+  .group { gap: 3px; }
+  button { padding: 0 6px; gap: 4px; }
+  button.icon { width: 36px; min-width: 36px; }
+  select { padding: 0 2px; font-size: 13px; }
+  .status { flex-wrap: wrap; gap: 4px 8px; padding: 4px 8px; }
+  .hint { flex-basis: 100%; }
+  .mark .time { min-width: 54px; font-size: 12px; }
+  .mark .set { padding: 0 6px; }
+  button.speed { min-width: 46px; }
+  button.zoom-toggle { min-width: 0; }
+  .rate { min-width: 42px; font-size: 13px; }
+  .spacer { display: none; }
+  .hint { font-size: 12px; white-space: normal; }
+  .chips { max-width: none; flex: 1 1 auto; }
+  .tstat { min-width: 0; flex-basis: 100%; }
+  .progress { flex: 1 1 auto; width: auto; }
+}
 `;

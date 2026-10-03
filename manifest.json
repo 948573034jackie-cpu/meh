@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DJ Wave Looper for YouTube",
   "short_name": "Wave Looper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "See the whole song as a DJ waveform, click to set an A–B loop, slow it down (50/75/100%) and auto speed-up trainer. Built for singers and players.",
   "icons": {
     "16": "icons/icon16.png",
@@ -27,16 +27,16 @@
     }
   },
   "permissions": ["storage", "unlimitedStorage", "scripting"],
-  "host_permissions": ["https://www.youtube.com/*", "https://music.youtube.com/*"],
+  "host_permissions": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"],
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*", "https://music.youtube.com/*"],
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"],
       "js": ["src/inject.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://www.youtube.com/*", "https://music.youtube.com/*"],
+      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"],
       "js": ["src/core.js", "src/panel-css.js", "src/content.js"],
       "run_at": "document_idle"
     }

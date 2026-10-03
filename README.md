@@ -19,6 +19,22 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 4. Click **Load unpacked** and pick the unzipped folder (the one with `manifest.json` in it).
 5. Open any YouTube video. You'll see a new waveform button in the player controls (bottom right of the video). You can also click the extension icon or press **Alt+L**.
 
+## iPhone and iPad (Safari)
+
+Chrome on iPhone/iPad can't run extensions, so there is a **script version** that runs in Safari through the free **Userscripts** app. Same panel and features, plus touch: tap tap on the wave to loop, drag the flags with your finger, **pinch to zoom**, and a round floating button to open the looper.
+
+1. Install **Userscripts** from the App Store (free; icon is `</>`).
+2. Open the Userscripts app once and tap **Change Userscripts Directory**. Pick a folder, for example *On My iPhone → Userscripts*.
+3. Save `wave-looper.user.js` into that folder. Get it from the `userscript` folder of this repo, or from the file sent to you. In Files, *Move* it into the Userscripts folder.
+4. Go to **Settings → Apps → Safari → Extensions → Userscripts**. Turn it on and set **Permissions → youtube.com → Allow**. (On older iOS: *Settings → Safari → Extensions*.)
+5. Open **youtube.com** in Safari and play a video. Tap the round **waveform button** at the bottom right. If Safari asks, tap **ᴀA → Userscripts → Always Allow on this website**.
+
+Notes:
+- **iPad** works best. Safari shows YouTube's desktop site there, the same one the Chrome version was built and tested on.
+- **iPhone** uses the mobile site (m.youtube.com). Loop, speed and trainer work. The waveform needs YouTube to stream the audio the same way it does on desktop. If the wave stays empty on your iPhone, the loop and speed still work. Tell me and I'll look into it.
+- Videos opened in the **YouTube app** can't be controlled. Use youtube.com in Safari.
+- The same file also works in Tampermonkey or Violentmonkey on any desktop browser.
+
 ## How to use
 
 | What you want | What to do |
@@ -59,6 +75,9 @@ src/background.js toolbar button + Alt+L
 node tools/make-fixtures.js   # test media (needs ffmpeg)
 npm test                      # unit tests: logic + WebM/MP4 parsers
 npm run e2e                   # loads the real extension in Chromium on a simulated YouTube page (needs playwright)
+npm run e2e:userscript        # same 30 steps against the userscript build
+npm run e2e:mobile            # userscript on an emulated iPhone visiting m.youtube.com (touch, pinch, layout)
+npm run build:userscript      # userscript/wave-looper.user.js (Safari/iOS, Tampermonkey); built from src/
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
 

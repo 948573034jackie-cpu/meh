@@ -1,3 +1,1313 @@
+// ==UserScript==
+// @name         DJ Wave Looper for YouTube
+// @namespace    https://github.com/948573034jackie-cpu/meh
+// @version      1.1.0
+// @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
+// @match        https://www.youtube.com/*
+// @match        https://m.youtube.com/*
+// @match        https://music.youtube.com/*
+// @run-at       document-start
+// @inject-into  auto
+// @grant        none
+// @noframes
+// ==/UserScript==
+
+/* Built from src/ by tools/build-userscript.js. Edit the files in src/, not this one. */
+
+if (/(^|.)youtube.com$/.test(location.hostname)) {
+// ---- page-world audio tap (src/inject.js): must run before YouTube's player ----
+/*
+ * DJ Wave Looper: page-world audio tap.
+ *
+ * Runs in the page's MAIN world at document_start, before YouTube's player
+ * starts. It watches the audio bytes that YouTube hands to Media Source
+ * Extensions (SourceBuffer.appendBuffer). For each audio chunk it decodes the
+ * audio and turns it into small waveform "peaks", then posts them to the
+ * extension's content script with window.postMessage.
+ *
+ * Rules this file must follow:
+ * - It must never break playback. Every hook calls the original first or
+ *   inside try/catch, and copies bytes before YouTube can reuse them.
+ * - It only reads audio for the main player (#movie_player). Ads, hover
+ *   previews and Shorts are skipped.
+ */
+(() => {
+  'use strict';
+  const G = typeof window !== 'undefined' ? window : globalThis;
+  if (G.__ytlWaveHook) return;
+  G.__ytlWaveHook = true;
+
+  const TAG = '__ytlooper__';
+  const BIN_RATE = 50; // waveform bins per second (20 ms each)
+  const DECODE_RATE = 16000; // decode sample rate; enough for 3-band colouring
+  const MAX_PENDING_BYTES = 6 * 1024 * 1024;
+
+  // ---------------------------------------------------------------------------
+  // Byte helpers
+  // ---------------------------------------------------------------------------
+  function toU8Copy(data) {
+    if (!data) return null;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data.slice(0));
+    if (ArrayBuffer.isView(data)) {
+      return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    }
+    return null;
+  }
+
+  function concat(parts) {
+    let len = 0;
+    for (const p of parts) len += p.length;
+    const out = new Uint8Array(len);
+    let o = 0;
+    for (const p of parts) {
+      out.set(p, o);
+      o += p.length;
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // WebM (EBML) parsing: only what we need
+  // ---------------------------------------------------------------------------
+  const EBML_ID = 0x1a45dfa3;
+  const SEGMENT_ID = 0x18538067;
+  const CLUSTER_ID = 0x1f43b675;
+  const INFO_ID = 0x1549a966;
+  const TIMECODE_SCALE_ID = 0x2ad7b1;
+  const CLUSTER_TIMESTAMP_ID = 0xe7;
+
+  function readId(u8, pos) {
+    if (pos >= u8.length) return null;
+    const b = u8[pos];
+    let len = 0;
+    if (b & 0x80) len = 1;
+    else if (b & 0x40) len = 2;
+    else if (b & 0x20) len = 3;
+    else if (b & 0x10) len = 4;
+    else return null;
+    if (pos + len > u8.length) return null;
+    let id = 0;
+    for (let i = 0; i < len; i++) id = id * 256 + u8[pos + i];
+    return { id, len };
+  }
+
+  function readSize(u8, pos) {
+    if (pos >= u8.length) return null;
+    const b = u8[pos];
+    let len = 1;
+    let mask = 0x80;
+    while (len <= 8 && !(b & mask)) {
+      len++;
+      mask >>= 1;
+    }
+    if (len > 8 || pos + len > u8.length) return null;
+    let value = b & (mask - 1);
+    let allOnes = value === mask - 1;
+    for (let i = 1; i < len; i++) {
+      value = value * 256 + u8[pos + i];
+      if (u8[pos + i] !== 0xff) allOnes = false;
+    }
+    return { value, len, unknown: allOnes };
+  }
+
+  function readUint(u8, pos, len) {
+    let v = 0;
+    for (let i = 0; i < len; i++) v = v * 256 + u8[pos + i];
+    return v;
+  }
+
+  function webmStartsWith(u8, id) {
+    const r = readId(u8, 0);
+    return !!r && r.id === id;
+  }
+
+  /** Offset of the first Cluster, walking the top-level structure. -1 if none. */
+  function webmFindCluster(u8) {
+    let pos = 0;
+    let guard = 0;
+    while (pos < u8.length && guard++ < 10000) {
+      const id = readId(u8, pos);
+      if (!id) return -1;
+      const size = readSize(u8, pos + id.len);
+      if (!size) return -1;
+      const dataStart = pos + id.len + size.len;
+      if (id.id === CLUSTER_ID) return pos;
+      if (id.id === SEGMENT_ID) {
+        pos = dataStart; // descend into the segment
+        continue;
+      }
+      if (size.unknown) return -1;
+      pos = dataStart + size.value;
+    }
+    return -1;
+  }
+
+  /** TimecodeScale (ns per tick) from an init segment. Default 1 ms. */
+  function webmTimecodeScale(u8) {
+    let pos = 0;
+    let guard = 0;
+    while (pos < u8.length && guard++ < 10000) {
+      const id = readId(u8, pos);
+      if (!id) break;
+      const size = readSize(u8, pos + id.len);
+      if (!size) break;
+      const dataStart = pos + id.len + size.len;
+      if (id.id === SEGMENT_ID || id.id === INFO_ID) {
+        pos = dataStart;
+        continue;
+      }
+      if (id.id === TIMECODE_SCALE_ID) {
+        const v = readUint(u8, dataStart, size.value);
+        return v > 0 ? v : 1e6;
+      }
+      if (id.id === CLUSTER_ID || size.unknown) break;
+      pos = dataStart + size.value;
+    }
+    return 1e6;
+  }
+
+  /** Cluster timestamp (in seconds) of a chunk that starts with a Cluster. */
+  function webmClusterTime(u8, tcScale) {
+    const id = readId(u8, 0);
+    if (!id || id.id !== CLUSTER_ID) return null;
+    const size = readSize(u8, id.len);
+    if (!size) return null;
+    let pos = id.len + size.len;
+    const limit = Math.min(u8.length, pos + 256);
+    while (pos < limit) {
+      const cid = readId(u8, pos);
+      if (!cid) return null;
+      const csize = readSize(u8, pos + cid.len);
+      if (!csize) return null;
+      const dataStart = pos + cid.len + csize.len;
+      if (cid.id === CLUSTER_TIMESTAMP_ID) {
+        if (dataStart + csize.value > u8.length) return null;
+        return (readUint(u8, dataStart, csize.value) * tcScale) / 1e9;
+      }
+      if (csize.unknown) return null;
+      pos = dataStart + csize.value;
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // MP4 (ISO BMFF) parsing: init metadata, fragment times, AAC to ADTS
+  // ---------------------------------------------------------------------------
+  function u32(u8, p) {
+    return ((u8[p] << 24) | (u8[p + 1] << 16) | (u8[p + 2] << 8) | u8[p + 3]) >>> 0;
+  }
+
+  function fourcc(u8, p) {
+    return String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]);
+  }
+
+  /** Iterate boxes in [start, end). Returns [{type, start, dataStart, end}] */
+  function boxes(u8, start, end) {
+    const out = [];
+    let p = start;
+    while (p + 8 <= end) {
+      let size = u32(u8, p);
+      const type = fourcc(u8, p + 4);
+      let header = 8;
+      if (size === 1) {
+        if (p + 16 > end) break;
+        size = u32(u8, p + 8) * 4294967296 + u32(u8, p + 12);
+        header = 16;
+      } else if (size === 0) {
+        size = end - p;
+      }
+      if (size < header || !/^[a-zA-Z0-9 ]{4}$/.test(type)) break;
+      const boxEnd = Math.min(end, p + size);
+      out.push({ type, start: p, dataStart: p + header, end: boxEnd, truncated: p + size > end });
+      p += size;
+    }
+    return out;
+  }
+
+  function child(u8, box, type, skip = 0) {
+    if (!box) return null;
+    return boxes(u8, box.dataStart + skip, box.end).find((b) => b.type === type) || null;
+  }
+
+  const MP4_INIT_TYPES = new Set(['ftyp', 'moov']);
+  const MP4_MEDIA_TYPES = new Set(['moof', 'styp', 'sidx', 'emsg', 'prft']);
+
+  function mp4FirstType(u8) {
+    if (u8.length < 8) return null;
+    const type = fourcc(u8, 4);
+    return /^[a-z]{4}$/.test(type) ? type : null;
+  }
+
+  function mp4FindMediaStart(u8) {
+    for (const b of boxes(u8, 0, u8.length)) if (MP4_MEDIA_TYPES.has(b.type)) return b.start;
+    return -1;
+  }
+
+  /** Timescale and AudioSpecificConfig from an mp4 init segment. */
+  function mp4InitMeta(u8) {
+    const meta = { timescale: 0, asc: null };
+    const moov = boxes(u8, 0, u8.length).find((b) => b.type === 'moov');
+    const trak = child(u8, moov, 'trak');
+    const mdia = child(u8, trak, 'mdia');
+    const mdhd = child(u8, mdia, 'mdhd');
+    if (mdhd) {
+      const v = u8[mdhd.dataStart];
+      meta.timescale = u32(u8, mdhd.dataStart + (v === 1 ? 20 : 12));
+    }
+    const stbl = child(u8, child(u8, mdia, 'minf'), 'stbl');
+    const stsd = child(u8, stbl, 'stsd');
+    if (stsd) {
+      const entry = boxes(u8, stsd.dataStart + 8, stsd.end)[0];
+      if (entry && (entry.type === 'mp4a' || entry.type === 'enca')) {
+        const esds = child(u8, entry, 'esds', 28);
+        if (esds) meta.asc = parseEsds(u8, esds.dataStart + 4, esds.end);
+      }
+    }
+    return meta;
+  }
+
+  function parseEsds(u8, p, end) {
+    // Walk MPEG-4 descriptors: 0x03 ES -> 0x04 DecoderConfig -> 0x05 DecSpecificInfo
+    function desc(pos) {
+      if (pos + 2 > end) return null;
+      const tag = u8[pos++];
+      let len = 0;
+      for (let i = 0; i < 4 && pos < end; i++) {
+        const b = u8[pos++];
+        len = (len << 7) | (b & 0x7f);
+        if (!(b & 0x80)) break;
+      }
+      return { tag, len, data: pos };
+    }
+    let d = desc(p);
+    if (!d || d.tag !== 0x03) return null;
+    let q = d.data + 2; // ES_ID
+    const flags = u8[q++];
+    if (flags & 0x80) q += 2;
+    if (flags & 0x40) q += 1 + u8[q];
+    if (flags & 0x20) q += 2;
+    d = desc(q);
+    if (!d || d.tag !== 0x04) return null;
+    d = desc(d.data + 13);
+    if (!d || d.tag !== 0x05 || d.data + d.len > end || d.len < 2) return null;
+    const objType = u8[d.data] >> 3;
+    const freqIndex = ((u8[d.data] & 0x07) << 1) | (u8[d.data + 1] >> 7);
+    const channels = (u8[d.data + 1] >> 3) & 0x0f;
+    return { objType, freqIndex, channels };
+  }
+
+  /** Walk moof/mdat pairs. Returns { time (sec|null), samples: [Uint8Array] } */
+  function mp4Fragments(u8, timescale) {
+    const result = { time: null, samples: [] };
+    for (const moof of boxes(u8, 0, u8.length)) {
+      if (moof.type !== 'moof') continue;
+      for (const traf of boxes(u8, moof.dataStart, moof.end)) {
+        if (traf.type !== 'traf') continue;
+        const kids = boxes(u8, traf.dataStart, traf.end);
+        const tfhd = kids.find((b) => b.type === 'tfhd');
+        const tfdt = kids.find((b) => b.type === 'tfdt');
+        if (tfdt && result.time === null && timescale > 0) {
+          const v = u8[tfdt.dataStart];
+          const t =
+            v === 1
+              ? u32(u8, tfdt.dataStart + 4) * 4294967296 + u32(u8, tfdt.dataStart + 8)
+              : u32(u8, tfdt.dataStart + 4);
+          result.time = t / timescale;
+        }
+        let base = moof.start;
+        let defaultSize = 0;
+        if (tfhd) {
+          const f = u32(u8, tfhd.dataStart) & 0xffffff;
+          let q = tfhd.dataStart + 8; // flags + track_ID
+          if (f & 0x01) {
+            base = u32(u8, q) * 4294967296 + u32(u8, q + 4);
+            q += 8;
+          }
+          if (f & 0x02) q += 4;
+          if (f & 0x08) q += 4;
+          if (f & 0x10) defaultSize = u32(u8, q);
+        }
+        for (const trun of kids) {
+          if (trun.type !== 'trun') continue;
+          const f = u32(u8, trun.dataStart) & 0xffffff;
+          const count = u32(u8, trun.dataStart + 4);
+          let q = trun.dataStart + 8;
+          let dataPos = base;
+          if (f & 0x01) {
+            dataPos = base + (u32(u8, q) | 0);
+            q += 4;
+          } else {
+            const mdat = boxes(u8, moof.end, u8.length).find((b) => b.type === 'mdat');
+            dataPos = mdat ? mdat.dataStart : moof.end + 8;
+          }
+          if (f & 0x04) q += 4;
+          for (let i = 0; i < count && q <= trun.end; i++) {
+            if (f & 0x100) q += 4;
+            let size = defaultSize;
+            if (f & 0x200) {
+              size = u32(u8, q);
+              q += 4;
+            }
+            if (f & 0x400) q += 4;
+            if (f & 0x800) q += 4;
+            if (size <= 0 || dataPos + size > u8.length) break;
+            result.samples.push(u8.subarray(dataPos, dataPos + size));
+            dataPos += size;
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /** Wrap raw AAC frames in ADTS headers so decodeAudioData can read them. */
+  function toAdts(samples, asc) {
+    if (!asc || !samples.length) return null;
+    let objType = asc.objType;
+    if (objType === 5 || objType === 29) objType = 2; // HE-AAC: core is LC
+    const profile = Math.max(0, Math.min(3, objType - 1));
+    const sfi = asc.freqIndex & 0x0f;
+    const ch = asc.channels & 0x07;
+    const parts = [];
+    for (const s of samples) {
+      const len = s.length + 7;
+      const h = new Uint8Array(7);
+      h[0] = 0xff;
+      h[1] = 0xf1;
+      h[2] = (profile << 6) | (sfi << 2) | ((ch >> 2) & 1);
+      h[3] = ((ch & 3) << 6) | ((len >> 11) & 0x03);
+      h[4] = (len >> 3) & 0xff;
+      h[5] = ((len & 7) << 5) | 0x1f;
+      h[6] = 0xfc;
+      parts.push(h, s);
+    }
+    return concat(parts);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Peaks: decoded audio to 50 bins/s of peak + low/mid/high energy
+  // ---------------------------------------------------------------------------
+  function biquad(type, freq, sr) {
+    const w = (2 * Math.PI * freq) / sr;
+    const cos = Math.cos(w);
+    const alpha = Math.sin(w) / (2 * Math.SQRT1_2);
+    const a0 = 1 + alpha;
+    let b0, b1, b2;
+    if (type === 'lp') {
+      b0 = (1 - cos) / 2;
+      b1 = 1 - cos;
+      b2 = (1 - cos) / 2;
+    } else {
+      b0 = (1 + cos) / 2;
+      b1 = -(1 + cos);
+      b2 = (1 + cos) / 2;
+    }
+    return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: (-2 * cos) / a0, a2: (1 - alpha) / a0 };
+  }
+
+  /**
+   * channels: Float32Array[]; sr: sample rate; start: seconds of sample 0.
+   * Returns { startBin, peak, low, mid, high } (Uint8Arrays).
+   */
+  function computePeaks(channels, sr, start) {
+    const n = channels[0].length;
+    if (!n) return null;
+    const dur = n / sr;
+    const firstBin = Math.max(0, Math.floor(start * BIN_RATE));
+    const lastBin = Math.ceil((start + dur) * BIN_RATE) - 1;
+    const count = lastBin - firstBin + 1;
+    if (count <= 0) return null;
+    const peak = new Uint8Array(count);
+    const low = new Uint8Array(count);
+    const mid = new Uint8Array(count);
+    const high = new Uint8Array(count);
+    const lp = biquad('lp', 250, sr);
+    const hp = biquad('hp', 2500, sr);
+    let lx1 = 0, lx2 = 0, ly1 = 0, ly2 = 0;
+    let hx1 = 0, hx2 = 0, hy1 = 0, hy2 = 0;
+    const nch = channels.length;
+    let bin = 0;
+    let binEnd = Math.min(n, Math.round(((firstBin + 1) / BIN_RATE - start) * sr));
+    let pk = 0, sl = 0, sm = 0, sh = 0, cnt = 0;
+    const flush = () => {
+      if (cnt > 0 && bin < count) {
+        peak[bin] = Math.min(255, Math.round(pk * 255));
+        low[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sl / cnt)) * 300));
+        mid[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sm / cnt)) * 300));
+        high[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sh / cnt)) * 300));
+      }
+      pk = sl = sm = sh = cnt = 0;
+    };
+    for (let i = 0; i < n; i++) {
+      while (i >= binEnd && bin < count) {
+        flush();
+        bin++;
+        binEnd = Math.min(n, Math.round(((firstBin + bin + 1) / BIN_RATE - start) * sr));
+        if (binEnd <= i) binEnd = i + 1;
+      }
+      let x = 0;
+      let a = 0;
+      for (let c = 0; c < nch; c++) {
+        const v = channels[c][i];
+        x += v;
+        const av = v < 0 ? -v : v;
+        if (av > a) a = av;
+      }
+      x /= nch;
+      const yl = lp.b0 * x + lp.b1 * lx1 + lp.b2 * lx2 - lp.a1 * ly1 - lp.a2 * ly2;
+      lx2 = lx1; lx1 = x; ly2 = ly1; ly1 = yl;
+      const yh = hp.b0 * x + hp.b1 * hx1 + hp.b2 * hx2 - hp.a1 * hy1 - hp.a2 * hy2;
+      hx2 = hx1; hx1 = x; hy2 = hy1; hy1 = yh;
+      const ym = x - yl - yh;
+      if (a > pk) pk = a;
+      sl += yl * yl;
+      sm += ym * ym;
+      sh += yh * yh;
+      cnt++;
+    }
+    flush();
+    return { startBin: firstBin, peak, low, mid, high };
+  }
+
+  // Test hook (only used by the Node unit tests, never set on YouTube).
+  if (G.__YTL_TEST__) {
+    G.__YTL_TEST__.parsers = {
+      readId, readSize, webmFindCluster, webmTimecodeScale, webmClusterTime,
+      boxes, mp4FindMediaStart, mp4InitMeta, mp4Fragments, toAdts, computePeaks, BIN_RATE,
+    };
+    if (G.__YTL_TEST__.parsersOnly) return;
+  }
+
+  if (typeof MediaSource === 'undefined' || typeof SourceBuffer === 'undefined') return;
+
+  // ---------------------------------------------------------------------------
+  // Player helpers
+  // ---------------------------------------------------------------------------
+  function player() {
+    return document.getElementById('movie_player') || document.querySelector('#player-container-id .html5-video-player');
+  }
+
+  function mainVideo() {
+    const p = player();
+    return (p && p.querySelector('video')) || document.querySelector('#player-container-id video') || null;
+  }
+
+  function isAd() {
+    const p = player();
+    return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
+  }
+
+  function videoId() {
+    try {
+      const p = player();
+      const d = p && typeof p.getVideoData === 'function' ? p.getVideoData() : null;
+      if (d && d.video_id) return String(d.video_id);
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      return new URL(location.href).searchParams.get('v');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function post(msg) {
+    msg[TAG] = true;
+    try {
+      G.postMessage(msg, location.origin);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Hooks
+  // ---------------------------------------------------------------------------
+  const msUrl = new WeakMap(); // MediaSource -> blob url
+  const sbState = new WeakMap(); // audio SourceBuffer -> capture state
+
+  const origCreateObjectURL = URL.createObjectURL;
+  try {
+    URL.createObjectURL = function createObjectURL(obj) {
+      const url = origCreateObjectURL.apply(this, arguments);
+      try {
+        if (obj instanceof MediaSource) msUrl.set(obj, url);
+      } catch (e) {
+        /* ignore */
+      }
+      return url;
+    };
+  } catch (e) {
+    /* ignore */
+  }
+
+  const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
+  MediaSource.prototype.addSourceBuffer = function addSourceBuffer(mime) {
+    const sb = origAddSourceBuffer.apply(this, arguments);
+    try {
+      const m = String(mime || '').toLowerCase();
+      if (m.startsWith('audio/')) {
+        sbState.set(sb, {
+          ms: this,
+          container: m.includes('mp4') ? 'mp4' : 'webm',
+          init: null,
+          tcScale: 1e6,
+          mp4: null,
+          pending: null,
+          pendingBytes: 0,
+          pendingStart: null,
+          pendingVid: null,
+          decodedBytes: 0,
+          flushTimer: 0,
+          retries: 0,
+          seq: 0,
+        });
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    return sb;
+  };
+
+  // YouTube may switch codec (WebM <-> MP4) on the same SourceBuffer.
+  const origChangeType = SourceBuffer.prototype.changeType;
+  if (origChangeType) {
+    SourceBuffer.prototype.changeType = function changeType(mime) {
+      try {
+        const st = sbState.get(this);
+        if (st) {
+          finalize(st);
+          st.container = String(mime || '').toLowerCase().includes('mp4') ? 'mp4' : 'webm';
+          st.init = null;
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      return origChangeType.apply(this, arguments);
+    };
+  }
+
+  const origAppendBuffer = SourceBuffer.prototype.appendBuffer;
+  SourceBuffer.prototype.appendBuffer = function appendBuffer(data) {
+    try {
+      const st = sbState.get(this);
+      if (st) capture(this, st, data);
+    } catch (e) {
+      /* never break playback */
+    }
+    return origAppendBuffer.apply(this, arguments);
+  };
+
+  function isMainSource(st) {
+    const v = mainVideo();
+    if (!v) return false;
+    const url = msUrl.get(st.ms);
+    if (!url) return true; // unknown attachment; accept
+    return v.src === url || v.currentSrc === url;
+  }
+
+  function classify(st, u8) {
+    if (st.container === 'webm') {
+      if (webmStartsWith(u8, EBML_ID)) return 'init';
+      if (webmStartsWith(u8, CLUSTER_ID)) return 'media';
+      return 'cont';
+    }
+    const t = mp4FirstType(u8);
+    if (t && MP4_INIT_TYPES.has(t)) return 'init';
+    if (t && MP4_MEDIA_TYPES.has(t)) return 'media';
+    return 'cont';
+  }
+
+  function capture(sb, st, data) {
+    if (!isMainSource(st)) return;
+    if (isAd()) {
+      st.pending = null; // never mix ad audio into a song
+      return;
+    }
+    const u8 = toU8Copy(data);
+    if (!u8 || !u8.length) return;
+    const kind = classify(st, u8);
+    if (kind === 'init') {
+      finalize(st);
+      const split = st.container === 'webm' ? webmFindCluster(u8) : mp4FindMediaStart(u8);
+      st.init = split > 0 ? u8.slice(0, split) : u8;
+      if (st.container === 'webm') st.tcScale = webmTimecodeScale(st.init);
+      else st.mp4 = mp4InitMeta(st.init);
+      if (split > 0) startPending(sb, st, u8.subarray(split));
+      return;
+    }
+    if (!st.init) return;
+    if (kind === 'media') {
+      finalize(st);
+      startPending(sb, st, u8);
+    } else if (st.pending) {
+      st.pending.push(u8);
+      st.pendingBytes += u8.length;
+      if (st.pendingBytes > MAX_PENDING_BYTES) {
+        finalize(st);
+        return;
+      }
+    } else {
+      return;
+    }
+    clearTimeout(st.flushTimer);
+    st.flushTimer = setTimeout(() => flush(st, false), 250);
+  }
+
+  function startPending(sb, st, u8) {
+    st.pending = [u8];
+    st.pendingBytes = u8.length;
+    st.decodedBytes = 0;
+    st.retries = 0;
+    st.pendingVid = videoId();
+    st.seq++;
+    let t = null;
+    if (st.container === 'webm') t = webmClusterTime(u8, st.tcScale);
+    else if (st.mp4) t = mp4Fragments(u8, st.mp4.timescale).time;
+    if (t !== null && isFinite(t)) {
+      let off = 0;
+      try {
+        off = sb.timestampOffset || 0;
+      } catch (e) {
+        /* ignore */
+      }
+      st.pendingStart = t + off;
+    } else {
+      // Fallback: learn the start from what the SourceBuffer added.
+      st.pendingStart = null;
+      const seq = st.seq;
+      const before = ranges(sb);
+      sb.addEventListener(
+        'updateend',
+        () => {
+          if (st.seq !== seq || st.pendingStart !== null) return;
+          const s = firstNewTime(before, ranges(sb));
+          if (s !== null) st.pendingStart = s;
+        },
+        { once: true }
+      );
+    }
+  }
+
+  function ranges(sb) {
+    const out = [];
+    try {
+      const r = sb.buffered;
+      for (let i = 0; i < r.length; i++) out.push([r.start(i), r.end(i)]);
+    } catch (e) {
+      /* ignore */
+    }
+    return out;
+  }
+
+  function firstNewTime(before, after) {
+    for (const [s, e] of after) {
+      let t = s;
+      for (const [bs, be] of before) if (t >= bs - 0.05 && t < be) t = be;
+      if (t < e - 0.05) return t;
+    }
+    return null;
+  }
+
+  function finalize(st) {
+    clearTimeout(st.flushTimer);
+    if (st.pending) flush(st, true);
+    st.pending = null;
+    st.pendingBytes = 0;
+  }
+
+  function flush(st, final) {
+    if (!st.pending || !st.init) return;
+    if (st.pendingBytes === st.decodedBytes) return;
+    if (st.pendingStart === null) {
+      if (!final && ++st.retries < 20) {
+        clearTimeout(st.flushTimer);
+        st.flushTimer = setTimeout(() => flush(st, false), 400);
+      }
+      return;
+    }
+    if (isAd()) return;
+    st.decodedBytes = st.pendingBytes;
+    const media = concat(st.pending);
+    enqueue({
+      container: st.container,
+      init: st.init,
+      mp4: st.mp4,
+      media,
+      start: st.pendingStart,
+      vid: st.pendingVid,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Decode queue
+  // ---------------------------------------------------------------------------
+  let decodeCtx = null;
+  let queue = Promise.resolve();
+  let queued = 0;
+
+  function ctx() {
+    if (!decodeCtx) {
+      const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
+      decodeCtx = new Ctor(1, 1, DECODE_RATE);
+    }
+    return decodeCtx;
+  }
+
+  function decode(bytes) {
+    return new Promise((resolve, reject) => {
+      try {
+        const p = ctx().decodeAudioData(bytes.buffer, resolve, reject);
+        if (p && p.catch) p.catch(reject);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  function enqueue(job) {
+    if (queued > 40) return; // avoid runaway memory if decoding stalls
+    queued++;
+    queue = queue
+      .then(() => runJob(job))
+      .catch(() => {})
+      .then(() => {
+        queued--;
+      });
+  }
+
+  async function runJob(job) {
+    let buf = null;
+    if (job.container === 'webm') {
+      buf = await decode(concat([job.init, job.media]));
+    } else {
+      const frags = job.mp4 ? mp4Fragments(job.media, job.mp4.timescale) : null;
+      const adts = frags && job.mp4.asc ? toAdts(frags.samples, job.mp4.asc) : null;
+      if (adts) {
+        try {
+          buf = await decode(adts);
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) buf = await decode(concat([job.init, job.media]));
+    }
+    if (!buf || !buf.length) return;
+    const chans = [];
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c));
+    const res = computePeaks(chans, buf.sampleRate, job.start);
+    if (!res) return;
+    post({
+      type: 'peaks',
+      vid: job.vid,
+      binRate: BIN_RATE,
+      startBin: res.startBin,
+      peak: res.peak,
+      low: res.low,
+      mid: res.mid,
+      high: res.high,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tell the content script which video the main player is on
+  // ---------------------------------------------------------------------------
+  let lastInfo = '';
+  function postVideoInfo(force) {
+    const v = mainVideo();
+    const vid = videoId();
+    const info = { type: 'video', vid: vid || null, ad: isAd(), hasVideo: !!v };
+    const key = JSON.stringify(info);
+    if (!force && key === lastInfo) return;
+    lastInfo = key;
+    post(info);
+  }
+
+  G.addEventListener('message', (e) => {
+    if (e.source !== G || !e.data || e.data[TAG] !== 'cs') return;
+    if (e.data.type === 'hello') postVideoInfo(true);
+  });
+  document.addEventListener('yt-navigate-finish', () => postVideoInfo(false), true);
+  setInterval(() => postVideoInfo(false), 700);
+})();
+
+
+// ---- panel, loop engine, speed and trainer: start once the page has a body ----
+(function () {
+  'use strict';
+  function start() {
+
+globalThis.YTL_STORAGE = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((resolve, reject) => {
+    const req = indexedDB.open('ytl-wave-looper', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }));
+  const list = (k) => (Array.isArray(k) ? k : [k]);
+  return {
+    get(keys) {
+      return open().then((db) => new Promise((resolve) => {
+        const out = {};
+        const t = db.transaction('kv', 'readonly');
+        const st = t.objectStore('kv');
+        for (const k of list(keys)) {
+          const r = st.get(k);
+          r.onsuccess = () => { if (r.result !== undefined) out[k] = r.result; };
+        }
+        t.oncomplete = () => resolve(out);
+        t.onerror = t.onabort = () => resolve(out);
+      })).catch(() => ({}));
+    },
+    set(obj) {
+      open().then((db) => {
+        const st = db.transaction('kv', 'readwrite').objectStore('kv');
+        for (const [k, v] of Object.entries(obj)) st.put(v, k);
+      }).catch(() => {});
+    },
+    remove(keys) {
+      open().then((db) => {
+        const st = db.transaction('kv', 'readwrite').objectStore('kv');
+        for (const k of list(keys)) st.delete(k);
+      }).catch(() => {});
+    },
+  };
+})();
+
+/*
+ * DJ Wave Looper: pure logic with no DOM, shared by the content script and
+ * the Node unit tests.
+ */
+(function (root) {
+  'use strict';
+
+  const SPEED_MIN = 0.25;
+  const SPEED_MAX = 2;
+  const END_GUARD = 0.3; // never let a loop touch the real end (YouTube would autoplay next)
+  const MIN_LOOP = 0.1;
+
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function roundRate(r) {
+    return Math.round(clamp(r, SPEED_MIN, SPEED_MAX) * 100) / 100;
+  }
+
+  /** 83.456 -> "1:23.45"; 3725.1 -> "1:02:05.10". `cs=false` drops hundredths. */
+  function formatTime(sec, cs = true) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const totalCs = Math.floor(sec * 100 + 1e-6);
+    const h = Math.floor(totalCs / 360000);
+    const m = Math.floor((totalCs % 360000) / 6000);
+    const s = Math.floor((totalCs % 6000) / 100);
+    const c = totalCs % 100;
+    const ss = String(s).padStart(2, '0');
+    let out = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+    if (cs) out += '.' + String(c).padStart(2, '0');
+    return out;
+  }
+
+  /**
+   * Speed for repetition `rep` (1-based) of the auto speed-up trainer.
+   * Rep 1 plays at `start`, rep `reps` plays at `goal`, linear in between,
+   * and every rep after that stays at `goal`.
+   */
+  function trainerRate(start, goal, reps, rep) {
+    reps = Math.max(1, Math.round(reps));
+    if (reps === 1 || rep >= reps) return roundRate(goal);
+    const k = clamp((rep - 1) / (reps - 1), 0, 1);
+    return roundRate(start + (goal - start) * k);
+  }
+
+  /** Effective loop end: before the guard zone at the end of the video. */
+  function loopEnd(b, duration) {
+    if (!isFinite(duration) || duration <= 0) return b;
+    return Math.min(b, Math.max(0, duration - END_GUARD));
+  }
+
+  /** Orders, clamps and validates an A/B pair. Returns null if unusable. */
+  function normalizeLoop(a, b, duration) {
+    if (a == null || b == null || !isFinite(a) || !isFinite(b)) return null;
+    let lo = Math.min(a, b);
+    let hi = Math.max(a, b);
+    const max = isFinite(duration) && duration > 0 ? duration : Infinity;
+    lo = clamp(lo, 0, max);
+    hi = clamp(hi, 0, max);
+    if (hi - lo < MIN_LOOP) return null;
+    return { a: lo, b: hi };
+  }
+
+  // ---------------------------------------------------------------------------
+  // PeakStore: the song's waveform, filled piece by piece
+  // ---------------------------------------------------------------------------
+  class PeakStore {
+    constructor(binRate = 50) {
+      this.binRate = binRate;
+      this.n = 0;
+      this.peak = new Uint8Array(0);
+      this.low = new Uint8Array(0);
+      this.mid = new Uint8Array(0);
+      this.high = new Uint8Array(0);
+      this.cov = new Uint8Array(0);
+      this.version = 0;
+      this.maxPeak = 0;
+    }
+
+    ensure(n) {
+      if (n <= this.peak.length) {
+        if (n > this.n) this.n = n;
+        return;
+      }
+      const cap = Math.max(n, Math.ceil(this.peak.length * 1.5), 1024);
+      for (const k of ['peak', 'low', 'mid', 'high', 'cov']) {
+        const a = new Uint8Array(cap);
+        a.set(this[k]);
+        this[k] = a;
+      }
+      this.n = n;
+    }
+
+    setDuration(sec) {
+      if (isFinite(sec) && sec > 0) this.ensure(Math.ceil(sec * this.binRate));
+    }
+
+    /** Merge a chunk of bins (max-merge, so repeated chunks are harmless). */
+    add(startBin, peak, low, mid, high) {
+      if (!peak || !peak.length || startBin < 0) return;
+      const end = startBin + peak.length;
+      this.ensure(end);
+      for (let i = 0; i < peak.length; i++) {
+        const j = startBin + i;
+        if (peak[i] > this.peak[j]) this.peak[j] = peak[i];
+        if (low && low[i] > this.low[j]) this.low[j] = low[i];
+        if (mid && mid[i] > this.mid[j]) this.mid[j] = mid[i];
+        if (high && high[i] > this.high[j]) this.high[j] = high[i];
+        this.cov[j] = 1;
+        if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
+      }
+      this.version++;
+    }
+
+    /** Merge another store's covered bins into this one. */
+    merge(other) {
+      if (!other || other.binRate !== this.binRate || !other.n) return;
+      this.ensure(other.n);
+      for (let j = 0; j < other.n; j++) {
+        if (!other.cov[j]) continue;
+        if (other.peak[j] > this.peak[j]) this.peak[j] = other.peak[j];
+        if (other.low[j] > this.low[j]) this.low[j] = other.low[j];
+        if (other.mid[j] > this.mid[j]) this.mid[j] = other.mid[j];
+        if (other.high[j] > this.high[j]) this.high[j] = other.high[j];
+        this.cov[j] = 1;
+        if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
+      }
+      this.version++;
+    }
+
+    /** Fraction (0..1) of [0, durationSec) that has waveform data. */
+    coverage(durationSec) {
+      const n = Math.ceil(durationSec * this.binRate);
+      if (!(n > 0)) return 0;
+      const m = Math.min(n, this.n);
+      let c = 0;
+      for (let i = 0; i < m; i++) c += this.cov[i];
+      return c / n;
+    }
+
+    isCovered(sec) {
+      const i = Math.floor(sec * this.binRate);
+      return i >= 0 && i < this.n && this.cov[i] === 1;
+    }
+
+    /**
+     * Gaps without data in [0, durationSec - tail), each longer than minGap
+     * seconds: [{start, end}] in seconds.
+     */
+    gaps(durationSec, minGap = 0.4, tail = 0.6) {
+      const out = [];
+      const n = Math.floor(Math.max(0, durationSec - tail) * this.binRate);
+      const minBins = Math.max(1, Math.round(minGap * this.binRate));
+      let s = -1;
+      for (let i = 0; i <= n; i++) {
+        const empty = i < n && !(i < this.n && this.cov[i]);
+        if (empty && s < 0) s = i;
+        else if (!empty && s >= 0) {
+          if (i - s >= minBins) out.push({ start: s / this.binRate, end: i / this.binRate });
+          s = -1;
+        }
+      }
+      return out;
+    }
+
+    /** Next gap that starts at or after `sec` (wrapping to the first). */
+    nextGap(sec, durationSec) {
+      const g = this.gaps(durationSec);
+      if (!g.length) return null;
+      return g.find((x) => x.end > sec + 0.05) || g[0];
+    }
+
+    serialize() {
+      const n = this.n;
+      const out = new Uint8Array(n * 5);
+      out.set(this.peak.subarray(0, n), 0);
+      out.set(this.low.subarray(0, n), n);
+      out.set(this.mid.subarray(0, n), 2 * n);
+      out.set(this.high.subarray(0, n), 3 * n);
+      out.set(this.cov.subarray(0, n), 4 * n);
+      return { binRate: this.binRate, n, data: bytesToBase64(out) };
+    }
+
+    static deserialize(obj) {
+      const s = new PeakStore(obj.binRate || 50);
+      const n = obj.n | 0;
+      const raw = base64ToBytes(obj.data || '');
+      if (raw.length !== n * 5) return s;
+      s.ensure(n);
+      s.peak.set(raw.subarray(0, n));
+      s.low.set(raw.subarray(n, 2 * n));
+      s.mid.set(raw.subarray(2 * n, 3 * n));
+      s.high.set(raw.subarray(3 * n, 4 * n));
+      s.cov.set(raw.subarray(4 * n, 5 * n));
+      for (let i = 0; i < n; i++) if (s.peak[i] > s.maxPeak) s.maxPeak = s.peak[i];
+      s.version++;
+      return s;
+    }
+  }
+
+  function bytesToBase64(u8) {
+    if (typeof Buffer !== 'undefined' && typeof btoa === 'undefined') {
+      return Buffer.from(u8).toString('base64');
+    }
+    let s = '';
+    const CH = 0x8000;
+    for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+    return btoa(s);
+  }
+
+  function base64ToBytes(b64) {
+    if (typeof Buffer !== 'undefined' && typeof atob === 'undefined') {
+      return new Uint8Array(Buffer.from(b64, 'base64'));
+    }
+    const s = atob(b64);
+    const out = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+    return out;
+  }
+
+  /**
+   * DJ-style colour for a bin from its band energies (0..255 each):
+   * bass leans red/orange, mids green, highs blue/cyan.
+   */
+  function bandColor(low, mid, high) {
+    const l = low * 1.0;
+    const m = mid * 1.25;
+    const h = high * 1.9;
+    const max = Math.max(l, m, h, 1);
+    const r = Math.round(60 + 195 * (l / max));
+    const g = Math.round(50 + 205 * (m / max) * 0.85 + 30 * (l / max) * 0.4);
+    const b = Math.round(70 + 185 * (h / max));
+    return [Math.min(255, r), Math.min(255, g), Math.min(255, b)];
+  }
+
+  const api = {
+    SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
+    clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
+    PeakStore, bandColor, bytesToBase64, base64ToBytes,
+  };
+  root.YTLCore = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+
+/* Styles for the looper panel. They live inside a shadow root, so YouTube's
+ * CSS can't reach them and they can't leak into YouTube. */
+globalThis.YTL_PANEL_CSS = `
+:host { all: initial; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.panel {
+  --bg: #0b0e14;
+  --bg2: #121722;
+  --bg3: #1a2130;
+  --line: #262f42;
+  --text: #e8ecf4;
+  --muted: #8b95a8;
+  --accent: #19d3ff;
+  --accent-ink: #001a22;
+  --a: #3ddc84;
+  --b: #ff6b4a;
+  --gold: #ffcf3d;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.25 Roboto, "YouTube Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -10px 30px rgba(0,0,0,.45);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.resize {
+  position: absolute; left: 0; right: 0; top: -8px; height: 16px;
+  cursor: ns-resize; z-index: 3;
+}
+.resize::after {
+  content: ""; position: absolute; left: 50%; top: 5px; width: 72px; height: 6px;
+  margin-left: -36px; border-radius: 3px; background: #4a5670; transition: background .12s;
+}
+.resize:hover::after { background: var(--accent); }
+.row {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px 10px; padding: 6px 10px;
+}
+.bar { background: var(--bg2); border-bottom: 1px solid var(--line); padding-top: 7px; }
+.group { display: flex; align-items: center; gap: 4px; }
+.sep { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
+.spacer { flex: 1 1 auto; }
+.brand { display: flex; align-items: center; gap: 6px; font-weight: 700; letter-spacing: .2px; color: #fff; margin-right: 2px; }
+.brand svg { width: 18px; height: 18px; fill: var(--accent); }
+.brand small { font-weight: 500; color: var(--muted); }
+.label { color: var(--muted); font-size: 12px; }
+button {
+  font: inherit; color: var(--text); background: var(--bg3);
+  border: 1px solid var(--line); border-radius: 8px;
+  height: 28px; min-width: 28px; padding: 0 9px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s, color .12s;
+}
+button:hover { background: #222b3d; border-color: #34405a; }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: .4; cursor: default; transform: none; }
+button.icon { padding: 0; width: 28px; }
+button svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
+button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+button.speed { min-width: 50px; font-weight: 600; }
+button.zoom-toggle { min-width: 112px; font-weight: 600; }
+button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+button.danger { color: #ffb4a6; }
+.mark {
+  display: flex; align-items: center; height: 28px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg3); overflow: hidden;
+}
+.mark button { border: 0; border-radius: 0; height: 26px; background: transparent; min-width: 22px; padding: 0 5px; }
+.mark button:hover { background: #222b3d; }
+.mark .set { font-weight: 800; padding: 0 8px; }
+.mark.a .set { color: var(--a); }
+.mark.b .set { color: var(--b); }
+.mark .time {
+  font-variant-numeric: tabular-nums; min-width: 62px; text-align: center; color: var(--text);
+  padding: 0 2px; font-size: 12.5px;
+}
+.mark.pending { border-color: var(--a); box-shadow: 0 0 0 1px var(--a) inset; }
+.rate {
+  font-variant-numeric: tabular-nums; min-width: 52px; text-align: center; font-weight: 700;
+  font-size: 14px; color: var(--gold); cursor: pointer; border-radius: 6px; padding: 4px 2px;
+}
+.rate:hover { background: var(--bg3); }
+select {
+  font: inherit; color: var(--text); background: var(--bg3); border: 1px solid var(--line);
+  border-radius: 8px; height: 28px; padding: 0 6px; cursor: pointer;
+}
+label.check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
+label.check input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.sub { background: #0f1420; border-bottom: 1px solid var(--line); }
+.sub[hidden] { display: none; }
+.progress { position: relative; width: 160px; height: 8px; border-radius: 4px; background: var(--bg3); overflow: hidden; }
+.progress > i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: linear-gradient(90deg, var(--a), var(--gold)); transition: width .25s; }
+.tstat { font-variant-numeric: tabular-nums; color: var(--text); min-width: 140px; }
+.tstat b { color: var(--gold); }
+.wave-wrap { position: relative; flex: none; height: 140px; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.overlay {
+  position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px;
+  background: rgba(10, 14, 22, .88); border: 1px solid var(--line); box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  font-size: 13px; white-space: nowrap; pointer-events: auto; z-index: 2;
+}
+.overlay[hidden] { display: none; }
+.tip {
+  position: absolute; top: 20px; padding: 2px 6px; border-radius: 4px; background: #000c;
+  color: #fff; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none;
+  transform: translateX(-50%); white-space: nowrap; z-index: 2;
+}
+.tip[hidden] { display: none; }
+.status { display: flex; align-items: center; gap: 10px; padding: 4px 10px; min-height: 30px; background: var(--bg2); border-top: 1px solid var(--line); }
+.hint { color: var(--muted); flex: 1 1 auto; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint b { color: var(--text); font-weight: 600; }
+.chips { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow-x: auto; max-width: 55%; scrollbar-width: thin; }
+.chip {
+  display: inline-flex; align-items: center; height: 22px; border-radius: 11px; border: 1px solid var(--line);
+  background: var(--bg3); font-size: 12px; overflow: hidden; flex: none;
+}
+.chip button { height: 20px; border: 0; background: transparent; border-radius: 0; padding: 0 8px; font-size: 12px; min-width: 0; }
+.chip button.x { padding: 0 6px 0 2px; color: var(--muted); }
+.chip.active { border-color: var(--accent); }
+.chip.add button { color: var(--accent); }
+.count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.count b { color: var(--text); }
+.collapsed .wave-wrap, .collapsed .sub, .collapsed .status { display: none; }
+.help {
+  position: absolute; right: 10px; bottom: 36px; z-index: 5; width: min(520px, calc(100% - 20px));
+  max-height: calc(100% - 50px); overflow: auto; padding: 14px 16px; border-radius: 12px;
+  background: #0f1420; border: 1px solid #33405a; box-shadow: 0 12px 40px rgba(0,0,0,.6); line-height: 1.5;
+}
+.help[hidden] { display: none; }
+.help h3 { margin: 0 0 6px; font-size: 15px; color: #fff; }
+.help ol, .help ul { margin: 4px 0 10px; padding-left: 20px; }
+.help kbd {
+  display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 4px; border: 1px solid #3a4560;
+  background: #1a2130; font: 600 11px/18px ui-monospace, Menlo, monospace; text-align: center; color: #fff;
+}
+.help .close { position: absolute; right: 8px; top: 8px; }
+@media (max-width: 1400px) {
+  .brand-name, .hide-narrow { display: none; }
+  .row { gap: 6px 7px; }
+}
+@media (max-width: 900px) {
+  .chips { max-width: 40%; }
+}
+/* Fingers: bigger targets (iPad, iPhone, touch laptops). */
+@media (any-pointer: coarse) {
+  button { height: 38px; min-width: 38px; border-radius: 10px; font-size: 14px; }
+  button.icon { width: 38px; }
+  button svg { width: 20px; height: 20px; }
+  .mark { height: 38px; }
+  .mark button { height: 36px; min-width: 30px; }
+  select { height: 38px; font-size: 14px; }
+  .chip { height: 30px; border-radius: 15px; }
+  .chip button { height: 28px; font-size: 13px; }
+  .resize { top: -12px; height: 24px; }
+  .resize::after { top: 9px; width: 90px; margin-left: -45px; }
+  .help { font-size: 14px; }
+}
+/* Phones: compact rows so the wave keeps most of the space. */
+@media (max-width: 600px) {
+  .brand, .sep, .label.hide-narrow, .size-btns, .hide-phone { display: none !important; }
+  .row { padding: 5px 6px; gap: 5px; }
+  .group { gap: 3px; }
+  button { padding: 0 6px; gap: 4px; }
+  button.icon { width: 36px; min-width: 36px; }
+  select { padding: 0 2px; font-size: 13px; }
+  .status { flex-wrap: wrap; gap: 4px 8px; padding: 4px 8px; }
+  .hint { flex-basis: 100%; }
+  .mark .time { min-width: 54px; font-size: 12px; }
+  .mark .set { padding: 0 6px; }
+  button.speed { min-width: 46px; }
+  button.zoom-toggle { min-width: 0; }
+  .rate { min-width: 42px; font-size: 13px; }
+  .spacer { display: none; }
+  .hint { font-size: 12px; white-space: normal; }
+  .chips { max-width: none; flex: 1 1 auto; }
+  .tstat { min-width: 0; flex-basis: 100%; }
+  .progress { flex: 1 1 auto; width: auto; }
+}
+`;
+
 /*
  * DJ Wave Looper: content script (the panel, loop engine, speed and trainer).
  *
@@ -2268,3 +3578,9 @@
 
   init();
 })();
+
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+  else start();
+})();
+}

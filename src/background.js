@@ -2,7 +2,7 @@
  * The toolbar button and the Alt+L shortcut open or close the panel in the
  * current YouTube tab. */
 
-const YT = /^https:\/\/(www|music)\.youtube\.com\//;
+const YT = /^https:\/\/(www|m|music)\.youtube\.com\//;
 
 async function toggle(tab) {
   if (!tab || !tab.id || !YT.test(tab.url || '')) return;

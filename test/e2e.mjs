@@ -4,6 +4,8 @@
 //
 // Run: npm run e2e      (needs: node tools/make-fixtures.js)
 // Env: CHROME=/path/to/chrome  SHOTS=/dir/for/screenshots  HEADED=1
+//      USERSCRIPT=1  test the userscript build (userscript/wave-looper.user.js)
+//                    instead of the extension
 import { chromium } from 'playwright';
 import fs from 'fs';
 import os from 'os';
@@ -50,17 +52,20 @@ async function waitFor(fn, ms, msg) {
   throw new Error(`timeout: ${msg} (last=${JSON.stringify(last)})`);
 }
 
+const USERSCRIPT = !!process.env.USERSCRIPT;
 const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytl-profile-'));
 const ctx = await chromium.launchPersistentContext(userDir, {
   executablePath: CHROME,
   headless: !process.env.HEADED,
   viewport: { width: 1280, height: 860 },
   args: [
-    `--disable-extensions-except=${ROOT}`,
-    `--load-extension=${ROOT}`,
+    ...(USERSCRIPT ? [] : [`--disable-extensions-except=${ROOT}`, `--load-extension=${ROOT}`]),
     '--autoplay-policy=no-user-gesture-required',
   ],
 });
+// Userscript managers inject at document-start in the page's own world; an
+// init script does the same.
+if (USERSCRIPT) await ctx.addInitScript({ path: path.join(ROOT, 'userscript', 'wave-looper.user.js') });
 
 const pageHtml = fs.readFileSync(path.join(ROOT, 'test', 'fake-youtube.html'));
 await ctx.route('https://www.youtube.com/**', (route) => {
@@ -119,7 +124,7 @@ async function clickWaveAt(t, d = DUR) {
 }
 
 // =============================================================================
-await step('service worker starts', async () => {
+if (!USERSCRIPT) await step('service worker starts', async () => {
   const sw = ctx.serviceWorkers().length ? ctx.serviceWorkers()[0] : await ctx.waitForEvent('serviceworker', { timeout: 5000 });
   assert(sw.url().endsWith('src/background.js'), sw.url());
 });

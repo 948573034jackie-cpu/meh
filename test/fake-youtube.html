@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fake YouTube watch page (test)</title>
 <style>
   body { margin: 0; background: #0f0f0f; color: #fff; font-family: Roboto, Arial, sans-serif; }
@@ -29,6 +30,13 @@
 // A tiny DASH player that behaves like YouTube's: MSE, separate audio and
 // video SourceBuffers, init segment first, ~10 s read-ahead, refetch on seek.
 (async () => {
+  if (location.hostname === 'm.youtube.com') {
+    // Mobile site: no desktop control bar, no Like/Share row we know, full-width player.
+    for (const sel of ['.ytp-chrome-bottom', 'ytd-watch-metadata', '#fs-btn']) document.querySelector(sel)?.remove();
+    const st = document.createElement('style');
+    st.textContent = '#movie_player{width:100vw;height:56.25vw;margin:0}#below{width:auto;margin:12px}';
+    document.head.appendChild(st);
+  }
   const M = await (await fetch('/__fx/manifest.json')).json();
   const player = document.getElementById('movie_player');
   const video = player.querySelector('video');
