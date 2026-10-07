@@ -799,7 +799,19 @@
   function postVideoInfo(force) {
     const v = mainVideo();
     const vid = videoId();
-    const info = { type: 'video', vid: vid || null, ad: isAd(), hasVideo: !!v };
+    let title = '';
+    let author = '';
+    try {
+      const p = player();
+      const d = p && typeof p.getVideoData === 'function' ? p.getVideoData() : null;
+      if (d) {
+        title = String(d.title || '');
+        author = String(d.author || '');
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    const info = { type: 'video', vid: vid || null, ad: isAd(), hasVideo: !!v, title, author };
     const key = JSON.stringify(info);
     if (!force && key === lastInfo) return;
     lastInfo = key;

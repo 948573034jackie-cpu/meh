@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { installFakeLyrics } from './fake-lyrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FX = path.join(ROOT, 'test', 'fixtures');
@@ -62,6 +63,7 @@ await ctx.route('https://m.youtube.com/**', (route) => {
   if (u.pathname === '/watch') return route.fulfill({ body: html, contentType: 'text/html', headers: { 'content-security-policy': "require-trusted-types-for 'script'" } });
   return route.fulfill({ status: 404 });
 });
+const lyricsRequests = await installFakeLyrics(ctx);
 page = await ctx.newPage();
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
@@ -121,7 +123,7 @@ await step('panel fits the phone: big buttons, no sideways scrolling, video stil
     const btns = [...root.querySelectorAll('.bar button')].filter((b) => b.getClientRects().length);
     return {
       panelH: h.getBoundingClientRect().height,
-      rows: new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top))).size,
+      rows: btns.map((b) => b.getBoundingClientRect().top).sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 8).length,
       overflow: panel.scrollWidth - panel.clientWidth,
       minBtn: Math.min(...btns.map((b) => b.getBoundingClientRect().height)),
       videoBottom: document.getElementById('movie_player').getBoundingClientRect().bottom,
@@ -145,20 +147,67 @@ await step('reads the whole song (scan) and goes back', async () => {
   await page.screenshot({ path: path.join(SHOTS, 'm2-wave.png') });
 });
 
-await step('tap, tap on the wave makes a loop that repeats', async () => {
-  await tapWave(9);
-  await tapWave(11);
+await step('DJ view: the wave is zoomed in and scrolls under a playhead in the middle', async () => {
   const h = await host();
-  assert(Math.abs(Number(h.a) - 9) < 0.3 && Math.abs(Number(h.b) - 11) < 0.3, `loop ${h.a}-${h.b}`);
-  await waitFor(async () => Number((await host()).reps) >= 2, 8000, 'repeats');
+  assert(h.zoom && Number(h.zoom) < DUR, `zoomed (window ${h.zoom}s)`);
   const t = (await vstate()).t;
-  assert(t >= Number(h.a) - 0.05 && t <= Number(h.b) + 0.15, `inside loop (t=${t})`);
+  const [s, e] = h.view.split(',').map(Number);
+  const pos = (t - s) / (e - s);
+  if (t > (e - s) / 2 + 0.5) assert(Math.abs(pos - 0.5) < 0.1, `playhead in the middle (at ${pos.toFixed(2)})`);
+});
+
+await step('drag the wave like a DJ: finger holds the song, moving it moves the song, lifting plays on', async () => {
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 8; v.play(); });
+  await sleep(600);
+  const b = await waveBox();
+  const cdp = await ctx.newCDPSession(page);
+  const x = b.x + b.w * 0.6;
+  const y = b.y + 18 + (b.h - 18) * 0.5;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
+  await sleep(400);
+  let v = await vstate();
+  assert(v.paused, 'finger on the wave stops the music');
+  const t0 = v.t;
+  const span = Number((await host()).zoom);
+  for (let i = 1; i <= 8; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x - i * 15, y, id: 1 }] });
+    await sleep(30);
+  }
+  await sleep(200);
+  v = await vstate();
+  const want = t0 + (120 / b.w) * span;
+  assert(Math.abs(v.t - want) < 0.4, `pulling the wave left moves the song forward (${t0.toFixed(2)} -> ${v.t.toFixed(2)}, want ~${want.toFixed(2)})`);
+  assert(v.paused, 'still holding');
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await waitFor(async () => !(await vstate()).paused, 2000, 'plays on after lifting the finger');
+  assert(!(await host()).a, 'dragging the wave did not make a loop');
+});
+
+await step('A button makes a 3-second loop right away, B sets the end', async () => {
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 9; v.play(); });
+  await sleep(150);
+  await tap('button', 'A');
+  let h = await host();
+  assert(Math.abs(Number(h.a) - 9) < 0.3, `A at the playhead (${h.a})`);
+  assert(Math.abs(Number(h.b) - Number(h.a) - 3) < 0.01, `3-second loop (${h.a}-${h.b})`);
+  assert(h.loop === 'true', 'looping straight away');
+  await waitFor(async () => (await vstate()).t > Number(h.a) + 1.6, 4000, 'played a bit');
+  const t = (await vstate()).t; // B goes where the playhead is when you tap (then it loops back to A)
+  await tap('button', 'B');
+  h = await host();
+  assert(Math.abs(Number(h.b) - t) < 0.35 && Number(h.b) < Number(h.a) + 2.8, `B moved to the playhead (${h.b} vs t=${t.toFixed(2)})`);
+  await waitFor(async () => Number((await host()).reps) >= 2, 8000, 'repeats');
+  const tt = (await vstate()).t;
+  assert(tt >= Number(h.a) - 0.05 && tt <= Number(h.b) + 0.15, `inside loop (t=${tt})`);
 });
 
 await step('drag a flag with a finger', async () => {
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await sleep(700); // DJ view settles on the paused playhead
   const b = await waveBox();
   const h = await host();
-  const x = b.x + (Number(h.b) / DUR) * b.w + 10; // a little off the line: fingers are not precise
+  const [vs, ve] = h.view.split(',').map(Number);
+  const x = b.x + ((Number(h.b) - vs) / (ve - vs)) * b.w + 10; // a little off the line: fingers are not precise
   const y = b.y + b.h * 0.6;
   const cdp = await ctx.newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
@@ -167,13 +216,15 @@ await step('drag a flag with a finger', async () => {
   const h2 = await host();
   assert(Number(h2.b) > Number(h.b) + 0.5, `B moved right (${h.b} -> ${h2.b})`);
   assert(h2.a === h.a, 'A unchanged');
+  await page.evaluate(() => document.querySelector('#movie_player video').play());
 });
 
-await step('pinch with two fingers zooms in, Whole song zooms out', async () => {
+await step('pinch with two fingers zooms in; Whole song / Zoom in button', async () => {
   const b = await waveBox();
   const cdp = await ctx.newCDPSession(page);
   const y = b.y + b.h * 0.6;
   const cx = b.x + b.w / 2;
+  const before = Number((await host()).zoom);
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx - 30, y, id: 1 }, { x: cx + 30, y, id: 2 }] });
   for (let i = 1; i <= 8; i++) {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: cx - 30 - i * 15, y, id: 1 }, { x: cx + 30 + i * 15, y, id: 2 }] });
@@ -181,19 +232,19 @@ await step('pinch with two fingers zooms in, Whole song zooms out', async () => 
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await sleep(200);
   const h = await host();
-  assert(h.zoom && Number(h.zoom) < DUR / 2, `zoomed in (window ${h.zoom}s)`);
+  assert(h.zoom && Number(h.zoom) < before - 1, `zoomed in more (${before}s -> ${h.zoom}s)`);
   assert(Number(h.a) > 8 && Number(h.b) > Number(h.a), 'pinch did not change the loop');
+  assert(!(await vstate()).paused, 'pinching does not stop the music');
   await page.screenshot({ path: path.join(SHOTS, 'm3-pinch.png') });
   const rows = await page.evaluate(() => {
     const btns = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.bar button')].filter((b) => b.getClientRects().length);
-    return new Set(btns.map((b) => Math.round(b.getBoundingClientRect().top))).size;
+    return btns.map((b) => b.getBoundingClientRect().top).sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 8).length;
   });
   assert(rows <= 3, `toolbar still 3 rows while it says "Whole song" (${rows})`);
   await tap('button.zoom-toggle');
-  assert((await host()).zoom === '', 'whole song again');
+  assert((await host()).zoom === '', 'whole song');
   await tap('button.zoom-toggle');
-  assert(Number((await host()).zoom) > 0, 'Zoom in button works by tap');
-  await tap('button.zoom-toggle');
+  assert(Number((await host()).zoom) > 0, 'back to the DJ view');
 });
 
 await step('speed buttons by tap', async () => {
@@ -204,14 +255,51 @@ await step('speed buttons by tap', async () => {
   await tap('button.speed', '100%');
 });
 
-await step('speed trainer starts by tap', async () => {
-  await tap('button', 'Auto speed-up: start slow and reach full speed over N loops');
-  await tap('button', 'Start the speed trainer');
+await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops it at normal speed', async () => {
+  await tap('button', 'Trainer');
   await sleep(300);
-  assert(Math.abs((await vstate()).rate - 0.5) < 0.001, 'starts at 50%');
-  assert((await host()).trainer.startsWith('1/'), 'trainer running');
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, `starts at 30% (got ${(await vstate()).rate})`);
+  assert((await host()).trainer.startsWith('1/50'), 'trainer running, 50 loops');
   await page.screenshot({ path: path.join(SHOTS, 'm4-trainer.png') });
-  await tap('button', 'Stop the speed trainer');
+  await tap('button', 'Trainer');
+  assert((await host()).trainer === '', 'stopped');
+  assert(Math.abs((await vstate()).rate - 1) < 0.001, 'back to normal speed');
+});
+
+await step('play / pause button by tap', async () => {
+  await tap('button.play-btn');
+  assert((await vstate()).paused, 'paused');
+  await tap('button.play-btn');
+  await waitFor(async () => !(await vstate()).paused, 2000, 'playing');
+});
+
+await step('lyrics on the phone: above the wave, following the song', async () => {
+  await tap('button', 'Lyrics');
+  await waitFor(() => page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p').length > 0), 5000, 'lyrics shown');
+  assert(lyricsRequests.some((p) => p.track_name === 'Song PHONE001' && p.artist_name === 'Test Artist'), 'searched by song and artist');
+  const m = await page.evaluate(() => {
+    const h = document.getElementById('ytl-wave-looper');
+    const root = h.shadowRoot;
+    const ly = root.querySelector('.lyrics').getBoundingClientRect();
+    const cv = root.querySelector('canvas').getBoundingClientRect();
+    const btns = [...root.querySelectorAll('.bar button')].filter((b) => b.getClientRects().length);
+    return {
+      lyTop: ly.top, lyBottom: ly.bottom, lyH: ly.height, cvTop: cv.top, cvH: cv.height,
+      panelH: h.getBoundingClientRect().height,
+      panelTop: h.getBoundingClientRect().top,
+      videoBottom: document.getElementById('movie_player').getBoundingClientRect().bottom,
+      rows: btns.map((b) => b.getBoundingClientRect().top).sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 8).length,
+      overflow: root.querySelector('.panel').scrollWidth - root.querySelector('.panel').clientWidth,
+      fontPx: parseFloat(getComputedStyle(root.querySelector('.lyr-head input')).fontSize),
+    };
+  });
+  assert(m.lyBottom <= m.cvTop + 1, 'lyrics sit above the wave');
+  assert(m.lyH >= 120 && m.cvH >= 80, `both big enough (lyrics ${m.lyH}px, wave ${m.cvH}px)`);
+  assert(m.videoBottom <= m.panelTop + 1, `video still visible (${m.videoBottom} vs ${m.panelTop})`);
+  assert(m.rows <= 3 && m.overflow <= 1, `toolbar 3 rows, no sideways scroll (${m.rows}, ${m.overflow})`);
+  assert(m.fontPx >= 16, 'search box text ≥16px so iPhone does not zoom in when typing');
+  await waitFor(() => page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].some((p) => p.classList.contains('now'))), 3000, 'current line highlighted');
+  await page.screenshot({ path: path.join(SHOTS, 'm5-lyrics.png') });
 });
 
 await step('loop and wave are remembered after reloading the page', async () => {

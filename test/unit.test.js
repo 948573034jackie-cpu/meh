@@ -172,3 +172,35 @@ test('MP4: init meta, fragment times and ADTS that ffmpeg can decode', { skip: !
     fs.rmSync(tmp, { force: true });
   }
 });
+
+test('parseSongTitle: artist and song from YouTube titles', () => {
+  const t = (title, author) => C.parseSongTitle(title, author);
+  assert.deepEqual(t('Adele - Hello (Official Music Video)', 'AdeleVEVO'), { artist: 'Adele', track: 'Hello' });
+  assert.deepEqual(t('Hello', 'Adele - Topic'), { artist: 'Adele', track: 'Hello' });
+  assert.deepEqual(t('Billie Eilish - bad guy (Acapella)', 'x'), { artist: 'Billie Eilish', track: 'bad guy' });
+  assert.deepEqual(t('Ed Sheeran - Perfect [Official Lyric Video]', 'Ed Sheeran'), { artist: 'Ed Sheeran', track: 'Perfect' });
+  assert.deepEqual(t('The Weeknd - Blinding Lights | Instrumental', 't'), { artist: 'The Weeknd', track: 'Blinding Lights' });
+  assert.deepEqual(t('Queen – Bohemian Rhapsody (Official Video Remastered)', 'Queen Official'), { artist: 'Queen', track: 'Bohemian Rhapsody' });
+  assert.deepEqual(t('Someone - My Song ft. Other Person', 'x'), { artist: 'Someone', track: 'My Song' });
+});
+
+test('parseLrc and lineAt', () => {
+  const lines = C.parseLrc('[ar:Someone]\n[00:12.50]Second\n[00:10.00][01:00.00]First and last\nno stamp');
+  assert.deepEqual(lines.map((l) => [l.t, l.text]), [[10, 'First and last'], [12.5, 'Second'], [60, 'First and last']]);
+  assert.equal(C.lineAt(lines, 5), -1);
+  assert.equal(C.lineAt(lines, 10), 0);
+  assert.equal(C.lineAt(lines, 30), 1);
+  assert.equal(C.lineAt(lines, 99), 2);
+});
+
+test('rankLyrics prefers the right song, with lyrics, of similar length (either word order)', () => {
+  const r = (id, trackName, artistName, duration, synced = true) => ({ id, trackName, artistName, duration, syncedLyrics: synced ? '[00:01.00]x' : '', plainLyrics: 'x' });
+  const results = [
+    r(1, 'Hello (Live)', 'Adele', 400),
+    r(2, 'Goodbye', 'Adele', 240),
+    r(3, 'Hello', 'Adele', 295),
+    { id: 4, trackName: 'Hello', artistName: 'Adele', duration: 295, instrumental: true },
+  ];
+  assert.deepEqual(C.rankLyrics(results, { artist: 'Adele', track: 'Hello' }, 296).map((x) => x.id), [3, 1, 2]);
+  assert.equal(C.rankLyrics(results, { artist: 'Hello', track: 'Adele' }, 296)[0].id, 3, 'swapped title order still finds it');
+});

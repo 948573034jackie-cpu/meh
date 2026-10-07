@@ -98,7 +98,27 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .progress > i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: linear-gradient(90deg, var(--a), var(--gold)); transition: width .25s; }
 .tstat { font-variant-numeric: tabular-nums; color: var(--text); min-width: 140px; }
 .tstat b { color: var(--gold); }
-.wave-wrap { position: relative; flex: none; height: 140px; }
+.stage { position: relative; display: flex; flex: none; height: 140px; }
+.wave-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+.lyrics {
+  flex: 0 0 34%; min-width: 240px; max-width: 480px; display: flex; flex-direction: column;
+  border-left: 1px solid var(--line); background: #0d1119;
+  min-height: 0; overflow: hidden; /* a long song must scroll inside, never grow the panel */
+}
+.lyr-head { display: flex; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.lyr-head input {
+  flex: 1 1 auto; min-width: 0; height: 28px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg3); color: var(--text); padding: 0 8px; font: inherit; outline: none;
+}
+.lyr-head input:focus { border-color: var(--accent); }
+.lyr-meta { padding: 3px 8px; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 18px; }
+.lyr-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 60px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
+.lyr-body p { margin: 0; padding: 3px 6px; border-radius: 6px; color: #b4bccc; font-size: 15px; line-height: 1.35; transition: color .15s, background .15s; }
+.lyr-body.synced p { cursor: pointer; }
+.lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
+.lyr-body p.past { color: #6f788b; }
+.lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
+.lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .overlay {
   position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
@@ -127,7 +147,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 .chip.add button { color: var(--accent); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .count b { color: var(--text); }
-.collapsed .wave-wrap, .collapsed .sub, .collapsed .status { display: none; }
+.collapsed .stage, .collapsed .sub, .collapsed .status { display: none; }
 .help {
   position: absolute; right: 10px; bottom: 36px; z-index: 5; width: min(520px, calc(100% - 20px));
   max-height: calc(100% - 50px); overflow: auto; padding: 14px 16px; border-radius: 12px;
@@ -143,7 +163,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 .help .close { position: absolute; right: 8px; top: 8px; }
 @media (max-width: 1400px) {
   .brand-name, .hide-narrow { display: none; }
-  .row { gap: 6px 7px; }
+  .row { gap: 6px 5px; }
+  .lyrics-btn .txt { display: none; }
+  .lyrics-btn { width: 28px; padding: 0; }
+  button.speed { min-width: 46px; }
 }
 @media (max-width: 900px) {
   .chips { max-width: 40%; }
@@ -159,6 +182,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .chip { height: 30px; border-radius: 15px; }
   .chip button { height: 28px; font-size: 13px; }
   .resize { top: -12px; height: 24px; }
+  .lyr-head input { height: 38px; font-size: 16px; }
+  .lyrics-btn { width: 38px; }
+  .lyr-body p { font-size: 17px; padding: 4px 6px; }
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
 }
@@ -182,5 +208,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .chips { max-width: none; flex: 1 1 auto; }
   .tstat { min-width: 0; flex-basis: 100%; }
   .progress { flex: 1 1 auto; width: auto; }
+  .stage { flex-direction: column-reverse; }
+  .lyrics { flex: 0 0 170px; min-width: 0; max-width: none; border-left: 0; border-bottom: 1px solid var(--line); }
+  .wave-wrap { min-height: 80px; }
+  .lyrics-btn { width: 36px; min-width: 36px; }
 }
 `;

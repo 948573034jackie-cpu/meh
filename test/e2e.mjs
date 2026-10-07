@@ -12,6 +12,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
+import { installFakeLyrics } from './fake-lyrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FX = path.join(ROOT, 'test', 'fixtures');
@@ -86,6 +87,7 @@ await ctx.route('https://www.youtube.com/**', (route) => {
   return route.fulfill({ status: 404, body: 'not found' });
 });
 
+const lyricsRequests = await installFakeLyrics(ctx);
 let page = ctx.pages()[0] || (await ctx.newPage());
 const consoleErrors = [];
 page.on('console', (m) => {
@@ -285,11 +287,21 @@ await step('speed survives YouTube resetting it, but follows YouTube menu choice
   await shadowClick('button.speed', '100%');
 });
 
-await step('speed trainer offers 15, 30 or 50 loops', async () => {
-  await shadowClick('button', 'Auto speed-up: start slow and reach full speed over N loops');
-  const values = await page.evaluate(() => [...[...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')]
-    .find((e) => e.title === 'How many loops to reach the goal').options].map((o) => o.value));
-  assert(JSON.stringify(values) === '["15","30","50"]', `options ${values}`);
+await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops it at normal speed', async () => {
+  await shadowClick('button', 'Trainer');
+  await sleep(200);
+  let h = await host();
+  assert(h.trainer.startsWith('1/50'), `running from loop 1 of 50 (got "${h.trainer}")`);
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, `starts at 30% (got ${(await vstate()).rate})`);
+  const opts = await page.evaluate(() => Object.fromEntries([...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')]
+    .filter((e) => e.title === 'Starting speed' || e.title === 'How many loops to reach 100%')
+    .map((e) => [e.title, [...e.options].map((o) => o.value)])));
+  assert(JSON.stringify(opts['Starting speed']) === '["30","50","75"]', `start choices ${opts['Starting speed']}`);
+  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["15","30","50"]', `loop choices ${opts['How many loops to reach 100%']}`);
+  await shadowClick('button', 'Trainer');
+  h = await host();
+  assert(h.trainer === '', 'stopped');
+  assert(Math.abs((await vstate()).rate - 1) < 0.001, 'back to normal speed');
 });
 
 await step('speed trainer: 50% to 100% over 15 loops', async () => {
@@ -299,17 +311,16 @@ await step('speed trainer: 50% to 100% over 15 loops', async () => {
   await clickWaveAt(4);
   const h0 = await host();
   assert(Math.abs(Number(h0.a) - 3) < 0.2 && Math.abs(Number(h0.b) - 4) < 0.2, `loop 3-4 (got ${h0.a}-${h0.b})`);
-  await shadowSelect('Starting speed', 50);
-  await shadowSelect('Goal speed', 100);
-  await shadowSelect('How many loops to reach the goal', 15);
-  await shadowClick('button', 'Start the speed trainer');
+  await shadowClick('button', 'Trainer');
+  await shadowSelect('Starting speed', 50); // changing a choice restarts the training with it
+  await shadowSelect('How many loops to reach 100%', 15);
   const seen = [];
   await waitFor(async () => {
     const r = (await vstate()).rate;
     if (!seen.length || seen[seen.length - 1] !== r) seen.push(r);
     const h = await host();
     return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 16;
-  }, 60000, 'trainer reaches goal');
+  }, 60000, 'trainer reaches 100%');
   await page.screenshot({ path: path.join(SHOTS, '4-trainer.png') });
   const want = [...new Set(Array.from({ length: 15 }, (_, i) => Core.trainerRate(0.5, 1, 15, i + 1)))];
   assert(JSON.stringify(seen.slice(0, want.length)) === JSON.stringify(want), `rates ${JSON.stringify(seen)} want ${JSON.stringify(want)}`);
@@ -317,10 +328,13 @@ await step('speed trainer: 50% to 100% over 15 loops', async () => {
   assert(h.loop === 'true', 'loop still set');
 });
 
-await step('speed trainer: after the goal, plays N times at full speed and then stops', async () => {
-  if ((await host()).trainer) await shadowClick('button', 'Stop the speed trainer');
-  await shadowSelect('How many loops to reach the goal', 15);
-  await shadowClick('button', 'Start the speed trainer');
+await step('speed trainer: after 100%, plays 10 times at full speed and then stops', async () => {
+  if ((await host()).trainer) await shadowClick('button', 'Trainer'); // stop
+  await shadowClick('button', 'Trainer'); // start again: always 30% over 50 loops...
+  let h0 = await host();
+  assert(h0.trainer.startsWith('1/50') && Math.abs((await vstate()).rate - 0.3) < 0.001, 'every start is 30% over 50 loops');
+  await shadowSelect('Starting speed', 75); // ...shorter for the test: 75% over 15 loops
+  await shadowSelect('How many loops to reach 100%', 15);
   const start = Number((await host()).reps);
   await waitFor(async () => (await host()).trainer === '', 90000, 'trainer finishes by itself');
   const h = await host();
@@ -493,12 +507,76 @@ await step('a loop at the very end never lets the video end', async () => {
   assert(Number((await host()).reps) >= 1, 'wrapped');
 });
 
+await step('play / pause button', async () => {
+  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await sleep(200);
+  await shadowClick('button.play-btn');
+  assert((await vstate()).paused, 'paused');
+  const title = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.play-btn').title);
+  assert(title === 'Play', `button now offers Play (${title})`);
+  await shadowClick('button.play-btn');
+  await waitFor(async () => !(await vstate()).paused, 2000, 'playing again');
+});
+
+const lyr = () => page.evaluate(() => {
+  const root = document.getElementById('ytl-wave-looper').shadowRoot;
+  const pane = root.querySelector('.lyrics');
+  const lines = [...root.querySelectorAll('.lyr-body p')];
+  return {
+    visible: !pane.hidden && pane.getBoundingClientRect().width > 100,
+    meta: root.querySelector('.lyr-meta').textContent,
+    count: lines.length,
+    now: lines.findIndex((p) => p.classList.contains('now')),
+    msg: (root.querySelector('.lyr-msg') || {}).textContent || '',
+  };
+});
+
+await step('lyrics: found automatically from the YouTube title and shown next to the wave', async () => {
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 6.5; v.play(); });
+  const before = lyricsRequests.length;
+  await shadowClick('button', 'Lyrics');
+  const L = await waitFor(async () => { const x = await lyr(); return x.count > 0 ? x : null; }, 5000, 'lyrics shown');
+  assert(L.visible, 'lyrics pane visible beside the wave');
+  const first = lyricsRequests[before];
+  assert(first && first.track_name === 'Song VIDAAAA1' && first.artist_name === 'Test Artist', `searched by song and artist: ${JSON.stringify(first)}`);
+  assert(L.meta.startsWith('Song VIDAAAA1 — Test Artist') && L.meta.includes('follows the song'), `meta "${L.meta}"`);
+  const wave = await waveBox();
+  assert(wave.w > 600, `wave still big (${wave.w}px)`);
+  // The highlighted line follows the song: lines are 2 s apart.
+  const t = (await vstate()).t;
+  const x = await waitFor(async () => { const y = await lyr(); return y.now >= 0 ? y : null; }, 2000, 'a line is highlighted');
+  const want = Math.floor((t + 0.15) / 2);
+  assert(Math.abs(x.now - want) <= 1, `highlighted line ${x.now}, want ~${want} (t=${t.toFixed(1)})`);
+  await page.screenshot({ path: path.join(SHOTS, '8-lyrics.png') });
+});
+
+await step('lyrics: tap a line to jump there; next match; search by hand', async () => {
+  await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[10].click());
+  const v = await vstate();
+  assert(Math.abs(v.t - 20) < 0.5, `jumped to line 11 at 20 s (t=${v.t.toFixed(2)})`);
+  await shadowClick('button', 'Wrong song? Show the next match');
+  let L = await lyr();
+  assert(L.meta.includes('(Live)') && L.meta.includes('match 2 of'), `next match "${L.meta}"`);
+  assert(L.meta.includes('timing may not match'), 'a much longer version is not auto-followed');
+  await page.evaluate(() => {
+    const input = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-head input');
+    input.focus();
+  });
+  await page.keyboard.type('Another Tune');
+  await page.keyboard.press('Enter');
+  L = await waitFor(async () => { const y = await lyr(); return y.meta.startsWith('Another Tune') ? y : null; }, 4000, 'manual search result');
+  assert(lyricsRequests.some((p) => p.q === 'Another Tune'), 'searched what I typed');
+  assert(!(await vstate()).paused, 'typing did not trigger YouTube shortcuts (k would pause)');
+});
+
 await step('switching videos resets, coming back restores loop and cached wave', async () => {
   const before = await host();
   await page.evaluate(() => window.__navigate('VIDBBBB2'));
   await waitFor(async () => (await host()).vid === 'VIDBBBB2', 5000, 'new video id');
   let h = await host();
   assert(h.a === '' && h.b === '' && h.rate === '1', `reset state ${JSON.stringify(h)}`);
+  await waitFor(async () => (await lyr()).meta.startsWith('Song VIDBBBB2'), 5000, 'lyrics for the new song');
   // let the new video scan so the first video's scan state is not involved
   await waitFor(async () => (await host()).scanning === 'false', 40000, 'scan of video 2 done');
   await page.evaluate(() => window.__navigate('VIDAAAA1'));

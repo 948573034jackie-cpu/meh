@@ -234,10 +234,114 @@
     return [Math.min(255, r), Math.min(255, g), Math.min(255, b)];
   }
 
+  // ---------------------------------------------------------------------------
+  // Lyrics helpers
+  // ---------------------------------------------------------------------------
+  const TITLE_NOISE = /\b(official(\s+(music|lyrics?|audio|video|visuali[sz]er|mv))*|music\s+video|lyrics?\s+video|lyrics?|audio|video|hd|hq|4k|mv|m\/v|visuali[sz]er|a\s*cappella|acc?apella|vocals?\s+only|isolated\s+vocals?|instrumental|karaoke|backing\s+track|remaster(ed)?|full\s+song|with\s+lyrics)\b/gi;
+
+  function cleanPart(x) {
+    return String(x || '')
+      .replace(TITLE_NOISE, ' ')
+      .replace(/["“”]/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s\-–—:|~·.,]+|[\s\-–—:|~·.,]+$/g, '')
+      .trim();
+  }
+
+  /**
+   * Best guess of { artist, track } from a YouTube title and channel name:
+   * "Adele - Hello (Official Music Video)" -> { artist: 'Adele', track: 'Hello' }.
+   */
+  function parseSongTitle(title, author) {
+    let t = String(title || '');
+    t = t.replace(/[(\[{【「][^)\]}】」]*[)\]}】」]/g, ' '); // (Official Video), [Lyrics], 【MV】...
+    t = t.split(/\s[|｜]\s|\s\/\/\s/)[0];
+    t = t.replace(/\s(ft\.?|feat\.?|featuring)\s[^-–—]*/i, ' ');
+    let artist = '';
+    let track = '';
+    const m = t.match(/^(.+?)\s+[-–—]\s+(.+)$/) || t.match(/^(.+?)\s*[-–—:]\s+(.+)$/);
+    if (m) {
+      artist = cleanPart(m[1]);
+      track = cleanPart(m[2]);
+    } else {
+      track = cleanPart(t);
+    }
+    if (!artist && author) {
+      artist = cleanPart(String(author).replace(/\s*-\s*topic$/i, '').replace(/vevo$/i, '').replace(/\b(official|music|records|channel)\b/gi, ' '));
+    }
+    if (!track) track = cleanPart(title);
+    return { artist, track };
+  }
+
+  /** "[01:02.50] words" lines -> [{ t: 62.5, text: 'words' }], sorted by time. */
+  function parseLrc(lrc) {
+    const out = [];
+    for (const raw of String(lrc || '').split(/\r?\n/)) {
+      const stamps = [];
+      let rest = raw;
+      let m;
+      while ((m = rest.match(/^\s*\[(\d{1,3}):(\d{1,2}(?:[.:]\d{1,3})?)\]/))) {
+        stamps.push(Number(m[1]) * 60 + Number(m[2].replace(':', '.')));
+        rest = rest.slice(m[0].length);
+      }
+      if (!stamps.length) continue;
+      const text = rest.trim();
+      for (const t of stamps) out.push({ t, text });
+    }
+    return out.sort((x, y) => x.t - y.t);
+  }
+
+  /** Index of the line playing at time t (-1 before the first line). */
+  function lineAt(lines, t) {
+    let lo = 0;
+    let hi = lines.length - 1;
+    let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lines[mid].t <= t) {
+        ans = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  function words(x) {
+    return String(x || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  }
+
+  /** 0..1: how much of `want` appears in `got` (word overlap). */
+  function similarity(want, got) {
+    const a = words(want);
+    if (!a.length) return 0;
+    const b = new Set(words(got));
+    return a.filter((w) => b.has(w)).length / a.length;
+  }
+
+  /** Orders LRCLIB search results: best title/artist match, has lyrics, close length. */
+  function rankLyrics(results, guess, duration) {
+    return (results || [])
+      .filter((r) => r && !r.instrumental && (r.syncedLyrics || r.plainLyrics))
+      .map((r) => {
+        // Titles are written "Artist - Song" or "Song - Artist": try both ways round.
+        let score = Math.max(
+          similarity(guess.track, r.trackName) * 3 + similarity(guess.artist, r.artistName) * 2,
+          similarity(guess.artist, r.trackName) * 3 + similarity(guess.track, r.artistName) * 2
+        );
+        if (r.syncedLyrics) score += 0.5;
+        if (duration > 0 && r.duration > 0) score -= Math.min(1, Math.abs(r.duration - duration) / 30);
+        return { r, score };
+      })
+      .sort((x, y) => y.score - x.score)
+      .map((x) => x.r);
+  }
+
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
+    parseSongTitle, parseLrc, lineAt, similarity, rankLyrics,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

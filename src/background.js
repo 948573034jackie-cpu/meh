@@ -28,6 +28,16 @@ async function toggle(tab) {
 
 chrome.action.onClicked.addListener(toggle);
 
+// Lyrics lookups for the content script (only the LRCLIB lyrics API).
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (!msg || msg.type !== 'ytl-fetch-json' || !/^https:\/\/lrclib\.net\/api\//.test(msg.url || '')) return false;
+  fetch(msg.url, { credentials: 'omit' })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    .then((data) => sendResponse({ ok: true, data }))
+    .catch(() => sendResponse({ ok: false }));
+  return true;
+});
+
 chrome.commands.onCommand.addListener(async (command, tab) => {
   if (command !== 'toggle-panel') return;
   if (!tab) [tab] = await chrome.tabs.query({ active: true, currentWindow: true });

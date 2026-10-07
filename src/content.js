@@ -26,9 +26,12 @@
   const TOUCH = !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) || IS_MOBILE_SITE;
   const BIN_RATE = 50;
   const SPEED_PRESETS = [0.5, 0.75, 1];
-  const TRAINER_STARTS = [30, 40, 50, 60, 70, 80, 90];
-  const TRAINER_GOALS = [70, 80, 90, 100, 110, 120];
+  const TRAINER_STARTS = [30, 50, 75];
+  const TRAINER_GOAL = 100;
   const TRAINER_REPS = [15, 30, 50];
+  const TRAINER_DEFAULT_START = 30;
+  const TRAINER_DEFAULT_REPS = 50;
+  const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
   const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -80,9 +83,10 @@
     autoScan: true,
     keepPitch: true,
     gap: 0,
-    trainerStart: 50,
-    trainerGoal: 100,
-    trainerReps: 15,
+    trainerStart: 30,
+    trainerReps: TRAINER_DEFAULT_REPS,
+    trainerV: 3,
+    lyrics: false,
     seenHelp: false,
     zoomFocus: false, // "Zoom in": the wave follows the playhead in a short window
     focusLen: 30,
@@ -122,6 +126,7 @@
     wrapping: false,
     lastWrapAt: 0,
     adWas: false,
+    meta: { vid: null, title: '', author: '' },
     hintOverride: null,
     hintUntil: 0,
     dirty: true,
@@ -207,6 +212,7 @@
       renderUI();
     }],
     ['playing', () => applyRate()],
+    ['pause', () => renderUI()],
     ['seeked', () => (S.dirty = true)],
   ];
 
@@ -218,6 +224,7 @@
     const m = e.data;
     if (m.type === 'video') {
       S.mainVid = m.vid || null;
+      S.meta = { vid: m.vid || null, title: m.title || '', author: m.author || '' };
       syncVideo();
     } else if (m.type === 'peaks') {
       onPeaks(m);
@@ -258,6 +265,7 @@
     S.adWas = ad;
     updateVisibility();
     maybeAutoScan();
+    maybeLoadLyrics();
   }
 
   function switchVideo(vid) {
@@ -290,6 +298,7 @@
       for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high);
     }
     S.orphan = null;
+    resetLyrics();
     S.dirty = true;
     renderUI();
     if (vid) loadVideoData(vid);
@@ -555,6 +564,25 @@
     }
   }
 
+  function togglePlay() {
+    const v = S.video;
+    if (!v || S.scan) return;
+    if (v.paused) {
+      if (S.wrapping) {
+        clearTimeout(S.gapTimer);
+        S.wrapping = false;
+      }
+      play();
+    } else {
+      try {
+        v.pause();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    renderUI();
+  }
+
   function onPlay() {
     if (S.wrapping) {
       // The user pressed play during the breath pause: just go.
@@ -562,6 +590,7 @@
       S.wrapping = false;
     }
     applyRate();
+    renderUI();
   }
 
   function pushHistory() {
@@ -636,6 +665,12 @@
 
   function markA() {
     const t = nowTime();
+    if (TOUCH) {
+      // Touch: A sets the start and makes a short loop right away; B sets the end.
+      if (hasLoop() && t < S.b - C.MIN_LOOP) setLoop(t, S.b, { noSeek: true });
+      else setLoop(t, t + TOUCH_LOOP_LEN, { noSeek: true, fresh: true });
+      return;
+    }
     if (S.b != null && t < S.b - C.MIN_LOOP) setLoop(t, S.b, { noSeek: true });
     else {
       S.pendingA = t;
@@ -646,6 +681,11 @@
 
   function markB() {
     const t = nowTime();
+    if (TOUCH) {
+      if (hasLoop() && t > S.a + C.MIN_LOOP) setLoop(S.a, t);
+      else setLoop(Math.max(0, t - TOUCH_LOOP_LEN), t, { fresh: true });
+      return;
+    }
     const a = S.pendingA != null ? S.pendingA : S.a;
     if (a == null) return flash('Set the start first: press [ or click the A button.');
     setLoop(a, t, { fresh: S.pendingA != null });
@@ -663,8 +703,17 @@
   // ---------------------------------------------------------------------------
   // Auto speed-up trainer
   // ---------------------------------------------------------------------------
-  function startTrainer() {
+  // fromChoice: restarted because a choice changed. Otherwise (the Trainer
+  // button) every start begins at 30% over 50 loops.
+  function startTrainer(fromChoice) {
     if (!S.video || !dur()) return flash('Start a video first.');
+    if (!fromChoice) {
+      settings.trainerStart = TRAINER_DEFAULT_START;
+      settings.trainerReps = TRAINER_DEFAULT_REPS;
+      ui.tStart.value = String(settings.trainerStart);
+      ui.tReps.value = String(settings.trainerReps);
+      saveSettings();
+    }
     if (!hasLoop()) {
       // No loop yet: practise the whole song.
       S.a = 0;
@@ -673,12 +722,14 @@
     }
     const tr = S.trainer;
     tr.start = settings.trainerStart / 100;
-    tr.goal = settings.trainerGoal / 100;
+    tr.goal = TRAINER_GOAL / 100;
     tr.reps = settings.trainerReps;
     tr.after = TRAINER_AFTER;
     tr.rep = 1;
     tr.done = false;
     tr.running = true;
+    ui.trainerRow.hidden = false;
+    applyLayout();
     S.loopOn = true;
     S.reps = 0;
     S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, 1);
@@ -703,10 +754,267 @@
     renderUI();
   }
 
+  // The Trainer button: one tap starts it, the next tap stops it and puts the
+  // song back to normal speed.
+  function toggleTrainer() {
+    if (S.trainer.running) {
+      stopTrainer(true);
+      S.rate = 1;
+      S.rateOwned = false;
+      applyRate();
+      ui.trainerRow.hidden = true;
+      applyLayout();
+      saveVideoStateSoon();
+      flash('Trainer off. Back to normal speed.');
+      renderUI();
+    } else {
+      startTrainer(false);
+    }
+  }
+
   function stopTrainer(silent) {
     if (!S.trainer.running) return;
     S.trainer.running = false;
     if (!silent) renderUI();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lyrics: looked up by song name on LRCLIB (a free, open lyrics database) and
+  // shown next to the wave. Time-stamped lyrics follow the song, and tapping a
+  // line jumps there.
+  // ---------------------------------------------------------------------------
+  const LYRICS_API = 'https://lrclib.net/api/search';
+  const LYRICS_PHONE_H = 170;
+  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0 };
+
+  function songMeta() {
+    const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
+    const title = (fromTap && fromTap.title) || document.title.replace(/^\(\d+\)\s*/, '').replace(/\s*-\s*YouTube( Music)?$/, '');
+    let author = (fromTap && fromTap.author) || '';
+    if (!author) {
+      const el = document.querySelector('ytd-watch-metadata ytd-channel-name a, #owner ytd-channel-name a, .slim-owner-channel-name');
+      author = el ? el.textContent.trim() : '';
+    }
+    return { title: title.trim(), author };
+  }
+
+  function buildLyrics() {
+    ui.lyrInput = h('input', { type: 'search', placeholder: 'Song name – artist', 'aria-label': 'Search lyrics', enterkeyhint: 'search' });
+    ui.lyrInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const q = ui.lyrInput.value.trim();
+        if (q) findLyrics(q);
+        ui.lyrInput.blur();
+      }
+    });
+    ui.lyrNext = btn(null, 'Wrong song? Show the next match', nextLyrics, 'icon', 'next');
+    const findBtn = btn(null, 'Search lyrics', () => {
+      const q = ui.lyrInput.value.trim();
+      findLyrics(q || null);
+    }, 'icon', 'search');
+    ui.lyrMeta = h('div', { class: 'lyr-meta' });
+    ui.lyrBody = h('div', { class: 'lyr-body' });
+    const touched = () => (L.userScrollAt = now());
+    ui.lyrBody.addEventListener('wheel', touched, { passive: true });
+    ui.lyrBody.addEventListener('touchmove', touched, { passive: true });
+    return h('div', { class: 'lyrics', hidden: true },
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext),
+      ui.lyrMeta, ui.lyrBody);
+  }
+
+  function toggleLyrics() {
+    settings.lyrics = !settings.lyrics;
+    saveSettings();
+    if (settings.collapsed && settings.lyrics) toggleCollapse();
+    applyLayout();
+    renderUI();
+    maybeLoadLyrics();
+  }
+
+  function resetLyrics() {
+    L.token++;
+    L.vid = null;
+    L.results = [];
+    L.idx = 0;
+    L.lines = null;
+    L.synced = false;
+    L.nowIdx = -2;
+    if (ui.lyrBody) {
+      ui.lyrBody.replaceChildren();
+      ui.lyrMeta.textContent = '';
+      ui.lyrInput.value = '';
+    }
+  }
+
+  // Load lyrics for the current video once the pane is open and we know the title.
+  function maybeLoadLyrics() {
+    if (!settings.lyrics || !S.vid || L.vid === S.vid || !hostVisible()) return;
+    const meta = songMeta();
+    if (!meta.title) return;
+    L.vid = S.vid;
+    const vid = S.vid;
+    const token = ++L.token;
+    storage.get('ytl:lyr:' + vid).then((r) => {
+      if (token !== L.token || S.vid !== vid) return;
+      const saved = r['ytl:lyr:' + vid];
+      if (saved && saved.r) {
+        L.results = [saved.r];
+        L.idx = 0;
+        ui.lyrInput.value = saved.q || '';
+        showLyrics(0, false);
+      } else {
+        findLyrics(null);
+      }
+    });
+  }
+
+  function lyricsMessage(text) {
+    ui.lyrMeta.textContent = '';
+    ui.lyrBody.classList.remove('synced');
+    ui.lyrBody.replaceChildren(h('div', { class: 'lyr-msg', text }));
+  }
+
+  async function lyricsFetch(params) {
+    const url = LYRICS_API + '?' + new URLSearchParams(params).toString();
+    try {
+      const r = await fetch(url, { credentials: 'omit' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) {
+      // Chrome extension: the background worker can fetch without page limits.
+      if (!alive()) throw e;
+      return new Promise((resolve, reject) => {
+        try {
+          chrome.runtime.sendMessage({ type: 'ytl-fetch-json', url }, (resp) => {
+            if (chrome.runtime.lastError || !resp || !resp.ok) reject(new Error('fetch failed'));
+            else resolve(resp.data);
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    }
+  }
+
+  async function findLyrics(manual) {
+    const vid = S.vid;
+    if (!vid) return;
+    L.vid = vid;
+    const token = ++L.token;
+    lyricsMessage('Looking for the lyrics…');
+    const meta = songMeta();
+    const guess = manual ? C.parseSongTitle(manual, '') : C.parseSongTitle(meta.title, meta.author);
+    const tries = [];
+    const add = (p) => {
+      const key = JSON.stringify(p);
+      if (Object.values(p).every(Boolean) && !tries.some((t) => JSON.stringify(t) === key)) tries.push(p);
+    };
+    if (manual) add({ q: manual });
+    if (guess.artist && guess.track) {
+      add({ track_name: guess.track, artist_name: guess.artist });
+      add({ track_name: guess.artist, artist_name: guess.track });
+    }
+    add({ q: [guess.artist, guess.track].filter(Boolean).join(' ') });
+    if (!manual) add({ q: meta.title.replace(/[(\[【][^)\]】]*[)\]】]/g, ' ').replace(/\s+/g, ' ').trim() });
+    const found = new Map();
+    let failures = 0;
+    let ranked = [];
+    for (const p of tries) {
+      try {
+        const res = await lyricsFetch(p);
+        if (token !== L.token) return;
+        for (const r of Array.isArray(res) ? res : []) if (r && r.id != null && !found.has(r.id)) found.set(r.id, r);
+      } catch (e) {
+        if (token !== L.token) return;
+        failures++;
+      }
+      ranked = C.rankLyrics([...found.values()], guess, dur());
+      const top = ranked[0];
+      if (top && Math.max(C.similarity(guess.track, top.trackName), C.similarity(guess.artist, top.trackName)) >= 0.99) break;
+    }
+    if (token !== L.token) return;
+    L.results = ranked;
+    L.idx = 0;
+    if (!ranked.length) {
+      lyricsMessage(failures === tries.length
+        ? 'Could not reach the lyrics service. Check your internet and press the search button.'
+        : 'No lyrics found. Type the song name and artist above and press Enter.');
+      return;
+    }
+    if (manual) ui.lyrInput.value = manual;
+    showLyrics(0, true);
+  }
+
+  function nextLyrics() {
+    if (L.results.length < 2) {
+      if (!L.results.length) return findLyrics(ui.lyrInput.value.trim() || null);
+      return flash('No other matches. Type the song name and artist in the box above the lyrics.');
+    }
+    showLyrics((L.idx + 1) % L.results.length, true);
+  }
+
+  function showLyrics(i, save) {
+    const r = L.results[i];
+    if (!r) return;
+    L.idx = i;
+    const lines = r.syncedLyrics ? C.parseLrc(r.syncedLyrics) : null;
+    L.lines = lines && lines.length ? lines : null;
+    const d = dur();
+    L.synced = !!L.lines && (!d || !r.duration || Math.abs(r.duration - d) <= 8);
+    L.nowIdx = -2;
+    const more = L.results.length > 1 ? ` · match ${i + 1} of ${L.results.length}` : '';
+    const how = L.synced ? ' · follows the song' : L.lines ? ' · timing may not match this version' : '';
+    ui.lyrMeta.textContent = `${r.trackName || '?'} — ${r.artistName || '?'}${how}${more}`;
+    ui.lyrMeta.title = ui.lyrMeta.textContent;
+    ui.lyrBody.classList.toggle('synced', L.synced);
+    const kids = [];
+    if (L.lines) {
+      L.lines.forEach((ln, k) => {
+        const p = h('p', { text: ln.text || '♪' });
+        if (L.synced) p.addEventListener('click', () => {
+          seek(ln.t);
+          L.userScrollAt = 0;
+          if (S.loopOn && hasLoop() && (ln.t < S.a || ln.t >= effEnd())) {
+            S.loopOn = false;
+            flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
+          }
+          renderUI();
+        });
+        p.dataset.i = String(k);
+        kids.push(p);
+      });
+    } else {
+      for (const line of String(r.plainLyrics || '').split(/\r?\n/)) kids.push(h('p', { text: line || ' ' }));
+    }
+    ui.lyrBody.replaceChildren(...kids);
+    ui.lyrBody.scrollTop = 0;
+    if (save && S.vid) {
+      const slim = { id: r.id, trackName: r.trackName, artistName: r.artistName, duration: r.duration,
+        syncedLyrics: r.syncedLyrics || '', plainLyrics: r.plainLyrics || '' };
+      storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim() } });
+    }
+  }
+
+  function lyricsTick() {
+    if (!settings.lyrics || !L.synced || !L.lines || !S.video || ui.lyrics.hidden) return;
+    const i = C.lineAt(L.lines, S.video.currentTime + 0.15);
+    if (i === L.nowIdx) return;
+    const kids = ui.lyrBody.children;
+    for (let k = Math.max(0, Math.min(L.nowIdx, i) - 1); k < kids.length && k <= Math.max(L.nowIdx, i) + 1; k++) {
+      kids[k].classList.toggle('now', k === i);
+      kids[k].classList.toggle('past', k < i);
+    }
+    if (Math.abs(i - L.nowIdx) > 2) for (let k = 0; k < kids.length; k++) {
+      kids[k].classList.toggle('now', k === i);
+      kids[k].classList.toggle('past', k < i);
+    }
+    L.nowIdx = i;
+    const el = kids[Math.max(0, i)];
+    if (el && now() - L.userScrollAt > 3000) {
+      const top = el.offsetTop - ui.lyrBody.clientHeight * 0.35;
+      ui.lyrBody.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -938,6 +1246,10 @@
     down: 'M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z',
     up: 'M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z',
     play: 'M8 5v14l11-7z',
+    pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
+    note: 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z',
+    search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
+    next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
     stop: 'M6 6h12v12H6z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
     minus: 'M19 13H5v-2h14z',
@@ -981,7 +1293,8 @@
   }
 
   function btn(label, title, onclick, cls = '', iconName = null) {
-    return h('button', { class: cls, title, 'aria-label': title, onclick }, iconName ? icon(iconName) : null, label || null);
+    return h('button', { class: cls, title, 'aria-label': title, onclick }, iconName ? icon(iconName) : null,
+      label ? h('span', { class: 'txt', text: label }) : null);
   }
 
   function select(values, fmt, value, onchange, title) {
@@ -1011,7 +1324,8 @@
     hostEl.style.cssText =
       'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;display:none;';
     shadow = hostEl.attachShadow({ mode: 'open' });
-    for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'contextmenu', 'wheel', 'touchstart']) {
+    // Typing in the lyrics search box must not trigger YouTube's shortcuts (k, f, m, j, l...).
+    for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'contextmenu', 'wheel', 'touchstart', 'keydown', 'keyup', 'keypress']) {
       hostEl.addEventListener(ev, (e) => e.stopPropagation());
     }
     const style = document.createElement('style');
@@ -1031,6 +1345,7 @@
       btn(null, 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
       ui.bTime,
       btn(null, 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
+    ui.playBtn = btn(null, 'Play', togglePlay, 'icon play-btn', 'play');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
     ui.undoBtn = btn(null, 'Undo the last loop change', undo, 'icon hide-phone', 'undo');
@@ -1041,21 +1356,22 @@
     ui.rate.addEventListener('click', () => setRate(1));
     const slower = btn(null, 'Slower by 5%', () => setRate(Math.round((S.rate - 0.05) * 100) / 100), 'icon hide-phone', 'minus');
     const faster = btn(null, 'Faster by 5%', () => setRate(Math.round((S.rate + 0.05) * 100) / 100), 'icon hide-phone', 'plus');
-    ui.trainerBtn = btn('Trainer', 'Auto speed-up: start slow and reach full speed over N loops', () => toggleSub('trainer'), '', 'bolt');
+    ui.trainerBtn = btn('Trainer', 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop', toggleTrainer, '', 'bolt');
 
     ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon hide-phone', 'zoom');
     ui.zoomBtn = btn('Zoom in', ZOOM_IN_TITLE, toggleZoom, 'zoom-toggle', 'zoom');
     ui.biggerBtn = btn(null, 'Make the wave bigger (or drag the top edge of the panel)', () => resizeWave(Math.round(window.innerHeight * 0.1)), 'icon', 'taller');
     ui.smallerBtn = btn(null, 'Make the wave smaller', () => resizeWave(-Math.round(window.innerHeight * 0.1)), 'icon', 'shorter');
     ui.gearBtn = btn(null, 'Settings', () => toggleSub('settings'), 'icon', 'gear');
-    ui.helpBtn = btn(null, 'How to use', () => toggleHelp(), 'icon', 'help');
+    ui.helpBtn = btn(null, 'How to use', () => toggleHelp(), 'icon hide-phone', 'help');
+    ui.lyricsBtn = btn('Lyrics', 'Show the lyrics next to the wave (found automatically from the song name)', toggleLyrics, 'lyrics-btn', 'note');
     ui.collapseBtn = btn(null, 'Minimise', toggleCollapse, 'icon hide-phone', 'down');
     const closeBtn = btn(null, 'Close the looper (turns loop and speed off)', closePanel, 'icon', 'close');
 
     const bar = h('div', { class: 'row bar' },
       h('div', { class: 'brand', title: 'DJ Wave Looper' }, icon('wave'), h('span', { class: 'brand-name', text: 'Wave Looper' })),
       h('div', { class: 'group' }, ui.aMark, ui.bMark),
-      h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn),
+      h('div', { class: 'group' }, ui.playBtn, ui.loopBtn, ui.undoBtn, ui.clearBtn),
       h('div', { class: 'sep' }),
       h('div', { class: 'group' }, h('span', { class: 'label hide-narrow', text: 'Speed' }), ...ui.speedBtns, slower, ui.rate, faster),
       h('div', { class: 'sep' }),
@@ -1063,22 +1379,26 @@
       h('div', { class: 'spacer' }),
       h('div', { class: 'group size-btns' }, ui.smallerBtn, ui.biggerBtn),
       ui.zoomBtn,
+      ui.lyricsBtn,
       h('div', { class: 'group' }, ui.zoomLoopBtn, ui.gearBtn, ui.helpBtn, ui.collapseBtn, closeBtn));
 
     // --- trainer row ---
     const pct = (v) => `${v}%`;
-    ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, (v) => { settings.trainerStart = v; saveSettings(); renderUI(); }, 'Starting speed');
-    ui.tGoal = select(TRAINER_GOALS, pct, settings.trainerGoal, (v) => { settings.trainerGoal = v; saveSettings(); renderUI(); }, 'Goal speed');
-    ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, (v) => { settings.trainerReps = v; saveSettings(); renderUI(); }, 'How many loops to reach the goal');
-    ui.tGo = btn('Start', 'Start the speed trainer', () => (S.trainer.running ? stopTrainer() : startTrainer()), 'primary', 'play');
+    // Changing a choice while training restarts the training with it.
+    const trainerChoice = (key) => (v) => {
+      settings[key] = v;
+      saveSettings();
+      if (S.trainer.running) startTrainer(true);
+      else renderUI();
+    };
+    ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, trainerChoice('trainerStart'), 'Starting speed');
+    ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
     ui.trainerRow = h('div', { class: 'row sub', hidden: true },
-      h('span', { class: 'label hide-phone', text: 'Auto speed-up' }),
+      h('span', { class: 'label hide-phone', text: 'Speed trainer' }),
       h('span', { class: 'label', text: 'from' }), ui.tStart,
-      h('span', { class: 'label', text: 'to' }), ui.tGoal,
-      h('span', { class: 'label', text: 'over' }), ui.tReps,
-      ui.tGo,
+      h('span', { class: 'label', text: 'to 100% over' }), ui.tReps,
       h('div', { class: 'progress' }, ui.tBar),
       ui.tStat);
 
@@ -1095,7 +1415,8 @@
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
-      ui.rescanBtn);
+      ui.rescanBtn,
+      btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
     // --- waveform ---
     ui.canvas = h('canvas');
@@ -1105,6 +1426,8 @@
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
     ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
+    ui.lyrics = buildLyrics();
+    ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
     // --- status ---
     ui.hint = h('div', { class: 'hint' });
@@ -1114,7 +1437,7 @@
 
     ui.help = buildHelp();
     const resize = h('div', { class: 'resize', title: 'Drag up or down to make the wave bigger or smaller' });
-    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.waveWrap, status, ui.help);
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
     setupResize(resize);
@@ -1125,7 +1448,7 @@
   }
 
   function step(e) {
-    return e && e.shiftKey ? 0.01 : e && e.altKey ? 0.5 : 0.05;
+    return e && e.shiftKey ? 0.01 : e && e.altKey ? 0.5 : TOUCH ? 0.1 : 0.05;
   }
 
   function buildHelp() {
@@ -1134,13 +1457,19 @@
       btn(null, 'Close help', () => toggleHelp(false), 'icon close', 'close'),
       h('h3', { text: 'How to use Wave Looper' }),
       h('ol', {},
-        h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
-        h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
+        ...(TOUCH ? [
+          h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'put your finger on the wave and slide it. The song moves with your finger. Holding your finger still stops the music; lift it to play on.'),
+          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. Drag the green A / red B flags to fine-tune.`),
+          h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
+        ] : [
+          h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
+          h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
+        ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
-        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'pick a start speed (e.g. 50%), a goal (100%), how many loops to get there (15, 30 or 50), and Every loop gets a little faster. At full speed it plays 10 more times, then stops by itself.'),
+        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10–50 loops, then 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
-      h('ul', {},
+      TOUCH ? null : h('ul', {},
         h('li', {}, k('['), ' set start here   ', k(']'), ' set end here   ', k('\\'), ' loop on/off   ', k('Esc'), ' cancel a half-made loop'),
         h('li', {}, k('Alt'), '+', k('L'), ' open or close the looper. Space and the arrow keys still control YouTube.'),
         h('li', {}, 'Your loops and speed are saved for each video. "Pause between loops" in ⚙ gives you time to breathe.')));
@@ -1205,7 +1534,8 @@
   function applyLayout() {
     if (!hostEl) return;
     ui.panel.classList.toggle('collapsed', settings.collapsed);
-    ui.waveWrap.style.height = waveHeight() + 'px';
+    ui.lyrics.hidden = !settings.lyrics;
+    ui.stage.style.height = waveHeight() + (settings.lyrics && window.innerWidth < 600 ? LYRICS_PHONE_H : 0) + 'px';
     hostEl.style.bottom = bottomOffset() + 'px';
     ui.collapseBtn.replaceChildren(icon(settings.collapsed ? 'up' : 'down'));
     ui.collapseBtn.title = settings.collapsed ? 'Expand' : 'Minimise';
@@ -1451,14 +1781,20 @@
     }
     for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
     ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
-    ui.trainerBtn.classList.toggle('on', !ui.trainerRow.hidden || S.trainer.running);
+    const playing = !!S.video && !S.video.paused && !S.scan;
+    ui.playBtn.replaceChildren(icon(playing ? 'pause' : 'play'));
+    ui.playBtn.title = playing ? 'Pause' : 'Play';
+    ui.playBtn.classList.toggle('on', playing);
+    ui.playBtn.disabled = !S.video || !!S.scan;
+    ui.lyricsBtn.classList.toggle('on', settings.lyrics);
+    ui.trainerBtn.classList.toggle('on', S.trainer.running);
+    ui.trainerBtn.title = S.trainer.running
+      ? 'Stop the speed trainer (back to normal speed)'
+      : 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop';
     ui.gearBtn.classList.toggle('on', !ui.settingsRow.hidden);
 
     // Trainer
     const tr = S.trainer;
-    ui.tGo.replaceChildren(icon(tr.running ? 'stop' : 'play'), tr.running ? 'Stop' : 'Start');
-    ui.tGo.title = tr.running ? 'Stop the speed trainer' : 'Start the speed trainer';
-    for (const s of [ui.tStart, ui.tGoal, ui.tReps]) s.disabled = tr.running;
     if (tr.running) {
       const total = tr.after > 0 ? tr.reps + tr.after - 1 : tr.reps;
       ui.tBar.style.width = `${Math.round((Math.min(tr.rep, total) / total) * 100)}%`;
@@ -1469,7 +1805,7 @@
       ui.tStat.replaceChildren(label, h('b', { text: `${Math.round(S.rate * 100)}%` }));
     } else {
       ui.tBar.style.width = '0%';
-      const s = settings.trainerStart, g = settings.trainerGoal, n = settings.trainerReps;
+      const s = settings.trainerStart, g = TRAINER_GOAL, n = settings.trainerReps;
       const stepPct = n > 1 ? (g - s) / (n - 1) : 0;
       const a = TRAINER_AFTER;
       ui.tStat.textContent = `${s}% → ${g}% (+${Math.max(0, stepPct).toFixed(1)}% per loop)` +
@@ -1493,11 +1829,11 @@
       setHint([
         [S.loopOn ? 'Looping ' : 'Loop off: '],
         `${F(S.a)} → ${F(S.b)} (${len.toFixed(2)}s)`,
-        TOUCH ? '. Drag the A/B flags to adjust. Pinch to zoom.' : '. Drag the A/B flags to adjust. Scroll to zoom.',
+        TOUCH ? '. Press A or B again, or drag the flags. Pinch to zoom.' : '. Drag the A/B flags to adjust. Scroll to zoom.',
       ]);
     } else {
       setHint(TOUCH
-        ? [['Tap the wave at the loop START'], ', then tap the END. Tap the time ruler to jump.']
+        ? [['Drag the wave to move the song'], ' (hold = stop). Press ', ['A'], ' to loop from here, ', ['B'], ' to set the end.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -1520,6 +1856,7 @@
     d.scanning = String(!!S.scan);
     d.cov = dur() ? S.peaks.coverage(dur()).toFixed(3) : '0';
     d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
+    d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
   }
 
   let chipsKey = '';
@@ -1666,20 +2003,21 @@
 
   // Keeps the playhead about a quarter of the way in, so you see what's coming.
   function focusFollow(force) {
-    if (!settings.zoomFocus || !S.video || drag) return;
+    if (!settings.zoomFocus || !S.video || (drag && drag.mode !== 'scrub')) return;
     const d = dur();
     if (!d) return;
     const len = Math.min(focusLen(), d);
     if (len >= d) return;
-    if (!force && now() - S.lastViewTouch < 2000) return;
-    const t = S.video.currentTime;
-    if (!force && S.view) {
+    if (!force && now() - S.lastViewTouch < (TOUCH ? 600 : 2000)) return;
+    const t = drag && drag.mode === 'scrub' && drag.t != null ? drag.t : S.video.currentTime;
+    // Touch screens get a DJ deck: the playhead stays in the middle and the wave moves.
+    if (!force && S.view && !TOUCH) {
       const { s, e } = viewRange();
       // While looping a part that fits on screen, hold still on it.
       if (S.loopOn && hasLoop() && S.a >= s && S.b <= e && S.b - S.a < len) return;
       if (S.video.paused && t >= s && t <= e) return;
     }
-    const s0 = t - len * 0.25;
+    const s0 = t - len * (TOUCH ? 0.5 : 0.25);
     const was = S.view;
     setView(s0, s0 + len, true);
     if (!was !== !S.view) renderUI();
@@ -1791,7 +2129,7 @@
     ctx.scale(dpr, dpr);
 
     const v = S.video;
-    const t = v ? v.currentTime : 0;
+    const t = drag && drag.mode === 'scrub' && drag.t != null ? drag.t : v ? v.currentTime : 0;
     const px = xAt(t, g);
     const top = g.waveTop;
     const wh = g.waveH;
@@ -1986,6 +2324,7 @@
         if (fingers.size === 2) {
           // Second finger: cancel the tap/drag the first finger started and pinch instead.
           if (drag && drag.mode === 'handle') S.history.pop();
+          if (drag && drag.mode === 'scrub') endScrub(drag);
           drag = null;
           const p = pinchState(g);
           const { s, e: en } = viewRange();
@@ -2000,13 +2339,22 @@
         drag = { mode: 'seek' };
         userSeek(t);
       } else if (g.miniH && y >= g.waveTop + g.waveH) {
-        drag = { mode: 'mini' };
-        panMiniTo(x, g);
+        if (TOUCH && settings.zoomFocus) {
+          // DJ view: the little whole-song map jumps the song there.
+          drag = { mode: 'miniSeek' };
+          userSeek((x / g.w) * dur());
+          focusFollow(true);
+        } else {
+          drag = { mode: 'mini' };
+          panMiniTo(x, g);
+        }
       } else {
         const hnd = handleAt(x, g, e.pointerType === 'touch');
         if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
+        } else if (e.pointerType === 'touch') {
+          drag = startScrub(x, g);
         } else {
           drag = { mode: 'select', x0: x, t0: t, t1: t, moved: false };
         }
@@ -2033,7 +2381,9 @@
       const d = drag;
       drag = null;
       const { g, x } = local(e);
-      if (d.mode === 'select') {
+      if (d.mode === 'scrub') {
+        endScrub(d, x, g);
+      } else if (d.mode === 'select') {
         if (d.moved) {
           setLoop(d.t0, timeAt(x, g), { play: true, fresh: true });
         } else {
@@ -2049,6 +2399,7 @@
     });
     cv.addEventListener('pointercancel', (e) => {
       fingerUp(e);
+      if (drag && drag.mode === 'scrub') endScrub(drag);
       drag = null;
       S.dirty = true;
     });
@@ -2093,7 +2444,12 @@
 
   function onDragMove(e, g, x) {
     const t = timeAt(x, g);
-    if (drag.mode === 'seek') {
+    if (drag.mode === 'scrub') {
+      moveScrub(drag, x, g);
+    } else if (drag.mode === 'miniSeek') {
+      userSeek((x / g.w) * dur());
+      focusFollow(true);
+    } else if (drag.mode === 'seek') {
       userSeek(t);
     } else if (drag.mode === 'mini') {
       panMiniTo(x, g);
@@ -2117,6 +2473,64 @@
     }
     S.lastViewTouch = now();
     S.dirty = true;
+  }
+
+  // ---- DJ scrubbing (touch) ----
+  // Finger down holds the song (pauses). Moving the finger moves the song with
+  // it: in the zoomed DJ view the wave slides under the finger like a record;
+  // in the whole-song view the playhead follows the finger. Lifting the finger
+  // plays on if it was playing.
+  function startScrub(x, g) {
+    const v = S.video;
+    const { s, e } = viewRange();
+    const sc = { mode: 'scrub', x0: x, t0: v ? v.currentTime : 0, span: e - s, zoomed: !!S.view,
+      wasPlaying: !!v && !v.paused, moved: false, lastSeek: 0, t: null };
+    if (v && !v.paused) {
+      clearTimeout(S.gapTimer);
+      S.wrapping = false;
+      try {
+        v.pause();
+      } catch (err) {
+        /* ignore */
+      }
+    }
+    return sc;
+  }
+
+  function scrubTime(sc, x, g) {
+    const d = dur();
+    const t = sc.zoomed ? sc.t0 - ((x - sc.x0) / g.w) * sc.span : timeAt(x, g);
+    return C.clamp(t, 0, Math.max(0, d - 0.05));
+  }
+
+  function moveScrub(sc, x, g) {
+    if (Math.abs(x - sc.x0) > 3) sc.moved = true;
+    if (!sc.moved) return;
+    sc.t = scrubTime(sc, x, g);
+    if (now() - sc.lastSeek > 40) {
+      sc.lastSeek = now();
+      seek(sc.t);
+    }
+    focusFollowAt(sc.t);
+  }
+
+  function endScrub(sc, x, g) {
+    if (sc.moved) {
+      const t = x != null && g ? scrubTime(sc, x, g) : sc.t;
+      if (t != null) seek(t);
+    }
+    if (sc.wasPlaying) play();
+    S.dirty = true;
+    renderUI();
+  }
+
+  // Centre the DJ view on a time (used while the finger moves the song).
+  function focusFollowAt(t) {
+    if (!settings.zoomFocus) return;
+    const d = dur();
+    const len = Math.min(focusLen(), d);
+    if (!d || len >= d) return;
+    setView(t - len * 0.5, t + len * 0.5, true);
   }
 
   function panMiniTo(x, g) {
@@ -2212,6 +2626,7 @@
       liveTick();
       if (hostEl && hostEl.style.display !== 'none') {
         followPlayhead();
+        lyricsTick();
         const playing = S.video && !S.video.paused;
         if (S.dirty || playing || drag) {
           S.dirty = false;
@@ -2232,7 +2647,19 @@
   function init() {
     storage.get('ytl:settings').then((r) => {
       Object.assign(settings, r['ytl:settings'] || {});
-      // Older versions had other loop counts: snap to the closest one we offer.
+      // Touch screens start in the DJ view (zoomed, wave scrolls under a fixed playhead).
+      if (TOUCH && !settings.djDefault) {
+        settings.djDefault = true;
+        settings.zoomFocus = true;
+      }
+      // New trainer choices (v2): start from 30% over 10 loops unless chosen since.
+      if (settings.trainerV !== 3) {
+        settings.trainerV = 3;
+        settings.trainerStart = TRAINER_DEFAULT_START;
+        settings.trainerReps = TRAINER_DEFAULT_REPS;
+      }
+      if (!TRAINER_STARTS.includes(settings.trainerStart)) settings.trainerStart = 30;
+      // Snap anything else to the closest loop count we offer.
       if (!TRAINER_REPS.includes(settings.trainerReps)) {
         settings.trainerReps = TRAINER_REPS.reduce((best, n) =>
           Math.abs(n - settings.trainerReps) < Math.abs(best - settings.trainerReps) ? n : best);

@@ -41,7 +41,7 @@
   const player = document.getElementById('movie_player');
   const video = player.querySelector('video');
   let currentVid = new URL(location.href).searchParams.get('v');
-  player.getVideoData = () => ({ video_id: currentVid, title: 'Test ' + currentVid });
+  player.getVideoData = () => ({ video_id: currentVid, title: `Test Artist - Song ${currentVid} (Official Video)`, author: 'Test Artist VEVO' });
   window.__fake = { appended: [], loads: 0, playerClicks: 0 };
   player.addEventListener('click', () => window.__fake.playerClicks++);
 
