@@ -319,7 +319,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'call-state') { // is the chosen chat in a voice call? (then the replay is played into the call)
     (async () => {
       const { feedOn } = await chrome.storage.local.get('feedOn');
-      if (feedOn === false) return sendResponse({ inCall: false });
+      if (feedOn === false || self.__ytcSafari) return sendResponse({ inCall: false }); // Safari on iPhone/iPad cannot play the video into the call
       const T = await getTarget(msg.target);
       const tabs = await chrome.tabs.query({ url: T.url });
       tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
