@@ -113,6 +113,26 @@
       this.version++;
     }
 
+    /**
+     * Time (s) where the sound really starts: the first stretch of at least
+     * minRun seconds louder than `frac` of the loudest point. null if unknown.
+     * For a cappella tracks this is where the singing starts.
+     */
+    firstSound(durationSec, frac = 0.12, minRun = 0.25) {
+      if (!this.maxPeak) return null;
+      const n = Math.min(this.n, Math.ceil(durationSec * this.binRate));
+      const thr = this.maxPeak * frac;
+      const need = Math.max(1, Math.round(minRun * this.binRate));
+      let run = 0;
+      for (let i = 0; i < n; i++) {
+        if (!this.cov[i]) return null; // a gap before any sound: can't tell yet
+        if (this.peak[i] > thr) {
+          if (++run >= need) return (i - run + 1) / this.binRate;
+        } else run = 0;
+      }
+      return null;
+    }
+
     /** Merge another store's covered bins into this one. */
     merge(other) {
       if (!other || other.binRate !== this.binRate || !other.n) return;
@@ -291,6 +311,11 @@
     return out.sort((x, y) => x.t - y.t);
   }
 
+  /** True for titles of vocal-only versions (a cappella, isolated vocals...). */
+  function isVocalOnlyTitle(title) {
+    return /a\s*cappella|acc?apella|vocals?\s+only|isolated\s+vocals?|voice\s+only|vocal\s+(track|stem)|只有人声|清唱/i.test(String(title || ''));
+  }
+
   /** Index of the line playing at time t (-1 before the first line). */
   function lineAt(lines, t) {
     let lo = 0;
@@ -341,7 +366,7 @@
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
-    parseSongTitle, parseLrc, lineAt, similarity, rankLyrics,
+    parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

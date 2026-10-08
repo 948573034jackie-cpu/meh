@@ -204,3 +204,17 @@ test('rankLyrics prefers the right song, with lyrics, of similar length (either 
   assert.deepEqual(C.rankLyrics(results, { artist: 'Adele', track: 'Hello' }, 296).map((x) => x.id), [3, 1, 2]);
   assert.equal(C.rankLyrics(results, { artist: 'Hello', track: 'Adele' }, 296)[0].id, 3, 'swapped title order still finds it');
 });
+
+test('firstSound finds where the singing starts; vocal-only titles', () => {
+  const s = new C.PeakStore(50);
+  s.add(0, new Uint8Array(150).fill(3), null, null, null); // 3 s of near silence
+  s.add(150, new Uint8Array(100).fill(200), null, null, null);
+  assert.equal(s.firstSound(5), 3);
+  const gap = new C.PeakStore(50);
+  gap.add(100, new Uint8Array(50).fill(200), null, null, null);
+  assert.equal(gap.firstSound(5), null, 'unknown while the start is not loaded');
+  assert.ok(C.isVocalOnlyTitle('Adele - Hello (Acapella)'));
+  assert.ok(C.isVocalOnlyTitle('Hello - Vocals Only'));
+  assert.ok(C.isVocalOnlyTitle('Song (A Cappella Version)'));
+  assert.ok(!C.isVocalOnlyTitle('Adele - Hello (Official Video)'));
+});

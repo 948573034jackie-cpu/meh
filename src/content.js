@@ -32,6 +32,7 @@
   const TRAINER_DEFAULT_START = 30;
   const TRAINER_DEFAULT_REPS = 50;
   const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
+  const TOUCH_NUDGE = 3; // seconds: the ‹ › buttons beside A and B on touch screens
   const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -87,6 +88,9 @@
     trainerReps: TRAINER_DEFAULT_REPS,
     trainerV: 3,
     lyrics: false,
+    lyricsTop: null, // null = automatic: top of the screen on touch screens, beside the wave otherwise
+    lyricsFont: 0, // 0 = automatic size
+    lyricsH: 0, // height of the top lyrics area as a fraction of the screen; 0 = fill the space above the panel
     seenHelp: false,
     zoomFocus: false, // "Zoom in": the wave follows the playhead in a short window
     focusLen: 30,
@@ -695,7 +699,7 @@
     if (!hasLoop()) return;
     const a = which === 'a' ? S.a + delta : S.a;
     const b = which === 'b' ? S.b + delta : S.b;
-    if (b - a < C.MIN_LOOP) return;
+    if (b - a < C.MIN_LOOP) return flash(`Can't move it that far: A would pass B. Move the other point first.`);
     setLoop(a, b, { noSeek: which === 'b' });
     if (which === 'a' && S.video && S.loopOn) seek(S.a); // hear the new start right away
   }
@@ -785,7 +789,8 @@
   // ---------------------------------------------------------------------------
   const LYRICS_API = 'https://lrclib.net/api/search';
   const LYRICS_PHONE_H = 170;
-  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0 };
+  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
+    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '' };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -814,13 +819,92 @@
       findLyrics(q || null);
     }, 'icon', 'search');
     ui.lyrMeta = h('div', { class: 'lyr-meta' });
+    ui.lyrOffset = h('span', { class: 'lyr-off' });
+    ui.lyrSync = h('div', { class: 'lyr-sync', hidden: true },
+      btn('◀ 0.5s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-0.5), 'lyr-nudge'),
+      ui.lyrOffset,
+      btn('0.5s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(0.5), 'lyr-nudge'),
+      btn('Auto', 'Line the lyrics up again automatically', () => {
+        L.offsetSet = false;
+        L.offset = 0;
+        L.autoPending = true;
+        saveLyricsChoice();
+        renderLyricsSync();
+      }, 'lyr-nudge'));
     ui.lyrBody = h('div', { class: 'lyr-body' });
     const touched = () => (L.userScrollAt = now());
     ui.lyrBody.addEventListener('wheel', touched, { passive: true });
     ui.lyrBody.addEventListener('touchmove', touched, { passive: true });
+    const smaller = btn('A−', 'Smaller lyrics text', () => setLyricsFont(-1), 'icon lyr-size');
+    const bigger = btn('A+', 'Bigger lyrics text', () => setLyricsFont(1), 'icon lyr-size');
+    ui.lyrPlace = btn(null, 'Move the lyrics to the top of the screen', () => {
+      settings.lyricsTop = !lyricsOnTop();
+      saveSettings();
+      applyLayout();
+      renderUI();
+    }, 'icon', 'place');
+    const hide = btn(null, 'Hide the lyrics', toggleLyrics, 'icon', 'close');
+    const grip = h('div', { class: 'lyr-resize', title: 'Drag to make the lyrics area taller or shorter' });
+    setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
-      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext),
-      ui.lyrMeta, ui.lyrBody);
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
+      ui.lyrMeta, ui.lyrSync, ui.lyrBody, grip);
+  }
+
+  function lyricsOnTop() {
+    return settings.lyricsTop == null ? TOUCH : !!settings.lyricsTop;
+  }
+
+  function lyricsFontPx() {
+    if (settings.lyricsFont) return settings.lyricsFont;
+    if (lyricsOnTop()) return window.innerWidth < 600 ? 24 : 32;
+    return TOUCH ? 17 : 15;
+  }
+
+  function setLyricsFont(dir) {
+    settings.lyricsFont = Math.round(C.clamp(lyricsFontPx() + dir * (lyricsFontPx() >= 30 ? 4 : 2), 12, 72));
+    saveSettings();
+    layoutLyrics();
+    L.nowIdx = -2; // re-centre the current line at the new size
+  }
+
+  // Sizes the lyrics: text size everywhere, and on top of the screen a tall
+  // area (45% by default) that never runs into the panel at the bottom.
+  function layoutLyrics() {
+    if (!ui.lyrics) return;
+    const top = settings.lyrics && lyricsOnTop();
+    ui.lyrics.classList.toggle('top', top);
+    ui.lyrBody.style.setProperty('--lyr-font', lyricsFontPx() + 'px');
+    ui.lyrPlace.title = top ? 'Put the lyrics beside the wave' : 'Move the lyrics to the top of the screen';
+    if (top) {
+      const vh = window.innerHeight;
+      const room = vh - (hostVisible() ? panelHeight() : 0);
+      // Default: fill everything above the panel (about half the screen).
+      const want = settings.lyricsH ? vh * settings.lyricsH : room;
+      ui.lyrics.style.height = Math.round(Math.max(120, Math.min(want, room))) + 'px';
+    } else {
+      ui.lyrics.style.height = '';
+    }
+  }
+
+  function setupLyricsResize(grip) {
+    let startY = 0;
+    let startH = 0;
+    grip.addEventListener('pointerdown', (e) => {
+      startY = e.clientY;
+      startH = ui.lyrics.getBoundingClientRect().height;
+      grip.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!grip.hasPointerCapture(e.pointerId)) return;
+      settings.lyricsH = C.clamp((startH + (e.clientY - startY)) / window.innerHeight, 0.15, 0.85);
+      layoutLyrics();
+    });
+    grip.addEventListener('pointerup', (e) => {
+      if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
+      saveSettings();
+    });
   }
 
   function toggleLyrics() {
@@ -840,7 +924,11 @@
     L.lines = null;
     L.synced = false;
     L.nowIdx = -2;
+    L.offset = 0;
+    L.offsetSet = false;
+    L.autoPending = false;
     if (ui.lyrBody) {
+      renderLyricsSync();
       ui.lyrBody.replaceChildren();
       ui.lyrMeta.textContent = '';
       ui.lyrInput.value = '';
@@ -863,6 +951,12 @@
         L.idx = 0;
         ui.lyrInput.value = saved.q || '';
         showLyrics(0, false);
+        if (Number.isFinite(saved.offset)) {
+          L.offset = saved.offset;
+          L.offsetSet = !!saved.offsetSet;
+          L.autoPending = !L.offsetSet && L.autoPending;
+          renderLyricsSync();
+        }
       } else {
         findLyrics(null);
       }
@@ -961,21 +1055,30 @@
     const lines = r.syncedLyrics ? C.parseLrc(r.syncedLyrics) : null;
     L.lines = lines && lines.length ? lines : null;
     const d = dur();
-    L.synced = !!L.lines && (!d || !r.duration || Math.abs(r.duration - d) <= 8);
+    // Time-stamped lyrics always follow the song. Versions that differ from the
+    // original (a cappella uploads, edits) are lined up by an offset: found
+    // automatically from where the singing starts, or nudged with ◀ ▶.
+    L.synced = !!L.lines;
+    L.mismatch = !!L.lines && !!d && !!r.duration && Math.abs(r.duration - d) > 3;
+    L.offset = 0;
+    L.offsetSet = false;
+    L.autoPending = !!L.lines && (C.isVocalOnlyTitle(songMeta().title) || L.mismatch);
     L.nowIdx = -2;
     const more = L.results.length > 1 ? ` · match ${i + 1} of ${L.results.length}` : '';
-    const how = L.synced ? ' · follows the song' : L.lines ? ' · timing may not match this version' : '';
+    const how = L.lines ? ' · follows the song' : ' · no timings for these lyrics';
     ui.lyrMeta.textContent = `${r.trackName || '?'} — ${r.artistName || '?'}${how}${more}`;
     ui.lyrMeta.title = ui.lyrMeta.textContent;
+    renderLyricsSync();
     ui.lyrBody.classList.toggle('synced', L.synced);
     const kids = [];
     if (L.lines) {
       L.lines.forEach((ln, k) => {
         const p = h('p', { text: ln.text || '♪' });
         if (L.synced) p.addEventListener('click', () => {
-          seek(ln.t);
+          const at = Math.max(0, ln.t + L.offset);
+          seek(at);
           L.userScrollAt = 0;
-          if (S.loopOn && hasLoop() && (ln.t < S.a || ln.t >= effEnd())) {
+          if (S.loopOn && hasLoop() && (at < S.a || at >= effEnd())) {
             S.loopOn = false;
             flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
           }
@@ -989,16 +1092,57 @@
     }
     ui.lyrBody.replaceChildren(...kids);
     ui.lyrBody.scrollTop = 0;
-    if (save && S.vid) {
-      const slim = { id: r.id, trackName: r.trackName, artistName: r.artistName, duration: r.duration,
-        syncedLyrics: r.syncedLyrics || '', plainLyrics: r.plainLyrics || '' };
-      storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim() } });
+    if (save) saveLyricsChoice();
+  }
+
+  function saveLyricsChoice() {
+    const r = L.results[L.idx];
+    if (!r || !S.vid) return;
+    const slim = { id: r.id, trackName: r.trackName, artistName: r.artistName, duration: r.duration,
+      syncedLyrics: r.syncedLyrics || '', plainLyrics: r.plainLyrics || '' };
+    storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim(), offset: L.offset, offsetSet: L.offsetSet } });
+  }
+
+  function nudgeLyrics(delta) {
+    L.offset = Math.round((L.offset + delta) * 10) / 10;
+    L.offsetSet = true;
+    L.autoPending = false;
+    L.nowIdx = -2;
+    saveLyricsChoice();
+    renderLyricsSync();
+  }
+
+  function renderLyricsSync() {
+    if (!ui.lyrSync) return;
+    ui.lyrSync.hidden = !L.lines;
+    const o = L.offset;
+    const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(1)}s`;
+    ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : L.offsetSet ? label : `${label} (auto)`;
+    ui.lyrOffset.title = 'How much the lyrics are shifted to match this video';
+  }
+
+  // A cappella and other versions: line the first sung line up with the first
+  // sound in the wave (singing starts where the a cappella stops being silent).
+  function autoAlignLyrics() {
+    if (!L.autoPending || !L.lines || L.offsetSet) return;
+    const d = dur();
+    if (!d || S.peaks.coverage(d) < 0.6) return; // wait for the wave
+    const firstLine = L.lines.find((ln) => ln.text && ln.text.trim());
+    const start = S.peaks.firstSound(d);
+    L.autoPending = false;
+    if (firstLine && start != null) {
+      const off = Math.round((start - firstLine.t) * 10) / 10;
+      if (Math.abs(off) <= 90) L.offset = off;
     }
+    L.nowIdx = -2;
+    saveLyricsChoice();
+    renderLyricsSync();
   }
 
   function lyricsTick() {
     if (!settings.lyrics || !L.synced || !L.lines || !S.video || ui.lyrics.hidden) return;
-    const i = C.lineAt(L.lines, S.video.currentTime + 0.15);
+    if (L.autoPending) autoAlignLyrics();
+    const i = C.lineAt(L.lines, S.video.currentTime + 0.15 - L.offset);
     if (i === L.nowIdx) return;
     const kids = ui.lyrBody.children;
     for (let k = Math.max(0, Math.min(L.nowIdx, i) - 1); k < kids.length && k <= Math.max(L.nowIdx, i) + 1; k++) {
@@ -1012,7 +1156,7 @@
     L.nowIdx = i;
     const el = kids[Math.max(0, i)];
     if (el && now() - L.userScrollAt > 3000) {
-      const top = el.offsetTop - ui.lyrBody.clientHeight * 0.35;
+      const top = el.offsetTop - ui.lyrBody.clientHeight * (ui.lyrics.classList.contains('top') ? 0.4 : 0.35);
       ui.lyrBody.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
     }
   }
@@ -1250,6 +1394,7 @@
     note: 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z',
     search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
+    place: 'M4 4h16v6H4zm0 8h7v8H4zm9 0h7v8h-7z',
     stop: 'M6 6h12v12H6z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
     minus: 'M19 13H5v-2h14z',
@@ -1337,14 +1482,14 @@
     ui.bTime = h('span', { class: 'time', text: '--:--.--' });
     ui.aMark = h('div', { class: 'mark a' },
       btn('A', 'Set loop START at the current time  [', markA, 'set'),
-      btn(null, 'Move start earlier (Shift = fine, Alt = big)', (e) => nudge('a', -step(e)), 'icon', 'left'),
+      btn(null, TOUCH ? 'Move start earlier by 3 seconds' : 'Move start earlier (Shift = fine, Alt = big)', (e) => nudge('a', -step(e)), 'icon', 'left'),
       ui.aTime,
-      btn(null, 'Move start later (Shift = fine, Alt = big)', (e) => nudge('a', step(e)), 'icon', 'right'));
+      btn(null, TOUCH ? 'Move start later by 3 seconds' : 'Move start later (Shift = fine, Alt = big)', (e) => nudge('a', step(e)), 'icon', 'right'));
     ui.bMark = h('div', { class: 'mark b' },
       btn('B', 'Set loop END at the current time  ]', markB, 'set'),
-      btn(null, 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
+      btn(null, TOUCH ? 'Move end earlier by 3 seconds' : 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
       ui.bTime,
-      btn(null, 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
+      btn(null, TOUCH ? 'Move end later by 3 seconds' : 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
     ui.playBtn = btn(null, 'Play', togglePlay, 'icon play-btn', 'play');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
@@ -1444,11 +1589,15 @@
     setupCanvas();
     (document.body || document.documentElement).appendChild(hostEl);
     new ResizeObserver(() => (S.dirty = true)).observe(ui.waveWrap);
-    new ResizeObserver(updateBodyPad).observe(hostEl);
+    new ResizeObserver(() => {
+      updateBodyPad();
+      layoutLyrics();
+    }).observe(hostEl);
   }
 
   function step(e) {
-    return e && e.shiftKey ? 0.01 : e && e.altKey ? 0.5 : TOUCH ? 0.1 : 0.05;
+    if (TOUCH) return TOUCH_NUDGE;
+    return e && e.shiftKey ? 0.01 : e && e.altKey ? 0.5 : 0.05;
   }
 
   function buildHelp() {
@@ -1459,7 +1608,7 @@
       h('ol', {},
         ...(TOUCH ? [
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'put your finger on the wave and slide it. The song moves with your finger. Holding your finger still stops the music; lift it to play on.'),
-          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. Drag the green A / red B flags to fine-tune.`),
+          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} seconds; drag the green A / red B flags to fine-tune.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
         ] : [
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
@@ -1506,7 +1655,12 @@
   }
 
   function waveHeight() {
-    const def = Math.round(window.innerHeight * (window.innerWidth < 600 || window.innerHeight < 900 ? 0.22 : 0.3));
+    const vh = window.innerHeight;
+    // Touch screens: the whole panel takes the bottom half of the screen
+    // (lyrics fill the top half). Elsewhere a smaller wave.
+    const def = TOUCH
+      ? Math.round(vh * 0.5 - (S.chromeH || 200))
+      : Math.round(vh * (window.innerWidth < 600 || vh < 900 ? 0.22 : 0.3));
     const want = settings.height || def;
     return Math.round(C.clamp(want, 90, maxWaveHeight()));
   }
@@ -1535,11 +1689,21 @@
     if (!hostEl) return;
     ui.panel.classList.toggle('collapsed', settings.collapsed);
     ui.lyrics.hidden = !settings.lyrics;
-    ui.stage.style.height = waveHeight() + (settings.lyrics && window.innerWidth < 600 ? LYRICS_PHONE_H : 0) + 'px';
+    const besideOnPhone = settings.lyrics && !lyricsOnTop() && window.innerWidth < 600;
+    ui.stage.style.height = waveHeight() + (besideOnPhone ? LYRICS_PHONE_H : 0) + 'px';
+    // Measure the rows around the wave so the touch default really is half the screen.
+    if (hostVisible() && !settings.collapsed) {
+      const chrome = Math.round(hostEl.getBoundingClientRect().height - ui.stage.getBoundingClientRect().height);
+      if (chrome > 0 && Math.abs(chrome - (S.chromeH || 0)) > 2) {
+        S.chromeH = chrome;
+        ui.stage.style.height = waveHeight() + (besideOnPhone ? LYRICS_PHONE_H : 0) + 'px';
+      }
+    }
     hostEl.style.bottom = bottomOffset() + 'px';
     ui.collapseBtn.replaceChildren(icon(settings.collapsed ? 'up' : 'down'));
     ui.collapseBtn.title = settings.collapsed ? 'Expand' : 'Minimise';
     updateBodyPad();
+    layoutLyrics();
     S.dirty = true;
   }
 
@@ -2651,6 +2815,12 @@
       if (TOUCH && !settings.djDefault) {
         settings.djDefault = true;
         settings.zoomFocus = true;
+      }
+      // Touch screens: lyrics on (at the top of the screen) unless turned off since.
+      if (TOUCH && !settings.touchLyricsDefault) {
+        settings.touchLyricsDefault = true;
+        settings.lyrics = true;
+        settings.height = 0; // use the new half-screen default
       }
       // New trainer choices (v2): start from 30% over 10 loops unless chosen since.
       if (settings.trainerV !== 3) {

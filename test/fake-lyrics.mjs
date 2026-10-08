@@ -2,7 +2,10 @@
 // real lyrics are stored here). Lines are 2 s apart: "Line 7 (0:12)" at 12 s.
 export function lyricsFor(track, artist, duration = 30, id = 1) {
   const lines = [];
-  for (let t = 0, i = 1; t < duration; t += 2, i++) {
+  // The video "Song ACAPELLA" is searched as plain "Song" (the word acapella is
+  // dropped); in the original recording the singing starts 3 s later.
+  const shift = track === 'Song' ? 3 : 0;
+  for (let t = shift, i = 1; t < duration; t += 2, i++) {
     const mm = String(Math.floor(t / 60)).padStart(2, '0');
     const ss = String(t % 60).padStart(2, '0');
     lines.push(`[${mm}:${ss}.00] Line ${i} (${Math.floor(t / 60)}:${ss})`);

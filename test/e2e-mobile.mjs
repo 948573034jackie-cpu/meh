@@ -128,13 +128,15 @@ await step('panel fits the phone: big buttons, no sideways scrolling, video stil
       minBtn: Math.min(...btns.map((b) => b.getBoundingClientRect().height)),
       videoBottom: document.getElementById('movie_player').getBoundingClientRect().bottom,
       panelTop: h.getBoundingClientRect().top,
+      lyr: (() => { const r = root.querySelector('.lyrics').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, w: r.width, on: root.querySelector('.lyrics').classList.contains('top') }; })(),
     };
   });
+  assert(m.lyr.on && m.lyr.top <= 1 && m.lyr.w >= 380, `lyrics on by default, across the top (${JSON.stringify(m.lyr)})`);
+  assert(Math.abs(m.lyr.bottom - m.panelTop) <= 2, `lyrics fill the top half down to the panel (${m.lyr.bottom} vs ${m.panelTop})`);
   assert(m.overflow <= 1, `no sideways overflow (${m.overflow}px)`);
   assert(m.minBtn >= 36, `buttons at least 36px tall (${m.minBtn})`);
-  assert(m.panelH < 844 * 0.5, `panel not taller than half the screen (${m.panelH})`);
+  assert(m.panelH > 844 * 0.42 && m.panelH < 844 * 0.56, `panel takes about half the screen (${m.panelH})`);
   assert(m.rows <= 3, `toolbar fits in 3 rows (${m.rows})`);
-  assert(m.videoBottom <= m.panelTop, `video not covered (${m.videoBottom} vs ${m.panelTop})`);
 });
 
 await step('reads the whole song (scan) and goes back', async () => {
@@ -197,6 +199,13 @@ await step('A button makes a 3-second loop right away, B sets the end', async ()
   h = await host();
   assert(Math.abs(Number(h.b) - t) < 0.35 && Number(h.b) < Number(h.a) + 2.8, `B moved to the playhead (${h.b} vs t=${t.toFixed(2)})`);
   await waitFor(async () => Number((await host()).reps) >= 2, 8000, 'repeats');
+  const b0 = Number((await host()).b);
+  await tap('button', 'Move end later by 3 seconds');
+  const b1 = Number((await host()).b);
+  assert(Math.abs(b1 - b0 - 3) < 0.01, `› moves B by 3 seconds (${b0} -> ${b1})`);
+  await tap('button', 'Move end earlier by 3 seconds');
+  h = await host();
+  assert(Math.abs(Number(h.b) - b0) < 0.01, '‹ moves it back');
   const tt = (await vstate()).t;
   assert(tt >= Number(h.a) - 0.05 && tt <= Number(h.b) + 0.15, `inside loop (t=${tt})`);
 });
@@ -266,40 +275,54 @@ await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops i
   assert(Math.abs((await vstate()).rate - 1) < 0.001, 'back to normal speed');
 });
 
-await step('play / pause button by tap', async () => {
+await step('play / pause button by tap (big)', async () => {
+  const w = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.play-btn').getBoundingClientRect().width);
+  assert(w >= 50, `play button is big (${w}px wide)`);
   await tap('button.play-btn');
   assert((await vstate()).paused, 'paused');
   await tap('button.play-btn');
   await waitFor(async () => !(await vstate()).paused, 2000, 'playing');
 });
 
-await step('lyrics on the phone: above the wave, following the song', async () => {
-  await tap('button', 'Lyrics');
-  await waitFor(() => page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p').length > 0), 5000, 'lyrics shown');
+await step('lyrics: on by default at the top of the screen, big text, A−/A+ and a drag bar to resize', async () => {
+  await waitFor(() => page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p').length > 0), 5000, 'lyrics shown without tapping anything');
   assert(lyricsRequests.some((p) => p.track_name === 'Song PHONE001' && p.artist_name === 'Test Artist'), 'searched by song and artist');
-  const m = await page.evaluate(() => {
-    const h = document.getElementById('ytl-wave-looper');
-    const root = h.shadowRoot;
-    const ly = root.querySelector('.lyrics').getBoundingClientRect();
-    const cv = root.querySelector('canvas').getBoundingClientRect();
-    const btns = [...root.querySelectorAll('.bar button')].filter((b) => b.getClientRects().length);
-    return {
-      lyTop: ly.top, lyBottom: ly.bottom, lyH: ly.height, cvTop: cv.top, cvH: cv.height,
-      panelH: h.getBoundingClientRect().height,
-      panelTop: h.getBoundingClientRect().top,
-      videoBottom: document.getElementById('movie_player').getBoundingClientRect().bottom,
-      rows: btns.map((b) => b.getBoundingClientRect().top).sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 8).length,
-      overflow: root.querySelector('.panel').scrollWidth - root.querySelector('.panel').clientWidth,
-      fontPx: parseFloat(getComputedStyle(root.querySelector('.lyr-head input')).fontSize),
-    };
+  const info = () => page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const pane = root.querySelector('.lyrics');
+    const r = pane.getBoundingClientRect();
+    const p = root.querySelector('.lyr-body p');
+    return { top: r.top, h: r.height, font: parseFloat(getComputedStyle(p).fontSize),
+      inputFont: parseFloat(getComputedStyle(root.querySelector('.lyr-head input')).fontSize),
+      cvTop: root.querySelector('canvas').getBoundingClientRect().top,
+      overflow: root.querySelector('.panel').scrollWidth - root.querySelector('.panel').clientWidth };
   });
-  assert(m.lyBottom <= m.cvTop + 1, 'lyrics sit above the wave');
-  assert(m.lyH >= 120 && m.cvH >= 80, `both big enough (lyrics ${m.lyH}px, wave ${m.cvH}px)`);
-  assert(m.videoBottom <= m.panelTop + 1, `video still visible (${m.videoBottom} vs ${m.panelTop})`);
-  assert(m.rows <= 3 && m.overflow <= 1, `toolbar 3 rows, no sideways scroll (${m.rows}, ${m.overflow})`);
-  assert(m.fontPx >= 16, 'search box text ≥16px so iPhone does not zoom in when typing');
+  let m = await info();
+  assert(m.top <= 1 && m.h > 844 * 0.38, `top of the screen, about half of it (${m.h}px)`);
+  assert(m.font >= 22, `big words (${m.font}px)`);
+  assert(m.inputFont >= 16, 'search box text ≥16px so iPhone does not zoom in when typing');
+  assert(m.top + m.h <= m.cvTop, 'the wave stays visible below the lyrics');
   await waitFor(() => page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].some((p) => p.classList.contains('now'))), 3000, 'current line highlighted');
   await page.screenshot({ path: path.join(SHOTS, 'm5-lyrics.png') });
+  const f0 = m.font;
+  await tap('button', 'Bigger lyrics text');
+  m = await info();
+  assert(m.font > f0, `A+ makes the words bigger (${f0} -> ${m.font})`);
+  await tap('button', 'Smaller lyrics text');
+  await tap('button', 'Smaller lyrics text');
+  m = await info();
+  assert(m.font < f0, `A− makes them smaller (${m.font})`);
+  await tap('button', 'Bigger lyrics text');
+  // Drag the bar under the lyrics up: the lyrics area gets shorter.
+  const grip = await page.evaluate(() => { const r = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-resize').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const h0 = m.h;
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: grip.x, y: grip.y, id: 1 }] });
+  for (let i = 1; i <= 6; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: grip.x, y: grip.y - i * 20, id: 1 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  m = await info();
+  assert(m.h < h0 - 80, `drag bar resizes the lyrics (${h0} -> ${m.h})`);
+  assert(m.overflow <= 1, 'still no sideways scrolling');
 });
 
 await step('loop and wave are remembered after reloading the page', async () => {

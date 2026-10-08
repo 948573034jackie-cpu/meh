@@ -558,7 +558,11 @@ await step('lyrics: tap a line to jump there; next match; search by hand', async
   await shadowClick('button', 'Wrong song? Show the next match');
   let L = await lyr();
   assert(L.meta.includes('(Live)') && L.meta.includes('match 2 of'), `next match "${L.meta}"`);
-  assert(L.meta.includes('timing may not match'), 'a much longer version is not auto-followed');
+  await shadowClick('button', 'Lyrics are early: show them later');
+  const off = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-off').textContent);
+  assert(off === 'timing +0.5s', `timing nudged (${off})`);
+  await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[5].click());
+  assert(Math.abs((await vstate()).t - 10.5) < 0.4, `tapping a line uses the nudged timing (t=${(await vstate()).t.toFixed(2)})`);
   await page.evaluate(() => {
     const input = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-head input');
     input.focus();
@@ -584,6 +588,22 @@ await step('switching videos resets, coming back restores loop and cached wave',
   h = await waitFor(async () => { const x = await host(); return x.a ? x : null; }, 3000, 'loop restored');
   assert(h.a === before.a && h.b === before.b, `restored ${h.a}-${h.b} vs ${before.a}-${before.b}`);
   await waitFor(async () => Number((await host()).cov) > 0.95, 3000, 'cached waveform shown right away');
+});
+
+await step('a cappella video: lyrics line up with where the singing starts, by themselves', async () => {
+  await page.evaluate(() => window.__navigate('ACAPELLA'));
+  await waitFor(async () => (await lyr()).meta.startsWith('Song — Test Artist'), 6000, 'lyrics found without the word "acapella"');
+  const off = await waitFor(async () => {
+    const t = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-off').textContent);
+    return /\(auto\)$/.test(t) ? t : null;
+  }, 40000, 'auto timing');
+  assert(off === 'timing −3.0s (auto)', `lyrics moved 3 s earlier to meet the singing (${off})`);
+  await waitFor(async () => (await host()).scanning === 'false', 40000, 'whole-song read finished');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4.5; v.play(); });
+  // Line 3 is at 7 s in the original = 4 s in this video (lit from 4 s to 6 s).
+  await waitFor(async () => { const y = await lyr(); const t = (await vstate()).t; return t < 5.6 && y.now === 2; }, 3000, 'the line being sung is lit');
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
 });
 
 await step('close turns everything off', async () => {

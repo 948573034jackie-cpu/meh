@@ -63,6 +63,9 @@ button.icon { padding: 0; width: 28px; }
 button svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
 button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 button.speed { min-width: 50px; font-weight: 600; }
+button.play-btn { width: 44px; min-width: 44px; background: #1d3a46; border-color: #2b5666; color: #fff; }
+button.play-btn svg { width: 22px; height: 22px; }
+button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -113,12 +116,36 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .lyr-head input:focus { border-color: var(--accent); }
 .lyr-meta { padding: 3px 8px; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 18px; }
 .lyr-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 60px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
-.lyr-body p { margin: 0; padding: 3px 6px; border-radius: 6px; color: #b4bccc; font-size: 15px; line-height: 1.35; transition: color .15s, background .15s; }
+.lyr-body p { margin: 0; padding: .2em .4em; border-radius: 6px; color: #b4bccc; font-size: var(--lyr-font, 15px); line-height: 1.35; transition: color .15s, background .15s; }
+button.lyr-size { font-weight: 800; font-size: 13px; }
+.lyr-resize { display: none; }
+/* Lyrics on top of the screen (default on iPad/iPhone): big, karaoke style. */
+.lyrics.top {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 4;
+  flex: none; width: auto; min-width: 0; max-width: none;
+  border-left: 0; border-bottom: 1px solid #33405a;
+  background: rgba(8, 11, 17, .97); box-shadow: 0 10px 30px rgba(0,0,0,.55);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.lyrics.top .lyr-meta { text-align: center; }
+.lyrics.top .lyr-body { text-align: center; padding: 8px 16px 40%; }
+.lyrics.top .lyr-body p { line-height: 1.3; }
+.lyrics.top .lyr-resize {
+  display: block; position: absolute; left: 0; right: 0; bottom: 0; height: 22px; cursor: ns-resize; z-index: 5; touch-action: none;
+  background: linear-gradient(transparent, rgba(8,11,17,.9));
+}
+.lyrics.top .lyr-resize::after {
+  content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
+}
+.lyrics.top .lyr-resize:hover::after { background: var(--accent); }
 .lyr-body.synced p { cursor: pointer; }
 .lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
 .lyr-body p.past { color: #6f788b; }
 .lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
 .lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
+.lyr-sync { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 6px 4px; }
+.lyr-sync button { height: 24px; padding: 0 8px; font-size: 12px; border-radius: 12px; }
+.lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .overlay {
   position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
@@ -184,7 +211,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .resize { top: -12px; height: 24px; }
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
-  .lyr-body p { font-size: 17px; padding: 4px 6px; }
+  .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
+  button.play-btn { width: 64px; min-width: 64px; }
+  button.play-btn svg { width: 28px; height: 28px; }
+
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
 }
@@ -212,5 +242,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyrics { flex: 0 0 170px; min-width: 0; max-width: none; border-left: 0; border-bottom: 1px solid var(--line); }
   .wave-wrap { min-height: 80px; }
   .lyrics-btn { width: 36px; min-width: 36px; }
+  button.play-btn { width: 52px; min-width: 52px; }
+  button.speed { min-width: 41px; padding: 0 5px; }
+  .bar { padding-left: 4px; padding-right: 4px; }
+  .rate { min-width: 38px; font-size: 12.5px; }
 }
 `;

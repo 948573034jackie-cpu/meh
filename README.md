@@ -8,7 +8,7 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 - **Loop any part:** click where it starts, then click where it ends. It loops forever.
 - **Slow it down:** 50%, 75% and 100% buttons, plus − / + in 5% steps. The key stays the same, so you can still sing along.
 - **Speed trainer:** tap **Trainer** and it starts right away, always at 30% over 50 loops (you can switch to 50% / 75% and 15 / 30 loops while it runs). Every loop gets a little faster until 100%, then it plays 10 times at full speed and stops by itself. Tap **Trainer** again to stop it and go back to normal speed.
-- **Lyrics next to the wave:** tap **Lyrics** (♪). It reads the song name from the YouTube title (it ignores words like *Official Video*, *Acapella* or *Instrumental*) and finds the lyrics in [LRCLIB](https://lrclib.net), a free lyrics database. When the lyrics have timings, the current line lights up and scrolls along, and you can tap a line to jump there. Wrong song? Tap ⏭ for the next match, or type the song name and artist and press Enter.
+- **Lyrics next to the wave:** tap **Lyrics** (♪). It reads the song name from the YouTube title (it ignores words like *Official Video*, *Acapella* or *Instrumental*) and finds the lyrics in [LRCLIB](https://lrclib.net), a free lyrics database. When the lyrics have timings, the current line lights up and scrolls along, and you can tap a line to jump there. Wrong song? Tap ⏭ for the next match, or type the song name and artist and press Enter. For **a cappella / vocals-only** videos the lyrics line themselves up with where the singing starts; for any version you can fine-tune the timing with **◀ 0.5s / 0.5s ▶** (saved per video).
 - **Play / pause button** right in the panel.
 - **Pause between loops** (0.5–3 s) to breathe before each repeat.
 - **Saved parts** (Verse, Chorus…). Your loop and speed are remembered for every video.
@@ -25,9 +25,10 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 
 Chrome on iPhone/iPad can't run extensions, so there is a **script version** that runs in Safari through the free **Userscripts** app. Same panel and features, made for fingers:
 - **DJ wave:** the wave scrolls under a playhead in the middle. Put your finger on the wave and slide it: the song moves with your finger, like a record. Holding still stops the music; lift your finger to play on.
-- **A / B buttons:** press **A** where the part starts and a 3-second loop starts right away. Press **B** where it should end. Drag the flags with your finger to fine-tune.
+- **A / B buttons:** press **A** where the part starts and a 3-second loop starts right away. Press **B** where it should end. The ‹ › buttons move A or B by 3 seconds; drag the flags with your finger to fine-tune.
+- **Half and half:** the looper takes the bottom half of the screen, the lyrics fill the top half with big words. **A− / A+** change the word size, and the bar under the lyrics drags to make them taller or shorter. The layout button moves the lyrics back beside the wave.
+- **Big play / pause button.**
 - **Pinch to zoom**, **Whole song** to see everything, tap the little map under the wave to jump.
-- **Lyrics** sit just above the wave, so you can watch the wave and sing along at the same time.
 - A round floating button opens the looper.
 
 1. Install **Userscripts** from the App Store (free; icon is `</>`).
@@ -90,4 +91,4 @@ npm run build:userscript      # userscript/wave-looper.user.js (Safari/iOS, Tamp
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
 
-The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 34 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
+The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 35 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
