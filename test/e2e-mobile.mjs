@@ -200,10 +200,10 @@ await step('A button makes a 3-second loop right away, B sets the end', async ()
   assert(Math.abs(Number(h.b) - t) < 0.35 && Number(h.b) < Number(h.a) + 2.8, `B moved to the playhead (${h.b} vs t=${t.toFixed(2)})`);
   await waitFor(async () => Number((await host()).reps) >= 2, 8000, 'repeats');
   const b0 = Number((await host()).b);
-  await tap('button', 'Move end later by 3 seconds');
+  await tap('button', 'Move end later by 1 second');
   const b1 = Number((await host()).b);
-  assert(Math.abs(b1 - b0 - 3) < 0.01, `› moves B by 3 seconds (${b0} -> ${b1})`);
-  await tap('button', 'Move end earlier by 3 seconds');
+  assert(Math.abs(b1 - b0 - 1) < 0.01, `› moves B by 1 second (${b0} -> ${b1})`);
+  await tap('button', 'Move end earlier by 1 second');
   h = await host();
   assert(Math.abs(Number(h.b) - b0) < 0.01, '‹ moves it back');
   const tt = (await vstate()).t;

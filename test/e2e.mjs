@@ -299,14 +299,14 @@ await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops i
     .filter((e) => e.title === 'Starting speed' || e.title === 'How many loops to reach 100%')
     .map((e) => [e.title, [...e.options].map((o) => o.value)])));
   assert(JSON.stringify(opts['Starting speed']) === '["30","50","75"]', `start choices ${opts['Starting speed']}`);
-  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["15","30","50"]', `loop choices ${opts['How many loops to reach 100%']}`);
+  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["25","50","75"]', `loop choices ${opts['How many loops to reach 100%']}`);
   await shadowClick('button', 'Trainer');
   h = await host();
   assert(h.trainer === '', 'stopped');
   assert(Math.abs((await vstate()).rate - 1) < 0.001, 'back to normal speed');
 });
 
-await step('speed trainer: 50% to 100% over 15 loops', async () => {
+await step('speed trainer: 50% to 100% over 25 loops', async () => {
   // A short 1 s loop keeps the test quick. (Not at 5 s: clicking right on the
   // existing A flag would grab the flag instead of starting a new loop.)
   await clickWaveAt(3);
@@ -315,16 +315,16 @@ await step('speed trainer: 50% to 100% over 15 loops', async () => {
   assert(Math.abs(Number(h0.a) - 3) < 0.2 && Math.abs(Number(h0.b) - 4) < 0.2, `loop 3-4 (got ${h0.a}-${h0.b})`);
   await shadowClick('button', 'Trainer');
   await shadowSelect('Starting speed', 50); // changing a choice restarts the training with it
-  await shadowSelect('How many loops to reach 100%', 15);
+  await shadowSelect('How many loops to reach 100%', 25);
   const seen = [];
   await waitFor(async () => {
     const r = (await vstate()).rate;
     if (!seen.length || seen[seen.length - 1] !== r) seen.push(r);
     const h = await host();
-    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 16;
+    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 26;
   }, 60000, 'trainer reaches 100%');
   await page.screenshot({ path: path.join(SHOTS, '4-trainer.png') });
-  const want = [...new Set(Array.from({ length: 15 }, (_, i) => Core.trainerRate(0.5, 1, 15, i + 1)))];
+  const want = [...new Set(Array.from({ length: 25 }, (_, i) => Core.trainerRate(0.5, 1, 25, i + 1)))];
   assert(JSON.stringify(seen.slice(0, want.length)) === JSON.stringify(want), `rates ${JSON.stringify(seen)} want ${JSON.stringify(want)}`);
   const h = await host();
   assert(h.loop === 'true', 'loop still set');
@@ -335,14 +335,14 @@ await step('speed trainer: after 100%, plays 10 times at full speed and then sto
   await shadowClick('button', 'Trainer'); // start again: always 30% over 50 loops...
   let h0 = await host();
   assert(h0.trainer.startsWith('1/50') && Math.abs((await vstate()).rate - 0.3) < 0.001, 'every start is 30% over 50 loops');
-  await shadowSelect('Starting speed', 75); // ...shorter for the test: 75% over 15 loops
-  await shadowSelect('How many loops to reach 100%', 15);
+  await shadowSelect('Starting speed', 75); // ...shorter for the test: 75% over 25 loops
+  await shadowSelect('How many loops to reach 100%', 25);
   const start = Number((await host()).reps);
   await waitFor(async () => (await host()).trainer === '', 90000, 'trainer finishes by itself');
   const h = await host();
   const v = await vstate();
-  // 14 ramp loops + 10 full-speed loops = 24 plays, then it stops at A.
-  assert(Number(h.reps) - start === 24, `plays ${Number(h.reps) - start}`);
+  // 24 ramp loops + 10 full-speed loops = 34 plays, then it stops at A.
+  assert(Number(h.reps) - start === 34, `plays ${Number(h.reps) - start}`);
   assert(v.paused, 'stopped (paused)');
   assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
   assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');

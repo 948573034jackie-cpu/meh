@@ -28,11 +28,11 @@
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
-  const TRAINER_REPS = [15, 30, 50];
+  const TRAINER_REPS = [25, 50, 75];
   const TRAINER_DEFAULT_START = 30;
   const TRAINER_DEFAULT_REPS = 50;
   const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
-  const TOUCH_NUDGE = 3; // seconds: the ‹ › buttons beside A and B on touch screens
+  const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -1647,14 +1647,14 @@
     ui.bTime = h('span', { class: 'time', text: '--:--.--' });
     ui.aMark = h('div', { class: 'mark a' },
       btn('A', 'Set loop START at the current time  [', markA, 'set'),
-      btn(null, TOUCH ? 'Move start earlier by 3 seconds' : 'Move start earlier (Shift = fine, Alt = big)', (e) => nudge('a', -step(e)), 'icon', 'left'),
+      btn(null, TOUCH ? 'Move start earlier by 1 second' : 'Move start earlier (Shift = fine, Alt = big)', (e) => nudge('a', -step(e)), 'icon', 'left'),
       ui.aTime,
-      btn(null, TOUCH ? 'Move start later by 3 seconds' : 'Move start later (Shift = fine, Alt = big)', (e) => nudge('a', step(e)), 'icon', 'right'));
+      btn(null, TOUCH ? 'Move start later by 1 second' : 'Move start later (Shift = fine, Alt = big)', (e) => nudge('a', step(e)), 'icon', 'right'));
     ui.bMark = h('div', { class: 'mark b' },
       btn('B', 'Set loop END at the current time  ]', markB, 'set'),
-      btn(null, TOUCH ? 'Move end earlier by 3 seconds' : 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
+      btn(null, TOUCH ? 'Move end earlier by 1 second' : 'Move end earlier (Shift = fine, Alt = big)', (e) => nudge('b', -step(e)), 'icon', 'left'),
       ui.bTime,
-      btn(null, TOUCH ? 'Move end later by 3 seconds' : 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
+      btn(null, TOUCH ? 'Move end later by 1 second' : 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
     ui.playBtn = btn(null, 'Play', togglePlay, 'icon play-btn', 'play');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
@@ -1773,7 +1773,7 @@
       h('ol', {},
         ...(TOUCH ? [
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'put your finger on the wave and slide it. The song moves with your finger. Holding your finger still stops the music; lift it to play on.'),
-          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} seconds; drag the green A / red B flags to fine-tune.`),
+          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}; drag the green A / red B flags to fine-tune.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
           h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 20 times (30% → 100% over 10, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
         ] : [
