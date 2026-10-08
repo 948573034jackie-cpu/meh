@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.6.0
+// @version      1.7.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -1571,6 +1571,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   const TRAINER_DEFAULT_REPS = 50;
   const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
+  const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -2388,9 +2389,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   const LYRICS_PHONE_H = 170;
   const LYRICS_NUDGE = 0.2; // seconds per tap on ◀ ▶ (lyrics timing)
   // One-line practice (tap the left of a lyric line): speed up from 30% to
-  // 100% over 10 plays, then 10 plays at 100%, then stop.
+  // 100% over 20 plays, then 10 plays at 100%, then stop.
   const LINE_START = 0.3;
-  const LINE_RAMP = 10;
+  const LINE_RAMP = 20;
   const LINE_FULL = 10;
   const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
     offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '' };
@@ -2677,7 +2678,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     const kids = [];
     if (L.lines) {
       L.lines.forEach((ln, k) => {
-        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: 20 times from 30% to 100% (tap again to stop)' }, icon('loop')) : null,
+        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: 20 times from 30% to 100%, then 10 at 100% (tap again to stop)' }, icon('loop')) : null,
           h('span', { class: 'lyr-text', text: ln.text || '♪' }));
         if (L.synced) p.addEventListener('click', (e) => {
           // Left edge of a line (the ⟳ button): repeat just this line.
@@ -3310,10 +3311,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
       h('h3', { text: 'How to use Wave Looper' }),
       h('ol', {},
         ...(TOUCH ? [
-          h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'put your finger on the wave and slide it. The song moves with your finger. Holding your finger still stops the music; lift it to play on.'),
+          h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays.'),
           h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}; drag the green A / red B flags to fine-tune.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
-          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 20 times (30% → 100% over 10, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
+          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 30 times (30% → 100% over 20, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
         ] : [
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
@@ -3708,7 +3709,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
       ]);
     } else {
       setHint(TOUCH
-        ? [['Drag the wave to move the song'], ' (hold = stop). Press ', ['A'], ' to loop from here, ', ['B'], ' to set the end.']
+        ? [['Tap the wave'], ' to pause / play, ', ['drag it'], ' to move the song. Press ', ['A'], ' to loop from here, ', ['B'], ' to set the end.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -4370,7 +4371,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     const v = S.video;
     const { s, e } = viewRange();
     const sc = { mode: 'scrub', x0: x, t0: v ? v.currentTime : 0, span: e - s, zoomed: !!S.view,
-      wasPlaying: !!v && !v.paused, moved: false, lastSeek: 0, t: null };
+      wasPlaying: !!v && !v.paused, moved: false, lastSeek: 0, t: null, downAt: now() };
     if (v && !v.paused) {
       clearTimeout(S.gapTimer);
       S.wrapping = false;
@@ -4400,12 +4401,20 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     focusFollowAt(sc.t);
   }
 
+  // A quick tap (no sliding) is play/pause. Sliding moves the song, and a
+  // long hold just holds it; both play on afterwards if it was playing.
   function endScrub(sc, x, g) {
+    const lifted = x != null && !!g; // finger lifted (not cancelled / pinch)
     if (sc.moved) {
-      const t = x != null && g ? scrubTime(sc, x, g) : sc.t;
+      const t = lifted ? scrubTime(sc, x, g) : sc.t;
       if (t != null) seek(t);
     }
-    if (sc.wasPlaying) play();
+    const tap = lifted && !sc.moved && now() - sc.downAt < TAP_MS;
+    if (tap) {
+      if (!sc.wasPlaying) play(); // tap while stopped: play; tap while playing: stays paused
+    } else if (sc.wasPlaying) {
+      play();
+    }
     S.dirty = true;
     renderUI();
   }

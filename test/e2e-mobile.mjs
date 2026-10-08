@@ -185,6 +185,26 @@ await step('drag the wave like a DJ: finger holds the song, moving it moves the 
   assert(!(await host()).a, 'dragging the wave did not make a loop');
 });
 
+await step('a quick tap on the wave pauses, another tap plays; a long hold just holds', async () => {
+  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await sleep(300);
+  const b = await waveBox();
+  const x = b.x + b.w * 0.3;
+  const y = b.y + 18 + (b.h - 18) * 0.5;
+  await page.touchscreen.tap(x, y);
+  await sleep(400);
+  assert((await vstate()).paused, 'tap paused it, and it stays paused');
+  await page.touchscreen.tap(x, y);
+  await waitFor(async () => !(await vstate()).paused, 2000, 'second tap plays');
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
+  await sleep(700);
+  assert((await vstate()).paused, 'holding stops the music');
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await waitFor(async () => !(await vstate()).paused, 2000, 'lifting after a hold plays on');
+  assert(!(await host()).a, 'no loop made by tapping');
+});
+
 await step('A button makes a 3-second loop right away, B sets the end', async () => {
   await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 9; v.play(); });
   await sleep(150);
@@ -328,14 +348,19 @@ await step('lyrics: on by default at the top of the screen, big text, A−/A+ an
 });
 
 await step('lyrics: tap the left side of a line to practise it (from 30%), tap again to stop', async () => {
-  const where = () => page.evaluate(() => {
-    const body = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body');
-    body.dispatchEvent(new WheelEvent('wheel')); // like a finger on the lyrics: pauses auto-scroll
-    const p = body.querySelectorAll('p')[3];
-    body.scrollTop = p.offsetTop - body.clientHeight / 2 + p.offsetHeight / 2;
-    const r = p.getBoundingClientRect();
-    return { x: r.left + 24, y: r.top + r.height / 2 };
-  });
+  const where = async () => {
+    await page.evaluate(() => {
+      const body = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body');
+      body.dispatchEvent(new WheelEvent('wheel')); // like a finger on the lyrics: pauses auto-scroll
+      const p = body.querySelectorAll('p')[3];
+      body.scrollTo({ top: p.offsetTop - body.clientHeight / 2 + p.offsetHeight / 2, behavior: 'instant' });
+    });
+    await sleep(400); // let any smooth scroll settle
+    return page.evaluate(() => {
+      const r = document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[3].getBoundingClientRect();
+      return { x: r.left + 24, y: r.top + r.height / 2 };
+    });
+  };
   let box = await where();
   await page.touchscreen.tap(box.x, box.y);
   let h = await host();

@@ -581,7 +581,7 @@ const lineBtn = (i) => page.evaluate((k) => {
   p.querySelector('.lyr-loop').click();
 }, i);
 
-await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, then 10 at 100%), then stops and puts the speed back', async () => {
+await step('line practice: ⟳ plays one line 30 times (30% → 100% over 20, then 10 at 100%), then stops and puts the speed back', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
   await shadowClick('button.speed', '75%'); // the speed from before, to be restored
   const abBefore = await host();
@@ -599,13 +599,13 @@ await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, th
     const x = await host();
     if (x.lineLoop && (v.t < 7.95 || v.t > 10.15)) outside++;
     return x.lineLoop === '' ? x : null;
-  }, 150000, 'line practice finishes by itself');
+  }, 220000, 'line practice finishes by itself');
   h = await host();
   const v = await vstate();
-  const want = [...new Set(Array.from({ length: 10 }, (_, i) => Core.trainerRate(0.3, 1, 10, i + 1))), 0.75];
+  const want = [...new Set(Array.from({ length: 20 }, (_, i) => Core.trainerRate(0.3, 1, 20, i + 1))), 0.75];
   assert(JSON.stringify(rates) === JSON.stringify(want), `speeds ${JSON.stringify(rates)} want ${JSON.stringify(want)}`);
   assert(outside === 0, `stayed on the line (${outside})`);
-  assert(Number(h.reps) - r0 === 20, `20 plays (${Number(h.reps) - r0})`);
+  assert(Number(h.reps) - r0 === 30, `30 plays (${Number(h.reps) - r0})`);
   assert(v.paused && Math.abs(v.t - 8) < 0.15, `stopped at the start of the line (paused=${v.paused}, t=${v.t.toFixed(2)})`);
   assert(Math.abs(v.rate - 0.75) < 0.001, 'speed back to 75%');
   assert(h.a === abBefore.a && h.b === abBefore.b, 'A-B loop untouched');
