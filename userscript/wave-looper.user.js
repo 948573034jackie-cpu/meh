@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.3.0
+// @version      1.4.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -1330,6 +1330,16 @@ button.speed { min-width: 50px; font-weight: 600; }
 button.play-btn { width: 44px; min-width: 44px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* Big round play / pause button on the wave. */
+button.big-play {
+  position: absolute; left: 14px; bottom: 22px; z-index: 2;
+  width: 56px; height: 56px; min-width: 56px; padding: 0; border-radius: 50%;
+  background: var(--accent); border: 3px solid rgba(255,255,255,.85); color: var(--accent-ink);
+  box-shadow: 0 6px 22px rgba(0,0,0,.55);
+}
+button.big-play svg { width: 30px; height: 30px; }
+button.big-play.on { background: #ffffff; color: #0b0e14; border-color: var(--accent); }
+button.big-play:active { transform: scale(.95); }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -1402,7 +1412,17 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
 }
 .lyrics.top .lyr-resize:hover::after { background: var(--accent); }
-.lyr-body.synced p { cursor: pointer; }
+.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: 2.1em; }
+.lyr-loop {
+  position: absolute; left: .25em; top: 50%; transform: translateY(-50%);
+  width: 1.5em; height: 1.5em; min-width: 26px; min-height: 26px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #5d6780; border: 1px solid #2a3348; background: rgba(255,255,255,.03);
+}
+.lyr-loop svg { width: 62%; height: 62%; fill: currentColor; }
+.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #4b3f78; }
+.lyr-body p.looping { background: rgba(190,120,255,.22); color: #fff; font-weight: 700; }
+.lyr-body p.looping .lyr-loop { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
 .lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
 .lyr-body p.past { color: #6f788b; }
 .lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
@@ -1476,8 +1496,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
   .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
-  button.play-btn { width: 64px; min-width: 64px; }
-  button.play-btn svg { width: 28px; height: 28px; }
+  button.play-btn { width: 88px; min-width: 88px; }
+  button.play-btn svg { width: 30px; height: 30px; }
+  button.big-play { width: 84px; height: 84px; min-width: 84px; left: 18px; bottom: 26px; border-radius: 50%; }
+  button.big-play svg { width: 44px; height: 44px; }
 
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
@@ -1507,6 +1529,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .wave-wrap { min-height: 80px; }
   .lyrics-btn { width: 36px; min-width: 36px; }
   button.play-btn { width: 52px; min-width: 52px; }
+  button.big-play { width: 70px; height: 70px; min-width: 70px; left: 12px; bottom: 20px; }
+  button.big-play svg { width: 36px; height: 36px; }
   button.speed { min-width: 41px; padding: 0 5px; }
   .bar { padding-left: 4px; padding-right: 4px; }
   .rate { min-width: 38px; font-size: 12.5px; }
@@ -1645,6 +1669,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     wrapping: false,
     lastWrapAt: 0,
     adWas: false,
+    lineLoop: null, // { a, b, idx }: one lyric line repeating
     meta: { vid: null, title: '', author: '' },
     hintOverride: null,
     hintUntil: 0,
@@ -1924,6 +1949,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   }
 
   function setRate(r, fromTrainer) {
+    if (!fromTrainer && S.lineLoop) {
+      S.lineLoop.saved = null; // keep the speed you just picked
+      stopLineLoop(true);
+    }
     S.rate = C.roundRate(r);
     S.rateOwned = true;
     if (!fromTrainer && S.trainer.running) {
@@ -1980,12 +2009,26 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     return S.a != null && S.b != null;
   }
 
+  // What is looping right now: a single lyric line (tapped ⟳) wins over the
+  // A-B loop, which keeps waiting behind it.
+  function loopRegion() {
+    if (S.lineLoop) return S.lineLoop;
+    if (S.loopOn && hasLoop()) return { a: S.a, b: S.b };
+    return null;
+  }
+
   function loopActive() {
-    return settings.open && S.loopOn && hasLoop() && !!S.video && !S.scan && !isAd();
+    return settings.open && !!loopRegion() && !!S.video && !S.scan && !isAd();
   }
 
   function effEnd() {
-    return C.loopEnd(S.b, dur());
+    const r = loopRegion();
+    return C.loopEnd(r ? r.b : S.b, dur());
+  }
+
+  function loopStart() {
+    const r = loopRegion();
+    return r ? r.a : S.a;
   }
 
   function seek(t) {
@@ -2016,7 +2059,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     if (v.paused || v.seeking) return;
     const t = v.currentTime;
     const end = effEnd();
-    if (t >= end - 0.004 && t > S.a) {
+    if (t >= end - 0.004 && t > loopStart()) {
       wrap();
       return;
     }
@@ -2025,7 +2068,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     if (remain > 0 && remain < 0.12 && !S.wrapTimer) {
       S.wrapTimer = setTimeout(() => {
         S.wrapTimer = 0;
-        if (loopActive() && !S.wrapping && !v.paused && v.currentTime >= effEnd() - 0.03 && v.currentTime > S.a) wrap();
+        if (loopActive() && !S.wrapping && !v.paused && v.currentTime >= effEnd() - 0.03 && v.currentTime > loopStart()) wrap();
       }, Math.max(0, remain * 1000 - 3));
     }
   }
@@ -2037,7 +2080,17 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     if (now() - S.lastWrapAt < 60) return; // already wrapping this pass
     S.lastWrapAt = now();
     S.reps++;
-    if (S.trainer.running) {
+    if (S.lineLoop) {
+      const ll = S.lineLoop;
+      if (ll.rep >= LINE_RAMP + LINE_FULL) {
+        finishLinePractice();
+        return;
+      }
+      ll.rep++;
+      S.rate = C.trainerRate(LINE_START, 1, LINE_RAMP, ll.rep);
+      applyRate();
+    }
+    if (S.trainer.running && !S.lineLoop) {
       const tr = S.trainer;
       // Rep `reps` is the first play at the goal speed. After `after` plays at
       // the goal speed, training is finished: stop at the loop start.
@@ -2063,14 +2116,14 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
       } catch (e) {
         /* ignore */
       }
-      seek(S.a);
+      seek(loopStart());
       clearTimeout(S.gapTimer);
       S.gapTimer = setTimeout(() => {
         S.wrapping = false;
         if (S.video === v) play();
       }, gap * 1000);
     } else {
-      seek(S.a);
+      seek(loopStart());
     }
     renderUI();
   }
@@ -2304,6 +2357,12 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   // ---------------------------------------------------------------------------
   const LYRICS_API = 'https://lrclib.net/api/search';
   const LYRICS_PHONE_H = 170;
+  const LYRICS_NUDGE = 0.2; // seconds per tap on ◀ ▶ (lyrics timing)
+  // One-line practice (tap the left of a lyric line): speed up from 30% to
+  // 100% over 10 plays, then 10 plays at 100%, then stop.
+  const LINE_START = 0.3;
+  const LINE_RAMP = 10;
+  const LINE_FULL = 10;
   const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
     offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '' };
 
@@ -2336,9 +2395,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     ui.lyrMeta = h('div', { class: 'lyr-meta' });
     ui.lyrOffset = h('span', { class: 'lyr-off' });
     ui.lyrSync = h('div', { class: 'lyr-sync', hidden: true },
-      btn('◀ 0.5s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-0.5), 'lyr-nudge'),
+      btn('◀ 0.2s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-LYRICS_NUDGE), 'lyr-nudge'),
       ui.lyrOffset,
-      btn('0.5s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(0.5), 'lyr-nudge'),
+      btn('0.2s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(LYRICS_NUDGE), 'lyr-nudge'),
       btn('Auto', 'Line the lyrics up again automatically', () => {
         L.offsetSet = false;
         L.offset = 0;
@@ -2432,6 +2491,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   }
 
   function resetLyrics() {
+    stopLineLoop(true);
     L.token++;
     L.vid = null;
     L.results = [];
@@ -2588,8 +2648,18 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     const kids = [];
     if (L.lines) {
       L.lines.forEach((ln, k) => {
-        const p = h('p', { text: ln.text || '♪' });
-        if (L.synced) p.addEventListener('click', () => {
+        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: 20 times from 30% to 100% (tap again to stop)' }, icon('loop')) : null,
+          h('span', { class: 'lyr-text', text: ln.text || '♪' }));
+        if (L.synced) p.addEventListener('click', (e) => {
+          // Left edge of a line (the ⟳ button): repeat just this line.
+          const r = p.getBoundingClientRect();
+          const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
+          const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
+          if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
+            toggleLineLoop(k);
+            return;
+          }
+          if (S.lineLoop) stopLineLoop(true);
           const at = Math.max(0, ln.t + L.offset);
           seek(at);
           L.userScrollAt = 0;
@@ -2605,9 +2675,97 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     } else {
       for (const line of String(r.plainLyrics || '').split(/\r?\n/)) kids.push(h('p', { text: line || ' ' }));
     }
+    stopLineLoop(true); // the lines changed
     ui.lyrBody.replaceChildren(...kids);
     ui.lyrBody.scrollTop = 0;
     if (save) saveLyricsChoice();
+  }
+
+  // ---- one-line loop ----
+  function lineRange(k) {
+    const d = dur();
+    const ln = L.lines[k];
+    let end = null;
+    for (let j = k + 1; j < L.lines.length; j++) {
+      if (L.lines[j].t > ln.t + 0.05) {
+        end = L.lines[j].t;
+        break;
+      }
+    }
+    if (end == null) end = ln.t + 6; // last line: about 6 s
+    let a = ln.t + L.offset;
+    let b = end + L.offset;
+    if (d) b = Math.min(b, d);
+    a = Math.max(0, a);
+    if (b - a < 0.5) b = a + 0.5;
+    return { a, b };
+  }
+
+  function toggleLineLoop(k) {
+    if (!L.lines || !L.lines[k]) return;
+    if (S.lineLoop && S.lineLoop.idx === k) return stopLineLoop(false);
+    const r = lineRange(k);
+    // Remember the speed from before (a trainer keeps its place too) so it can
+    // be put back exactly when the line practice ends.
+    const saved = S.lineLoop ? S.lineLoop.saved : { rate: S.rate, rateOwned: S.rateOwned };
+    S.lineLoop = { a: r.a, b: r.b, idx: k, rep: 1, saved };
+    S.rate = C.trainerRate(LINE_START, 1, LINE_RAMP, 1);
+    S.rateOwned = true;
+    applyRate();
+    clearTimeout(S.wrapTimer);
+    S.wrapTimer = 0;
+    seek(r.a);
+    play();
+    L.userScrollAt = 0;
+    markLoopingLine();
+    S.dirty = true;
+    renderUI();
+  }
+
+  // Stops repeating the line. The song just carries on into the next line,
+  // and the A-B loop (if any) takes over again.
+  function stopLineLoop(silent) {
+    if (!S.lineLoop) return;
+    restoreLineSpeed();
+    S.lineLoop = null;
+    markLoopingLine();
+    S.dirty = true;
+    if (!silent) {
+      flash(S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
+      renderUI();
+    }
+  }
+
+  function restoreLineSpeed() {
+    const sv = S.lineLoop && S.lineLoop.saved;
+    if (!sv) return;
+    S.rate = sv.rate;
+    S.rateOwned = sv.rateOwned;
+    applyRate();
+  }
+
+  // All 20 plays done: stop on the line's start, speed back to what it was.
+  // Pressing play goes on as before (A-B loop / trainer / normal playing).
+  function finishLinePractice() {
+    const ll = S.lineLoop;
+    restoreLineSpeed();
+    S.lineLoop = null;
+    markLoopingLine();
+    try {
+      S.video.pause();
+    } catch (e) {
+      /* ignore */
+    }
+    seek(ll.a);
+    flash(`Line practice done: ${LINE_RAMP + LINE_FULL} times, up to 100%. Press play to go on.`, 10000);
+    S.dirty = true;
+    renderUI();
+  }
+
+  function markLoopingLine() {
+    if (!ui.lyrBody) return;
+    const kids = ui.lyrBody.children;
+    for (let k = 0; k < kids.length; k++) kids[k].classList.toggle('looping', !!S.lineLoop && S.lineLoop.idx === k);
   }
 
   function saveLyricsChoice() {
@@ -2620,6 +2778,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 
   function nudgeLyrics(delta) {
     L.offset = Math.round((L.offset + delta) * 10) / 10;
+    if (S.lineLoop) Object.assign(S.lineLoop, lineRange(S.lineLoop.idx));
     L.offsetSet = true;
     L.autoPending = false;
     L.nowIdx = -2;
@@ -3085,7 +3244,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
+    ui.bigPlay = btn(null, 'Play', togglePlay, 'big-play', 'play');
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.bigPlay);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -3125,6 +3285,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'put your finger on the wave and slide it. The song moves with your finger. Holding your finger still stops the music; lift it to play on.'),
           h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} seconds; drag the green A / red B flags to fine-tune.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
+          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 20 times (30% → 100% over 10, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
         ] : [
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
@@ -3292,6 +3453,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   function closePanel() {
     settings.open = false;
     saveSettings();
+    stopLineLoop(true);
     if (S.scan) endScan('cancel');
     stopTrainer(true);
     clearTimeout(S.gapTimer);
@@ -3461,10 +3623,12 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
     ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
     const playing = !!S.video && !S.video.paused && !S.scan;
-    ui.playBtn.replaceChildren(icon(playing ? 'pause' : 'play'));
-    ui.playBtn.title = playing ? 'Pause' : 'Play';
-    ui.playBtn.classList.toggle('on', playing);
-    ui.playBtn.disabled = !S.video || !!S.scan;
+    for (const b of [ui.playBtn, ui.bigPlay]) {
+      b.replaceChildren(icon(playing ? 'pause' : 'play'));
+      b.title = playing ? 'Pause' : 'Play';
+      b.classList.toggle('on', playing);
+      b.disabled = !S.video || !!S.scan;
+    }
     ui.lyricsBtn.classList.toggle('on', settings.lyrics);
     ui.trainerBtn.classList.toggle('on', S.trainer.running);
     ui.trainerBtn.title = S.trainer.running
@@ -3497,6 +3661,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     // Hint line
     if (S.hintOverride && now() < S.hintUntil) {
       setHint([S.hintOverride]);
+    } else if (S.lineLoop && L.lines && L.lines[S.lineLoop.idx]) {
+      const ll = S.lineLoop;
+      const stage = ll.rep <= LINE_RAMP ? `speeding up ${ll.rep}/${LINE_RAMP}` : `full speed ${ll.rep - LINE_RAMP}/${LINE_FULL}`;
+      setHint([['Practising one line: '], `“${L.lines[ll.idx].text || '♪'}” · ${stage} at ${Math.round(S.rate * 100)}%. Tap ⟳ again to stop.`]);
     } else if (S.scan) {
       setHint(['Reading the whole song… it plays muted for a moment, then goes back to where you were.']);
     } else if (!dur()) {
@@ -3535,6 +3703,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     d.scanning = String(!!S.scan);
     d.cov = dur() ? S.peaks.coverage(dur()).toFixed(3) : '0';
     d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
+    d.lineLoop = S.lineLoop ? `${S.lineLoop.a.toFixed(2)},${S.lineLoop.b.toFixed(2)}` : '';
+    d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
   }
 
@@ -3844,6 +4014,15 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
         ctx.fillRect(Math.min(xa, xh), top, Math.abs(xh - xa), wh);
       }
       drawFlag(ctx, xa, top, wh, '#3ddc84', 'A', false);
+    }
+    if (S.lineLoop) {
+      const xa = xAt(S.lineLoop.a, g);
+      const xb = xAt(S.lineLoop.b, g);
+      ctx.fillStyle = 'rgba(190,120,255,0.22)';
+      ctx.fillRect(xa, top, xb - xa, wh);
+      ctx.fillStyle = '#c084fc';
+      ctx.fillRect(Math.round(xa) - 1, top, 2, wh);
+      ctx.fillRect(Math.round(xb) - 1, top, 2, wh);
     }
     if (drag && drag.mode === 'select' && drag.moved) {
       const x0 = xAt(drag.t0, g);

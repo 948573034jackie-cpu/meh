@@ -66,6 +66,16 @@ button.speed { min-width: 50px; font-weight: 600; }
 button.play-btn { width: 44px; min-width: 44px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+/* Big round play / pause button on the wave. */
+button.big-play {
+  position: absolute; left: 14px; bottom: 22px; z-index: 2;
+  width: 56px; height: 56px; min-width: 56px; padding: 0; border-radius: 50%;
+  background: var(--accent); border: 3px solid rgba(255,255,255,.85); color: var(--accent-ink);
+  box-shadow: 0 6px 22px rgba(0,0,0,.55);
+}
+button.big-play svg { width: 30px; height: 30px; }
+button.big-play.on { background: #ffffff; color: #0b0e14; border-color: var(--accent); }
+button.big-play:active { transform: scale(.95); }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -138,7 +148,17 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
 }
 .lyrics.top .lyr-resize:hover::after { background: var(--accent); }
-.lyr-body.synced p { cursor: pointer; }
+.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: 2.1em; }
+.lyr-loop {
+  position: absolute; left: .25em; top: 50%; transform: translateY(-50%);
+  width: 1.5em; height: 1.5em; min-width: 26px; min-height: 26px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #5d6780; border: 1px solid #2a3348; background: rgba(255,255,255,.03);
+}
+.lyr-loop svg { width: 62%; height: 62%; fill: currentColor; }
+.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #4b3f78; }
+.lyr-body p.looping { background: rgba(190,120,255,.22); color: #fff; font-weight: 700; }
+.lyr-body p.looping .lyr-loop { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
 .lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
 .lyr-body p.past { color: #6f788b; }
 .lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
@@ -212,8 +232,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
   .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
-  button.play-btn { width: 64px; min-width: 64px; }
-  button.play-btn svg { width: 28px; height: 28px; }
+  button.play-btn { width: 88px; min-width: 88px; }
+  button.play-btn svg { width: 30px; height: 30px; }
+  button.big-play { width: 84px; height: 84px; min-width: 84px; left: 18px; bottom: 26px; border-radius: 50%; }
+  button.big-play svg { width: 44px; height: 44px; }
 
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
@@ -243,6 +265,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .wave-wrap { min-height: 80px; }
   .lyrics-btn { width: 36px; min-width: 36px; }
   button.play-btn { width: 52px; min-width: 52px; }
+  button.big-play { width: 70px; height: 70px; min-width: 70px; left: 12px; bottom: 20px; }
+  button.big-play svg { width: 36px; height: 36px; }
   button.speed { min-width: 41px; padding: 0 5px; }
   .bar { padding-left: 4px; padding-right: 4px; }
   .rate { min-width: 38px; font-size: 12.5px; }

@@ -325,6 +325,40 @@ await step('lyrics: on by default at the top of the screen, big text, A−/A+ an
   assert(m.overflow <= 1, 'still no sideways scrolling');
 });
 
+await step('lyrics: tap the left side of a line to practise it (from 30%), tap again to stop', async () => {
+  const where = () => page.evaluate(() => {
+    const body = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body');
+    body.dispatchEvent(new WheelEvent('wheel')); // like a finger on the lyrics: pauses auto-scroll
+    const p = body.querySelectorAll('p')[3];
+    body.scrollTop = p.offsetTop - body.clientHeight / 2 + p.offsetHeight / 2;
+    const r = p.getBoundingClientRect();
+    return { x: r.left + 24, y: r.top + r.height / 2 };
+  });
+  let box = await where();
+  await page.touchscreen.tap(box.x, box.y);
+  let h = await host();
+  assert(h.lineLoop === '6.00,8.00', `line 4 (${h.lineLoop})`);
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, 'starts at 30%');
+  await sleep(1500);
+  const t = (await vstate()).t;
+  assert(t >= 5.95 && t <= 8.15, `on that line (t=${t.toFixed(2)})`);
+  await page.screenshot({ path: path.join(SHOTS, 'm6-line-loop.png') });
+  box = await where();
+  await page.touchscreen.tap(box.x, box.y);
+  h = await host();
+  assert(h.lineLoop === '', 'stopped');
+  assert(Math.abs((await vstate()).rate - 1) < 0.001, 'speed back to 100%');
+});
+
+await step('big round play button on the wave', async () => {
+  const b = await page.evaluate(() => { const r = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.big-play').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }; });
+  assert(b.w >= 64, `big on the phone (${b.w}px)`);
+  const was = (await vstate()).paused;
+  await page.touchscreen.tap(b.x, b.y);
+  assert((await vstate()).paused !== was, 'tap toggles play/pause');
+  if ((await vstate()).paused) await page.touchscreen.tap(b.x, b.y);
+});
+
 await step('loop and wave are remembered after reloading the page', async () => {
   const before = await host();
   await sleep(1200); // let the save land

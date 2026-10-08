@@ -61,7 +61,7 @@
     });
     const buffered = (sb, x) => { for (let i = 0; i < sb.buffered.length; i++) if (x >= sb.buffered.start(i) && x < sb.buffered.end(i)) return true; return false; };
     async function pump(tr) {
-      if (tr.busy || my !== session || ms.readyState !== 'open') return;
+      if (tr.busy || my !== session || ms.readyState === 'closed') return; // appending after endOfStream reopens it, like YouTube
       tr.busy = true;
       try {
         if (!tr.inited) { await append(tr, await get(tr.t.init)); tr.inited = true; }

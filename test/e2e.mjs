@@ -408,7 +408,7 @@ await step('zoom with the mouse wheel and back to the whole song', async () => {
 
 await step('Zoom in button: short window that scrolls with the song; Whole song zooms out', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash'); // free playback so the view scrolls
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 2; v.play(); });
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 2; v.play().catch(() => {}); });
   await shadowClick('button.zoom-toggle');
   let h = await host();
   assert(Math.abs(Number(h.zoom) - DUR / 2) < 0.1, `zoomed to half of a short song (got ${h.zoom})`);
@@ -533,7 +533,7 @@ const lyr = () => page.evaluate(() => {
 
 await step('lyrics: found automatically from the YouTube title and shown next to the wave', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 6.5; v.play(); });
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 6.5; v.play().catch(() => {}); });
   const before = lyricsRequests.length;
   await shadowClick('button', 'Lyrics');
   const L = await waitFor(async () => { const x = await lyr(); return x.count > 0 ? x : null; }, 5000, 'lyrics shown');
@@ -560,9 +560,9 @@ await step('lyrics: tap a line to jump there; next match; search by hand', async
   assert(L.meta.includes('(Live)') && L.meta.includes('match 2 of'), `next match "${L.meta}"`);
   await shadowClick('button', 'Lyrics are early: show them later');
   const off = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-off').textContent);
-  assert(off === 'timing +0.5s', `timing nudged (${off})`);
+  assert(off === 'timing +0.2s', `timing nudged by 0.2 s (${off})`);
   await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[5].click());
-  assert(Math.abs((await vstate()).t - 10.5) < 0.4, `tapping a line uses the nudged timing (t=${(await vstate()).t.toFixed(2)})`);
+  assert(Math.abs((await vstate()).t - 10.2) < 0.15, `tapping a line uses the nudged timing (t=${(await vstate()).t.toFixed(2)})`);
   await page.evaluate(() => {
     const input = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-head input');
     input.focus();
@@ -572,6 +572,67 @@ await step('lyrics: tap a line to jump there; next match; search by hand', async
   L = await waitFor(async () => { const y = await lyr(); return y.meta.startsWith('Another Tune') ? y : null; }, 4000, 'manual search result');
   assert(lyricsRequests.some((p) => p.q === 'Another Tune'), 'searched what I typed');
   assert(!(await vstate()).paused, 'typing did not trigger YouTube shortcuts (k would pause)');
+});
+
+const lineBtn = (i) => page.evaluate((k) => {
+  const p = document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[k];
+  p.querySelector('.lyr-loop').click();
+}, i);
+
+await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, then 10 at 100%), then stops and puts the speed back', async () => {
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
+  await shadowClick('button.speed', '75%'); // the speed from before, to be restored
+  const abBefore = await host();
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 2; v.play().catch(() => {}); });
+  await lineBtn(4);
+  let h = await host();
+  assert(h.lineLoop === '8.00,10.00' && h.lineRep === '1', `line 5 (8 s to 10 s), play 1 (${h.lineLoop} / ${h.lineRep})`);
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, 'starts at 30%');
+  const r0 = Number(h.reps);
+  const rates = [];
+  let outside = 0;
+  await waitFor(async () => {
+    const v = await vstate();
+    if (!rates.length || rates[rates.length - 1] !== v.rate) rates.push(v.rate);
+    const x = await host();
+    if (x.lineLoop && (v.t < 7.95 || v.t > 10.15)) outside++;
+    return x.lineLoop === '' ? x : null;
+  }, 150000, 'line practice finishes by itself');
+  h = await host();
+  const v = await vstate();
+  const want = [...new Set(Array.from({ length: 10 }, (_, i) => Core.trainerRate(0.3, 1, 10, i + 1))), 0.75];
+  assert(JSON.stringify(rates) === JSON.stringify(want), `speeds ${JSON.stringify(rates)} want ${JSON.stringify(want)}`);
+  assert(outside === 0, `stayed on the line (${outside})`);
+  assert(Number(h.reps) - r0 === 20, `20 plays (${Number(h.reps) - r0})`);
+  assert(v.paused && Math.abs(v.t - 8) < 0.15, `stopped at the start of the line (paused=${v.paused}, t=${v.t.toFixed(2)})`);
+  assert(Math.abs(v.rate - 0.75) < 0.001, 'speed back to 75%');
+  assert(h.a === abBefore.a && h.b === abBefore.b, 'A-B loop untouched');
+});
+
+await step('line practice: tap ⟳ again to stop early; speed comes back and it plays on', async () => {
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await lineBtn(1);
+  let h = await host();
+  assert(h.lineLoop === '2.00,4.00', `line 2 (${h.lineLoop})`);
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');
+  await page.screenshot({ path: path.join(SHOTS, '9-line-loop.png') });
+  await sleep(500);
+  await lineBtn(1);
+  h = await host();
+  assert(h.lineLoop === '', 'stopped');
+  const v = await vstate();
+  assert(Math.abs(v.rate - 0.75) < 0.001 && !v.paused, `75% again and still playing (${v.rate}, paused=${v.paused})`);
+  await waitFor(async () => (await vstate()).t > 4.2, 5000, 'plays on into the next line');
+  await shadowClick('button.speed', '100%');
+});
+
+await step('big round play / pause button on the wave', async () => {
+  const w = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.big-play').getBoundingClientRect().width);
+  assert(w >= 50, `big (${w}px)`);
+  const wasPaused = (await vstate()).paused;
+  await shadowClick('button.big-play');
+  assert((await vstate()).paused !== wasPaused, 'toggled');
+  if ((await vstate()).paused) await shadowClick('button.big-play');
 });
 
 await step('switching videos resets, coming back restores loop and cached wave', async () => {
@@ -599,7 +660,7 @@ await step('a cappella video: lyrics line up with where the singing starts, by t
   }, 40000, 'auto timing');
   assert(off === 'timing −3.0s (auto)', `lyrics moved 3 s earlier to meet the singing (${off})`);
   await waitFor(async () => (await host()).scanning === 'false', 40000, 'whole-song read finished');
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4.5; v.play(); });
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4.5; v.play().catch(() => {}); });
   // Line 3 is at 7 s in the original = 4 s in this video (lit from 4 s to 6 s).
   await waitFor(async () => { const y = await lyr(); const t = (await vstate()).t; return t < 5.6 && y.now === 2; }, 3000, 'the line being sung is lit');
   await page.evaluate(() => window.__navigate('VIDAAAA1'));
