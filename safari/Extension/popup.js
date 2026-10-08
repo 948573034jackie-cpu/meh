@@ -36,16 +36,22 @@ go.addEventListener('click', async () => {
 const parseSubtitleFile = (window.YTC || {}).parseSubtitleFile;
 
 // ---- options ----
+const SAFARI = !!self.__ytcSafari; // iPad / iPhone Safari
+if (SAFARI) { // these two cannot work in Safari on iPad / iPhone: hide them
+  for (const id of ['feedOn', 'talkOn']) { const b = document.getElementById(id); if (b && b.closest('label')) b.closest('label').style.display = 'none'; }
+}
 for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'feedOn', 'talkOn', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
-  chrome.storage.local.get(id).then((s) => { box.checked = id === 'talkOn' ? s[id] === true : s[id] !== false; }); // talk mode is off unless turned on
+  // off unless turned on: talk mode everywhere, voice commands on iPad / iPhone (the microphone stays free for the voice call)
+  const offFirst = id === 'talkOn' || (id === 'voiceOn' && SAFARI);
+  chrome.storage.local.get(id).then((s) => { box.checked = offFirst ? s[id] === true : s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
 const slider = document.getElementById('textLevel');
 const sizeVal = document.getElementById('sizeVal');
 const LABELS = { 1: 'smallest', 6: 'medium', 10: 'biggest' };
 function showSize(v) { sizeVal.textContent = (Number.isInteger(v) ? v : v.toFixed(2).replace(/0$/, '')) + (LABELS[v] ? ' (' + LABELS[v] + ')' : ''); }
-chrome.storage.local.get('textLevel').then((s) => { slider.value = Math.min(10, s.textLevel || 6); showSize(Number(slider.value)); });
+chrome.storage.local.get('textLevel').then((s) => { slider.value = Math.min(10, s.textLevel || (SAFARI ? 4.5 : 6)); showSize(Number(slider.value)); });
 slider.addEventListener('input', () => { showSize(Number(slider.value)); chrome.storage.local.set({ textLevel: Number(slider.value) }); });
 
 

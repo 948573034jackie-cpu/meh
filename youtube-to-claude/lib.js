@@ -244,6 +244,28 @@
     return total >= 40 && same >= 8 ? same / total : 0; // needs a real amount of text: one "no, no, no" is not a pattern
   }
 
+  // Remove the "code" that sometimes comes with YouTube subtitles: &#39; &amp; &quot; <font>, <c>, {\an8},
+  // VTT/SRT time lines (00:01:02.000 --> ...), cue numbers on their own, ">>" speaker marks, invisible characters.
+  const NAMED = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', shy: '' };
+  function cleanText(t) {
+    let x = String(t == null ? '' : t);
+    for (let k = 0; k < 2; k++) { // twice: "&amp;#39;" -> "&#39;" -> "'"
+      x = x.replace(/&#(\d{1,6});?/g, (m, n) => { const c = +n; return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
+        .replace(/&#x([0-9a-f]{1,6});?/gi, (m, h) => { const c = parseInt(h, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
+        .replace(/&([a-z]{2,8});/gi, (m, n) => (n.toLowerCase() in NAMED ? NAMED[n.toLowerCase()] : m));
+    }
+    return x.replace(/<[^>]{0,200}>/g, ' ')
+      .replace(/\{\\[^}]*\}/g, '')
+      .replace(/\b\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}/g, ' ')
+      .replace(/(^|\s)\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}[.,]\d{3}/g, ' ')
+      .replace(/(^|\s)(?:align|position|line|size):\S+/g, ' ')
+      .replace(/>>+|&gt;&gt;/g, ' ')
+      .replace(/[​-‏‪-‮⁠-⁤﻿­]/g, '')
+      .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, ' ')
+      .replace(/\\[nN]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+
   function toWords(cues) {
     const forceUndouble = rawDoubleRate(cues) >= 0.2; // the whole transcript is doubled (real speech: about 0.01)
     const words = [];
@@ -252,10 +274,11 @@
       const next = cues[i + 1];
       let list;
       if (c.words) {
-        list = c.words.map((x) => ({ t: x.t, w: x.w, e: null }));
+        list = c.words.map((x) => ({ t: x.t, w: cleanText(x.w), e: null })).filter((x) => x.w);
         list.forEach((x, k) => { x.e = k + 1 < list.length ? Math.min(list[k + 1].t, x.t + 1.2) : x.t + 0.6; });
       } else {
-        const toks = c.text.split(/\s+/).filter(Boolean);
+        const toks = cleanText(c.text).split(/\s+/).filter(Boolean);
+        if (!toks.length) continue;
         let end = c.end || (next ? next.start : c.start + 4);
         if (next && next.start > c.start && end > next.start) end = next.start;
         if (end <= c.start) end = c.start + 2;
@@ -380,7 +403,7 @@
     return groups;
   }
 
-  const api = { fmtTime, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
+  const api = { fmtTime, cleanText, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YTC = api;
 })(typeof window !== 'undefined' ? window : globalThis);

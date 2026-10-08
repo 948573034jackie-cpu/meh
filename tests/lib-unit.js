@@ -188,3 +188,27 @@ console.log('subtitle file tests passed');
   console.log('  30-second parts at 1:35, 20:34, 1:00:00, 1:30:32, 1:58:20 ->', lengths.join('s, ') + 's');
 }
 console.log('30-second part tests passed');
+
+// ---- the "code" that sometimes comes with subtitles is removed ----
+{
+  const L = require('../youtube-to-claude/lib.js');
+  const cases = [
+    ['I&#39;m here &amp; you&#39;re there', "I'm here & you're there"],
+    ['she said &quot;hello&quot; &#x27;ok&#x27;', 'she said "hello" \'ok\''],
+    ['&amp;#39;double&amp;#39; encoded', "'double' encoded"],
+    ['<font color="#E5E5E5">we are</font> <c.colorE5E5E5>going</c>', 'we are going'],
+    ['{\\an8}top line', 'top line'],
+    ['00:01:02.000 --> 00:01:04.500 align:start position:0% hello there', 'hello there'],
+    ['>> SPEAKER: welcome back', 'SPEAKER: welcome back'],
+    ['zero​width﻿ word', 'zerowidth word'],
+    ['line one\\nline two', 'line one line two'],
+    ['plain words stay the same, 2 + 2 = 4.', 'plain words stay the same, 2 + 2 = 4.']
+  ];
+  let bad = 0;
+  for (const [inp, want] of cases) { const got = L.cleanText(inp); if (got !== want) { bad++; console.log('  FAIL cleanText', JSON.stringify(inp), '->', JSON.stringify(got), 'want', JSON.stringify(want)); } }
+  const sents = L.buildSentences([{ start: 0, end: 3, text: 'I&#39;m learning&nbsp;English &amp; it&#39;s fun.' }, { start: 3, end: 6, text: '<c>Today</c> we read.' }]);
+  const joined = sents.map((x) => x.text).join(' ');
+  if (joined !== "I'm learning English & it's fun. Today we read.") { bad++; console.log('  FAIL sentences', JSON.stringify(joined)); }
+  if (bad) { console.log(bad + ' cleanText tests FAILED'); process.exit(1); }
+  console.log('subtitle code-cleaning tests passed');
+}

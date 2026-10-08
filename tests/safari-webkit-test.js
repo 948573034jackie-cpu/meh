@@ -8,7 +8,7 @@ const rd = (f) => fs.readFileSync(EXT + f, 'utf8');
 let fails = 0;
 const ok = (name, cond, info) => { console.log((cond ? 'PASS  ' : 'FAIL  ') + name + (info ? '  ' + String(info).slice(0, 300) : '')); if (!cond) fails++; };
 
-const cues = Array.from({ length: 30 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: 'This is sentence number ' + (i + 1) + ' of the lesson.' }] }));
+const cues = Array.from({ length: 30 }, (_, i) => ({ tStartMs: i * 4000, dDurationMs: 4000, segs: [{ utf8: 'This is sentence number ' + (i + 1) + ' of the&nbsp;lesson.' + (i % 5 === 4 ? '&#39;' : '') }] }));
 const json3 = JSON.stringify({ events: cues });
 const pr = JSON.stringify({ videoDetails: { videoId: 'abc12345678', title: 'English Lesson 1', lengthSeconds: '120' }, playabilityStatus: { status: 'OK' },
   captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'http://localhost:8771/timedtext?lang=en', languageCode: 'en', kind: 'asr' }] } } });
@@ -27,7 +27,8 @@ const server = http.createServer((q, r) => {
 
 // Safari's API: everything returns a promise. "chrome" is a decoy WITHOUT promises, so the test fails if the shim is not used.
 const fakeSafari = (store) => {
-  window.__calls = []; window.__listeners = [];
+  window.__calls = []; window.__listeners = []; window.__recStarts = 0;
+  window.webkitSpeechRecognition = function () { window.__recStarts++; this.start = () => {}; this.stop = () => {}; this.abort = () => {}; };
   const changed = [];
   window.browser = {
     runtime: { id: 'safari-ext', getURL: (p) => p,
@@ -73,6 +74,19 @@ setTimeout(() => { console.log('FAIL  test took longer than 5 minutes (stuck) - 
   const ps = await yt.evaluate(() => { const p = window.__calls.find((c) => c.type === 'pause-send'); return p ? { start: p.seg.start, end: p.seg.end, lines: p.lines.length, first: p.lines[0], inCall: p.inCall } : null; });
   ok('pause: the ~30 s part is sent (complete sentences), not the whole video', ps && ps.end - ps.start >= 24 && ps.end - ps.start <= 36 && /^This is sentence number \d+ of the lesson\./.test(ps.first) && ps.inCall === false, JSON.stringify(ps));
   ok('pause: the subtitles show on screen', await yt.evaluate(() => !!document.getElementById('yt2c-overlay')));
+  const ovText = await yt.evaluate(() => (document.getElementById('yt2c-overlay') || {}).innerText || '');
+  ok('subtitles have no "code" (&nbsp; &#39; ...)', ovText.length > 20 && !/&[#a-z0-9]+;?/i.test(ovText) && /of the lesson\./.test(ovText), ovText.slice(0, 120));
+  ok('iPad: the microphone is NOT used by the YouTube page (free for the Claude voice call)', await yt.evaluate(() => window.__recStarts === 0), 'started ' + await yt.evaluate(() => window.__recStarts));
+  await yt.waitForTimeout(2500);
+  const st = await yt.evaluate(() => document.getElementById('yt2c-b-status').textContent);
+  ok('the result of sending shows under the video', /^Sent to Claude ✓ \(\d+:\d\d–\d+:\d\d\)$/.test(st), st);
+  const fs0 = await yt.evaluate(() => parseFloat(getComputedStyle(document.getElementById('yt2c-body')).fontSize));
+  await yt.click('#yt2c-b-bigger'); await yt.click('#yt2c-b-bigger'); await yt.waitForTimeout(400);
+  const fs1 = await yt.evaluate(() => parseFloat(getComputedStyle(document.getElementById('yt2c-body')).fontSize));
+  await yt.click('#yt2c-b-smaller'); await yt.click('#yt2c-b-smaller'); await yt.click('#yt2c-b-smaller'); await yt.click('#yt2c-b-smaller'); await yt.waitForTimeout(400);
+  const fs2 = await yt.evaluate(() => parseFloat(getComputedStyle(document.getElementById('yt2c-body')).fontSize));
+  const lvl = await yt.evaluate(() => window.browser.storage.local.get('textLevel').then((o) => o.textLevel));
+  ok('A+ / A− under the video make the subtitles bigger / smaller (and it is saved)', fs1 > fs0 && fs2 < fs0 && lvl === 3.5, [fs0, fs1, fs2, lvl].join(' / '));
 
   // ---- iPad: touch the video. 1st touch: back to the start of the ~30 s part, play it once, stop, send. 2nd touch: back to its start, play to the end ----
   const tp = await ctx.newPage();

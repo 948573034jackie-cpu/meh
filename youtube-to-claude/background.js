@@ -118,7 +118,7 @@ function passageText(lines, seg) {
     ...when,
     lines.join('\n'),
     '',
-    'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then repeat the sentences above once more, exactly as written. Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words, and do not ask me anything or offer anything at the end.'
+    'Using the context of this video, explain this part to me like an English teacher: what is happening, what they are talking about, and the important idea, so I really understand it. Then write the sentences above again as complete, correctly punctuated sentences, one sentence per line (they come from automatic subtitles, so fix only the sentence breaks, punctuation and capital letters; keep the words). Start directly with the explanation. No greeting, no title, no headings, no bullet points, no bold, no labels, no extra words, and do not ask me anything or offer anything at the end.'
   ].join('\n');
 }
 
@@ -143,7 +143,9 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
       await sleep(500);
     }
   }
-  if (!path) return 'Could not reach the ' + T.name + ' tab. Refresh it and try again.';
+  if (!path) return self.__ytcSafari
+    ? 'Could not reach ' + T.name + '. Open ' + T.name + ' in a second Safari window NEXT to YouTube (Split View, both on screen), allow the extension there, then try again.'
+    : 'Could not reach the ' + T.name + ' tab. Refresh it and try again.';
 
   const sent = await getSent();
   const rec = sent[claudeTab.id];

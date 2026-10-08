@@ -314,10 +314,13 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: !!window.__ytcSafari || navigator.maxTouchPoints > 0, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
+  // iPad / iPhone (Safari): you touch the video instead of talking to it. The microphone stays free for your
+  // Claude voice call (when this page listens, iPadOS turns the video's sound down and takes the mic from the call).
+  const TOUCH = !window.__ytcShimYT && (!!window.__ytcSafari || navigator.maxTouchPoints > 0); // (the YT Learn app keeps its own settings)
+  const settings = { pauseOn: true, replayOn: true, textLevel: TOUCH ? 4.5 : 6, voiceOn: !TOUCH, target: 'claude', tapOn: TOUCH, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
-    if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
+    if ('voiceOn' in s) settings.voiceOn = TOUCH ? s.voiceOn === true : s.voiceOn !== false;
     if ('replayOn' in s) settings.replayOn = s.replayOn !== false;
     if ('textLevel' in s) settings.textLevel = Math.min(10, Math.max(1, Number(s.textLevel) || 6)); // 1..10, in steps of 0.25
     if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
@@ -622,7 +625,20 @@
       };
       gpt.onclick = () => toggle('chatgpt');
       claude.onclick = () => toggle('claude');
-      bar.append(gpt, claude, status);
+      // subtitle size: A- smaller, A+ bigger (saved)
+      const size = (id, text, step) => {
+        const b = document.createElement('button'); b.id = id; b.textContent = text;
+        b.title = step < 0 ? 'Smaller subtitles' : 'Bigger subtitles';
+        b.style.cssText = 'border:1px solid #888;border-radius:14px;padding:6px 10px;font:inherit;cursor:pointer;color:inherit;background:transparent;min-width:40px';
+        b.onclick = () => {
+          settings.textLevel = Math.min(10, Math.max(1, (Number(settings.textLevel) || 6) + step));
+          chrome.storage.local.set({ textLevel: settings.textLevel });
+          status.textContent = 'Subtitle size ' + settings.textLevel + ' of 10';
+          try { rerender(); } catch (e) { /* ignore */ }
+        };
+        return b;
+      };
+      bar.append(gpt, claude, size('yt2c-b-smaller', 'A−', -0.5), size('yt2c-b-bigger', 'A+', 0.5), status);
     }
     for (const id of ['chatgpt', 'claude']) {
       const b = bar.querySelector('#yt2c-b-' + id);
@@ -645,6 +661,14 @@
       bar.style.borderRadius = '16px';
       bar.style.padding = '4px 8px';
     }
+  }
+
+  function setBarStatus(text, bad) {
+    const st = document.getElementById('yt2c-b-status');
+    if (!st) return;
+    st.textContent = text;
+    st.style.color = bad ? '#ff6b5e' : '';
+    st.style.whiteSpace = bad ? 'normal' : 'nowrap';
   }
 
   function updateTapLayer() {
@@ -1058,8 +1082,9 @@
               const ok = !!(r && /^Sent /.test(r.result));
               lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');
               setFoot('Not sent to ' + targetName() + ': ' + ((r && r.result) || 'no answer'), ok);
+              setBarStatus(ok ? 'Sent to ' + targetName() + ' ✓ (' + fmtTime(seg.start) + '–' + fmtTime(seg.end) + ')' : '⚠ NOT sent: ' + ((r && r.result) || 'no answer'), !ok);
             })
-            .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); });
+            .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); setBarStatus('⚠ NOT sent: reload this YouTube page', true); });
         } catch (e) { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
       };
       // Is the chat in a voice call right now? Then the replay is also played INTO the call (Claude hears it).
