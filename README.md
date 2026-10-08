@@ -32,6 +32,8 @@ Chrome on iPhone/iPad can't run extensions, so there is a **script version** tha
 - **Play / pause** button a little bigger than the others.
 - **Pinch to zoom**, **Whole song** to see everything, tap the little map under the wave to jump.
 - A round floating button opens the looper.
+- **Practise with Claude on a voice call (iPad):** the video keeps playing during the call (⚙ **Play along with voice calls**, on by default on iPhone/iPad; the silent switch / silent mode mutes it). Every time you pause, 1 second later a **picture of the lyrics** opens in the share sheet: the video frame with its subtitles, the song, and the lyrics around where you stopped, with that line highlighted. Tap **Claude** and it's sent. (Safari never lets a web page send to another app by itself, so that one tap is needed; after the first time, Claude sits at the front of the share sheet.) The 📷 above the lyrics sends one any time. Turn it off in ⚙ (**When I pause: send a lyrics picture**). Tip: on iPad put Safari and Claude side by side (Split View).
+- **Tap the video** to pause / play.
 
 1. Install **Userscripts** from the App Store (free; icon is `</>`).
 2. Open the Userscripts app once and tap **Change Userscripts Directory**. Pick a folder, for example *On My iPhone → Userscripts*.
@@ -62,6 +64,7 @@ Notes:
 | Lyrics | Tap **Lyrics** (♪). They're found automatically from the song name; the current line lights up when the lyrics have timings. Tap a line to jump there. ⏭ = next match; or type the song name and press Enter. |
 | Play / pause | ▶ / ❚❚ button in the row right above the wave, next to **A** / **B**. |
 | Breathing pause, pitch, sound quality | ⚙ settings. **Studio-quality slow-down** is on by default; turn it off if your computer struggles. Turn **Keep pitch** off for tape-style slow-down (50% = one octave lower, handy for working out fast solos). |
+| Send the lyrics to Claude | 📷 above the lyrics. On a computer the picture is copied, so paste it into Claude (Ctrl+V / ⌘V). |
 | Undo a loop change | ↶ button. |
 | Turn it all off | ✕ closes the panel and resets speed to 100%. |
 

@@ -24,6 +24,8 @@
   const IS_MUSIC = location.hostname === 'music.youtube.com';
   const IS_MOBILE_SITE = location.hostname === 'm.youtube.com';
   const TOUCH = !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) || IS_MOBILE_SITE;
+  // iPhone / iPad (iPadOS Safari says "Macintosh" but has a touch screen).
+  const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   const BIN_RATE = 50;
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
@@ -96,7 +98,11 @@
     lyricsH: 0, // height of the top lyrics area as a fraction of the screen; 0 = fill the space above the panel
     seenHelp: false,
     zoomFocus: false, // "Zoom in": the wave follows the playhead in a short window
-    hqAudio: true, // studio-quality slow-down (Signalsmith Stretch)
+    hqAudio: !IS_IOS, // studio-quality slow-down (Signalsmith Stretch); off on iPhone/iPad, where Safari can freeze it
+    hqV: 1,
+    tapVideo: true, // touch screens: a tap on the video pauses / plays
+    mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
+    snapOnPause: IS_IOS, // after you pause: share a picture of the lyrics (e.g. to Claude)
     focusLen: 30,
   };
   function saveSettings() {
@@ -210,6 +216,9 @@
     ['ratechange', () => updateHQ()],
     ['ended', onEnded],
     ['play', onPlay],
+    ['play', () => {
+      if (HQ.src) hqCheckSound();
+    }],
     ['durationchange', () => {
       S.peaks.setDuration(dur());
       S.dirty = true;
@@ -222,7 +231,10 @@
       renderUI();
     }],
     ['playing', () => applyRate()],
-    ['pause', () => renderUI()],
+    ['pause', () => {
+      renderUI();
+      onPauseSnap();
+    }],
     ['seeked', () => (S.dirty = true)],
   ];
 
@@ -434,11 +446,6 @@
   // Called from taps/clicks in the panel: audio may only start after one.
   function hqGesture() {
     if (!settings.hqAudio || HQ.failed) return;
-    try {
-      if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; // iPhone: ignore the silent switch, like video sound
-    } catch (e) {
-      /* ignore */
-    }
     if (HQ.ctx) {
       if (HQ.ctx.state !== 'running') HQ.ctx.resume().catch(() => {});
       return;
@@ -454,8 +461,13 @@
       return;
     }
     HQ.ctx.addEventListener('statechange', () => {
-      if (HQ.src && HQ.ctx.state !== 'running') HQ.ctx.resume().catch(() => flash('Tap the panel to bring the sound back.', 6000));
+      if (HQ.src && HQ.ctx.state !== 'running' && S.video && !S.video.paused) hqCheckSound();
       updateHQ();
+    });
+    // Any tap on the page counts as a gesture that may wake the sound up.
+    for (const ev of ['pointerdown', 'touchend', 'keydown']) document.addEventListener(ev, hqWake, true);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) hqWake();
     });
     HQ.loading = true;
     // eslint-disable-next-line no-undef
@@ -479,6 +491,24 @@
         HQ.loading = false;
         updateHQ();
       });
+  }
+
+  // Once the video's sound runs through our engine it is silent while the
+  // engine is suspended (Safari does that on pause, app switch, phone calls,
+  // the microphone...). Wake it up whenever we can; a tap always can.
+  function hqWake() {
+    if (!HQ.ctx || !HQ.src || HQ.ctx.state === 'running' || HQ.ctx.state === 'closed') return;
+    HQ.ctx.resume().catch(() => {});
+  }
+
+  function hqCheckSound() {
+    hqWake();
+    setTimeout(() => {
+      const v = S.video;
+      if (HQ.ctx && HQ.src && HQ.video === v && v && !v.paused && HQ.ctx.state !== 'running') {
+        flash('No sound? Tap anywhere on the page to bring it back.', 6000);
+      }
+    }, 800);
   }
 
   function hqWanted(v) {
@@ -743,6 +773,55 @@
       if (!settings.gap) play();
     }
   }
+
+  // ---- Tap the video to pause / play (touch screens) ----
+  // YouTube's own buttons, progress bar, menus and end cards keep working.
+  const VIDEO_TAP_SKIP = 'button, a, input, select, textarea, [role="button"], [role="slider"], [role="menu"], ' +
+    '.ytp-chrome-bottom, .ytp-chrome-top, .ytp-settings-menu, .ytp-popup, .ytp-ce-element, .ytp-ad-module, ' +
+    '.ytp-cards-teaser, ytm-progress-bar, [class*="progress-bar"], .ytl-fab';
+  const VT = { down: null, suppressClickUntil: 0 };
+
+  function isVideoTap(e) {
+    const v = S.video;
+    if (!TOUCH || !settings.tapVideo || !settings.open || !v || S.scan || isAd() || e.pointerType === 'mouse') return false;
+    const path = e.composedPath ? e.composedPath() : [];
+    if (hostEl && path.includes(hostEl)) return false;
+    for (const el of path) {
+      if (el === document.body) break;
+      if (el instanceof Element && el.matches(VIDEO_TAP_SKIP)) return false;
+    }
+    const r = v.getBoundingClientRect();
+    return r.width > 0 && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    VT.down = isVideoTap(e) ? { x: e.clientX, y: e.clientY, at: now(), id: e.pointerId } : null;
+  }, true);
+  document.addEventListener('pointercancel', () => (VT.down = null), true);
+  document.addEventListener('pointerup', (e) => {
+    const d = VT.down;
+    VT.down = null;
+    if (!d || e.pointerId !== d.id || now() - d.at > 450 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 12 || !isVideoTap(e)) return;
+    const v = S.video;
+    const wantPaused = !v.paused;
+    VT.suppressClickUntil = now() + 700;
+    togglePlay();
+    // If YouTube's own tap handling flipped it straight back, put it right.
+    setTimeout(() => {
+      if (S.video === v && v.paused !== wantPaused) {
+        if (wantPaused) v.pause();
+        else play();
+      }
+    }, 350);
+  }, true);
+  // The click that follows the tap belongs to us, not to YouTube's player.
+  document.addEventListener('click', (e) => {
+    if (now() < VT.suppressClickUntil && !(hostEl && e.composedPath().includes(hostEl))) {
+      VT.suppressClickUntil = 0;
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
 
   function togglePlay() {
     const v = S.video;
@@ -1059,10 +1138,11 @@
       renderUI();
     }, 'icon', 'place');
     const hide = btn(null, 'Hide the lyrics', toggleLyrics, 'icon', 'close');
+    ui.snapBtn = btn(null, 'Send a picture of the lyrics (to Claude or any app)', () => sendLyricsPicture(false), 'icon', 'camera');
     const grip = h('div', { class: 'lyr-resize', title: 'Drag to make the lyrics area taller or shorter' });
     setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
-      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, ui.snapBtn, smaller, bigger, ui.lyrPlace, hide),
       ui.lyrMeta, ui.lyrSync, ui.lyrBody, grip);
   }
 
@@ -1467,6 +1547,222 @@
     renderLyricsSync();
   }
 
+  // ---------------------------------------------------------------------------
+  // Practising with Claude (or a teacher) on a voice call, on iPad/iPhone:
+  // - the video keeps playing during the call (audio mixes with the call)
+  // - every time you pause, after 1 second a picture of the lyrics (and the
+  //   video with its subtitles) goes to the share sheet: pick Claude.
+  //   Safari never lets a web page send to another app without that one tap.
+  // ---------------------------------------------------------------------------
+  const SNAP_DELAY = 1000;
+  const SNAP = { timer: 0, lastInputAt: 0, suppressUntil: 0, fingers: new Set() };
+
+  function applyAudioSession() {
+    try {
+      if (!navigator.audioSession) return;
+      const want = settings.mixCalls ? 'ambient' : 'auto';
+      if (navigator.audioSession.type !== want) navigator.audioSession.type = want;
+    } catch (e) {
+      /* not supported */
+    }
+  }
+
+  for (const ev of ['pointerdown', 'keydown']) {
+    document.addEventListener(ev, (e) => {
+      SNAP.lastInputAt = now();
+      if (ev === 'pointerdown') SNAP.fingers.add(e.pointerId);
+    }, true);
+  }
+  for (const ev of ['pointerup', 'pointercancel']) document.addEventListener(ev, (e) => SNAP.fingers.delete(e.pointerId), true);
+
+  function onPauseSnap() {
+    clearTimeout(SNAP.timer);
+    if (!settings.snapOnPause || !settings.open || S.scan || isAd() || now() < SNAP.suppressUntil) return;
+    if (now() - SNAP.lastInputAt > 1200) return; // paused by the looper (breath pause, trainer done...), not by you
+    const v = S.video;
+    SNAP.timer = setTimeout(() => {
+      // Still paused, and not just holding the wave with a finger.
+      if (S.video !== v || !v || !v.paused || S.scan || S.wrapping || SNAP.fingers.size) return;
+      sendLyricsPicture(true);
+    }, SNAP_DELAY);
+  }
+
+  function lyricsPictureLines() {
+    const kids = ui.lyrBody ? [...ui.lyrBody.querySelectorAll('p')] : [];
+    const text = (p) => {
+      const t = p.querySelector('.lyr-text');
+      return ((t || p).textContent || '').trim();
+    };
+    if (!kids.length || !L.results.length || ui.lyrics.hidden) return { lines: [], cur: -1 };
+    let from;
+    let to;
+    let cur = -1;
+    if (L.synced && L.lines && S.video) {
+      cur = S.lineLoop ? S.lineLoop.idx : C.lineAt(L.lines, S.video.currentTime + 0.15 - L.offset - audioLag());
+      const c = Math.max(0, cur);
+      from = Math.max(0, c - 3);
+      to = Math.min(kids.length, c + 5);
+    } else {
+      // Plain lyrics: the lines you can see.
+      const box = ui.lyrBody.getBoundingClientRect();
+      const seen = kids.map((p, i) => [p.getBoundingClientRect(), i]).filter(([r]) => r.bottom > box.top && r.top < box.bottom);
+      from = seen.length ? seen[0][1] : 0;
+      to = Math.min(kids.length, seen.length ? seen[seen.length - 1][1] + 1 : 10, from + 14);
+    }
+    const lines = [];
+    for (let i = from; i < to; i++) lines.push({ text: text(kids[i]) || '♪', now: i === cur });
+    return { lines, cur };
+  }
+
+  function wrapText(ctx, text, maxW) {
+    const out = [];
+    let line = '';
+    // Split on spaces, or between characters for Chinese/Japanese/Korean.
+    const parts = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]|[^\s\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+|\s+/g) || [];
+    for (const w of parts) {
+      const next = line + w;
+      if (line.trim() && ctx.measureText(next).width > maxW) {
+        out.push(line.trim());
+        line = /^\s+$/.test(w) ? '' : w;
+      } else line = next;
+    }
+    if (line.trim()) out.push(line.trim());
+    return out.length ? out : [''];
+  }
+
+  // Draws the picture: video frame (with YouTube's subtitles), song, lyrics.
+  function makeLyricsPicture() {
+    const v = S.video;
+    const W = 1080;
+    const pad = 48;
+    let frame = null;
+    if (v && v.videoWidth && v.readyState >= 2) {
+      try {
+        const fh = Math.round((W * v.videoHeight) / v.videoWidth);
+        frame = document.createElement('canvas');
+        frame.width = W;
+        frame.height = Math.min(fh, 900);
+        const fc = frame.getContext('2d');
+        fc.drawImage(v, 0, (frame.height - fh) / 2, W, fh);
+        fc.getImageData(0, 0, 1, 1); // throws if the browser will not let us read the picture
+      } catch (e) {
+        frame = null;
+      }
+    }
+    const caption = [...document.querySelectorAll('.ytp-caption-segment, .caption-visual-line')]
+      .map((e) => (e.textContent || '').trim()).filter(Boolean).join(' ');
+    const { lines } = lyricsPictureLines();
+    if (!frame && !caption && !lines.length) return null;
+
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    const font = (size, bold) => `${bold ? '700' : '500'} ${size}px -apple-system, "PingFang SC", "Hiragino Sans", "Noto Sans CJK SC", "Segoe UI", Roboto, sans-serif`;
+    const maxW = W - pad * 2;
+    // Lay out first, then draw.
+    const items = [];
+    ctx.font = font(36, true);
+    for (const l of wrapText(ctx, songMeta().title || 'YouTube', maxW)) items.push({ text: l, size: 36, bold: true, color: '#111' });
+    const t = v ? v.currentTime : 0;
+    const speed = v && Math.abs(v.playbackRate - 1) > 0.001 ? ` · speed ${Math.round(v.playbackRate * 100)}%` : '';
+    items.push({ text: `Paused at ${C.formatTime(t).replace(/\.\d+$/, '')}${speed}`, size: 28, color: '#666', gapAfter: 16 });
+    if (caption) {
+      ctx.font = font(34, false);
+      items.push({ text: 'Subtitles on the video:', size: 26, color: '#666' });
+      for (const l of wrapText(ctx, caption, maxW)) items.push({ text: l, size: 34, color: '#111' });
+      items.push({ text: '', size: 12 });
+    }
+    if (lines.length) {
+      for (const ln of lines) {
+        const size = ln.now ? 50 : 42;
+        ctx.font = font(size, ln.now);
+        const wrapped = wrapText(ctx, (ln.now ? '▶ ' : '') + ln.text, maxW);
+        for (const l of wrapped) items.push({ text: l, size, bold: ln.now, color: ln.now ? '#b45309' : '#333', mark: ln.now });
+      }
+    }
+    const frameH = frame ? frame.height : 0;
+    let H = frameH + pad;
+    for (const it of items) H += it.size * 1.35 + (it.gapAfter || 0);
+    H += pad;
+    c.width = W;
+    c.height = Math.ceil(H);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, c.height);
+    if (frame) ctx.drawImage(frame, 0, 0);
+    let y = frameH + pad;
+    ctx.textBaseline = 'top';
+    for (const it of items) {
+      const lh = it.size * 1.35;
+      if (it.mark) {
+        ctx.fillStyle = '#fff4d6';
+        ctx.fillRect(pad / 2, y - 6, W - pad, lh + 4);
+      }
+      ctx.font = font(it.size, it.bold);
+      ctx.fillStyle = it.color;
+      ctx.fillText(it.text, pad, y);
+      y += lh + (it.gapAfter || 0);
+    }
+    const url = c.toDataURL('image/png');
+    const bin = atob(url.slice(url.indexOf(',') + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const name = `lyrics-${C.formatTime(t).replace(/\.\d+$/, '').replace(':', 'm')}s.png`;
+    try {
+      return new File([bytes], name, { type: 'image/png' });
+    } catch (e) {
+      const b = new Blob([bytes], { type: 'image/png' });
+      b.name = name;
+      return b;
+    }
+  }
+
+  async function sendLyricsPicture(auto) {
+    let file;
+    try {
+      file = makeLyricsPicture();
+    } catch (e) {
+      file = null;
+    }
+    if (!file) {
+      if (!auto) flash('Nothing to send yet: open the lyrics (♪) first.');
+      return;
+    }
+    if (hostEl) hostEl.dataset.snap = `${file.name}:${file.size}`;
+    ui.snapBtn.classList.remove('pulse');
+    let canShare = false;
+    try {
+      canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
+    } catch (e) {
+      canShare = false;
+    }
+    if (canShare) {
+      try {
+        await navigator.share({ files: [file] });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // share sheet closed
+        if (auto) {
+          // Too long after the tap for Safari: one tap on 📷 sends it.
+          ui.snapBtn.classList.add('pulse');
+          flash('Tap 📷 (above the lyrics) to send the picture.', 5000);
+          return;
+        }
+      }
+    }
+    if (auto && TOUCH) return;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': file })]);
+      flash('Lyrics picture copied. Paste it into Claude (Ctrl+V / ⌘V).', 4000);
+      return;
+    } catch (e) {
+      /* no clipboard: save it */
+    }
+    const a = h('a', { href: URL.createObjectURL(file), download: file.name || 'lyrics.png' });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    flash('Lyrics picture saved.', 3000);
+  }
+
   function lyricsTick() {
     if (!settings.lyrics || !L.synced || !L.lines || !S.video || ui.lyrics.hidden) return;
     if (L.autoPending) autoAlignLyrics();
@@ -1723,6 +2019,7 @@
     search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
     place: 'M4 4h16v6H4zm0 8h7v8H4zm9 0h7v8h-7z',
+    camera: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z',
     stop: 'M6 6h12v12H6z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
     minus: 'M19 13H5v-2h14z',
@@ -1890,13 +2187,36 @@
       ui.hqChk.blur();
       if (settings.hqAudio) hqGesture();
       updateHQ();
+      if (settings.hqAudio && IS_IOS) flash('On iPhone/iPad Safari may stop this sound when you pause or switch apps. If it goes quiet, tap the page, or turn this off.', 7000);
+      else if (!settings.hqAudio && HQ.src) flash('Off. Reload the page if the sound ever stays quiet.', 4000);
     });
+    ui.tapChk = h('input', { type: 'checkbox' });
+    ui.tapChk.checked = settings.tapVideo;
+    ui.tapChk.addEventListener('change', () => { settings.tapVideo = ui.tapChk.checked; saveSettings(); ui.tapChk.blur(); });
+    ui.mixChk = h('input', { type: 'checkbox' });
+    ui.mixChk.checked = settings.mixCalls;
+    ui.mixChk.addEventListener('change', () => {
+      settings.mixCalls = ui.mixChk.checked;
+      saveSettings();
+      applyAudioSession();
+      ui.mixChk.blur();
+      if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
+    });
+    ui.snapChk = h('input', { type: 'checkbox' });
+    ui.snapChk.checked = settings.snapOnPause;
+    ui.snapChk.addEventListener('change', () => { settings.snapOnPause = ui.snapChk.checked; saveSettings(); ui.snapChk.blur(); });
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
-      h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk, 'Studio-quality slow-down'),
+      h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
+        IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
+      TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
+      h('label', { class: 'check', title: 'After you pause, a picture of the lyrics (and the video with its subtitles) opens in the share sheet: pick Claude to send it.' }, ui.snapChk,
+        'When I pause: send a lyrics picture after 1 s'),
+      'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
+        'Play along with voice calls') : null,
       ui.rescanBtn,
       btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
@@ -3103,6 +3423,8 @@
     if (!d) return;
     t = C.clamp(t, 0, Math.max(0, d - 0.05));
     // Undo the play/pause of the first tap: a double tap only sets a point.
+    SNAP.suppressUntil = now() + 600;
+    clearTimeout(SNAP.timer);
     if (wasPlaying) play();
     else if (S.video && !S.video.paused) {
       try {
@@ -3257,6 +3579,12 @@
         settings.lyrics = true;
         settings.height = 0; // use the new half-screen default
       }
+      // iPhone/iPad: Safari freezes the studio sound engine when you pause, switch
+      // apps or use the microphone, and the video went silent. Off by default there.
+      if (settings.hqV !== 1) {
+        settings.hqV = 1;
+        if (IS_IOS) settings.hqAudio = false;
+      }
       // New trainer choices (v2): start from 30% over 10 loops unless chosen since.
       if (settings.trainerV !== 3) {
         settings.trainerV = 3;
@@ -3270,6 +3598,7 @@
           Math.abs(n - settings.trainerReps) < Math.abs(best - settings.trainerReps) ? n : best);
       }
       buildPanel();
+      applyAudioSession();
       postToPage({ type: 'hello' });
       syncVideo();
       requestAnimationFrame(frame);

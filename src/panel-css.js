@@ -259,4 +259,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .bar { padding-left: 4px; padding-right: 4px; }
   .rate { min-width: 38px; font-size: 12.5px; }
 }
+
+button.pulse { animation: ytl-pulse 0.9s ease-in-out infinite; background: #f59e0b; color: #111; }
+@keyframes ytl-pulse { 50% { transform: scale(1.15); } }
 `;

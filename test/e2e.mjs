@@ -582,6 +582,13 @@ const lineBtn = (i) => page.evaluate((k) => {
   p.querySelector('.lyr-loop').click();
 }, i);
 
+await step('📷 makes a picture of the lyrics to send to Claude (copied or saved on a computer)', async () => {
+  await shadowClick('button', 'Send a picture of the lyrics (to Claude or any app)');
+  await waitFor(async () => /^lyrics-.*\.png:\d+$/.test((await host()).snap || ''), 4000, 'picture made');
+  const size = Number((await host()).snap.split(':')[1]);
+  assert(size > 15000, `a real picture (${size} bytes)`);
+});
+
 await step('line practice: ⟳ plays one line 30 times (30% → 100% over 20, then 10 at 100%), then stops and puts the speed back', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
   await shadowClick('button.speed', '75%'); // the speed from before, to be restored

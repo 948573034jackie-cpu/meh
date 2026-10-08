@@ -51,6 +51,17 @@ const ctx = await browser.newContext({
   hasTouch: true,
   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
 });
+// A stand-in for Safari's share sheet: records what would be sent (e.g. to Claude).
+await ctx.addInitScript(() => {
+  window.__shares = [];
+  navigator.canShare = (d) => !!(d && d.files && d.files.length);
+  navigator.share = async (d) => {
+    for (const f of d.files) {
+      const url = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
+      window.__shares.push({ name: f.name, type: f.type, size: f.size, url });
+    }
+  };
+});
 await ctx.addInitScript({ path: path.join(ROOT, 'userscript', 'wave-looper.user.js') });
 const html = fs.readFileSync(path.join(ROOT, 'test', 'fake-youtube.html'));
 await ctx.route('https://m.youtube.com/**', (route) => {
@@ -206,7 +217,7 @@ await step('a quick tap on the wave pauses, another tap plays; a long hold just 
 });
 
 await step('double-tap the wave: first sets A there, the next sets B and the loop starts', async () => {
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 12; v.play(); });
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 12; v.play().catch(() => {}); });
   await sleep(500);
   const b = await waveBox();
   const y = b.y + 18 + (b.h - 18) * 0.5;
@@ -394,7 +405,7 @@ await step('lyrics: tap the left side of a line to practise it (from 30%), tap a
   let box = await where();
   await page.touchscreen.tap(box.x, box.y);
   let h = await host();
-  assert(h.lineLoop === '6.00,8.00', `line 4 (${h.lineLoop})`);
+  assert(h.lineLoop === '6.00,8.00', `line 4 (${h.lineLoop}) ${JSON.stringify(h)}`);
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, 'starts at 30%');
   await sleep(1500);
   const t = (await vstate()).t;
@@ -420,6 +431,46 @@ await step('play / pause: one button, a little bigger than the others', async ()
   await page.touchscreen.tap(m.x, m.y);
   assert((await vstate()).paused !== was, 'tap toggles play/pause');
   if ((await vstate()).paused) await page.touchscreen.tap(m.x, m.y);
+});
+
+await step('voice call helper: pause, and 1 s later a lyrics picture goes to the share sheet (for Claude)', async () => {
+  const shares = () => page.evaluate(() => window.__shares.map(({ name, type, size }) => ({ name, type, size })));
+  await page.evaluate(() => { window.__shares.length = 0; document.querySelector('#movie_player video').play().catch(() => {}); });
+  await sleep(1500);
+  const m = await page.evaluate(() => {
+    const p = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.play-btn').getBoundingClientRect();
+    return { x: p.left + p.width / 2, y: p.top + p.height / 2 };
+  });
+  await page.touchscreen.tap(m.x, m.y);
+  assert((await vstate()).paused, 'paused');
+  await sleep(500);
+  assert((await shares()).length === 0, 'waits a second first');
+  await waitFor(async () => (await shares()).length === 1, 2500, 'picture sent to the share sheet');
+  const sh = (await shares())[0];
+  assert(sh.type === 'image/png' && sh.size > 15000 && /^lyrics-.*\.png$/.test(sh.name), `a picture (${JSON.stringify(sh)})`);
+  const url = await page.evaluate(() => window.__shares[0].url);
+  fs.writeFileSync(path.join(SHOTS, 'm7-lyrics-picture.png'), Buffer.from(url.split(',')[1], 'base64'));
+  await tap('button', 'Send a picture of the lyrics (to Claude or any app)');
+  await waitFor(async () => (await shares()).length === 2, 2000, '📷 sends one right away');
+  // The looper pausing by itself (breath pause, trainer finished...) sends nothing.
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await sleep(1600);
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await sleep(1600);
+  assert((await shares()).length === 2, 'no picture when you did not pause it yourself');
+  // Holding the wave with a finger is not a pause.
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await sleep(500);
+  const b = await waveBox();
+  const cdp = await ctx.newCDPSession(page);
+  const x = b.x + b.w * 0.5;
+  const y = b.y + 18 + (b.h - 18) * 0.5;
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
+  await sleep(1600);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await sleep(300);
+  assert((await shares()).length === 2, 'holding the wave sends nothing');
+  assert(!(await vstate()).paused, 'plays on');
 });
 
 await step('loop and wave are remembered after reloading the page', async () => {
