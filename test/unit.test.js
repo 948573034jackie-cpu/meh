@@ -182,6 +182,14 @@ test('parseSongTitle: artist and song from YouTube titles', () => {
   assert.deepEqual(t('The Weeknd - Blinding Lights | Instrumental', 't'), { artist: 'The Weeknd', track: 'Blinding Lights' });
   assert.deepEqual(t('Queen – Bohemian Rhapsody (Official Video Remastered)', 'Queen Official'), { artist: 'Queen', track: 'Bohemian Rhapsody' });
   assert.deepEqual(t('Someone - My Song ft. Other Person', 'x'), { artist: 'Someone', track: 'My Song' });
+  assert.deepEqual(t('Leonard Cohen - Hallelujah (Official Audio) - Remastered 2023', 'x'), { artist: 'Leonard Cohen', track: 'Hallelujah' });
+  assert.deepEqual(t('Bohemian Rhapsody | Queen | Lyrics', 'Some Channel'), { artist: 'Queen', track: 'Bohemian Rhapsody' });
+  assert.deepEqual(t("BTS (방탄소년단) 'Dynamite' Official MV", 'HYBE LABELS'), { artist: 'BTS', track: 'Dynamite' });
+  assert.deepEqual(t('【MV】YOASOBI「夜に駆ける」', 'Ayase / YOASOBI'), { artist: 'YOASOBI', track: '夜に駆ける' });
+  const jay = t('周杰倫 Jay Chou【告白氣球 Love Confession】Official MV', '周杰倫 Jay Chou');
+  assert.equal(jay.track, '告白氣球 Love Confession');
+  assert.deepEqual(jay.alts, [{ track: '告白氣球', artist: '周杰倫' }, { track: 'Love Confession', artist: 'Jay Chou' }]);
+  assert.equal(t('鄧紫棋 G.E.M.《光年之外 LIGHT YEARS AWAY》MV', 'x').alts[0].track, '光年之外');
 });
 
 test('parseLrc and lineAt', () => {

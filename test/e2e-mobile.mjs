@@ -192,7 +192,7 @@ await step('a quick tap on the wave pauses, another tap plays; a long hold just 
   const x = b.x + b.w * 0.3;
   const y = b.y + 18 + (b.h - 18) * 0.5;
   await page.touchscreen.tap(x, y);
-  await sleep(400);
+  await sleep(600); // slower than a double tap
   assert((await vstate()).paused, 'tap paused it, and it stays paused');
   await page.touchscreen.tap(x, y);
   await waitFor(async () => !(await vstate()).paused, 2000, 'second tap plays');
@@ -203,6 +203,36 @@ await step('a quick tap on the wave pauses, another tap plays; a long hold just 
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await waitFor(async () => !(await vstate()).paused, 2000, 'lifting after a hold plays on');
   assert(!(await host()).a, 'no loop made by tapping');
+});
+
+await step('double-tap the wave: first sets A there, the next sets B and the loop starts', async () => {
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 12; v.play(); });
+  await sleep(500);
+  const b = await waveBox();
+  const y = b.y + 18 + (b.h - 18) * 0.5;
+  const timeAtX = async (x) => { const [vs, ve] = (await host()).view.split(',').map(Number); return vs + ((x - b.x) / b.w) * (ve - vs); };
+  const doubleTap = async (x) => { await page.touchscreen.tap(x, y); await sleep(90); await page.touchscreen.tap(x, y); };
+  const xa = b.x + b.w * 0.3;
+  const ta = await timeAtX(xa);
+  await doubleTap(xa);
+  let h = await host();
+  assert(h.pending && Math.abs(Number(h.pending) - ta) < 0.6, `A waits at the double-tapped spot (${h.pending} vs ~${ta.toFixed(2)})`);
+  await sleep(300);
+  assert(!(await vstate()).paused, 'double tap does not pause the song');
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await sleep(700);
+  const xb = b.x + b.w * 0.75;
+  const tb = await timeAtX(xb);
+  await doubleTap(xb);
+  h = await host();
+  assert(!h.pending && h.loop === 'true', 'second double tap makes the loop');
+  assert(Math.abs(Number(h.b) - tb) < 0.6 && Number(h.b) > Number(h.a), `B at the double-tapped spot (${h.a}-${h.b} vs ~${tb.toFixed(2)})`);
+  await waitFor(async () => !(await vstate()).paused, 2000, 'loop plays');
+  const t = (await vstate()).t;
+  assert(t >= Number(h.a) - 0.05 && t <= Number(h.b) + 0.15, `playing inside the loop (t=${t.toFixed(2)})`);
+  await tap('button', 'Clear the loop');
+  await sleep(500);
+  assert(!(await host()).a, 'cleared');
 });
 
 await step('A button makes a 3-second loop right away, B sets the end', async () => {

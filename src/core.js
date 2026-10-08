@@ -271,8 +271,11 @@
   // ---------------------------------------------------------------------------
   const TITLE_NOISE = /\b(official(\s+(music|lyrics?|audio|video|visuali[sz]er|mv))*|music\s+video|lyrics?\s+video|lyrics?|audio|video|hd|hq|4k|mv|m\/v|visuali[sz]er|a\s*cappella|acc?apella|vocals?\s+only|isolated\s+vocals?|instrumental|karaoke|backing\s+track|remaster(ed)?|full\s+song|with\s+lyrics)\b/gi;
 
+  const REMASTER = /\b(\d{4}\s+)?(digital(ly)?\s+)?remaster(ed)?(\s+(version|edition|\d{4}))*\b|\b\d{4}\s+(version|mix)\b/gi;
+
   function cleanPart(x) {
     return String(x || '')
+      .replace(REMASTER, ' ')
       .replace(TITLE_NOISE, ' ')
       .replace(/["“”]/g, '')
       .replace(/\s+/g, ' ')
@@ -284,10 +287,25 @@
    * Best guess of { artist, track } from a YouTube title and channel name:
    * "Adele - Hello (Official Music Video)" -> { artist: 'Adele', track: 'Hello' }.
    */
+  const CJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]/;
+
   function parseSongTitle(title, author) {
-    let t = String(title || '');
-    t = t.replace(/[(\[{【「][^)\]}】」]*[)\]}】」]/g, ' '); // (Official Video), [Lyrics], 【MV】...
-    t = t.split(/\s[|｜]\s|\s\/\/\s/)[0];
+    const raw = String(title || '');
+    // East-Asian style: the song name is in 《》『』「」 (or a 【】 that is
+    // not just "Official MV"): 周杰倫【告白氣球】, 鄧紫棋《光年之外》.
+    const quoted = raw.match(/[《『「]([^》』」]+)[》』」]/) || raw.match(/【([^】]+)】/);
+    if (quoted && cleanPart(quoted[1]) && !/\s[-–—]\s/.test(raw.replace(quoted[0], ' '))) {
+      const track = cleanPart(quoted[1]);
+      const artist = cleanPart(raw.replace(quoted[0], ' ').replace(/[(\[{【《『「][^)\]}】》』」]*[)\]}】》』」]/g, ' ')) ||
+        cleanAuthor(author);
+      return withAlt({ artist, track });
+    }
+    let t = raw.replace(/[(\[{【「《『][^)\]}】」》』]*[)\]}】」》』]/g, ' '); // (Official Video), [Lyrics], 【MV】...
+    const bars = t.split(/\s*[|｜]\s*|\s\/\/\s/).map((x) => x.trim()).filter(Boolean);
+    t = bars[0] || t;
+    // K-pop style: BTS 'Dynamite' Official MV
+    const q = !/\s[-–—]\s/.test(t) && t.match(/^(.+?)\s+['‘’"“”]([^'‘’"“”]+)['‘’"“”]/);
+    if (q && cleanPart(q[1]) && cleanPart(q[2])) return withAlt({ artist: cleanPart(q[1]), track: cleanPart(q[2]) });
     t = t.replace(/\s(ft\.?|feat\.?|featuring)\s[^-–—]*/i, ' ');
     let artist = '';
     let track = '';
@@ -297,12 +315,34 @@
       track = cleanPart(m[2]);
     } else {
       track = cleanPart(t);
+      // "Song | Artist | Lyrics"
+      if (bars.length > 1 && cleanPart(bars[1])) artist = cleanPart(bars[1]);
     }
-    if (!artist && author) {
-      artist = cleanPart(String(author).replace(/\s*-\s*topic$/i, '').replace(/vevo$/i, '').replace(/\b(official|music|records|channel)\b/gi, ' '));
-    }
+    if (!artist && author) artist = cleanAuthor(author);
     if (!track) track = cleanPart(title);
-    return { artist, track };
+    return withAlt({ artist, track });
+  }
+
+  function cleanAuthor(author) {
+    return cleanPart(String(author || '').replace(/\s*-\s*topic$/i, '').replace(/vevo$/i, '').replace(/\b(official|music|records|channel)\b/gi, ' '));
+  }
+
+  // "告白氣球 Love Confession": also try just the Chinese/Japanese/Korean part
+  // (and just the Latin part), since the lyrics database uses one name.
+  function withAlt(g) {
+    const split = (x) => {
+      if (!CJK.test(x) || !/[A-Za-z]{2}/.test(x)) return null;
+      const asian = x.split(/\s+/).filter((w) => CJK.test(w)).join(' ');
+      const latin = x.split(/\s+/).filter((w) => !CJK.test(w)).join(' ');
+      return asian && latin ? [asian, latin] : null;
+    };
+    const ts = split(g.track);
+    const as = split(g.artist);
+    if (ts || as) g.alts = [
+      { track: ts ? ts[0] : g.track, artist: as ? as[0] : g.artist },
+      { track: ts ? ts[1] : g.track, artist: as ? as[1] : g.artist },
+    ];
+    return g;
   }
 
   /** "[01:02.50] words" lines -> [{ t: 62.5, text: 'words' }], sorted by time. */

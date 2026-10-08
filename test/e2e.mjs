@@ -265,7 +265,8 @@ await step('speed buttons 30% / 50% / 75% / 100% and keep-pitch', async () => {
   await shadowClick('button.speed', '50%');
   let v = await vstate();
   assert(Math.abs(v.rate - 0.5) < 0.001, `rate ${v.rate}`);
-  assert(v.pitch === true, 'pitch kept');
+  const hq = (await host()).hq;
+  assert(v.pitch === true || hq === 'stretch', `pitch kept (browser keep-pitch ${v.pitch}, studio engine ${hq})`);
   await shadowClick('button.speed', '75%');
   v = await vstate();
   assert(Math.abs(v.rate - 0.75) < 0.001, `rate ${v.rate}`);

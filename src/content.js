@@ -34,6 +34,8 @@
   const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
+  const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
+  const DOUBLE_TAP_PX = 40;
   const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -1223,7 +1225,9 @@
       add({ track_name: guess.track, artist_name: guess.artist });
       add({ track_name: guess.artist, artist_name: guess.track });
     }
+    for (const alt of guess.alts || []) add({ track_name: alt.track, artist_name: alt.artist });
     add({ q: [guess.artist, guess.track].filter(Boolean).join(' ') });
+    for (const alt of guess.alts || []) add({ q: `${alt.artist} ${alt.track}` });
     if (!manual) add({ q: meta.title.replace(/[(\[【][^)\]】]*[)\]】]/g, ' ').replace(/\s+/g, ' ').trim() });
     const found = new Map();
     let failures = 0;
@@ -1239,7 +1243,8 @@
       }
       ranked = C.rankLyrics([...found.values()], guess, dur());
       const top = ranked[0];
-      if (top && Math.max(C.similarity(guess.track, top.trackName), C.similarity(guess.artist, top.trackName)) >= 0.99) break;
+      const names = [guess, ...(guess.alts || [])];
+      if (top && names.some((g) => Math.max(C.similarity(g.track, top.trackName), C.similarity(g.artist, top.trackName)) >= 0.99)) break;
     }
     if (token !== L.token) return;
     L.results = ranked;
@@ -1434,8 +1439,11 @@
     ui.lyrOffset.title = 'How much the lyrics are shifted to match this video';
   }
 
-  // A cappella and other versions: line the first sung line up with the first
-  // sound in the wave (singing starts where the a cappella stops being silent).
+  // A cappella: line the first sung line up with the first sound in the wave
+  // (singing starts where the a cappella stops being silent). Other versions
+  // whose length differs (a music video with silence or a skit before the
+  // song): the first sound there is the band, not the voice, so only the
+  // silence before the song is skipped, never more than the extra length.
   function autoAlignLyrics() {
     if (!L.autoPending || !L.lines || L.offsetSet) return;
     const d = dur();
@@ -1444,8 +1452,15 @@
     const start = S.peaks.firstSound(d);
     L.autoPending = false;
     if (firstLine && start != null) {
-      const off = Math.round((start - firstLine.t) * 10) / 10;
-      if (Math.abs(off) <= 90) L.offset = off;
+      if (C.isVocalOnlyTitle(songMeta().title)) {
+        const off = Math.round((start - firstLine.t) * 10) / 10;
+        if (Math.abs(off) <= 90) L.offset = off;
+      } else {
+        const r = L.results[L.idx];
+        const extra = r && r.duration ? d - r.duration : 0;
+        const off = Math.round(Math.min(start - 0.2, extra + 0.5) * 10) / 10;
+        if (off >= 0.3) L.offset = off;
+      }
     }
     L.nowIdx = -2;
     saveLyricsChoice();
@@ -1934,7 +1949,7 @@
       h('h3', { text: 'How to use Wave Looper' }),
       h('ol', {},
         ...(TOUCH ? [
-          h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays.'),
+          h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays. Double-tap the wave to set A there, double-tap again to set B.'),
           h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}; drag the green A / red B flags to fine-tune.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
           h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 30 times (30% → 100% over 20, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
@@ -2322,17 +2337,17 @@
     } else if (!dur()) {
       setHint(['Waiting for the video…']);
     } else if (pending) {
-      setHint(TOUCH ? [['Now tap where the loop should END']] : [['Now click where the loop should END'], '  (Esc to cancel)']);
+      setHint(TOUCH ? [['Now double-tap where the loop should END (B)']] : [['Now click where the loop should END'], '  (Esc to cancel)']);
     } else if (hasLoop()) {
       const len = S.b - S.a;
       setHint([
         [S.loopOn ? 'Looping ' : 'Loop off: '],
         `${F(S.a)} → ${F(S.b)} (${len.toFixed(2)}s)`,
-        TOUCH ? '. Press A or B again, or drag the flags. Pinch to zoom.' : '. Drag the A/B flags to adjust. Scroll to zoom.',
+        TOUCH ? '. Drag the flags, press A / B, or double-tap for a new loop. Pinch to zoom.' : '. Drag the A/B flags to adjust. Scroll to zoom.',
       ]);
     } else {
       setHint(TOUCH
-        ? [['Tap the wave'], ' to pause / play, ', ['drag it'], ' to move the song. Press ', ['A'], ' to loop from here, ', ['B'], ' to set the end.']
+        ? [['Tap the wave'], ' to pause / play, ', ['drag it'], ' to move the song, ', ['double-tap'], ' to set A, then B. Or press ', ['A'], ' to loop from here.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -3060,6 +3075,8 @@
 
   // A quick tap (no sliding) is play/pause. Sliding moves the song, and a
   // long hold just holds it; both play on afterwards if it was playing.
+  // A double tap sets a loop point where the finger is: the first double tap
+  // sets A, the next one sets B and the loop starts.
   function endScrub(sc, x, g) {
     const lifted = x != null && !!g; // finger lifted (not cancelled / pinch)
     if (sc.moved) {
@@ -3067,13 +3084,43 @@
       if (t != null) seek(t);
     }
     const tap = lifted && !sc.moved && now() - sc.downAt < TAP_MS;
-    if (tap) {
+    const prev = S.lastTap;
+    S.lastTap = null;
+    if (tap && prev && sc.downAt - prev.at < DOUBLE_TAP_MS && Math.abs(x - prev.x) < DOUBLE_TAP_PX) {
+      doubleTapAt(timeAt(x, g), prev.wasPlaying);
+    } else if (tap) {
+      S.lastTap = { at: now(), x, wasPlaying: sc.wasPlaying };
       if (!sc.wasPlaying) play(); // tap while stopped: play; tap while playing: stays paused
     } else if (sc.wasPlaying) {
       play();
     }
     S.dirty = true;
     renderUI();
+  }
+
+  function doubleTapAt(t, wasPlaying) {
+    const d = dur();
+    if (!d) return;
+    t = C.clamp(t, 0, Math.max(0, d - 0.05));
+    // Undo the play/pause of the first tap: a double tap only sets a point.
+    if (wasPlaying) play();
+    else if (S.video && !S.video.paused) {
+      try {
+        S.video.pause();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    const F = C.formatTime;
+    if (S.pendingA == null) {
+      waveClick(t);
+      flash(`A set at ${F(t)}. Double-tap where the loop should end (B).`, 4000);
+    } else if (Math.abs(t - S.pendingA) < C.MIN_LOOP) {
+      flash('Double-tap a bit further away to set B.');
+    } else {
+      waveClick(t);
+      if (hasLoop()) flash(`Loop ${F(S.a)} → ${F(S.b)}.`, 2500);
+    }
   }
 
   // Centre the DJ view on a time (used while the finger moves the song).
