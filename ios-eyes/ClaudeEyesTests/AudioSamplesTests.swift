@@ -31,7 +31,7 @@ final class AudioSamplesTests: XCTestCase {
         var sample: CMSampleBuffer?
         XCTAssertEqual(CMAudioSampleBufferCreateReadyWithPacketDescriptions(
             allocator: kCFAllocatorDefault, dataBuffer: block!, formatDescription: format!, sampleCount: frames,
-            presentationTimestamp: .zero, packetDescriptions: nil, sampleBufferOut: &sample), noErr)
+            presentationTimeStamp: .zero, packetDescriptions: nil, sampleBufferOut: &sample), noErr)
         return sample!
     }
 
