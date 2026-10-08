@@ -59,6 +59,10 @@ jobs:
           SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
           xcrun --sdk iphonesimulator swiftc -typecheck -parse-as-library \
             -target arm64-apple-ios15.0-simulator -sdk "$SDK" ios-eyes/ClaudeEyes/*.swift
+          # the "any app" screen-broadcast part is its own little program that shares some of the files
+          xcrun --sdk iphonesimulator swiftc -typecheck -parse-as-library \
+            -target arm64-apple-ios15.0-simulator -sdk "$SDK" \
+            ios-eyes/ClaudeEyesBroadcast/SampleHandler.swift ios-eyes/ClaudeEyes/{Vad,LevelMeter,BroadcastCore,AudioSamples,FrameEncoder,PictureOutput}.swift
           echo "All Swift files type-check."
 
       - name: Install XcodeGen and generate the Xcode project
@@ -112,6 +116,7 @@ jobs:
           xcodebuild -project ClaudeEyes.xcodeproj -scheme ClaudeEyes -sdk iphoneos \
             -destination 'generic/platform=iOS' -configuration Release \
             -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -20
+          test -d build-dev/Build/Products/Release-iphoneos/ClaudeEyes.app/PlugIns/ClaudeEyesBroadcast.appex || { echo "broadcast part missing from the app"; exit 1; }
           mkdir -p Payload
           cp -R build-dev/Build/Products/Release-iphoneos/ClaudeEyes.app Payload/
           zip -qr ClaudeEyes-unsigned.ipa Payload

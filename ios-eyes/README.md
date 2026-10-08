@@ -10,6 +10,13 @@ Tap **ON** (green dot). From then on, **when you start speaking, the app takes a
 * It listens to the **microphone only**. It changes no volume (other audio keeps playing at its own level), records nothing and sends nothing except the picture.
 * Then say or type your question in the chat (the chat's own keyboard / dictation key works).
 
+## "Any app" mode (works over every app)
+Tap **Any app** at the top and follow the three steps: allow notifications and Photos once, check with **Copy a test picture now**, then tap the round broadcast button, choose *Claude Eyes*, turn the **Microphone** on and press *Start Broadcast*.
+
+From then on, in **any app**, **when you start speaking** the app makes one picture of the screen, **copies it to the clipboard** (15 minutes, this device only), **saves it to Photos** and shows a notification. Paste it into the Claude or ChatGPT app (press and hold in the message box, Paste). One picture, then 30 seconds of waiting; no speech = no picture; microphone only (the iPad's own sound is ignored).
+
+Limits: iPadOS cannot let any app put the picture into another app by itself, so you paste it (one long-press). The broadcast must be started once after every restart, and iPadOS shows a red recording mark while it runs. The wait time is fixed at 30 s in this mode. Some video apps show a black picture. Not tested on a real iPad: the screen broadcast itself (simulators cannot run it), so the first real use is the real test.
+
 ## Why an app with its own browser?
 iOS does not let one app take pictures of, or put things into, another app (like the Claude app). Inside this app it can do both, so it only works for the page shown **in this app**.
 

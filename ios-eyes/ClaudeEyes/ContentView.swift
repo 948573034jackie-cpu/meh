@@ -28,6 +28,7 @@ struct ContentView: View {
 
 struct TopBar: View {
     @EnvironmentObject var model: EyesModel
+    @State private var showAnyApp = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -56,16 +57,20 @@ struct TopBar: View {
                 Button("Test picture") { Task { await model.captureAndSend(reason: "test") } }
             }
             // second row, so everything also fits on an iPhone
-            Picker("Chat", selection: $model.service) {
-                ForEach(EyesModel.Service.allCases) { s in Text(s.title).tag(s) }
+            HStack(spacing: 12) {
+                Picker("Chat", selection: $model.service) {
+                    ForEach(EyesModel.Service.allCases) { s in Text(s.title).tag(s) }
+                }
+                .pickerStyle(.segmented)
+                Button("Any app") { showAnyApp = true }
             }
-            .pickerStyle(.segmented)
             Text(model.status).font(.footnote).foregroundColor(.secondary).lineLimit(2)
             Text(model.lastResult).font(.footnote).lineLimit(2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color(UIColor.secondarySystemBackground))
+        .sheet(isPresented: $showAnyApp) { AnyAppView() }
     }
 }
 
