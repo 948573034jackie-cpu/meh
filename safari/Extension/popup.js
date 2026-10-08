@@ -40,10 +40,10 @@ const SAFARI = !!self.__ytcSafari; // iPad / iPhone Safari
 if (SAFARI) { // these two cannot work in Safari on iPad / iPhone: hide them
   for (const id of ['feedOn', 'talkOn']) { const b = document.getElementById(id); if (b && b.closest('label')) b.closest('label').style.display = 'none'; }
 }
-for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'feedOn', 'talkOn', 'imageOn', 'barOn']) {
+for (const id of ['pauseOn', 'replayOn', 'voiceOn', 'voiceBridge', 'feedOn', 'talkOn', 'picOnly', 'imageOn', 'barOn']) {
   const box = document.getElementById(id);
   // off unless turned on: talk mode everywhere, voice commands on iPad / iPhone (the microphone stays free for the voice call)
-  const offFirst = id === 'talkOn' || (id === 'voiceOn' && SAFARI);
+  const offFirst = id === 'talkOn' || (id === 'voiceOn' && SAFARI) || (id === 'picOnly' && !SAFARI); // picture only: on for iPad, off on the computer
   chrome.storage.local.get(id).then((s) => { box.checked = offFirst ? s[id] === true : s[id] !== false; });
   box.addEventListener('change', () => chrome.storage.local.set({ [id]: box.checked }));
 }
@@ -77,3 +77,18 @@ document.getElementById('subfile').addEventListener('change', async (e) => {
 });
 
 document.getElementById('ver').textContent = 'version ' + chrome.runtime.getManifest().version;
+
+// ---- 🩺 check for problems: a report you can copy and send ----
+{
+  const check = document.getElementById('check'), pre = document.getElementById('report'), copyB = document.getElementById('copyReport');
+  if (check) check.addEventListener('click', async () => {
+    pre.style.display = 'block'; pre.textContent = 'Checking…';
+    try { const r = await chrome.runtime.sendMessage({ type: 'diagnose' }); pre.textContent = (r && r.report) || 'No answer from the extension.'; }
+    catch (e) { pre.textContent = 'The extension did not answer: ' + e.message; }
+    copyB.style.display = 'inline-block';
+  });
+  if (copyB) copyB.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(pre.textContent); copyB.textContent = 'Copied ✓'; }
+    catch (e) { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); copyB.textContent = 'Selected: tap Copy'; }
+  });
+}

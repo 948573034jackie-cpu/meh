@@ -254,7 +254,8 @@
         .replace(/&#x([0-9a-f]{1,6});?/gi, (m, h) => { const c = parseInt(h, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
         .replace(/&([a-z]{2,8});/gi, (m, n) => (n.toLowerCase() in NAMED ? NAMED[n.toLowerCase()] : m));
     }
-    return x.replace(/<[^>]{0,200}>/g, ' ')
+    return x.replace(/\[\s*_+\s*\]/g, '(bleep)') // YouTube hides swear words as [ __ ]
+      .replace(/<[^>]{0,200}>/g, ' ')
       .replace(/\{\\[^}]*\}/g, '')
       .replace(/\b\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}/g, ' ')
       .replace(/(^|\s)\d{1,2}:\d{2}[.,]\d{3}\s*-->\s*\d{1,2}:\d{2}[.,]\d{3}/g, ' ')

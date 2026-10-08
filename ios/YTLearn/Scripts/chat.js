@@ -155,10 +155,15 @@
   // ---- voice call: find its "end" and "start" buttons (by their names, so small page changes do not matter) ----
   const btnName = (b) => ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '') + ' ' + (b.innerText || '')).replace(/\s+/g, ' ').trim();
   const allButtons = () => Array.from(document.querySelectorAll('button, [role="button"]')).filter(visible);
-  const END_VOICE = /\b(end|stop|exit|close|leave|hang ?up)\b.{0,20}\b(voice|call|conversation|talking)\b|\bhang ?up\b|\bend call\b/i;
-  const START_VOICE = /\bvoice mode\b|\b(start|use|enter|open)\b.{0,12}\bvoice\b|\bvoice (conversation|chat|call)\b|\btalk to (claude|chatgpt)\b/i;
-  function findVoiceEnd() { return allButtons().find((b) => END_VOICE.test(btnName(b))) || null; }
-  function findVoiceStart() { return allButtons().find((b) => { const n = btnName(b); return START_VOICE.test(n) && !END_VOICE.test(n) && !/dictat/i.test(n); }) || null; }
+  const END_VOICE = /\b(end|stop|exit|close|leave|hang ?up)\b.{0,20}\b(voice|call|conversation|talking|session)\b|\bhang ?up\b|\bend call\b|^(end|leave)$/i;
+  const START_VOICE = /\bvoice mode\b|\b(start|use|enter|open)\b.{0,12}\bvoice\b|\bvoice (conversation|chat|call|session)\b|\btalk to (claude|chatgpt)\b/i;
+  // Claude's newer voice screen keeps the text box, but every other button says "...: End the voice session to continue"
+  // (they are locked). Those are NOT the end button, they only tell us a voice session is running.
+  const LOCKED = /end the voice (session|mode|call) to continue/i;
+  const voiceSessionOn = () => Array.from(document.querySelectorAll('[aria-label], [title], [data-tooltip]'))
+    .some((e) => LOCKED.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || '') + ' ' + (e.getAttribute('data-tooltip') || '')));
+  function findVoiceEnd() { return allButtons().find((b) => { const n = btnName(b); return END_VOICE.test(n) && !LOCKED.test(n); }) || null; }
+  function findVoiceStart() { return allButtons().find((b) => { const n = btnName(b); return START_VOICE.test(n) && !END_VOICE.test(n) && !LOCKED.test(n) && !/dictat/i.test(n); }) || null; }
   const visibleComposer = () => { const c = composer(); return c && visible(c) ? c : null; };
 
   function pageInfo() {
@@ -167,13 +172,21 @@
       composer: (() => { const c = composer(); return c ? c.tagName.toLowerCase() + (c.id ? '#' + c.id : '') : null; })(),
       fileInputs: Array.from(document.querySelectorAll('input[type="file"]')).map((i) => i.accept || '*'),
       sendButton: !!sendButton(),
-      buttons: allButtons().map(btnName).filter(Boolean).slice(0, 40) // (so a changed page can be fixed quickly)
+      voiceSession: voiceSessionOn(),
+      buttons: allButtons().map(btnName).filter(Boolean).filter((n) => !LOCKED.test(n)).sort((a, b) => /voice|call|session|end|stop/i.test(b) - /voice|call|session|end|stop/i.test(a)).slice(0, 40) // (so a changed page can be fixed quickly)
     };
   }
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!msg) return;
     if (msg.type === 'chat-ping') { sendResponse({ ok: true, path: location.pathname }); return; }
+    if (msg.type === 'chat-diag') { // for the 🩺 check
+      const e = findVoiceEnd(), st = findVoiceStart(), c = composer();
+      sendResponse(Object.assign(pageInfo(), { host: location.host, title: document.title.slice(0, 60), visible: document.visibilityState,
+        composerVisible: !!visibleComposer(), composerText: c ? boxText(c).length : -1, imageInput: !!imageInput(),
+        endButton: e ? btnName(e).slice(0, 60) : null, startButton: st ? btnName(st).slice(0, 60) : null }));
+      return;
+    }
     if (msg.type === 'chat-state') { const b = composer(); sendResponse({ boxText: b ? boxText(b).length : -1 }); return; }
     if (msg.type === 'chat-reply') { // the newest answer of the AI (to read it aloud)
       const ANSWER = ['[data-message-author-role="assistant"]', '[data-testid="assistant-message"]', '.font-claude-response', '.font-claude-message', '[class*="font-claude-message"]'];
@@ -184,7 +197,7 @@
       sendResponse({ count: list.length, text: last ? String(last.innerText || last.textContent || '').trim() : '', busy: BUSY.some((q) => !!document.querySelector(q)) });
       return;
     }
-    if (msg.type === 'call-state') { sendResponse({ inCall: !!findVoiceEnd() && !visibleComposer(), mixer: !!document.documentElement.dataset.ytcMicMix }); return; }
+    if (msg.type === 'call-state') { sendResponse({ inCall: !!findVoiceEnd() && (!visibleComposer() || voiceSessionOn()), mixer: !!document.documentElement.dataset.ytcMicMix }); return; }
     if (msg.type === 'feed') { window.postMessage({ __ytcFeed: msg.op, seq: msg.seq, data: msg.data, mime: msg.mime }, '*'); return; }
     if (msg.type === 'voice-restart') { // go back into the voice call after the text was sent
       const b = findVoiceStart();
@@ -201,17 +214,39 @@
       try {
         const pic = msg.card || msg.image;
         let bridged = false;
-        let box = await waitFor(visibleComposer, pic ? 2500 : 5000);
-        // Voice call: its screen has no text box. Step out of the call for a moment, send the text, step back in.
-        if (!box && msg.voiceBridge !== false) {
+        let box = voiceSessionOn() ? null : await waitFor(visibleComposer, pic ? 2500 : 5000);
+        // Voice call: its screen has no text box (or a locked one). Step out of the call for a moment, send the text, step back in.
+        if ((!box || voiceSessionOn()) && msg.voiceBridge !== false) {
           const end = findVoiceEnd();
           if (end) {
             mark('voice call: pressed "' + btnName(end).slice(0, 40) + '" for a moment');
             end.click();
-            box = await waitFor(visibleComposer, 8000);
+            box = await waitFor(() => !voiceSessionOn() && visibleComposer(), 8000);
             if (box) { bridged = true; mark('text box is back'); }
             else mark('text box did not come back');
+          } else if (voiceSessionOn()) {
+            return sendResponse({ ok: false, error: 'Claude is in a voice session and does not take typed messages now, and its End button was not found. Allow "Voice call: step out of the call for a moment" in the extension, or end the voice session in Claude.', steps, info: pageInfo() });
           }
+        } else if (voiceSessionOn()) {
+          return sendResponse({ ok: false, error: 'Claude is in a voice session and does not take typed messages now. Turn on "Voice call: step out of the call for a moment" in the extension, or end the voice session in Claude.', steps, info: pageInfo() });
+        }
+        // Picture only (no text): the picture carries the sentences AND the question.
+        if (msg.pictureOnly && pic && pic.dataUrl && imageInput()) {
+          mark('picture only: attached via ' + attachImage(pic, box));
+          // wait for the upload: the Send button becomes ready, then press it and check it went out
+          const btn = await waitFor(sendButton, 20000, 300);
+          if (!btn) {
+            if (!box) return sendResponse({ ok: true, voiceMode: true, steps: steps.concat('no Send button (voice screen): the picture was added'), info: pageInfo() });
+            return sendResponse({ ok: false, error: 'the picture was added but the Send button did not get ready', steps, info: pageInfo() });
+          }
+          btn.click(); mark('clicked Send');
+          const left = await waitFor(() => !sendButton() || !document.contains(btn), 6000, 200);
+          if (!left) {
+            const again = sendButton(); if (again) { again.click(); mark('clicked Send again'); }
+            if (!(await waitFor(() => !sendButton(), 5000, 200))) return sendResponse({ ok: false, error: voiceSessionOn() ? 'Claude is in a voice session and did not take the picture' : 'the picture was added but the page did not send it', steps, info: pageInfo() });
+          }
+          mark('done');
+          return sendResponse({ ok: true, steps, bridged, pictureOnly: true });
         }
         // Still no text box: only a picture can go in. The card picture carries the sentences AND the question.
         if (!box && pic && pic.dataUrl && imageInput()) {

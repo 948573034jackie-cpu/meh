@@ -138,7 +138,7 @@ function fmt(sec) {
 }
 
 // Sends `passage` (may be null). Adds the link + full transcript if this chat has not had this video yet.
-async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card, readAloud, inCall }) {
+async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noTranscript, image, card, readAloud, inCall, pictureOnly }) {
   const started = Date.now();
   const T = await getTarget(targetId);
   const { tab: claudeTab, opened } = await findOrOpenClaude(T);
@@ -188,7 +188,9 @@ async function sendToClaude({ videoTabId, videoId, passage, force, targetId, noT
     const sendImage = image && T.name === 'Claude' ? { name: 'video-' + Date.now() + '.jpg', dataUrl: image } : null; // ChatGPT gets words only
     const sendCard = card && T.name === 'Claude' ? { name: 'question-' + Date.now() + '.jpg', dataUrl: card } : null; // for voice mode: the words are inside the picture
     const { voiceBridge } = await chrome.storage.local.get('voiceBridge');
-    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: sendImage, card: sendCard, voiceBridge: voiceBridge !== false && !inCall });
+    pictureOnly = !!(pictureOnly && sendCard && !file);
+    if (pictureOnly) summary = 'picture only (the sentences + the question are in the picture)';
+    res = await chrome.tabs.sendMessage(claudeTab.id, { type: 'chat-send', text, file, image: pictureOnly ? null : sendImage, card: sendCard, pictureOnly, voiceBridge: voiceBridge !== false && !inCall });
   } catch (e) {
     return 'Could not send to ' + T.name + ': ' + e.message + '. Refresh the ' + T.name + ' tab and try again.';
   }
@@ -303,8 +305,62 @@ async function setChatMuted(muted) {
   for (const t of await chatTabs()) { try { await chrome.tabs.update(t.id, { muted }); } catch (e) { /* ignore */ } }
 }
 
+// ---- 🩺 check: what works and what does not, in plain words (copy it and send it to get help) ----
+const within = (p, ms) => Promise.race([p, sleep(ms).then(() => null)]);
+async function diagnose() {
+  const out = [], problems = [];
+  const add = (k, v) => out.push(k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
+  const man = chrome.runtime.getManifest();
+  add('Extension', man.version + (self.__ytcSafari ? ' (Safari)' : ' (Chrome)') + ' · ' + new Date().toLocaleString());
+  try { add('Device', (self.navigator && navigator.userAgent || '').slice(0, 140)); } catch (e) { /* ignore */ }
+  const st = await chrome.storage.local.get(null).catch(() => ({}));
+  const keys = ['sendOn', 'target', 'picOnly', 'imageOn', 'replayOn', 'voiceOn', 'voiceBridge', 'textLevel', 'pauseOn', 'barOn'];
+  add('Settings', Object.fromEntries(keys.filter((k) => k in st).map((k) => [k, st[k]])));
+  add('Last result', st.last || '(nothing sent yet)');
+  if (st.last && /NOT|problem|Could not|error/i.test(st.last)) problems.push('The last send failed: ' + st.last.split(' | steps:')[0].slice(0, 300));
+
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch (e) { problems.push('Cannot see the tabs: ' + e.message); }
+  const hosts = tabs.map((t) => { try { return new URL(t.url).host; } catch (e) { return '(no access)'; } });
+  add('Open tabs', hosts.join(', ') || '(none visible)');
+
+  const yts = tabs.filter((t) => /^https:\/\/(www|m)\.youtube\.com\//.test(t.url || ''));
+  if (!yts.length) problems.push('No YouTube tab found. Open a video on youtube.com (and allow the extension on youtube.com).');
+  for (const t of yts.slice(0, 2)) {
+    if (/^https:\/\/m\./.test(t.url)) problems.push('YouTube is the MOBILE site (m.youtube.com). Tap aA → Request Desktop Website.');
+    const r = await within(chrome.tabs.sendMessage(t.id, { type: 'yt-diag' }).catch((e) => ({ error: e.message })), 3000);
+    add('YouTube tab', r || 'no answer');
+    if (!r || r.error) problems.push('The YouTube page does not answer. Reload it, and allow the extension on youtube.com (aA → Manage Extensions).');
+    else {
+      if (!r.video) problems.push('No video found on the YouTube page.');
+      if (r.subtitles && /^none|error/.test(r.subtitles)) problems.push('No subtitles for this video: ' + r.subtitles);
+      if (!r.settings.sendOn) problems.push('ChatGPT and Claude are both OFF (red). Press Claude under the video so it turns green.');
+      if (r.muted) problems.push('The video is MUTED. Tap the speaker icon in the player.');
+      if (r.settings.voiceOn && r.touch) problems.push('Voice commands are ON: the YouTube page uses the microphone, so the Claude voice call may lose it and the video sound gets quiet. Turn "Voice commands" off.');
+    }
+  }
+
+  const T = await getTarget();
+  const chats = tabs.filter((t) => (t.url || '').startsWith(T.url.replace('*', '')));
+  if (!chats.length) problems.push('No ' + T.name + ' tab found. Open ' + T.name + ' (' + T.url.replace('/*', '') + ') in a second Safari window next to YouTube.');
+  for (const t of chats.slice(0, 2)) {
+    const r = await within(chrome.tabs.sendMessage(t.id, { type: 'chat-diag' }).catch((e) => ({ error: e.message })), 3000);
+    add(T.name + ' tab', r || 'no answer');
+    if (!r || r.error) problems.push('The ' + T.name + ' page does not answer. Reload it, and allow the extension on ' + T.url.replace('https://', '').replace('/*', '') + '. Keep it on screen (Split View): Safari stops pages you cannot see.');
+    else {
+      if (r.voiceSession && !r.endButton) problems.push(T.name + ' is in a voice session and its End button was not found (needed to send). Buttons seen: ' + (r.buttons || []).slice(0, 8).join(' / '));
+      if (!r.imageInput) problems.push('The ' + T.name + ' page has no picture upload, so pictures cannot be sent.');
+      if (!r.composer && !r.voiceSession) problems.push('No message box found on the ' + T.name + ' page. Open a chat there.');
+      if (r.visible === 'hidden') problems.push('The ' + T.name + ' page is not on screen. Put it next to YouTube (Split View), otherwise Safari pauses it.');
+    }
+  }
+  const head = problems.length ? 'PROBLEMS FOUND (' + problems.length + '):\n' + problems.map((p, i) => (i + 1) + '. ' + p).join('\n') : 'No problems found ✓';
+  return head + '\n\n--- details (send this to Claude Code to get help) ---\n' + out.join('\n');
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
+  if (msg.type === 'diagnose') { diagnose().then((report) => sendResponse({ report }), (e) => sendResponse({ report: 'Check failed: ' + e.message })); return true; }
   if (msg.type === 'send') {
     (async () => {
       let result;
@@ -384,7 +440,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         result = await sendToClaude({
           videoTabId: sender.tab.id, videoId: msg.videoId,
-          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, readAloud: await talkOn(), image: msg.image || null, card: msg.card || null, inCall: !!msg.inCall
+          passage: passageText(msg.lines || msg.seg.items.map((s) => s.text), msg.seg), force: false, noTranscript: true, readAloud: await talkOn(), image: msg.image || null, card: msg.card || null, inCall: !!msg.inCall, pictureOnly: !!msg.pictureOnly
         });
       } catch (e) { result = 'Unexpected error: ' + e.message; }
       await setLast('Paused at ' + fmt(msg.seg.pausedAt) + ': ' + result);

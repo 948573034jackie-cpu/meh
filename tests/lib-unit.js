@@ -202,6 +202,7 @@ console.log('30-second part tests passed');
     ['>> SPEAKER: welcome back', 'SPEAKER: welcome back'],
     ['zero​width﻿ word', 'zerowidth word'],
     ['line one\\nline two', 'line one line two'],
+    ['puts all that [ __ ] behind him', 'puts all that (bleep) behind him'],
     ['plain words stay the same, 2 + 2 = 4.', 'plain words stay the same, 2 + 2 = 4.']
   ];
   let bad = 0;

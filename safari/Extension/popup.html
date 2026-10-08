@@ -25,9 +25,13 @@
   <label id="lbl-chatgpt"><input type="radio" name="target" value="chatgpt">ChatGPT</label>
 </div>
 <button id="go">Send this video to Claude</button>
+<button id="check" style="margin-top:6px">🩺 Check for problems</button>
+<pre id="report" style="display:none;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:#111;color:#eee;padding:8px;border-radius:8px;font-size:11px;-webkit-user-select:text;user-select:text"></pre>
+<button id="copyReport" style="display:none;margin-top:4px">Copy report</button>
 <div class="hint">Sends the video link + full transcript ONCE and turns that chat on (green under the video). After that every pause sends only the ~30 s you paused at.</div>
 <hr>
 <label class="opt"><input type="checkbox" id="pauseOn" checked> When I pause: show the last ~30 s big and send the text to the chat</label>
+<label class="opt"><input type="checkbox" id="picOnly"> Claude: send ONLY a picture when I pause (the sentences + the question are in the picture, no typed text). Best with a Claude voice session</label>
 <label class="opt"><input type="checkbox" id="imageOn" checked> Claude only: also send a picture of the subtitle screen, taken 1 s after you stop (ChatGPT gets the words only)</label>
 <label class="opt"><input type="checkbox" id="barOn" checked> Show the ChatGPT / Claude on-off buttons under the video</label>
 <label class="opt"><input type="checkbox" id="replayOn" checked> Play those sentences again once (normal speed), and send to the chat when it ends</label>

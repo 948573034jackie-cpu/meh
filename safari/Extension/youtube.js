@@ -317,7 +317,7 @@
   // iPad / iPhone (Safari): you touch the video instead of talking to it. The microphone stays free for your
   // Claude voice call (when this page listens, iPadOS turns the video's sound down and takes the mic from the call).
   const TOUCH = !window.__ytcShimYT && (!!window.__ytcSafari || navigator.maxTouchPoints > 0); // (the YT Learn app keeps its own settings)
-  const settings = { pauseOn: true, replayOn: true, textLevel: TOUCH ? 4.5 : 6, voiceOn: !TOUCH, target: 'claude', tapOn: TOUCH, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
+  const settings = { pauseOn: true, replayOn: true, textLevel: TOUCH ? 4.5 : 6, voiceOn: !TOUCH, target: 'claude', tapOn: TOUCH, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false, picOnly: TOUCH };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = TOUCH ? s.voiceOn === true : s.voiceOn !== false;
@@ -330,8 +330,9 @@
     if ('sendOn' in s) settings.sendOn = s.sendOn === true; // a button under the video is green: pauses are sent to that chat
     if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
     if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
+    if ('picOnly' in s) settings.picOnly = s.picOnly === true; // Claude only: send ONLY the picture (words + question on it), no text
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn', 'talkOn']).then(readSettings);
+  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn', 'talkOn', 'picOnly']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
@@ -451,6 +452,24 @@
     el.appendChild(wrap);
     el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#ff8a80;margin-top:1%;flex:none;text-align:center'));  // only shows if something goes wrong
     el.appendChild(mk('yt2c-hint', 'display:none'));
+    // play / pause only: does not send anything and does not jump (bottom right, away from the touch area)
+    const pp = document.createElement('button');
+    pp.id = 'yt2c-pp';
+    pp.setAttribute('aria-label', 'Play / pause (does not send)');
+    pp.style.cssText = 'position:absolute;right:2.5%;bottom:14%;width:64px;height:64px;border-radius:50%;border:2px solid rgba(255,255,255,.7);' +
+      'background:rgba(40,40,40,.85);color:#fff;font:700 26px/1 system-ui,Arial,sans-serif;pointer-events:auto;cursor:pointer;z-index:2147483646;' +
+      '-webkit-tap-highlight-color:transparent;touch-action:manipulation;padding:0';
+    const ppIcon = () => { pp.textContent = video && !video.paused ? '❚❚' : '▶'; };
+    ppIcon();
+    pp.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!video) return;
+      if (video.paused) { ourPlay = true; video.play().catch(() => { ourPlay = false; }); }
+      else { ourPause = true; video.pause(); }
+      setTimeout(ppIcon, 150);
+    }, true);
+    const ppTimer = setInterval(() => { if (!document.contains(pp)) clearInterval(ppTimer); else ppIcon(); }, 400);
+    el.appendChild(pp);
     host.appendChild(el);
     if (fixed) { placeFixed(el); placeTimer = setInterval(() => placeFixed(el), 300); }
     if (seg) {
@@ -492,6 +511,7 @@
   let sendTimer = null;
 
   function askCallState() {
+    if (window.__ytcSafari) return Promise.resolve(false); // Safari cannot play into a call: do not wait for the answer
     return new Promise((resolve) => {
       const t = setTimeout(() => resolve(false), 800);
       try {
@@ -620,7 +640,7 @@
         try {
           const res = await chrome.runtime.sendMessage({ type: 'send', target: t });
           const text = (res && res.result) || 'no answer';
-          status.textContent = /^Sent /.test(text) ? 'On: full transcript sent to ' + name + ' ✓  Now every pause sends only that part.' : text.slice(0, 160);
+          status.textContent = /^Sent /.test(text) ? 'On: full transcript sent to ' + name + ' ✓  Now every pause sends only that part.' : shortReason(text);
         } catch (e) { status.textContent = 'Not sent: reload this YouTube page'; }
       };
       gpt.onclick = () => toggle('chatgpt');
@@ -638,13 +658,18 @@
         };
         return b;
       };
-      bar.append(gpt, claude, size('yt2c-b-smaller', 'A−', -0.5), size('yt2c-b-bigger', 'A+', 0.5), status);
+      const check = size('yt2c-b-check', '🩺 Check', 0);
+      check.title = 'Find out what is not working (you can copy the report)';
+      check.onclick = () => showReport();
+      bar.append(gpt, claude, size('yt2c-b-smaller', 'A−', -0.5), size('yt2c-b-bigger', 'A+', 0.5), check, status);
     }
     for (const id of ['chatgpt', 'claude']) {
       const b = bar.querySelector('#yt2c-b-' + id);
       const on = settings.sendOn && settings.target === id;
+      const label = (id === 'chatgpt' ? 'ChatGPT' : 'Claude') + (on ? ' ● on' : ' ○ off');
+      if (b.textContent === label) continue; // nothing changed: do not touch the page (keeps the video smooth)
       b.style.background = on ? GREEN : RED;
-      b.textContent = (id === 'chatgpt' ? 'ChatGPT' : 'Claude') + (on ? ' ● on' : ' ○ off');
+      b.textContent = label;
       b.title = on ? 'On: every pause is sent here. Click to turn off.' : 'Click to turn on: sends the full transcript once, then every pause.';
     }
     const below = document.querySelector('#below');   // desktop YouTube: right under the player, above the title
@@ -661,6 +686,49 @@
       bar.style.borderRadius = '16px';
       bar.style.padding = '4px 8px';
     }
+  }
+
+  // the reason only, short (the long technical details stay in the extension's "last result")
+  function shortReason(text) {
+    const t = String(text || '').split(' | steps:')[0].replace(/^(Claude|ChatGPT) page problem: /, '');
+    return t.length > 170 ? t.slice(0, 167) + '…' : t;
+  }
+  // Safari sometimes loses the answer of a long send: read the result the background writes down instead (up to 60 s)
+  async function resultLater(before) {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const o = await chrome.storage.local.get('last').catch(() => ({}));
+      const last = o && o.last;
+      if (last && last !== before && /— Paused at /.test(last)) return { result: last.replace(/^.*?— Paused at [\d:]+: /, '') };
+    }
+    return { result: 'no answer from the extension in 60 s (press 🩺 Check under the video)' };
+  }
+  async function showReport() {
+    let panel = document.getElementById('yt2c-report');
+    if (panel) panel.remove();
+    panel = document.createElement('div');
+    panel.id = 'yt2c-report';
+    panel.style.cssText = 'position:fixed;left:3%;right:3%;top:6%;bottom:6%;z-index:2147483647;background:#111;color:#eee;border:2px solid #555;border-radius:14px;' +
+      'display:flex;flex-direction:column;font:14px/1.4 system-ui,Arial,sans-serif;box-shadow:0 10px 40px #000';
+    const top = document.createElement('div');
+    top.style.cssText = 'display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid #333';
+    const title = document.createElement('b'); title.textContent = '🩺 Check'; title.style.flex = '1';
+    const btn = (t, f) => { const b = document.createElement('button'); b.textContent = t; b.style.cssText = 'border:0;border-radius:12px;padding:10px 16px;font:600 15px system-ui;background:#2b6de8;color:#fff'; b.onclick = f; return b; };
+    const pre = document.createElement('pre');
+    pre.id = 'yt2c-report-text';
+    pre.style.cssText = 'flex:1;overflow:auto;margin:0;padding:12px;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text';
+    pre.textContent = 'Checking…';
+    const copy = btn('Copy report', async () => {
+      try { await navigator.clipboard.writeText(pre.textContent); copy.textContent = 'Copied ✓'; }
+      catch (e) { const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); copy.textContent = 'Selected: tap Copy'; }
+    });
+    top.append(title, copy, btn('Close', () => panel.remove()));
+    panel.append(top, pre);
+    (document.fullscreenElement || document.webkitFullscreenElement || document.documentElement).appendChild(panel);
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'diagnose' });
+      pre.textContent = (r && r.report) || 'No answer from the extension. Close Safari fully (swipe it away), open it again, and press Check again. If it still says this: Settings → Apps → Safari → Extensions → turn the extension off and on.';
+    } catch (e) { pre.textContent = 'The extension did not answer (' + e.message + '). Reload this page and press Check again.'; }
   }
 
   function setBarStatus(text, bad) {
@@ -684,10 +752,14 @@
         tapLayer.addEventListener('click', onTap, true);
         document.documentElement.appendChild(tapLayer);
       }
-      tapLayer.style.left = Math.round(r.left + r.width * 0.12) + 'px';
-      tapLayer.style.top = Math.round(r.top + r.height * 0.14) + 'px';
-      tapLayer.style.width = Math.round(r.width * 0.76) + 'px';
-      tapLayer.style.height = Math.round(r.height * 0.62) + 'px';
+      const fs = document.fullscreenElement || document.webkitFullscreenElement || null; // full screen: the touch area must be INSIDE it
+      const parent = fs && fs.contains(video) ? fs : document.documentElement;
+      if (tapLayer.parentElement !== parent) parent.appendChild(tapLayer);
+      const place = [r.left + r.width * 0.12, r.top + r.height * 0.14, r.width * 0.76, r.height * 0.62].map((x) => Math.round(x) + 'px');
+      if (tapLayer.dataset.place !== place.join()) {
+        tapLayer.dataset.place = place.join();
+        [tapLayer.style.left, tapLayer.style.top, tapLayer.style.width, tapLayer.style.height] = place;
+      }
     } else if (tapLayer) { tapLayer.remove(); tapLayer = null; }
 
     if (settings.badgeOn) {
@@ -704,6 +776,7 @@
     } else if (badge) { badge.remove(); badge = null; }
   }
   setInterval(updateTapLayer, 300);
+  for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => setTimeout(updateTapLayer, 50));
   window.addEventListener('scroll', updateTapLayer, true);
 
   function onPlay() {
@@ -731,7 +804,7 @@
     // wait a moment: ignore pauses caused by seeking, the video ending, or ads
     setTimeout(() => {
       if (v.paused && !v.ended && !v.seeking && !isAd() && !handling) handlePause();
-    }, 250);
+    }, TOUCH ? 120 : 250);
   }
 
   // ---- waiting for "let's go" ----
@@ -919,7 +992,17 @@
     continueFromStart();
   }, true);
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'yt-diag') { // for the 🩺 check
+      const r = video ? video.getBoundingClientRect() : null;
+      sendResponse({ url: location.href.slice(0, 80), visible: document.visibilityState, video: !!video,
+        videoSize: r ? Math.round(r.width) + 'x' + Math.round(r.height) : null, paused: video ? video.paused : null, muted: video ? video.muted : null,
+        volume: video ? video.volume : null, time: video ? +video.currentTime.toFixed(1) : null, subtitles: subState, lastSend, lastHeard,
+        waiting: !!pending, replaying: !!replaying, touchArea: !!tapLayer, bar: !!bar,
+        settings: { sendOn: settings.sendOn, target: settings.target, picOnly: settings.picOnly, replayOn: settings.replayOn, voiceOn: settings.voiceOn, tapOn: settings.tapOn, textLevel: settings.textLevel },
+        safari: !!window.__ytcSafari, touch: TOUCH });
+      return;
+    }
     if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false, msg.key); // used by tests / other parts of the extension
     if (msg && msg.type === 'tts-state') { aiSpeaking = !!msg.speaking; if (!msg.speaking) aiSpeakingEnded = Date.now(); }
   });
@@ -941,7 +1024,7 @@
         beginWaiting(seg);
         runDeferredSend(); // (only if it was not sent already)
       }
-    }, 50);
+    }, TOUCH ? 120 : 50);
     replaying = { seg, timer };
     quietUntil = Date.now() + 1500;
     video.currentTime = Math.max(0, seg.start - 0.3);
@@ -1063,8 +1146,11 @@
       lastSeg = seg;
       showOverlay({ seg });
       // Claude only: 1 second after you stopped (the big subtitles are on screen by then) take the picture
-      const wantPicture = settings.sendOn && settings.target === 'claude' && settings.imageOn;
-      const pictureReady = wantPicture ? new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 900)) : Promise.resolve(null);
+      const picOnly = settings.target === 'claude' && settings.picOnly;
+      const wantPicture = settings.sendOn && settings.target === 'claude' && (settings.imageOn || picOnly);
+      const pictureReady = !wantPicture ? Promise.resolve(null)
+        : picOnly ? new Promise((resolve) => setTimeout(() => { let card = null; try { card = renderSubtitlePicture(seg, true); } catch (e) { /* none */ } resolve({ shot: null, card }); }, 700)) // drawn once the replay runs (the replay starts at once)
+        : new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 900));
       deferredSend = null;
       const sendNow = async (inCall) => {
         if (!settings.sendOn) { // both buttons under the video are red: only watch, send nothing
@@ -1076,13 +1162,17 @@
         lastSend = 'sending…';
         const pics = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
         const image = pics && pics.shot, card = pics && pics.card;
+        const lastBefore = await chrome.storage.local.get('last').then((o) => o.last || '', () => '');
+        setBarStatus('Sending to ' + targetName() + '…', false);
         try {
-          chrome.runtime.sendMessage({ type: 'pause-send', inCall: !!inCall, videoId: videoId(), title: d.title, url: d.url, seg, image, card, lines: groupSentences(seg.items).map((g) => g.text) })
-            .then((r) => {
+          chrome.runtime.sendMessage({ type: 'pause-send', inCall: !!inCall, videoId: videoId(), title: d.title, url: d.url, seg, image: picOnly ? null : image, card, pictureOnly: picOnly && !!card, lines: groupSentences(seg.items).map((g) => g.text) })
+            .then(async (r) => {
+              if (!r || !r.result) r = await resultLater(lastBefore);
               const ok = !!(r && /^Sent /.test(r.result));
               lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');
-              setFoot('Not sent to ' + targetName() + ': ' + ((r && r.result) || 'no answer'), ok);
-              setBarStatus(ok ? 'Sent to ' + targetName() + ' ✓ (' + fmtTime(seg.start) + '–' + fmtTime(seg.end) + ')' : '⚠ NOT sent: ' + ((r && r.result) || 'no answer'), !ok);
+              const why = shortReason((r && r.result) || 'no answer');
+              setFoot('Not sent to ' + targetName() + ': ' + why, ok);
+              setBarStatus(ok ? 'Sent to ' + targetName() + ' ✓ (' + fmtTime(seg.start) + '–' + fmtTime(seg.end) + ')' : '⚠ NOT sent: ' + why, !ok);
             })
             .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); setBarStatus('⚠ NOT sent: reload this YouTube page', true); });
         } catch (e) { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
