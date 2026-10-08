@@ -42,6 +42,7 @@ globalThis.YTL_PANEL_CSS = `
   gap: 6px 10px; padding: 6px 10px;
 }
 .bar { background: var(--bg2); border-bottom: 1px solid var(--line); padding-top: 7px; }
+.bar.transport { background: #10151f; padding-top: 6px; }
 .group { display: flex; align-items: center; gap: 4px; }
 .sep { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
 .spacer { flex: 1 1 auto; }

@@ -136,7 +136,7 @@ await step('panel fits the phone: big buttons, no sideways scrolling, video stil
   assert(m.overflow <= 1, `no sideways overflow (${m.overflow}px)`);
   assert(m.minBtn >= 36, `buttons at least 36px tall (${m.minBtn})`);
   assert(m.panelH > 844 * 0.42 && m.panelH < 844 * 0.56, `panel takes about half the screen (${m.panelH})`);
-  assert(m.rows <= 3, `toolbar fits in 3 rows (${m.rows})`);
+  assert(m.rows <= 4, `two short button rows above and beside the wave (${m.rows})`);
 });
 
 await step('reads the whole song (scan) and goes back', async () => {
@@ -269,7 +269,7 @@ await step('pinch with two fingers zooms in; Whole song / Zoom in button', async
     const btns = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.bar button')].filter((b) => b.getClientRects().length);
     return btns.map((b) => b.getBoundingClientRect().top).sort((x, y) => x - y).filter((t, i, a) => i === 0 || t - a[i - 1] > 8).length;
   });
-  assert(rows <= 3, `toolbar still 3 rows while it says "Whole song" (${rows})`);
+  assert(rows <= 4, `buttons still fit while it says "Whole song" (${rows})`);
   await tap('button.zoom-toggle');
   assert((await host()).zoom === '', 'whole song');
   await tap('button.zoom-toggle');

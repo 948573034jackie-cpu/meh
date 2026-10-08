@@ -5,7 +5,9 @@ const path = require('path');
 const zlib = require('zlib');
 
 const ROOT = path.join(__dirname, '..');
-const files = ['manifest.json', ...fs.readdirSync(path.join(ROOT, 'src')).map((f) => `src/${f}`),
+const files = ['manifest.json',
+  ...fs.readdirSync(path.join(ROOT, 'src')).filter((f) => f.endsWith('.js')).map((f) => `src/${f}`),
+  ...fs.readdirSync(path.join(ROOT, 'src', 'vendor')).map((f) => `src/vendor/${f}`),
   ...fs.readdirSync(path.join(ROOT, 'icons')).map((f) => `icons/${f}`)];
 
 const CRC = new Uint32Array(256).map((_, n) => {

@@ -84,6 +84,7 @@ ${read('inject.js')}
 ${storageShim}
 ${read('core.js')}
 ${read('panel-css.js')}
+${read('vendor/signalsmith-stretch.js')}
 ${read('content.js')}
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });

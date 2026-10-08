@@ -15,7 +15,7 @@ async function toggle(tab) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/inject.js'], world: 'MAIN' });
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['src/core.js', 'src/panel-css.js', 'src/content.js'],
+        files: ['src/core.js', 'src/panel-css.js', 'src/vendor/signalsmith-stretch.js', 'src/content.js'],
       });
       setTimeout(() => {
         chrome.tabs.sendMessage(tab.id, { type: 'ytl-toggle' }).catch(() => {});

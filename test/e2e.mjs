@@ -617,6 +617,18 @@ await step('line practice: tap ⟳ again to stop early; speed comes back and it 
   let h = await host();
   assert(h.lineLoop === '2.00,4.00', `line 2 (${h.lineLoop})`);
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');
+  // The purple ] edge on the wave can be dragged, like the A/B flags.
+  if ((await host()).zoom) await shadowClick('button', 'Show the whole song');
+  const wb = await waveBox();
+  const y = wb.y + 18 + (wb.h - 18) * 0.6;
+  const xe = wb.x + (4 / DUR) * wb.w;
+  await page.mouse.move(xe, y);
+  await page.mouse.down();
+  await page.mouse.move(xe + 10, y, { steps: 3 });
+  await page.mouse.move(wb.x + (5 / DUR) * wb.w, y, { steps: 4 });
+  await page.mouse.up();
+  h = await host();
+  assert(h.lineLoop === '2.00,5.00' || /^2\.00,4\.9[5-9]|^2\.00,5\.0[0-5]/.test(h.lineLoop), `line end dragged to ~5 s (${h.lineLoop})`);
   await page.screenshot({ path: path.join(SHOTS, '9-line-loop.png') });
   await sleep(500);
   await lineBtn(1);
@@ -626,6 +638,33 @@ await step('line practice: tap ⟳ again to stop early; speed comes back and it 
   assert(Math.abs(v.rate - 0.75) < 0.001 && !v.paused, `75% again and still playing (${v.rate}, paused=${v.paused})`);
   await waitFor(async () => (await vstate()).t > 4.2, 5000, 'plays on into the next line');
   await shadowClick('button.speed', '100%');
+});
+
+await step('studio-quality slow-down: at 50% the pitch stays right (440 Hz, not 220 Hz); at 100% the sound is untouched', async () => {
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 8.2; v.play().catch(() => {}); });
+  // A real click (a user gesture) lets the audio engine start.
+  const b50 = await page.evaluate(() => {
+    const r = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.speed')].find((x) => x.textContent === '50%').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await page.mouse.click(b50.x, b50.y);
+  await waitFor(async () => (await host()).hq === 'stretch', 8000, 'sound goes through the stretch engine');
+  const v = await vstate();
+  assert(v.pitch === false && Math.abs(v.rate - 0.5) < 0.001, `video plays tape-style at 50% (preservesPitch=${v.pitch})`);
+  const seen = {};
+  for (let i = 0; i < 25; i++) {
+    await page.evaluate(() => { const v = document.querySelector('#movie_player video'); if (v.currentTime > 9.6 || v.currentTime < 8) v.currentTime = 8.2; });
+    await sleep(120);
+    const hz = Number((await host()).hqHz);
+    if (hz > 100) seen[Math.round(hz / 20) * 20] = (seen[Math.round(hz / 20) * 20] || 0) + 1;
+  }
+  const top = Number(Object.entries(seen).sort((a, b) => b[1] - a[1])[0]?.[0] || 0);
+  assert(Math.abs(top - 440) <= 25, `main pitch ${top} Hz (want 440; tape-slowed would be 220). Seen: ${JSON.stringify(seen)}`);
+  await shadowClick('button.speed', '100%');
+  await waitFor(async () => (await host()).hq === 'bypass', 3000, 'straight through at 100%');
+  assert((await vstate()).pitch === true, 'normal pitch handling at 100%');
 });
 
 await step('play / pause button is a little bigger than the other buttons', async () => {

@@ -94,6 +94,7 @@
     lyricsH: 0, // height of the top lyrics area as a fraction of the screen; 0 = fill the space above the panel
     seenHelp: false,
     zoomFocus: false, // "Zoom in": the wave follows the playhead in a short window
+    hqAudio: true, // studio-quality slow-down (Signalsmith Stretch)
     focusLen: 30,
   };
   function saveSettings() {
@@ -204,6 +205,7 @@
 
   const videoListeners = [
     ['ratechange', onRateChange],
+    ['ratechange', () => updateHQ()],
     ['ended', onEnded],
     ['play', onPlay],
     ['durationchange', () => {
@@ -402,12 +404,157 @@
     const v = S.video;
     if (!v || S.scan || isAd()) return;
     try {
-      if (v.preservesPitch !== settings.keepPitch) v.preservesPitch = settings.keepPitch;
-      if ('webkitPreservesPitch' in v && v.webkitPreservesPitch !== settings.keepPitch) v.webkitPreservesPitch = settings.keepPitch;
       if (Math.abs(v.playbackRate - S.rate) > 0.001) v.playbackRate = S.rate;
     } catch (e) {
       /* ignore */
     }
+    updateHQ();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Studio-quality slow-down. The browser's own "keep pitch" stretch gets
+  // grainy at 30-50%. Instead the video plays like a slowed-down tape (clean,
+  // just lower), and Signalsmith Stretch (a professional time-stretch/pitch
+  // engine, the same family of tech as DAW warping) shifts the pitch back up.
+  // At 100% speed the audio goes straight through, untouched.
+  // ---------------------------------------------------------------------------
+  const HQ = { ctx: null, node: null, src: null, video: null, mode: 'off', semis: null, failed: false, loading: false, lag: 0, analyser: null };
+
+  function setPitchFlag(v, keep) {
+    try {
+      if (v.preservesPitch !== keep) v.preservesPitch = keep;
+      if ('webkitPreservesPitch' in v && v.webkitPreservesPitch !== keep) v.webkitPreservesPitch = keep;
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  // Called from taps/clicks in the panel: audio may only start after one.
+  function hqGesture() {
+    if (!settings.hqAudio || HQ.failed) return;
+    try {
+      if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; // iPhone: ignore the silent switch, like video sound
+    } catch (e) {
+      /* ignore */
+    }
+    if (HQ.ctx) {
+      if (HQ.ctx.state !== 'running') HQ.ctx.resume().catch(() => {});
+      return;
+    }
+    if (typeof SignalsmithStretch !== 'function' || !window.AudioContext || !window.AudioWorkletNode) {
+      HQ.failed = true;
+      return;
+    }
+    try {
+      HQ.ctx = new AudioContext({ latencyHint: 'playback' });
+    } catch (e) {
+      HQ.failed = true;
+      return;
+    }
+    HQ.ctx.addEventListener('statechange', () => {
+      if (HQ.src && HQ.ctx.state !== 'running') HQ.ctx.resume().catch(() => flash('Tap the panel to bring the sound back.', 6000));
+      updateHQ();
+    });
+    HQ.loading = true;
+    // eslint-disable-next-line no-undef
+    SignalsmithStretch(HQ.ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] })
+      .then(async (node) => {
+        HQ.node = node;
+        HQ.loading = false;
+        await node.start();
+        try {
+          HQ.lag = (await node.latency()) || 0;
+        } catch (e) {
+          HQ.lag = 0;
+        }
+        HQ.analyser = HQ.ctx.createAnalyser();
+        HQ.analyser.fftSize = 8192;
+        node.connect(HQ.analyser);
+        updateHQ();
+      })
+      .catch(() => {
+        HQ.failed = true; // nothing was routed yet: the normal sound is untouched
+        HQ.loading = false;
+        updateHQ();
+      });
+  }
+
+  function hqWanted(v) {
+    const r = v.playbackRate;
+    return settings.hqAudio && settings.keepPitch && !HQ.failed && !S.scan && !isAd() &&
+      Math.abs(r - 1) > 0.001 && r >= 0.2 && r <= 2.5 && /^blob:/.test(v.currentSrc || v.src || '');
+  }
+
+  // Routes the video's sound: straight through, or through the stretch engine.
+  function updateHQ() {
+    const v = S.video;
+    if (!v) return;
+    const want = !!HQ.node && HQ.ctx.state === 'running' && hqWanted(v);
+    if (want && HQ.video !== v) {
+      try {
+        const src = HQ.ctx.createMediaElementSource(v); // from now on this video's sound flows through our graph
+        if (HQ.src) {
+          try {
+            HQ.src.disconnect(); // an old, replaced video element
+            HQ.node.disconnect(HQ.ctx.destination);
+          } catch (e) {
+            /* not connected */
+          }
+        }
+        HQ.src = src;
+        HQ.video = v;
+        HQ.mode = 'off'; // nothing is wired for this element yet
+      } catch (e) {
+        HQ.failed = true;
+      }
+    }
+    const routed = !!HQ.src && HQ.video === v;
+    const mode = routed ? (want && !HQ.failed ? 'stretch' : 'bypass') : 'off';
+    if (routed && mode !== HQ.mode) {
+      try {
+        HQ.src.disconnect();
+        HQ.node.disconnect(HQ.ctx.destination);
+      } catch (e) {
+        /* not connected yet */
+      }
+      if (mode === 'stretch') {
+        HQ.src.connect(HQ.node);
+        HQ.node.connect(HQ.ctx.destination);
+      } else {
+        HQ.src.connect(HQ.ctx.destination);
+      }
+    }
+    HQ.mode = mode;
+    if (mode === 'stretch') {
+      const semis = Math.round(-12 * Math.log2(v.playbackRate) * 1000) / 1000;
+      if (semis !== HQ.semis) {
+        HQ.semis = semis;
+        HQ.node.schedule({ semitones: semis, formantCompensation: false });
+      }
+      setPitchFlag(v, false); // tape-style input; the engine restores the pitch
+    } else {
+      HQ.semis = null;
+      setPitchFlag(v, settings.keepPitch);
+    }
+    if (hostEl) {
+      hostEl.dataset.hq = HQ.failed ? 'failed' : HQ.mode;
+      if (document.documentElement.dataset.ytlDebug === '1') hostEl.dataset.hqHz = String(hqPeakHz());
+    }
+  }
+
+  // Test/debug helper: the loudest frequency coming out of the engine.
+  function hqPeakHz() {
+    if (!HQ.analyser || HQ.mode !== 'stretch') return 0;
+    const bins = new Float32Array(HQ.analyser.frequencyBinCount);
+    HQ.analyser.getFloatFrequencyData(bins);
+    let best = 0;
+    for (let i = 1; i < bins.length; i++) if (bins[i] > bins[best]) best = i;
+    return Math.round((best * HQ.ctx.sampleRate) / HQ.analyser.fftSize);
+  }
+
+  // How far the sound runs behind the playhead (seconds of song time).
+  function audioLag() {
+    return HQ.mode === 'stretch' && S.video ? HQ.lag * S.video.playbackRate : 0;
   }
 
   function setRate(r, fromTrainer) {
@@ -1270,7 +1417,7 @@
 
   function nudgeLyrics(delta) {
     L.offset = Math.round((L.offset + delta) * 10) / 10;
-    if (S.lineLoop) Object.assign(S.lineLoop, lineRange(S.lineLoop.idx));
+    if (S.lineLoop && !S.lineLoop.custom) Object.assign(S.lineLoop, lineRange(S.lineLoop.idx));
     L.offsetSet = true;
     L.autoPending = false;
     L.nowIdx = -2;
@@ -1308,7 +1455,7 @@
   function lyricsTick() {
     if (!settings.lyrics || !L.synced || !L.lines || !S.video || ui.lyrics.hidden) return;
     if (L.autoPending) autoAlignLyrics();
-    const i = C.lineAt(L.lines, S.video.currentTime + 0.15 - L.offset);
+    const i = C.lineAt(L.lines, S.video.currentTime + 0.15 - L.offset - audioLag());
     if (i === L.nowIdx) return;
     const kids = ui.lyrBody.children;
     for (let k = Math.max(0, Math.min(L.nowIdx, i) - 1); k < kids.length && k <= Math.max(L.nowIdx, i) + 1; k++) {
@@ -1635,6 +1782,7 @@
     hostEl.style.cssText =
       'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;display:none;';
     shadow = hostEl.attachShadow({ mode: 'open' });
+    hostEl.addEventListener('pointerdown', () => hqGesture(), true);
     // Typing in the lyrics search box must not trigger YouTube's shortcuts (k, f, m, j, l...).
     for (const ev of ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'contextmenu', 'wheel', 'touchstart', 'keydown', 'keyup', 'keypress']) {
       hostEl.addEventListener(ev, (e) => e.stopPropagation());
@@ -1679,11 +1827,9 @@
     ui.collapseBtn = btn(null, 'Minimise', toggleCollapse, 'icon hide-phone', 'down');
     const closeBtn = btn(null, 'Close the looper (turns loop and speed off)', closePanel, 'icon', 'close');
 
+    // Top row: speed, trainer and view options.
     const bar = h('div', { class: 'row bar' },
       h('div', { class: 'brand', title: 'DJ Wave Looper' }, icon('wave'), h('span', { class: 'brand-name', text: 'Wave Looper' })),
-      h('div', { class: 'group' }, ui.aMark, ui.bMark),
-      h('div', { class: 'group' }, ui.playBtn, ui.loopBtn, ui.undoBtn, ui.clearBtn),
-      h('div', { class: 'sep' }),
       h('div', { class: 'group' }, h('span', { class: 'label hide-narrow', text: 'Speed' }), ...ui.speedBtns, slower, ui.rate, faster),
       h('div', { class: 'sep' }),
       ui.trainerBtn,
@@ -1721,11 +1867,21 @@
     ui.scanChk = h('input', { type: 'checkbox' });
     ui.scanChk.checked = settings.autoScan;
     ui.scanChk.addEventListener('change', () => { settings.autoScan = ui.scanChk.checked; saveSettings(); ui.scanChk.blur(); if (settings.autoScan) maybeAutoScan(); });
+    ui.hqChk = h('input', { type: 'checkbox' });
+    ui.hqChk.checked = settings.hqAudio;
+    ui.hqChk.addEventListener('change', () => {
+      settings.hqAudio = ui.hqChk.checked;
+      saveSettings();
+      ui.hqChk.blur();
+      if (settings.hqAudio) hqGesture();
+      updateHQ();
+    });
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
+      h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk, 'Studio-quality slow-down'),
       ui.rescanBtn,
       btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
@@ -1748,7 +1904,12 @@
 
     ui.help = buildHelp();
     const resize = h('div', { class: 'resize', title: 'Drag up or down to make the wave bigger or smaller' });
-    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.stage, status, ui.help);
+    // Right above the wave: play, A / B and the loop buttons, close to your hand.
+    const transport = h('div', { class: 'row bar transport' },
+      h('div', { class: 'group' }, ui.playBtn),
+      h('div', { class: 'group' }, ui.aMark, ui.bMark),
+      h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn));
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
     setupResize(resize);
@@ -2196,6 +2357,8 @@
     d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
     d.lineLoop = S.lineLoop ? `${S.lineLoop.a.toFixed(2)},${S.lineLoop.b.toFixed(2)}` : '';
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
+    d.hq = HQ.failed ? 'failed' : HQ.mode;
+    if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
   }
 
@@ -2511,9 +2674,8 @@
       const xb = xAt(S.lineLoop.b, g);
       ctx.fillStyle = 'rgba(190,120,255,0.22)';
       ctx.fillRect(xa, top, xb - xa, wh);
-      ctx.fillStyle = '#c084fc';
-      ctx.fillRect(Math.round(xa) - 1, top, 2, wh);
-      ctx.fillRect(Math.round(xb) - 1, top, 2, wh);
+      drawFlag(ctx, xa, top, wh, '#c084fc', '[', false);
+      drawFlag(ctx, xb, top, wh, '#c084fc', ']', true);
     }
     if (drag && drag.mode === 'select' && drag.moved) {
       const x0 = xAt(drag.t0, g);
@@ -2699,7 +2861,9 @@
         }
       } else {
         const hnd = handleAt(x, g, e.pointerType === 'touch');
-        if (hnd) {
+        if (hnd === 'la' || hnd === 'lb') {
+          drag = { mode: 'lhandle', which: hnd };
+        } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
         } else if (e.pointerType === 'touch') {
@@ -2738,6 +2902,10 @@
         } else {
           waveClick(d.t0);
         }
+      } else if (d.mode === 'lhandle') {
+        const v = S.video;
+        if (v && S.lineLoop && (v.currentTime < S.lineLoop.a - 0.01 || v.currentTime >= effEnd())) seek(S.lineLoop.a);
+        renderUI();
       } else if (d.mode === 'handle') {
         const v = S.video;
         if (v && S.loopOn && (v.currentTime < S.a - 0.01 || v.currentTime >= effEnd())) seek(S.a);
@@ -2783,12 +2951,22 @@
     );
   }
 
+  // Which edge is under the pointer: the practised line's start/end ('la'/'lb',
+  // checked first) or the A/B flags.
   function handleAt(x, g, touch) {
-    if (!hasLoop() || S.pendingA != null) return null;
-    const da = Math.abs(x - xAt(S.a, g));
-    const db = Math.abs(x - xAt(S.b, g));
-    if (Math.min(da, db) > (touch ? 22 : HANDLE_PX)) return null;
-    return da <= db ? 'a' : 'b';
+    const cands = [];
+    if (S.lineLoop) cands.push(['la', S.lineLoop.a], ['lb', S.lineLoop.b]);
+    if (hasLoop() && S.pendingA == null) cands.push(['a', S.a], ['b', S.b]);
+    let best = null;
+    let bestD = Infinity;
+    for (const [k, t] of cands) {
+      const d = Math.abs(x - xAt(t, g));
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    }
+    return bestD <= (touch ? 22 : HANDLE_PX) ? best : null;
   }
 
   function onDragMove(e, g, x) {
@@ -2802,6 +2980,23 @@
       userSeek(t);
     } else if (drag.mode === 'mini') {
       panMiniTo(x, g);
+    } else if (drag.mode === 'lhandle' && S.lineLoop) {
+      // Move the practised line's start or end freely.
+      const ll = S.lineLoop;
+      let a = ll.a;
+      let b = ll.b;
+      if (drag.which === 'la') a = t;
+      else b = t;
+      if (a > b) {
+        [a, b] = [b, a];
+        drag.which = drag.which === 'la' ? 'lb' : 'la';
+      }
+      if (b - a >= 0.3) {
+        ll.a = a;
+        ll.b = b;
+        ll.custom = true;
+        renderUI();
+      }
     } else if (drag.mode === 'handle') {
       let a = S.a;
       let b = S.b;

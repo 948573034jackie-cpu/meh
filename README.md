@@ -7,9 +7,10 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 - **See the whole song as a DJ waveform** in a panel at the bottom of the page. Colours show the sound: orange/red = bass, green = mids, blue = highs.
 - **Loop any part:** click where it starts, then click where it ends. It loops forever.
 - **Slow it down:** 30%, 50%, 75% and 100% buttons, plus − / + in 5% steps. The key stays the same, so you can still sing along.
+- **Studio-quality slow-down:** when you slow a song down, the sound goes through a studio time-stretch engine (like warping in a DAW) instead of the browser's basic one, so voices and instruments stay clean, without the robotic, watery sound. At 100% the sound is untouched. You can switch it off in ⚙ (**Studio-quality slow-down**).
 - **Speed trainer:** tap **Trainer** and it starts right away, always at 30% over 50 loops (you can switch to 50% / 75% and 25 / 75 loops while it runs). Every loop gets a little faster until 100%, then it plays 10 times at full speed and stops by itself. Tap **Trainer** again to stop it and go back to normal speed. **Too fast?** Press a slower speed while it runs: the trainer steps back to the loop that plays at that speed, so you get those loops again (30% → 100% over 50 loops: 50% = loop 15, 75% = loop 33; 30% starts the climb again with all 50 loops).
-- **Lyrics next to the wave:** tap **Lyrics** (♪). It reads the song name from the YouTube title (it ignores words like *Official Video*, *Acapella* or *Instrumental*) and finds the lyrics in [LRCLIB](https://lrclib.net), a free lyrics database. When the lyrics have timings, the current line lights up and scrolls along, and you can tap a line to jump there. **Practise one line:** tap the ⟳ at the left of a line (or the left edge of the line). That line plays 30 times: the first 20 speed up from 30% to 100%, then 10 at 100%, then it stops and your speed goes back to what it was (a running Trainer keeps its place). Tap ⟳ again to stop early: your speed comes back and the song carries on (your A–B loop if you have one). Wrong song? Tap ⏭ for the next match, or type the song name and artist and press Enter. For **a cappella / vocals-only** videos the lyrics line themselves up with where the singing starts; for any version you can fine-tune the timing with **◀ 0.2s / 0.2s ▶** (saved per video).
-- **Play / pause button** right in the panel.
+- **Lyrics next to the wave:** tap **Lyrics** (♪). It reads the song name from the YouTube title (it ignores words like *Official Video*, *Acapella* or *Instrumental*) and finds the lyrics in [LRCLIB](https://lrclib.net), a free lyrics database. When the lyrics have timings, the current line lights up and scrolls along, and you can tap a line to jump there. **Practise one line:** tap the ⟳ at the left of a line (or the left edge of the line). That line plays 30 times: the first 20 speed up from 30% to 100%, then 10 at 100%, then it stops and your speed goes back to what it was (a running Trainer keeps its place). Tap ⟳ again to stop early: your speed comes back and the song carries on (your A–B loop if you have one). The line shows on the wave in purple with **[ ]** edges: drag them to make the line loop start earlier or end later, just like the A / B flags. Wrong song? Tap ⏭ for the next match, or type the song name and artist and press Enter. For **a cappella / vocals-only** videos the lyrics line themselves up with where the singing starts; for any version you can fine-tune the timing with **◀ 0.2s / 0.2s ▶** (saved per video).
+- **Everything for the loop sits right above the wave:** play / pause, **A** / **B** with their ‹ › buttons, **Loop**, undo and clear. Speeds, the Trainer and the view buttons are in the top row.
 - **Pause between loops** (0.5–3 s) to breathe before each repeat.
 - **Saved parts** (Verse, Chorus…). Your loop and speed are remembered for every video.
 
@@ -48,7 +49,7 @@ Notes:
 | What you want | What to do |
 |---|---|
 | Make a loop | Click the wave at the start, then click at the end. Or drag across the part. |
-| Fine-tune the loop | Drag the green **A** / red **B** flags, or use the ‹ › buttons (0.05 s; Shift = 0.01 s, Alt = 0.5 s). |
+| Fine-tune the loop | Drag the green **A** / red **B** flags (or the purple **[ ]** of a lyric-line loop), or use the ‹ › buttons (0.05 s; Shift = 0.01 s, Alt = 0.5 s). |
 | Zoom in / zoom out | Press **Zoom in**: the wave shows only about 30 s around what is playing and scrolls along with the song. Press **Whole song** to see everything again. You can also scroll on the wave to zoom, and 🔍 zooms to your loop. |
 | Open the looper | Waveform button in the video controls (bottom right), the **Wave Looper** button under the video next to Like/Share, the extension icon, or **Alt+L**. |
 | Make the wave bigger | Press the ↕ buttons (top right of the panel), or drag the top edge of the panel up. |
@@ -58,8 +59,8 @@ Notes:
 | Slow down | **50% / 75% / 100%**, or − / +. Click the big % number to reset to 100%. |
 | Speed trainer | Tap **Trainer**: it starts right away at 30% → 100% over 50 loops. Change *from* (30/50/75%) or *over* (25/50/75 loops) any time. After reaching 100% it plays 10 times, then stops by itself. Tap **Trainer** again to stop and go back to normal speed. |
 | Lyrics | Tap **Lyrics** (♪). They're found automatically from the song name; the current line lights up when the lyrics have timings. Tap a line to jump there. ⏭ = next match; or type the song name and press Enter. |
-| Play / pause | ▶ / ❚❚ button at the left of **Loop**. |
-| Breathing pause, pitch | ⚙ settings. Turn **Keep pitch** off for tape-style slow-down (50% = one octave lower, handy for working out fast solos). |
+| Play / pause | ▶ / ❚❚ button in the row right above the wave, next to **A** / **B**. |
+| Breathing pause, pitch, sound quality | ⚙ settings. **Studio-quality slow-down** is on by default; turn it off if your computer struggles. Turn **Keep pitch** off for tape-style slow-down (50% = one octave lower, handy for working out fast solos). |
 | Undo a loop change | ↶ button. |
 | Turn it all off | ✕ closes the panel and resets speed to 100%. |
 
@@ -79,16 +80,21 @@ src/content.js    panel UI, loop engine, speed + trainer, scan, storage
 src/core.js       pure logic (time format, trainer ramp, PeakStore), unit tested
 src/panel-css.js  panel styles (inside a shadow root)
 src/background.js toolbar button + Alt+L
+src/vendor/signalsmith-stretch.js  Signalsmith Stretch 1.3.2 (MIT, Geraint Luff): pitch/time-stretch AudioWorklet
 ```
 
 ```
 node tools/make-fixtures.js   # test media (needs ffmpeg)
 npm test                      # unit tests: logic + WebM/MP4 parsers
 npm run e2e                   # loads the real extension in Chromium on a simulated YouTube page (needs playwright)
-npm run e2e:userscript        # same 30 steps against the userscript build
+npm run e2e:userscript        # same steps against the userscript build
 npm run e2e:mobile            # userscript on an emulated iPhone visiting m.youtube.com (touch, pinch, layout)
 npm run build:userscript      # userscript/wave-looper.user.js (Safari/iOS, Tampermonkey); built from src/
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
 
-The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 39 steps: scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
+The end-to-end test serves a fake YouTube watch page that streams media through MSE the way YouTube does, with YouTube's Trusted Types policy. It covers 41 steps, including a pitch check that 50% speed still sounds at the right pitch (440 Hz stays 440 Hz): scan and position restore, waveform accuracy, making the wave bigger, the click-click loop, loop timing (under 80 ms overshoot), speed buttons, YouTube resetting the speed, the trainer ramp, the trainer stopping after N full-speed plays, the button under the video, flag dragging, nudge, undo, zoom, keyboard keys, breath pause, saved parts, the end-of-video guard, switching videos, ads, fullscreen and console errors.
+
+## Credits
+
+Slow-down audio uses [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) by Geraint Luff / Signalsmith Audio, MIT licence (see the header of `src/vendor/signalsmith-stretch.js`). Lyrics come from [LRCLIB](https://lrclib.net).
