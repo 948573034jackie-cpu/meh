@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 14px; width: 300px; font: 13px system-ui, sans-serif; color: #202124; }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  .mode { display: flex; border: 1px solid #dadce0; border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+  .mode label { flex: 1; text-align: center; padding: 8px 0; cursor: pointer; font-weight: 600; background: #f8f9fa; }
+  .mode input { display: none; }
+  .mode input:checked + span { display: block; }
+  .mode label.on-claude { background: #d97757; color: #fff; }
+  .mode label.on-chatgpt { background: #10a37f; color: #fff; }
+  #go { width: 100%; padding: 10px 0; font-size: 14px; border-radius: 8px; border: 0; color: #fff; cursor: pointer; background: #d97757; }
+  #go.chatgpt { background: #10a37f; }
+  #go:disabled { opacity: .6; cursor: default; }
+  .hint { font-size: 11px; color: #5f6368; margin-top: 6px; }
+  .opt { display: block; margin-top: 10px; font-size: 12px; line-height: 1.35; }
+  select { width: 100%; margin-top: 4px; padding: 5px; font-size: 12px; }
+  hr { border: 0; border-top: 1px solid #e8eaed; margin: 12px 0 2px; }
+  #msg { margin-top: 10px; font-size: 12px; color: #5f6368; word-break: break-word; }
+  #msg.err { color: #d93025; }
+</style>
+<h1>YouTube → AI chat <span id="ver" style="font-weight:400;color:#5f6368;font-size:11px"></span></h1>
+<div class="mode" id="mode">
+  <label id="lbl-claude"><input type="radio" name="target" value="claude">Claude</label>
+  <label id="lbl-chatgpt"><input type="radio" name="target" value="chatgpt">ChatGPT</label>
+</div>
+<button id="go">Send this video to Claude</button>
+<button id="check" style="margin-top:6px">🩺 Check for problems</button>
+<pre id="report" style="display:none;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:#111;color:#eee;padding:8px;border-radius:8px;font-size:11px;-webkit-user-select:text;user-select:text"></pre>
+<button id="copyReport" style="display:none;margin-top:4px">Copy report</button>
+<div class="hint">Sends the video link + full transcript ONCE and turns that chat on (green under the video). After that every pause sends only the ~30 s you paused at.</div>
+<hr>
+<label class="opt"><input type="checkbox" id="pauseOn" checked> When I pause: show the last ~30 s big and send the text to the chat</label>
+<label class="opt"><input type="checkbox" id="picOnly"> Claude: send ONLY a picture when I pause (the sentences + the question are in the picture, no typed text). Best with a Claude voice session</label>
+<label class="opt"><input type="checkbox" id="imageOn" checked> Claude only: also send a picture of the subtitle screen, taken 1 s after you stop (ChatGPT gets the words only)</label>
+<label class="opt"><input type="checkbox" id="barOn" checked> Show the ChatGPT / Claude on-off buttons under the video</label>
+<label class="opt"><input type="checkbox" id="replayOn" checked> Play those sentences again once (normal speed), and send to the chat when it ends</label>
+<label class="opt"><input type="checkbox" id="voiceOn" checked> Voice commands (microphone on while you watch): say <b>“hi bro”</b> to stop the video and send that part, <b>“shut up”</b> to make the AI quiet, replay that part and keep playing</label>
+<label class="opt"><input type="checkbox" id="voiceBridge" checked> Claude / ChatGPT voice call: step out of the call for a moment, send the text, then go back into the call</label>
+<label class="opt"><input type="checkbox" id="feedOn" checked> Voice call: play the replayed part INTO the call, so Claude / ChatGPT hears it with you</label>
+<label class="opt"><input type="checkbox" id="talkOn"> Talk mode (Chrome's computer voice, OFF is best with a Claude voice call): Chrome reads the AI's typed answer aloud, and what you say while the video is stopped is typed into the chat. Never used during a voice call</label>
+<label class="opt">Text size on the video: <b id="sizeVal"></b>
+  <input type="range" id="textLevel" min="1" max="10" step="0.25" style="width:100%">
+  <span class="hint" style="display:flex;justify-content:space-between"><span>1 smaller</span><span>bigger 10</span></span>
+</label>
+<hr>
+<label class="opt"><b>No subtitles for this video?</b> Load a subtitle file (.srt, .vtt or .txt) from any tool:
+  <input type="file" id="subfile" accept=".srt,.vtt,.txt,text/*" style="width:100%;margin-top:4px">
+</label>
+<div id="subMsg" class="hint"></div>
+<div id="msg"></div>
+<script src="lib.js"></script>
+<script src="popup.js"></script>
