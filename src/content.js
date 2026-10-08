@@ -25,7 +25,7 @@
   const IS_MOBILE_SITE = location.hostname === 'm.youtube.com';
   const TOUCH = !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) || IS_MOBILE_SITE;
   const BIN_RATE = 50;
-  const SPEED_PRESETS = [0.5, 0.75, 1];
+  const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
   const TRAINER_REPS = [15, 30, 50];
@@ -414,12 +414,9 @@
       S.lineLoop.saved = null; // keep the speed you just picked
       stopLineLoop(true);
     }
+    if (!fromTrainer && S.trainer.running) return trainerJumpTo(C.roundRate(r));
     S.rate = C.roundRate(r);
     S.rateOwned = true;
-    if (!fromTrainer && S.trainer.running) {
-      stopTrainer();
-      flash('Speed trainer stopped because you picked a speed.');
-    }
     applyRate();
     renderUI();
     saveVideoStateSoon();
@@ -785,6 +782,39 @@
     seek(S.a);
     flash(`Training done! ${tr.after} times at ${Math.round(tr.goal * 100)}%. Press play to go again.`, 10000);
     renderUI();
+  }
+
+  // Picking a speed while training moves the trainer to the loop that plays
+  // at that speed, so a slower pick gives you those loops again:
+  //   loop for speed r = 1 + (r - start) / (100% - start) × (loops - 1)
+  // e.g. 30% → 100% over 50 loops: 50% is loop 15 (36 loops to go), 75% is
+  // loop 33. Slower than the start (e.g. 30% when it began at 50%) starts the
+  // climb again from that speed with all the loops.
+  function trainerJumpTo(r) {
+    const tr = S.trainer;
+    if (r < tr.start - 0.001) {
+      tr.start = r;
+      tr.rep = 1;
+      const pct = Math.round(r * 100);
+      if (TRAINER_STARTS.includes(pct)) {
+        // Keep the box and the setting in step, so changing "loops" later keeps this start.
+        settings.trainerStart = pct;
+        ui.tStart.value = String(pct);
+        saveSettings();
+      }
+    } else {
+      tr.rep = C.trainerRepFor(tr.start, tr.goal, tr.reps, r);
+    }
+    tr.done = tr.rep >= tr.reps;
+    S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
+    S.rateOwned = true;
+    applyRate();
+    const toGoal = tr.reps - tr.rep;
+    flash(toGoal > 0
+      ? `Trainer at ${Math.round(S.rate * 100)}%: ${toGoal} more loop${toGoal === 1 ? '' : 's'} to 100%, then ${tr.after} at 100%.`
+      : `Trainer at 100%: ${tr.after} plays at full speed, then it stops.`, 5000);
+    renderUI();
+    saveVideoStateSoon();
   }
 
   // The Trainer button: one tap starts it, the next tap stops it and puts the
@@ -1705,8 +1735,7 @@
     ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
-    ui.bigPlay = btn(null, 'Play', togglePlay, 'big-play', 'play');
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.bigPlay);
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -1751,7 +1780,7 @@
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
-        h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
+        h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
         h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10–50 loops, then 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
@@ -2084,7 +2113,7 @@
     for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
     ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
     const playing = !!S.video && !S.video.paused && !S.scan;
-    for (const b of [ui.playBtn, ui.bigPlay]) {
+    for (const b of [ui.playBtn]) {
       b.replaceChildren(icon(playing ? 'pause' : 'play'));
       b.title = playing ? 'Pause' : 'Play';
       b.classList.toggle('on', playing);

@@ -63,19 +63,9 @@ button.icon { padding: 0; width: 28px; }
 button svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
 button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 button.speed { min-width: 50px; font-weight: 600; }
-button.play-btn { width: 44px; min-width: 44px; background: #1d3a46; border-color: #2b5666; color: #fff; }
+button.play-btn { width: 44px; min-width: 44px; height: 32px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-/* Big round play / pause button on the wave. */
-button.big-play {
-  position: absolute; left: 14px; bottom: 22px; z-index: 2;
-  width: 56px; height: 56px; min-width: 56px; padding: 0; border-radius: 50%;
-  background: var(--accent); border: 3px solid rgba(255,255,255,.85); color: var(--accent-ink);
-  box-shadow: 0 6px 22px rgba(0,0,0,.55);
-}
-button.big-play svg { width: 30px; height: 30px; }
-button.big-play.on { background: #ffffff; color: #0b0e14; border-color: var(--accent); }
-button.big-play:active { transform: scale(.95); }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -232,10 +222,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
   .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
-  button.play-btn { width: 88px; min-width: 88px; }
-  button.play-btn svg { width: 30px; height: 30px; }
-  button.big-play { width: 84px; height: 84px; min-width: 84px; left: 18px; bottom: 26px; border-radius: 50%; }
-  button.big-play svg { width: 44px; height: 44px; }
+  button.play-btn { width: 60px; min-width: 60px; height: 44px; }
+  button.play-btn svg { width: 28px; height: 28px; }
 
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
@@ -264,9 +252,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyrics { flex: 0 0 170px; min-width: 0; max-width: none; border-left: 0; border-bottom: 1px solid var(--line); }
   .wave-wrap { min-height: 80px; }
   .lyrics-btn { width: 36px; min-width: 36px; }
-  button.play-btn { width: 52px; min-width: 52px; }
-  button.big-play { width: 70px; height: 70px; min-width: 70px; left: 12px; bottom: 20px; }
-  button.big-play svg { width: 36px; height: 36px; }
+  button.play-btn { width: 52px; min-width: 52px; height: 44px; }
+  .rate { display: none; } /* the lit speed button and the trainer row show the speed */
   button.speed { min-width: 41px; padding: 0 5px; }
   .bar { padding-left: 4px; padding-right: 4px; }
   .rate { min-width: 38px; font-size: 12.5px; }

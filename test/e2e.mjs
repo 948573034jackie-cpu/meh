@@ -259,7 +259,9 @@ await step('loop end is tight (overshoot under 80 ms)', async () => {
   assert(maxT - b < 0.08, `max time ${maxT.toFixed(3)} vs B ${b.toFixed(3)}`);
 });
 
-await step('speed buttons 50% / 75% / 100% and keep-pitch', async () => {
+await step('speed buttons 30% / 50% / 75% / 100% and keep-pitch', async () => {
+  await shadowClick('button.speed', '30%');
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');
   await shadowClick('button.speed', '50%');
   let v = await vstate();
   assert(Math.abs(v.rate - 0.5) < 0.001, `rate ${v.rate}`);
@@ -349,7 +351,7 @@ await step('speed trainer: after 100%, plays 10 times at full speed and then sto
   await sleep(300);
 });
 
-await step('picking a speed by hand stops the trainer', async () => {
+await step('picking a speed when the trainer is off just sets it', async () => {
   await shadowClick('button.speed', '75%');
   const h = await host();
   assert(h.trainer === '', 'trainer stopped');
@@ -626,13 +628,46 @@ await step('line practice: tap ⟳ again to stop early; speed comes back and it 
   await shadowClick('button.speed', '100%');
 });
 
-await step('big round play / pause button on the wave', async () => {
-  const w = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.big-play').getBoundingClientRect().width);
-  assert(w >= 50, `big (${w}px)`);
-  const wasPaused = (await vstate()).paused;
-  await shadowClick('button.big-play');
-  assert((await vstate()).paused !== wasPaused, 'toggled');
-  if ((await vstate()).paused) await shadowClick('button.big-play');
+await step('play / pause button is a little bigger than the other buttons', async () => {
+  const m = await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const p = root.querySelector('button.play-btn').getBoundingClientRect();
+    const o = root.querySelector('button.speed').getBoundingClientRect();
+    return { ph: p.height, pw: p.width, oh: o.height, big: !!root.querySelector('.big-play') };
+  });
+  assert(m.ph > m.oh && m.pw >= 40, `bigger (${m.pw}x${m.ph} vs ${m.oh})`);
+  assert(!m.big, 'only one play button');
+});
+
+await step('Trainer: a slower speed steps the trainer back (more loops); 30% starts the climb again', async () => {
+  if ((await host()).trainer) await shadowClick('button', 'Trainer');
+  await shadowClick('button', 'Trainer'); // 30% over 50 loops
+  const check = async (pct, rep, start = 0.3) => {
+    const h = await host();
+    const v = await vstate();
+    assert(h.trainer === `${rep}/50`, `${pct}%: loop ${rep} of 50 (got ${h.trainer})`);
+    assert(Math.abs(v.rate - Core.trainerRate(start, 1, 50, rep)) < 0.001, `${pct}%: speed ${v.rate}`);
+  };
+  await shadowClick('button.speed', '75%');
+  await check(75, Core.trainerRepFor(0.3, 1, 50, 0.75)); // loop 33: 17 to go
+  await shadowClick('button.speed', '50%');
+  await check(50, 15); // stepped back: 35 loops to go again
+  const hint = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.hint').textContent);
+  assert(hint.includes('35 more loops to 100%'), `tells me how many loops are left ("${hint}")`);
+  await shadowClick('button.speed', '100%');
+  await check(100, 50);
+  await shadowClick('button.speed', '30%');
+  await check(30, 1);
+  // Trainer started at 50%: picking 30% starts the climb again from 30% with all 50 loops.
+  await shadowSelect('Starting speed', 50);
+  await check(50, 1, 0.5);
+  await shadowClick('button.speed', '30%');
+  await check(30, 1, 0.3);
+  const startSel = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')].find((e) => e.title === 'Starting speed').value);
+  assert(startSel === '30', 'the start box shows 30%');
+  assert((await host()).trainer !== '', 'trainer still running');
+  await shadowClick('button', 'Trainer');
+  assert(Math.abs((await vstate()).rate - 1) < 0.001, 'off: normal speed');
 });
 
 await step('switching videos resets, coming back restores loop and cached wave', async () => {

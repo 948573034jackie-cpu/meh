@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.4.0
+// @version      1.5.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -934,6 +934,18 @@ globalThis.YTL_STORAGE = (() => {
     return roundRate(start + (goal - start) * k);
   }
 
+  /**
+   * Which repetition of the trainer plays at `rate` (the inverse of
+   * trainerRate): used when you pick a slower speed mid-training, so the
+   * trainer steps back and you get those loops again.
+   */
+  function trainerRepFor(start, goal, reps, rate) {
+    reps = Math.max(1, Math.round(reps));
+    if (reps === 1 || rate >= goal - 1e-6) return reps;
+    if (rate <= start + 1e-6) return 1;
+    return clamp(1 + Math.round(((rate - start) / (goal - start)) * (reps - 1)), 1, reps);
+  }
+
   /** Effective loop end: before the guard zone at the end of the video. */
   function loopEnd(b, duration) {
     if (!isFinite(duration) || duration <= 0) return b;
@@ -1254,7 +1266,7 @@ globalThis.YTL_STORAGE = (() => {
 
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
-    clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
+    clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
   };
@@ -1327,19 +1339,9 @@ button.icon { padding: 0; width: 28px; }
 button svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
 button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
 button.speed { min-width: 50px; font-weight: 600; }
-button.play-btn { width: 44px; min-width: 44px; background: #1d3a46; border-color: #2b5666; color: #fff; }
+button.play-btn { width: 44px; min-width: 44px; height: 32px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-/* Big round play / pause button on the wave. */
-button.big-play {
-  position: absolute; left: 14px; bottom: 22px; z-index: 2;
-  width: 56px; height: 56px; min-width: 56px; padding: 0; border-radius: 50%;
-  background: var(--accent); border: 3px solid rgba(255,255,255,.85); color: var(--accent-ink);
-  box-shadow: 0 6px 22px rgba(0,0,0,.55);
-}
-button.big-play svg { width: 30px; height: 30px; }
-button.big-play.on { background: #ffffff; color: #0b0e14; border-color: var(--accent); }
-button.big-play:active { transform: scale(.95); }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -1496,10 +1498,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
   .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
-  button.play-btn { width: 88px; min-width: 88px; }
-  button.play-btn svg { width: 30px; height: 30px; }
-  button.big-play { width: 84px; height: 84px; min-width: 84px; left: 18px; bottom: 26px; border-radius: 50%; }
-  button.big-play svg { width: 44px; height: 44px; }
+  button.play-btn { width: 60px; min-width: 60px; height: 44px; }
+  button.play-btn svg { width: 28px; height: 28px; }
 
   .resize::after { top: 9px; width: 90px; margin-left: -45px; }
   .help { font-size: 14px; }
@@ -1528,9 +1528,8 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyrics { flex: 0 0 170px; min-width: 0; max-width: none; border-left: 0; border-bottom: 1px solid var(--line); }
   .wave-wrap { min-height: 80px; }
   .lyrics-btn { width: 36px; min-width: 36px; }
-  button.play-btn { width: 52px; min-width: 52px; }
-  button.big-play { width: 70px; height: 70px; min-width: 70px; left: 12px; bottom: 20px; }
-  button.big-play svg { width: 36px; height: 36px; }
+  button.play-btn { width: 52px; min-width: 52px; height: 44px; }
+  .rate { display: none; } /* the lit speed button and the trainer row show the speed */
   button.speed { min-width: 41px; padding: 0 5px; }
   .bar { padding-left: 4px; padding-right: 4px; }
   .rate { min-width: 38px; font-size: 12.5px; }
@@ -1564,7 +1563,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   const IS_MOBILE_SITE = location.hostname === 'm.youtube.com';
   const TOUCH = !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) || IS_MOBILE_SITE;
   const BIN_RATE = 50;
-  const SPEED_PRESETS = [0.5, 0.75, 1];
+  const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
   const TRAINER_REPS = [15, 30, 50];
@@ -1953,12 +1952,9 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
       S.lineLoop.saved = null; // keep the speed you just picked
       stopLineLoop(true);
     }
+    if (!fromTrainer && S.trainer.running) return trainerJumpTo(C.roundRate(r));
     S.rate = C.roundRate(r);
     S.rateOwned = true;
-    if (!fromTrainer && S.trainer.running) {
-      stopTrainer();
-      flash('Speed trainer stopped because you picked a speed.');
-    }
     applyRate();
     renderUI();
     saveVideoStateSoon();
@@ -2324,6 +2320,39 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     seek(S.a);
     flash(`Training done! ${tr.after} times at ${Math.round(tr.goal * 100)}%. Press play to go again.`, 10000);
     renderUI();
+  }
+
+  // Picking a speed while training moves the trainer to the loop that plays
+  // at that speed, so a slower pick gives you those loops again:
+  //   loop for speed r = 1 + (r - start) / (100% - start) × (loops - 1)
+  // e.g. 30% → 100% over 50 loops: 50% is loop 15 (36 loops to go), 75% is
+  // loop 33. Slower than the start (e.g. 30% when it began at 50%) starts the
+  // climb again from that speed with all the loops.
+  function trainerJumpTo(r) {
+    const tr = S.trainer;
+    if (r < tr.start - 0.001) {
+      tr.start = r;
+      tr.rep = 1;
+      const pct = Math.round(r * 100);
+      if (TRAINER_STARTS.includes(pct)) {
+        // Keep the box and the setting in step, so changing "loops" later keeps this start.
+        settings.trainerStart = pct;
+        ui.tStart.value = String(pct);
+        saveSettings();
+      }
+    } else {
+      tr.rep = C.trainerRepFor(tr.start, tr.goal, tr.reps, r);
+    }
+    tr.done = tr.rep >= tr.reps;
+    S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
+    S.rateOwned = true;
+    applyRate();
+    const toGoal = tr.reps - tr.rep;
+    flash(toGoal > 0
+      ? `Trainer at ${Math.round(S.rate * 100)}%: ${toGoal} more loop${toGoal === 1 ? '' : 's'} to 100%, then ${tr.after} at 100%.`
+      : `Trainer at 100%: ${tr.after} plays at full speed, then it stops.`, 5000);
+    renderUI();
+    saveVideoStateSoon();
   }
 
   // The Trainer button: one tap starts it, the next tap stops it and puts the
@@ -3244,8 +3273,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
-    ui.bigPlay = btn(null, 'Play', togglePlay, 'big-play', 'play');
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.bigPlay);
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -3290,7 +3318,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
-        h('li', {}, h('b', { text: 'Slow down: ' }), 'press 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same.'),
+        h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
         h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10–50 loops, then 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
@@ -3623,7 +3651,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
     for (const [i, r] of SPEED_PRESETS.entries()) ui.speedBtns[i].classList.toggle('on', Math.abs(S.rate - r) < 0.001);
     ui.rate.textContent = `${Math.round(S.rate * 100)}%`;
     const playing = !!S.video && !S.video.paused && !S.scan;
-    for (const b of [ui.playBtn, ui.bigPlay]) {
+    for (const b of [ui.playBtn]) {
       b.replaceChildren(icon(playing ? 'pause' : 'play'));
       b.title = playing ? 'Pause' : 'Play';
       b.classList.toggle('on', playing);

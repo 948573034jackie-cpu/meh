@@ -256,7 +256,9 @@ await step('pinch with two fingers zooms in; Whole song / Zoom in button', async
   assert(Number((await host()).zoom) > 0, 'back to the DJ view');
 });
 
-await step('speed buttons by tap', async () => {
+await step('speed buttons by tap (30 / 50 / 75 / 100%)', async () => {
+  await tap('button.speed', '30%');
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');
   await tap('button.speed', '50%');
   assert(Math.abs((await vstate()).rate - 0.5) < 0.001, '50%');
   await tap('button.speed', '75%');
@@ -350,13 +352,19 @@ await step('lyrics: tap the left side of a line to practise it (from 30%), tap a
   assert(Math.abs((await vstate()).rate - 1) < 0.001, 'speed back to 100%');
 });
 
-await step('big round play button on the wave', async () => {
-  const b = await page.evaluate(() => { const r = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.big-play').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }; });
-  assert(b.w >= 64, `big on the phone (${b.w}px)`);
+await step('play / pause: one button, a little bigger than the others', async () => {
+  const m = await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const p = root.querySelector('button.play-btn').getBoundingClientRect();
+    const o = root.querySelector('button.speed').getBoundingClientRect();
+    return { x: p.left + p.width / 2, y: p.top + p.height / 2, ph: p.height, oh: o.height, big: !!root.querySelector('.big-play') };
+  });
+  assert(m.ph > m.oh, `taller than the other buttons (${m.ph} vs ${m.oh})`);
+  assert(!m.big, 'only one play button');
   const was = (await vstate()).paused;
-  await page.touchscreen.tap(b.x, b.y);
+  await page.touchscreen.tap(m.x, m.y);
   assert((await vstate()).paused !== was, 'tap toggles play/pause');
-  if ((await vstate()).paused) await page.touchscreen.tap(b.x, b.y);
+  if ((await vstate()).paused) await page.touchscreen.tap(m.x, m.y);
 });
 
 await step('loop and wave are remembered after reloading the page', async () => {

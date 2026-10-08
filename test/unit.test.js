@@ -218,3 +218,19 @@ test('firstSound finds where the singing starts; vocal-only titles', () => {
   assert.ok(C.isVocalOnlyTitle('Song (A Cappella Version)'));
   assert.ok(!C.isVocalOnlyTitle('Adele - Hello (Official Video)'));
 });
+
+test('trainerRepFor: the loop that plays at a speed (inverse of trainerRate)', () => {
+  assert.equal(C.trainerRepFor(0.3, 1, 50, 0.5), 15);
+  assert.equal(C.trainerRate(0.3, 1, 50, 15), 0.5);
+  assert.equal(C.trainerRepFor(0.3, 1, 50, 0.75), 33);
+  assert.equal(C.trainerRepFor(0.3, 1, 50, 0.3), 1);
+  assert.equal(C.trainerRepFor(0.3, 1, 50, 1), 50);
+  assert.equal(C.trainerRepFor(0.5, 1, 15, 0.3), 1, 'slower than the start: back to loop 1');
+  for (const reps of [15, 30, 50]) {
+    for (let k = 1; k <= reps; k++) {
+      const r = C.trainerRate(0.3, 1, reps, k);
+      const back = C.trainerRepFor(0.3, 1, reps, r);
+      assert.ok(Math.abs(C.trainerRate(0.3, 1, reps, back) - r) < 0.011, `reps ${reps}, loop ${k}`);
+    }
+  }
+});

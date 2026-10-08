@@ -44,6 +44,18 @@
     return roundRate(start + (goal - start) * k);
   }
 
+  /**
+   * Which repetition of the trainer plays at `rate` (the inverse of
+   * trainerRate): used when you pick a slower speed mid-training, so the
+   * trainer steps back and you get those loops again.
+   */
+  function trainerRepFor(start, goal, reps, rate) {
+    reps = Math.max(1, Math.round(reps));
+    if (reps === 1 || rate >= goal - 1e-6) return reps;
+    if (rate <= start + 1e-6) return 1;
+    return clamp(1 + Math.round(((rate - start) / (goal - start)) * (reps - 1)), 1, reps);
+  }
+
   /** Effective loop end: before the guard zone at the end of the video. */
   function loopEnd(b, duration) {
     if (!isFinite(duration) || duration <= 0) return b;
@@ -364,7 +376,7 @@
 
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
-    clamp, roundRate, formatTime, trainerRate, loopEnd, normalizeLoop,
+    clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
   };
