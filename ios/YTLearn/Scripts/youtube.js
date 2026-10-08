@@ -314,7 +314,7 @@
   };
 
   // ---- settings (set in the popup) ----
-  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: false, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
+  const settings = { pauseOn: true, replayOn: true, textLevel: 6, voiceOn: true, target: 'claude', tapOn: !!window.__ytcSafari || navigator.maxTouchPoints > 0, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false };
   function readSettings(s) {
     if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
     if ('voiceOn' in s) settings.voiceOn = s.voiceOn !== false;
@@ -570,13 +570,17 @@
     return 'none' + (why[1] && why[1] !== 'OK' ? ' (' + (why[2] || why[1]) + ')' : '');
   }
 
+  // iPad / iPhone: touch the middle of the video.
+  //   1st touch (playing): stop, go back to the start of the ~30 s part, play it once, stop, send it.
+  //   2nd touch (stopped): back to the start of that part again, then keep playing to the end.
   function onTap(e) {
     e.preventDefault();
     e.stopPropagation();
     if (!video) return;
-    if (pending) { continueFromStart(); return; } // touching a paused video = "let's go"
+    if (pending) { continueFromStart(); return; }      // touching the stopped part = "let's go"
+    if (replaying) { const seg = replaying.seg; cancelReplay(); beginWaiting(seg); runDeferredSend(); continueFromStart(); return; } // touch during the replay: send it, play on from its start
     if (video.paused) { video.play().catch(() => {}); return; }
-    video.pause();                                // touching a playing video = pause -> show + send the sentences
+    video.pause();                                     // touching a playing video = pause -> replay the part + send it
   }
 
   // ---- two buttons just under the video: ChatGPT and Claude. Green = on, red = off. ----

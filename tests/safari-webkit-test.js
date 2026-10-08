@@ -74,6 +74,32 @@ setTimeout(() => { console.log('FAIL  test took longer than 5 minutes (stuck) - 
   ok('pause: the ~30 s part is sent (complete sentences), not the whole video', ps && ps.end - ps.start >= 24 && ps.end - ps.start <= 36 && /^This is sentence number \d+ of the lesson\./.test(ps.first) && ps.inCall === false, JSON.stringify(ps));
   ok('pause: the subtitles show on screen', await yt.evaluate(() => !!document.getElementById('yt2c-overlay')));
 
+  // ---- iPad: touch the video. 1st touch: back to the start of the ~30 s part, play it once, stop, send. 2nd touch: back to its start, play to the end ----
+  const tp = await ctx.newPage();
+  tp.on('pageerror', (e) => console.log('PAGE ERROR (tap):', String(e.message || e).slice(0, 300)));
+  await tp.addInitScript(fakeSafari, { pauseOn: true, replayOn: true, voiceOn: false, imageOn: true, barOn: true, sendOn: true, target: 'claude' });
+  await tp.goto('http://localhost:8771/watch?v=abc12345678');
+  for (const f of m.content_scripts[0].js) await tp.addScriptTag({ content: rd(f) });
+  await tp.evaluate(() => { window.__reply = (msg) => msg.type === 'call-state' ? { inCall: false } : msg.type === 'capture' ? { dataUrl: null } : { result: 'Sent to Claude: ok' }; });
+  const vs = () => tp.evaluate(() => { const v = document.querySelector('video'); return { t: +v.currentTime.toFixed(1), paused: v.paused, overlay: !!document.getElementById('yt2c-overlay'), sent: window.__calls.filter((c) => c.type === 'pause-send').length }; });
+  await tp.evaluate(async () => { const v = document.querySelector('video'); v.muted = true; v.currentTime = 50; try { await Promise.race([v.play(), new Promise((r) => setTimeout(r, 3000))]); } catch (e) { /* ignore */ } });
+  await tp.waitForTimeout(1500);
+  ok('Safari: the touch area is on (tap control is on by default)', !!(await tp.$('#yt2c-tap')));
+  await tp.click('#yt2c-tap');
+  await tp.waitForTimeout(3000);
+  const a1 = await vs();
+  ok('1st touch: back to the start of the ~30 s part and playing it, sentences on screen', !a1.paused && a1.t >= 24 && a1.t < 30 && a1.overlay, JSON.stringify(a1));
+  await tp.waitForTimeout(29000);
+  const a2 = await vs();
+  ok('...then it stops by itself at the end of the part, and the part was sent to Claude once', a2.paused && a2.t >= 50 && a2.t <= 54 && a2.sent === 1, JSON.stringify(a2));
+  await tp.click('#yt2c-tap');
+  await tp.waitForTimeout(1500);
+  const a3 = await vs();
+  await tp.waitForTimeout(4000);
+  const a4 = await vs();
+  ok('2nd touch: back to the start of the part again, plays on (no new message)', !a3.paused && a3.t >= 23 && a3.t < 28 && !a3.overlay && a4.t > a3.t + 2 && a4.sent === 1, JSON.stringify([a3, a4]));
+  await tp.close();
+
   const chat = await ctx.newPage();
   chat.on('pageerror', (e) => console.log('PAGE ERROR (chat):', String(e.message || e).slice(0, 300)));
   await chat.addInitScript(fakeSafari, {});
