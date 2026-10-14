@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; padding: 12px; width: 260px; font: 13px system-ui, sans-serif; color: #202124; }
+  #status { font-weight: 600; margin-bottom: 6px; min-height: 18px; }
+  #meter { height: 8px; border-radius: 4px; background: #e8eaed; overflow: hidden; margin-bottom: 10px; }
+  #bar { height: 100%; width: 0; background: #188038; transition: width 60ms linear; }
+  .row { display: flex; gap: 8px; }
+  button { flex: 1; padding: 7px 0; font-size: 13px; border-radius: 6px; border: 1px solid #dadce0; background: #f8f9fa; cursor: pointer; }
+  button:hover { background: #eee; }
+  #open { background: #188038; color: #fff; border-color: #188038; }
+  #open.on { background: #f8f9fa; color: #202124; border-color: #dadce0; }
+  #err { color: #d93025; font-size: 12px; margin-top: 8px; }
+  #last { color: #5f6368; font-size: 11px; margin-top: 8px; word-break: break-word; }
+</style>
+<div id="status">Off</div>
+<div id="meter"><div id="bar"></div></div>
+<div class="row">
+  <button id="open">Open</button>
+  <button id="quit">Quit</button>
+</div>
+<div id="err"></div>
+<div id="last"></div>
+<script src="popup.js"></script>
