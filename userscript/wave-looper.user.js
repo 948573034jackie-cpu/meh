@@ -6738,7 +6738,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
 
   function viewRange() {
     const d = dur();
-    if (S.view && d) return { s: S.view.s, e: Math.min(S.view.e, d) };
+    if (S.view && d) return { s: S.view.s, e: djDeck() && settings.zoomFocus ? S.view.e : Math.min(S.view.e, d) };
     return { s: 0, e: d || 1 };
   }
 
@@ -6759,7 +6759,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (len >= d - 1e-6) {
       S.view = null;
     } else {
-      s = C.clamp(s, 0, d - len);
+      // DJ view: the playhead line always stays in the middle, so near the
+      // start and the end of the song the view runs past it (empty space).
+      s = djDeck() && settings.zoomFocus ? C.clamp(s, -len / 2, d - len / 2) : C.clamp(s, 0, d - len);
       S.view = { s, e: s + len };
     }
     S.dirty = true;
@@ -6867,9 +6869,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
       return a0 + (a1 - a0) * fr;
     };
     const perCol = (span * br) / W;
+    const songEnd = dur();
     for (let x = 0; x < W; x++) {
       const t0 = s + (x / W) * span;
       const t1 = s + ((x + 1) / W) * span;
+      if (t1 <= 0 || t0 >= songEnd) {
+        col[x] = 'out'; // before the start / after the end: nothing to draw
+        continue;
+      }
       if (perCol < 1) {
         const f = Math.max(0, Math.min(P.n - 1, (t0 + t1) * 0.5 * br - 0.5));
         if (!P.cov[Math.floor(f)]) {
@@ -6907,6 +6914,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (settings.waveStyle === 'drums') drawDrumColumns(bctx, dctx, W, H, s, span, dpr);
     else for (let x = 0; x < W; x++) {
       const cc = col[x];
+      if (cc === 'out') continue;
       if (!cc) {
         bctx.fillStyle = 'rgba(140,150,170,0.16)';
         bctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
@@ -7001,7 +7009,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     for (let x = 0; x < W; x++) {
       const t0 = s + (x / W) * span;
       const t1 = s + ((x + 1) / W) * span;
-      const b0 = Math.floor(t0 * br);
+      if (t1 <= 0 || t0 >= dur()) continue; // before the start / after the end
+      const b0 = Math.max(0, Math.floor(t0 * br));
       const b1 = Math.min(P.n, Math.max(b0 + 1, Math.floor(t1 * br)));
       let covered = false;
       const vals = [0, 0, 0];
@@ -7276,6 +7285,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ctx.textBaseline = 'middle';
     const first = Math.ceil(s / st) * st;
     for (let tt = first; tt <= e + 1e-9; tt += st) {
+      if (tt < -1e-9 || tt > dur() + 1e-9) continue;
       const x = xAt(tt, g);
       ctx.fillStyle = '#3a4560';
       ctx.fillRect(Math.round(x), RULER - 6, 1, 5);

@@ -174,6 +174,14 @@ await step('DJ view: the wave is zoomed in and scrolls under a playhead in the m
   const [s, e] = h.view.split(',').map(Number);
   const pos = (t - s) / (e - s);
   if (t > (e - s) / 2 + 0.5) assert(Math.abs(pos - 0.5) < 0.1, `playhead in the middle (at ${pos.toFixed(2)})`);
+  // Also right at the start of the song: the view runs past the start (empty space) and the line stays in the middle.
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 0.6; });
+  await sleep(800);
+  const h2 = await host();
+  const [s2, e2] = h2.view.split(',').map(Number);
+  const pos2 = (0.6 - s2) / (e2 - s2);
+  assert(s2 < 0 && Math.abs(pos2 - 0.5) < 0.03, `at 0:00.6 the playhead is still in the middle (view ${h2.view}, at ${pos2.toFixed(2)})`);
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); });
 });
 
 await step('drag the wave like a DJ: finger holds the song, moving it moves the song, lifting plays on', async () => {
