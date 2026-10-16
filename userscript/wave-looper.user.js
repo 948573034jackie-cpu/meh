@@ -6949,7 +6949,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
       return { g, x: e.clientX - g.left, y: e.clientY - g.top };
     };
 
-    // Two fingers on the wave: pinch to zoom, like a photo.
+    // Two fingers on the wave: pinch to zoom. 5x quicker than a photo: a small
+    // spread of the fingers zooms a lot.
+    const PINCH_SPEED = 5;
     const fingers = new Map();
     let pinch = null;
     const pinchState = (g) => {
@@ -6963,7 +6965,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       if (pinch && fingers.size >= 2) {
         const p = pinchState(g);
         const d = dur();
-        const span = C.clamp((pinch.e - pinch.s) * (pinch.dist / p.dist), Math.min(1, d), d);
+        const span = C.clamp((pinch.e - pinch.s) * Math.pow(pinch.dist / p.dist, PINCH_SPEED), Math.min(1, d), d);
         setView(pinch.tMid - (p.mid / g.w) * span, pinch.tMid + (1 - p.mid / g.w) * span);
         if (settings.zoomFocus) {
           if (!S.view) settings.zoomFocus = false;
@@ -7109,7 +7111,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
           return;
         }
         const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
-        const factor = Math.pow(1.0018, e.deltaY * unit);
+        // A trackpad pinch (MacBook) arrives as a wheel event with ctrlKey: 5x quicker too.
+        const factor = Math.pow(1.0018, e.deltaY * unit * (e.ctrlKey ? PINCH_SPEED : 1));
         const tAt = s + (x / g.w) * span;
         const ns = Math.max(Math.min(1, d), span * factor);
         setView(tAt - (x / g.w) * ns, tAt + (1 - x / g.w) * ns);

@@ -422,6 +422,19 @@ await step('zoom with the mouse wheel and back to the whole song', async () => {
   await shadowClick('button', 'Zoom to the loop');
   await sleep(150);
   await page.screenshot({ path: path.join(SHOTS, '6-zoom-loop.png') });
+  // A MacBook trackpad pinch (wheel + ctrlKey) zooms 5 times as fast as scrolling.
+  const span = async () => { const [s0, e0] = (await host()).view.split(',').map(Number); return e0 - s0; };
+  const wheel = (ctrlKey) => page.evaluate(([x, y, c]) => {
+    document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas')
+      .dispatchEvent(new WheelEvent('wheel', { deltaY: 20, ctrlKey: c, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+  }, [b.x + b.w * 0.5, b.y + b.h * 0.6, ctrlKey]);
+  let s0 = await span();
+  await wheel(false);
+  const plain = (await span()) / s0;
+  s0 = await span();
+  await wheel(true);
+  const pinch = (await span()) / s0;
+  assert(Math.abs(Math.log(pinch) / Math.log(plain) - 5) < 0.2, `trackpad pinch zooms 5x faster (scroll x${plain.toFixed(3)}, pinch x${pinch.toFixed(3)})`);
   await shadowClick('button', 'Show the whole song');
 });
 

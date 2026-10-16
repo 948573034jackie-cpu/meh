@@ -352,13 +352,14 @@ await step('pinch with two fingers zooms in; Whole song / Zoom in button', async
   const cx = b.x + b.w / 2;
   const before = Number((await host()).zoom);
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx - 30, y, id: 1 }, { x: cx + 30, y, id: 2 }] });
-  for (let i = 1; i <= 8; i++) {
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: cx - 30 - i * 15, y, id: 1 }, { x: cx + 30 + i * 15, y, id: 2 }] });
+  // A small spread (60 px -> 84 px, x1.4) zooms in 5 times as fast: x1.4^5 = x5.4.
+  for (let i = 1; i <= 4; i++) {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: cx - 30 - i * 3, y, id: 1 }, { x: cx + 30 + i * 3, y, id: 2 }] });
   }
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await sleep(200);
   const h = await host();
-  assert(h.zoom && Number(h.zoom) < before - 1, `zoomed in more (${before}s -> ${h.zoom}s)`);
+  assert(h.zoom && Number(h.zoom) < before / 4, `a small pinch zooms in a lot (${before}s -> ${h.zoom}s)`);
   assert(Number(h.a) > 8 && Number(h.b) > Number(h.a), 'pinch did not change the loop');
   assert(!(await vstate()).paused, 'pinching does not stop the music');
   await page.screenshot({ path: path.join(SHOTS, 'm3-pinch.png') });
