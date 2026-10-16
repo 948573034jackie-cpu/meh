@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.9.0
+// @version      1.10.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -1383,6 +1383,8 @@ button.speed { min-width: 50px; font-weight: 600; }
 button.play-btn { width: 44px; min-width: 44px; height: 32px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.jump { gap: 2px; padding-left: 7px; padding-right: 9px; }
+button.jump svg { width: 18px; height: 18px; }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -1576,8 +1578,6 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .rate { min-width: 38px; font-size: 12.5px; }
 }
 
-button.pulse { animation: ytl-pulse 0.9s ease-in-out infinite; background: #f59e0b; color: #111; }
-@keyframes ytl-pulse { 50% { transform: scale(1.15); } }
 `;
 
 /*
@@ -2076,7 +2076,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
   const TRAINER_REPS = [25, 50, 75];
   const TRAINER_DEFAULT_START = 30;
   const TRAINER_DEFAULT_REPS = 50;
-  const TOUCH_LOOP_LEN = 3; // seconds: the A button on touch screens makes a loop this long
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
@@ -2145,7 +2144,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
     hqV: 1,
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
-    snapOnPause: IS_IOS, // after you pause: share a picture of the lyrics (e.g. to Claude)
     focusLen: 30,
   };
   function saveSettings() {
@@ -2274,10 +2272,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       renderUI();
     }],
     ['playing', () => applyRate()],
-    ['pause', () => {
-      renderUI();
-      onPauseSnap();
-    }],
+    ['pause', () => renderUI()],
     ['seeked', () => (S.dirty = true)],
   ];
 
@@ -2694,7 +2689,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // A-B loop, which keeps waiting behind it.
   function loopRegion() {
     if (S.lineLoop) return S.lineLoop;
-    if (S.loopOn && hasLoop()) return { a: S.a, b: S.b };
+    if (S.loopOn && hasLoop() && S.pendingA == null) return { a: S.a, b: S.b };
     return null;
   }
 
@@ -2866,6 +2861,27 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
   }, true);
 
+  // ↺ 5s: hear the last few seconds again (plays). 5s ↻: skip ahead.
+  const JUMP_SEC = 5;
+  function jump(sec) {
+    const v = S.video;
+    if (!v || S.scan || !dur()) return;
+    const from = v.currentTime;
+    let t = C.clamp(from + sec, 0, Math.max(0, dur() - 0.1));
+    const r = loopRegion();
+    if (r && sec < 0 && from >= r.a - 0.01 && t < r.a) t = r.a; // inside a loop: back to its start, not out of it
+    if (sec < 0) {
+      if (S.wrapping) {
+        clearTimeout(S.gapTimer);
+        S.wrapping = false;
+      }
+      seek(t);
+      play();
+    } else userSeek(t);
+    focusFollow(true);
+    renderUI();
+  }
+
   function togglePlay() {
     const v = S.video;
     if (!v || S.scan) return;
@@ -2968,9 +2984,17 @@ if (typeof exports === 'object' && typeof module === 'object') {
   function markA() {
     const t = nowTime();
     if (TOUCH) {
-      // Touch: A sets the start and makes a short loop right away; B sets the end.
-      if (hasLoop() && t < S.b - C.MIN_LOOP) setLoop(t, S.b, { noSeek: true });
-      else setLoop(t, t + TOUCH_LOOP_LEN, { noSeek: true, fresh: true });
+      // Touch, like a DJ app's loop in / loop out: A marks the start where the
+      // playhead is, B marks the end. Stop, drag the wave to the spot, tap A;
+      // drag on, tap B.
+      if (hasLoop() && S.pendingA == null && t < S.b - C.MIN_LOOP) {
+        setLoop(t, S.b, { noSeek: true });
+        return;
+      }
+      pushHistory();
+      S.pendingA = t;
+      S.dirty = true;
+      renderUI();
       return;
     }
     if (S.b != null && t < S.b - C.MIN_LOOP) setLoop(t, S.b, { noSeek: true });
@@ -2984,8 +3008,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
   function markB() {
     const t = nowTime();
     if (TOUCH) {
-      if (hasLoop() && t > S.a + C.MIN_LOOP) setLoop(S.a, t);
-      else setLoop(Math.max(0, t - TOUCH_LOOP_LEN), t, { fresh: true });
+      const a = S.pendingA != null ? S.pendingA : S.a;
+      if (a == null) return flash('Tap A first, where the loop should start.');
+      if (Math.abs(t - a) < C.MIN_LOOP) return flash('Move further from A, then tap B.');
+      setLoop(a, t, { fresh: S.pendingA != null, noHistory: S.pendingA != null });
       return;
     }
     const a = S.pendingA != null ? S.pendingA : S.a;
@@ -3181,11 +3207,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
       renderUI();
     }, 'icon', 'place');
     const hide = btn(null, 'Hide the lyrics', toggleLyrics, 'icon', 'close');
-    ui.snapBtn = btn(null, 'Send a picture of the lyrics (to Claude or any app)', () => sendLyricsPicture(false), 'icon', 'camera');
     const grip = h('div', { class: 'lyr-resize', title: 'Drag to make the lyrics area taller or shorter' });
     setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
-      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, ui.snapBtn, smaller, bigger, ui.lyrPlace, hide),
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
       ui.lyrMeta, ui.lyrSync, ui.lyrBody, grip);
   }
 
@@ -3591,15 +3616,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   // ---------------------------------------------------------------------------
-  // Practising with Claude (or a teacher) on a voice call, on iPad/iPhone:
-  // - the video keeps playing during the call (audio mixes with the call)
-  // - every time you pause, after 1 second a picture of the lyrics (and the
-  //   video with its subtitles) goes to the share sheet: pick Claude.
-  //   Safari never lets a web page send to another app without that one tap.
+  // iPhone/iPad: let the video's sound mix with a voice call instead of being
+  // cut off by it.
   // ---------------------------------------------------------------------------
-  const SNAP_DELAY = 1000;
-  const SNAP = { timer: 0, lastInputAt: 0, suppressUntil: 0, fingers: new Set() };
-
   function applyAudioSession() {
     try {
       if (!navigator.audioSession) return;
@@ -3608,202 +3627,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } catch (e) {
       /* not supported */
     }
-  }
-
-  for (const ev of ['pointerdown', 'keydown']) {
-    document.addEventListener(ev, (e) => {
-      SNAP.lastInputAt = now();
-      if (ev === 'pointerdown') SNAP.fingers.add(e.pointerId);
-    }, true);
-  }
-  for (const ev of ['pointerup', 'pointercancel']) document.addEventListener(ev, (e) => SNAP.fingers.delete(e.pointerId), true);
-
-  function onPauseSnap() {
-    clearTimeout(SNAP.timer);
-    if (!settings.snapOnPause || !settings.open || S.scan || isAd() || now() < SNAP.suppressUntil) return;
-    if (now() - SNAP.lastInputAt > 1200) return; // paused by the looper (breath pause, trainer done...), not by you
-    const v = S.video;
-    SNAP.timer = setTimeout(() => {
-      // Still paused, and not just holding the wave with a finger.
-      if (S.video !== v || !v || !v.paused || S.scan || S.wrapping || SNAP.fingers.size) return;
-      sendLyricsPicture(true);
-    }, SNAP_DELAY);
-  }
-
-  function lyricsPictureLines() {
-    const kids = ui.lyrBody ? [...ui.lyrBody.querySelectorAll('p')] : [];
-    const text = (p) => {
-      const t = p.querySelector('.lyr-text');
-      return ((t || p).textContent || '').trim();
-    };
-    if (!kids.length || !L.results.length || ui.lyrics.hidden) return { lines: [], cur: -1 };
-    let from;
-    let to;
-    let cur = -1;
-    if (L.synced && L.lines && S.video) {
-      cur = S.lineLoop ? S.lineLoop.idx : C.lineAt(L.lines, S.video.currentTime + 0.15 - L.offset - audioLag());
-      const c = Math.max(0, cur);
-      from = Math.max(0, c - 3);
-      to = Math.min(kids.length, c + 5);
-    } else {
-      // Plain lyrics: the lines you can see.
-      const box = ui.lyrBody.getBoundingClientRect();
-      const seen = kids.map((p, i) => [p.getBoundingClientRect(), i]).filter(([r]) => r.bottom > box.top && r.top < box.bottom);
-      from = seen.length ? seen[0][1] : 0;
-      to = Math.min(kids.length, seen.length ? seen[seen.length - 1][1] + 1 : 10, from + 14);
-    }
-    const lines = [];
-    for (let i = from; i < to; i++) lines.push({ text: text(kids[i]) || '♪', now: i === cur });
-    return { lines, cur };
-  }
-
-  function wrapText(ctx, text, maxW) {
-    const out = [];
-    let line = '';
-    // Split on spaces, or between characters for Chinese/Japanese/Korean.
-    const parts = text.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]|[^\s\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+|\s+/g) || [];
-    for (const w of parts) {
-      const next = line + w;
-      if (line.trim() && ctx.measureText(next).width > maxW) {
-        out.push(line.trim());
-        line = /^\s+$/.test(w) ? '' : w;
-      } else line = next;
-    }
-    if (line.trim()) out.push(line.trim());
-    return out.length ? out : [''];
-  }
-
-  // Draws the picture: video frame (with YouTube's subtitles), song, lyrics.
-  function makeLyricsPicture() {
-    const v = S.video;
-    const W = 1080;
-    const pad = 48;
-    let frame = null;
-    if (v && v.videoWidth && v.readyState >= 2) {
-      try {
-        const fh = Math.round((W * v.videoHeight) / v.videoWidth);
-        frame = document.createElement('canvas');
-        frame.width = W;
-        frame.height = Math.min(fh, 900);
-        const fc = frame.getContext('2d');
-        fc.drawImage(v, 0, (frame.height - fh) / 2, W, fh);
-        fc.getImageData(0, 0, 1, 1); // throws if the browser will not let us read the picture
-      } catch (e) {
-        frame = null;
-      }
-    }
-    const caption = [...document.querySelectorAll('.ytp-caption-segment, .caption-visual-line')]
-      .map((e) => (e.textContent || '').trim()).filter(Boolean).join(' ');
-    const { lines } = lyricsPictureLines();
-    if (!frame && !caption && !lines.length) return null;
-
-    const c = document.createElement('canvas');
-    const ctx = c.getContext('2d');
-    const font = (size, bold) => `${bold ? '700' : '500'} ${size}px -apple-system, "PingFang SC", "Hiragino Sans", "Noto Sans CJK SC", "Segoe UI", Roboto, sans-serif`;
-    const maxW = W - pad * 2;
-    // Lay out first, then draw.
-    const items = [];
-    ctx.font = font(36, true);
-    for (const l of wrapText(ctx, songMeta().title || 'YouTube', maxW)) items.push({ text: l, size: 36, bold: true, color: '#111' });
-    const t = v ? v.currentTime : 0;
-    const speed = v && Math.abs(v.playbackRate - 1) > 0.001 ? ` · speed ${Math.round(v.playbackRate * 100)}%` : '';
-    items.push({ text: `Paused at ${C.formatTime(t).replace(/\.\d+$/, '')}${speed}`, size: 28, color: '#666', gapAfter: 16 });
-    if (caption) {
-      ctx.font = font(34, false);
-      items.push({ text: 'Subtitles on the video:', size: 26, color: '#666' });
-      for (const l of wrapText(ctx, caption, maxW)) items.push({ text: l, size: 34, color: '#111' });
-      items.push({ text: '', size: 12 });
-    }
-    if (lines.length) {
-      for (const ln of lines) {
-        const size = ln.now ? 50 : 42;
-        ctx.font = font(size, ln.now);
-        const wrapped = wrapText(ctx, (ln.now ? '▶ ' : '') + ln.text, maxW);
-        for (const l of wrapped) items.push({ text: l, size, bold: ln.now, color: ln.now ? '#b45309' : '#333', mark: ln.now });
-      }
-    }
-    const frameH = frame ? frame.height : 0;
-    let H = frameH + pad;
-    for (const it of items) H += it.size * 1.35 + (it.gapAfter || 0);
-    H += pad;
-    c.width = W;
-    c.height = Math.ceil(H);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, W, c.height);
-    if (frame) ctx.drawImage(frame, 0, 0);
-    let y = frameH + pad;
-    ctx.textBaseline = 'top';
-    for (const it of items) {
-      const lh = it.size * 1.35;
-      if (it.mark) {
-        ctx.fillStyle = '#fff4d6';
-        ctx.fillRect(pad / 2, y - 6, W - pad, lh + 4);
-      }
-      ctx.font = font(it.size, it.bold);
-      ctx.fillStyle = it.color;
-      ctx.fillText(it.text, pad, y);
-      y += lh + (it.gapAfter || 0);
-    }
-    const url = c.toDataURL('image/png');
-    const bin = atob(url.slice(url.indexOf(',') + 1));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const name = `lyrics-${C.formatTime(t).replace(/\.\d+$/, '').replace(':', 'm')}s.png`;
-    try {
-      return new File([bytes], name, { type: 'image/png' });
-    } catch (e) {
-      const b = new Blob([bytes], { type: 'image/png' });
-      b.name = name;
-      return b;
-    }
-  }
-
-  async function sendLyricsPicture(auto) {
-    let file;
-    try {
-      file = makeLyricsPicture();
-    } catch (e) {
-      file = null;
-    }
-    if (!file) {
-      if (!auto) flash('Nothing to send yet: open the lyrics (♪) first.');
-      return;
-    }
-    if (hostEl) hostEl.dataset.snap = `${file.name}:${file.size}`;
-    ui.snapBtn.classList.remove('pulse');
-    let canShare = false;
-    try {
-      canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
-    } catch (e) {
-      canShare = false;
-    }
-    if (canShare) {
-      try {
-        await navigator.share({ files: [file] });
-        return;
-      } catch (e) {
-        if (e && e.name === 'AbortError') return; // share sheet closed
-        if (auto) {
-          // Too long after the tap for Safari: one tap on 📷 sends it.
-          ui.snapBtn.classList.add('pulse');
-          flash('Tap 📷 (above the lyrics) to send the picture.', 5000);
-          return;
-        }
-      }
-    }
-    if (auto && TOUCH) return;
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': file })]);
-      flash('Lyrics picture copied. Paste it into Claude (Ctrl+V / ⌘V).', 4000);
-      return;
-    } catch (e) {
-      /* no clipboard: save it */
-    }
-    const a = h('a', { href: URL.createObjectURL(file), download: file.name || 'lyrics.png' });
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    flash('Lyrics picture saved.', 3000);
   }
 
   function lyricsTick() {
@@ -4062,7 +3885,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
     place: 'M4 4h16v6H4zm0 8h7v8H4zm9 0h7v8h-7z',
-    camera: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM9 2 7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z',
+    back5: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
+    fwd5: 'M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z',
     stop: 'M6 6h12v12H6z',
     plus: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
     minus: 'M19 13H5v-2h14z',
@@ -4160,6 +3984,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.bTime,
       btn(null, TOUCH ? 'Move end later by 1 second' : 'Move end later (Shift = fine, Alt = big)', (e) => nudge('b', step(e)), 'icon', 'right'));
     ui.playBtn = btn(null, 'Play', togglePlay, 'icon play-btn', 'play');
+    ui.backBtn = btn('5s', `Back ${JUMP_SEC} seconds and play`, () => jump(-JUMP_SEC), 'jump', 'back5');
+    ui.fwdBtn = btn('5s', `Forward ${JUMP_SEC} seconds`, () => jump(JUMP_SEC), 'jump', 'fwd5');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
     ui.undoBtn = btn(null, 'Undo the last loop change', undo, 'icon hide-phone', 'undo');
@@ -4245,9 +4071,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
-    ui.snapChk = h('input', { type: 'checkbox' });
-    ui.snapChk.checked = settings.snapOnPause;
-    ui.snapChk.addEventListener('change', () => { settings.snapOnPause = ui.snapChk.checked; saveSettings(); ui.snapChk.blur(); });
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
@@ -4256,8 +4079,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
         IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
       TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
-      h('label', { class: 'check', title: 'After you pause, a picture of the lyrics (and the video with its subtitles) opens in the share sheet: pick Claude to send it.' }, ui.snapChk,
-        'When I pause: send a lyrics picture after 1 s'),
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
       ui.rescanBtn,
@@ -4284,9 +4105,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const resize = h('div', { class: 'resize', title: 'Drag up or down to make the wave bigger or smaller' });
     // Right above the wave: play, A / B and the loop buttons, close to your hand.
     const transport = h('div', { class: 'row bar transport' },
-      h('div', { class: 'group' }, ui.playBtn),
-      h('div', { class: 'group' }, ui.aMark, ui.bMark),
-      h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn));
+      h('div', { class: 'group' }, ui.backBtn, ui.playBtn, ui.fwdBtn),
+      h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn),
+      h('div', { class: 'group' }, ui.aMark, ui.bMark));
     ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
@@ -4313,7 +4134,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       h('ol', {},
         ...(TOUCH ? [
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays. Double-tap the wave to set A there, double-tap again to set B.'),
-          h('li', {}, h('b', { text: 'Make a loop: ' }), `press A where the part starts: a ${TOUCH_LOOP_LEN}-second loop starts right away. Press B where it should end. The ‹ › buttons move A or B by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}; drag the green A / red B flags to fine-tune.`),
+          h('li', {}, h('b', { text: 'Make a loop: ' }), `like a DJ app: tap the wave to stop, drag the wave to where the part starts and tap A, drag on to where it ends and tap B. It loops. (Or double-tap the wave at the start, then at the end.) Drag the green A / red B flags anywhere, or use ‹ › to move them by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}. ↺ 5s plays the last 5 seconds again.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
           h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 30 times (30% → 100% over 20, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
         ] : [
@@ -4700,7 +4521,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } else if (!dur()) {
       setHint(['Waiting for the video…']);
     } else if (pending) {
-      setHint(TOUCH ? [['Now double-tap where the loop should END (B)']] : [['Now click where the loop should END'], '  (Esc to cancel)']);
+      setHint(TOUCH ? [['A is set. Move to where the loop ends and tap B'], ' (or double-tap the wave there).'] : [['Now click where the loop should END'], '  (Esc to cancel)']);
     } else if (hasLoop()) {
       const len = S.b - S.a;
       setHint([
@@ -4710,7 +4531,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ]);
     } else {
       setHint(TOUCH
-        ? [['Tap the wave'], ' to pause / play, ', ['drag it'], ' to move the song, ', ['double-tap'], ' to set A, then B. Or press ', ['A'], ' to loop from here.']
+        ? [['Tap the wave'], ' to stop / play, ', ['drag it'], ' to move the song. Tap ', ['A'], ' where the loop starts, ', ['B'], ' where it ends.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -5241,6 +5062,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
         const hnd = handleAt(x, g, e.pointerType === 'touch');
         if (hnd === 'la' || hnd === 'lb') {
           drag = { mode: 'lhandle', which: hnd };
+        } else if (hnd === 'pa') {
+          drag = { mode: 'pending' };
         } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
@@ -5335,6 +5158,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const cands = [];
     if (S.lineLoop) cands.push(['la', S.lineLoop.a], ['lb', S.lineLoop.b]);
     if (hasLoop() && S.pendingA == null) cands.push(['a', S.a], ['b', S.b]);
+    if (S.pendingA != null) cands.push(['pa', S.pendingA]);
     let best = null;
     let bestD = Infinity;
     for (const [k, t] of cands) {
@@ -5373,6 +5197,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
         ll.a = a;
         ll.b = b;
         ll.custom = true;
+        renderUI();
+      }
+    } else if (drag.mode === 'pending') {
+      if (S.pendingA != null) {
+        S.pendingA = C.clamp(t, 0, Math.max(0, dur() - C.MIN_LOOP));
         renderUI();
       }
     } else if (drag.mode === 'handle') {
@@ -5466,8 +5295,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (!d) return;
     t = C.clamp(t, 0, Math.max(0, d - 0.05));
     // Undo the play/pause of the first tap: a double tap only sets a point.
-    SNAP.suppressUntil = now() + 600;
-    clearTimeout(SNAP.timer);
     if (wasPlaying) play();
     else if (S.video && !S.video.paused) {
       try {

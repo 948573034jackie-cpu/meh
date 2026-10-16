@@ -67,6 +67,8 @@ button.speed { min-width: 50px; font-weight: 600; }
 button.play-btn { width: 44px; min-width: 44px; height: 32px; background: #1d3a46; border-color: #2b5666; color: #fff; }
 button.play-btn svg { width: 22px; height: 22px; }
 button.play-btn.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button.jump { gap: 2px; padding-left: 7px; padding-right: 9px; }
+button.jump svg { width: 18px; height: 18px; }
 button.zoom-toggle { min-width: 112px; font-weight: 600; }
 button.speed.on { background: var(--gold); border-color: var(--gold); color: #241b00; }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
@@ -260,6 +262,4 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .rate { min-width: 38px; font-size: 12.5px; }
 }
 
-button.pulse { animation: ytl-pulse 0.9s ease-in-out infinite; background: #f59e0b; color: #111; }
-@keyframes ytl-pulse { 50% { transform: scale(1.15); } }
 `;

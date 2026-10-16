@@ -582,11 +582,21 @@ const lineBtn = (i) => page.evaluate((k) => {
   p.querySelector('.lyr-loop').click();
 }, i);
 
-await step('📷 makes a picture of the lyrics to send to Claude (copied or saved on a computer)', async () => {
-  await shadowClick('button', 'Send a picture of the lyrics (to Claude or any app)');
-  await waitFor(async () => /^lyrics-.*\.png:\d+$/.test((await host()).snap || ''), 4000, 'picture made');
-  const size = Number((await host()).snap.split(':')[1]);
-  assert(size > 15000, `a real picture (${size} bytes)`);
+await step('↺ 5s plays the last 5 seconds again; 5s ↻ skips ahead', async () => {
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 20; });
+  await sleep(200);
+  const loopWas = (await host()).loop;
+  await shadowClick('button', 'Back 5 seconds and play');
+  let v = await vstate();
+  const h = await host();
+  const want = h.loop === 'true' && Number(h.a) > 15 && Number(h.a) <= 20 ? Number(h.a) : 15;
+  assert(Math.abs(v.t - want) < 0.3 && !v.paused, `back and playing (t=${v.t.toFixed(2)}, want ${want}, loop ${loopWas})`);
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  const t0 = (await vstate()).t;
+  await shadowClick('button', 'Forward 5 seconds');
+  v = await vstate();
+  assert(Math.abs(v.t - t0 - 5) < 0.1, `forward 5 s (${t0.toFixed(2)} -> ${v.t.toFixed(2)})`);
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
 });
 
 await step('line practice: ⟳ plays one line 30 times (30% → 100% over 20, then 10 at 100%), then stops and puts the speed back', async () => {

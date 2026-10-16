@@ -51,17 +51,6 @@ const ctx = await browser.newContext({
   hasTouch: true,
   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
 });
-// A stand-in for Safari's share sheet: records what would be sent (e.g. to Claude).
-await ctx.addInitScript(() => {
-  window.__shares = [];
-  navigator.canShare = (d) => !!(d && d.files && d.files.length);
-  navigator.share = async (d) => {
-    for (const f of d.files) {
-      const url = await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(f); });
-      window.__shares.push({ name: f.name, type: f.type, size: f.size, url });
-    }
-  };
-});
 await ctx.addInitScript({ path: path.join(ROOT, 'userscript', 'wave-looper.user.js') });
 const html = fs.readFileSync(path.join(ROOT, 'test', 'fake-youtube.html'));
 await ctx.route('https://m.youtube.com/**', (route) => {
@@ -246,20 +235,37 @@ await step('double-tap the wave: first sets A there, the next sets B and the loo
   assert(!(await host()).a, 'cleared');
 });
 
-await step('A button makes a 3-second loop right away, B sets the end', async () => {
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 9; v.play(); });
-  await sleep(150);
+await step('like a DJ app: stop, drag to the start and tap A, drag on and tap B; ‹ › move by 1 second; the waiting A flag drags', async () => {
+  const at = (t) => page.evaluate((t) => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = t; }, t);
+  await at(9);
+  await sleep(300);
   await tap('button', 'A');
   let h = await host();
-  assert(Math.abs(Number(h.a) - 9) < 0.3, `A at the playhead (${h.a})`);
-  assert(Math.abs(Number(h.b) - Number(h.a) - 3) < 0.01, `3-second loop (${h.a}-${h.b})`);
-  assert(h.loop === 'true', 'looping straight away');
-  await waitFor(async () => (await vstate()).t > Number(h.a) + 1.6, 4000, 'played a bit');
-  const t = (await vstate()).t; // B goes where the playhead is when you tap (then it loops back to A)
+  assert(Math.abs(Number(h.pending) - 9) < 0.05, `A waits at the playhead (${h.pending})`);
+  assert(h.loop !== 'true', 'no loop yet');
+  // The waiting A flag can be dragged too.
+  await sleep(700); // DJ view settles
+  const b = await waveBox();
+  const [vs, ve] = h.view.split(',').map(Number);
+  const xa = b.x + ((9 - vs) / (ve - vs)) * b.w + 8;
+  const y = b.y + b.h * 0.6;
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: xa, y, id: 1 }] });
+  for (let i = 1; i <= 5; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: xa - i * 8, y, id: 1 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  h = await host();
+  const pa = Number(h.pending);
+  assert(pa < 8.8 && pa > 6, `dragged the waiting A earlier (${h.pending})`);
+  assert(Math.abs((await vstate()).t - 9) < 0.05, 'dragging the flag did not move the song');
+  await at(12.5);
+  await sleep(200);
   await tap('button', 'B');
   h = await host();
-  assert(Math.abs(Number(h.b) - t) < 0.35 && Number(h.b) < Number(h.a) + 2.8, `B moved to the playhead (${h.b} vs t=${t.toFixed(2)})`);
-  await waitFor(async () => Number((await host()).reps) >= 2, 8000, 'repeats');
+  assert(!h.pending && h.loop === 'true', 'B closes the loop');
+  assert(Math.abs(Number(h.a) - pa) < 0.01 && Math.abs(Number(h.b) - 12.5) < 0.05, `loop A..B (${h.a}-${h.b})`);
+  assert(Math.abs((await vstate()).t - Number(h.a)) < 0.05, 'ready at A');
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops');
   const b0 = Number((await host()).b);
   await tap('button', 'Move end later by 1 second');
   const b1 = Number((await host()).b);
@@ -267,8 +273,41 @@ await step('A button makes a 3-second loop right away, B sets the end', async ()
   await tap('button', 'Move end earlier by 1 second');
   h = await host();
   assert(Math.abs(Number(h.b) - b0) < 0.01, '‹ moves it back');
+  // Re-mark A inside the loop keeps B.
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await at(Number(h.a) + 1);
+  await tap('button', 'A');
+  const h2 = await host();
+  assert(Math.abs(Number(h2.a) - Number(h.a) - 1) < 0.05 && h2.b === h.b && !h2.pending, `A moved, B kept (${h2.a}-${h2.b})`);
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await sleep(300);
   const tt = (await vstate()).t;
-  assert(tt >= Number(h.a) - 0.05 && tt <= Number(h.b) + 0.15, `inside loop (t=${tt})`);
+  assert(tt >= Number(h2.a) - 0.05 && tt <= Number(h2.b) + 0.15, `inside loop (t=${tt})`);
+});
+
+await step('↺ 5s plays the last 5 seconds again (not out of the loop); 5s ↻ skips ahead', async () => {
+  await tap('button', 'Clear the loop');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 20; v.pause(); });
+  await sleep(200);
+  await tap('button', 'Back 5 seconds and play');
+  let v = await vstate();
+  assert(Math.abs(v.t - 15) < 0.3 && !v.paused, `back to 15 s and playing (t=${v.t.toFixed(2)}, paused ${v.paused})`);
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  const t0 = (await vstate()).t;
+  await tap('button', 'Forward 5 seconds');
+  v = await vstate();
+  assert(Math.abs(v.t - t0 - 5) < 0.1, `forward 5 s (${t0.toFixed(2)} -> ${v.t.toFixed(2)})`);
+  // Inside a loop, back stops at the loop start. (The test song is 30 s long.)
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 20; });
+  await tap('button', 'A');
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 26; });
+  await tap('button', 'B');
+  let h = await host();
+  assert(h.loop === 'true' && Math.abs(Number(h.a) - 20) < 0.05 && Math.abs(Number(h.b) - 26) < 0.05, `loop 20-26 (${h.a}-${h.b})`);
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 22; });
+  await tap('button', 'Back 5 seconds and play');
+  v = await vstate();
+  assert(Math.abs(v.t - 20) < 0.3 && !v.paused, `back to the loop start (t=${v.t.toFixed(2)})`);
 });
 
 await step('drag a flag with a finger', async () => {
@@ -431,46 +470,6 @@ await step('play / pause: one button, a little bigger than the others', async ()
   await page.touchscreen.tap(m.x, m.y);
   assert((await vstate()).paused !== was, 'tap toggles play/pause');
   if ((await vstate()).paused) await page.touchscreen.tap(m.x, m.y);
-});
-
-await step('voice call helper: pause, and 1 s later a lyrics picture goes to the share sheet (for Claude)', async () => {
-  const shares = () => page.evaluate(() => window.__shares.map(({ name, type, size }) => ({ name, type, size })));
-  await page.evaluate(() => { window.__shares.length = 0; document.querySelector('#movie_player video').play().catch(() => {}); });
-  await sleep(1500);
-  const m = await page.evaluate(() => {
-    const p = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.play-btn').getBoundingClientRect();
-    return { x: p.left + p.width / 2, y: p.top + p.height / 2 };
-  });
-  await page.touchscreen.tap(m.x, m.y);
-  assert((await vstate()).paused, 'paused');
-  await sleep(500);
-  assert((await shares()).length === 0, 'waits a second first');
-  await waitFor(async () => (await shares()).length === 1, 2500, 'picture sent to the share sheet');
-  const sh = (await shares())[0];
-  assert(sh.type === 'image/png' && sh.size > 15000 && /^lyrics-.*\.png$/.test(sh.name), `a picture (${JSON.stringify(sh)})`);
-  const url = await page.evaluate(() => window.__shares[0].url);
-  fs.writeFileSync(path.join(SHOTS, 'm7-lyrics-picture.png'), Buffer.from(url.split(',')[1], 'base64'));
-  await tap('button', 'Send a picture of the lyrics (to Claude or any app)');
-  await waitFor(async () => (await shares()).length === 2, 2000, '📷 sends one right away');
-  // The looper pausing by itself (breath pause, trainer finished...) sends nothing.
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
-  await sleep(1600);
-  await page.evaluate(() => document.querySelector('#movie_player video').pause());
-  await sleep(1600);
-  assert((await shares()).length === 2, 'no picture when you did not pause it yourself');
-  // Holding the wave with a finger is not a pause.
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
-  await sleep(500);
-  const b = await waveBox();
-  const cdp = await ctx.newCDPSession(page);
-  const x = b.x + b.w * 0.5;
-  const y = b.y + 18 + (b.h - 18) * 0.5;
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] });
-  await sleep(1600);
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await sleep(300);
-  assert((await shares()).length === 2, 'holding the wave sends nothing');
-  assert(!(await vstate()).paused, 'plays on');
 });
 
 await step('loop and wave are remembered after reloading the page', async () => {
