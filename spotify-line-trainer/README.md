@@ -26,6 +26,22 @@ If you drag Spotify's progress bar, the trainer moves to that line. If you pause
 3. Click **Load unpacked** and choose the `spotify-line-trainer` folder.
 4. Open https://open.spotify.com, play a song that has lyrics, and click **▶ Start** in the green panel at the bottom right (use **–** to shrink it to a 🎤 button).
 
+## Install on iPad / iPhone (Safari, no computer needed)
+
+1. Install the free app **Userscripts** (by Justin Wasack / quoid) from the App Store.
+2. Open the **Userscripts** app once and tap **Set Userscripts Directory**. Pick any folder, for example a new folder "Userscripts" in *On My iPad*.
+3. Go to **Settings → Apps → Safari → Extensions → Userscripts**. Turn it **on** and set **open.spotify.com** to **Allow**. (On older iPadOS: Settings → Safari → Extensions.)
+4. In Safari, open this link:
+   https://raw.githubusercontent.com/948573034jackie-cpu/meh/spotify-line-trainer/spotify-line-trainer/dist/spotify-line-trainer.user.js
+   Tap the **puzzle-piece / ᴀA** icon in the address bar → **Userscripts** → **Install**, then confirm.
+5. Open **https://open.spotify.com** in Safari, log in, play a song with lyrics, and tap **▶ Start** in the green panel.
+
+Tips for iPad:
+- Keep Safari open and in front while training. iPadOS may slow down background tabs.
+- If the panel says *"Start playing a song first"*, tap Spotify's play/pause once and press Start again.
+- If Safari shows "browser not supported", tap **ᴀA → Request Desktop Website**.
+- The script works the same in Tampermonkey (Chrome, Firefox, Edge) using the same link.
+
 ## Why a Chrome extension rather than an app?
 
 - Spotify's desktop and mobile apps no longer allow third-party add-ons, and the official Spotify Web API **cannot change playback speed**. Its seek commands also go over the network, which is too slow and imprecise to loop single lines.
@@ -42,11 +58,15 @@ If you drag Spotify's progress bar, the trainer moves to that line. If you pause
 ```
 src/core.js   pure logic: lyrics parsing, repeat/training plan (unit-tested)
 src/page.js   runs inside the Spotify page: finds the audio element, loads lyrics, loops lines
-src/ui.js     the floating control panel (shadow DOM), settings saved in chrome.storage
+src/ui.js     the floating control panel (shadow DOM), settings saved in chrome.storage / localStorage
+build-userscript.js   bundles src/ into dist/spotify-line-trainer.user.js (iPad / Safari version)
 test/         node unit tests + Playwright end-to-end tests against a mock open.spotify.com
 ```
 
 ```
 node --test test/core.test.js                  # unit tests
-NODE_PATH=$(npm root -g) node test/e2e.js      # end-to-end (needs playwright + chromium)
+node build-userscript.js                       # rebuild the iPad userscript after editing src/
+NODE_PATH=$(npm root -g) node test/e2e.js      # end-to-end as Chrome extension (needs playwright + chromium)
+MODE=userscript NODE_PATH=$(npm root -g) node test/e2e.js   # as userscript (document-start)
+MODE=late NODE_PATH=$(npm root -g) node test/e2e.js         # as userscript injected after page load
 ```
