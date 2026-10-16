@@ -118,7 +118,7 @@ function checkSteps(steps, lines, settings, label) {
     assert.strictEqual(s.rate, rate, `${label}: step ${i} rate`);
     assert.ok(s.rates.every(r => Math.abs(r - rate) < 1e-6), `${label}: step ${i} element rate ${s.rates} vs ${rate}`);
     assert.ok(s.tMin >= ln.start - core.LEAD_IN - 0.12 && s.tMin <= ln.start + 0.05, `${label}: step ${i} starts at ${s.tMin.toFixed(3)} expected ~${ln.start}`);
-    assert.ok(s.tMax >= ln.end - core.TAIL - 0.1 && s.tMax <= ln.end + 0.12, `${label}: step ${i} ends at ${s.tMax.toFixed(3)} expected ~${ln.end}`);
+    assert.ok(s.tMax >= ln.end - core.TAIL - 0.1 && s.tMax <= ln.end - core.TAIL + 0.1, `${label}: step ${i} ends at ${s.tMax.toFixed(3)} expected ~${ln.end - core.TAIL}`);
     if (i < steps.length - 1) {
       const wall = (steps[i + 1].wallStart - s.wallStart) / 1000;
       const want = (ln.end - core.TAIL - Math.max(s.tMin, 0)) / rate;
@@ -250,6 +250,87 @@ async function run(name, fn) {
     await page.close();
   });
 
+  await T('fix timing: nudge start/end, set now, whole-song offset, join/split, saved per song', async () => {
+    const page = await openPage(ctx);
+    await page.evaluate(() => localStorage.clear());
+    await chip(page, '🔁 Repeat').click();
+    await chip(page, '10×').click();
+    await chip(page, '100%').click();
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    const st = () => page.evaluate(() => { const S = window.__SLT_DEBUG__.state, l = S.lines[S.line]; return { line: S.line, start: l.start, end: l.end, text: l.text, count: S.lines.length, t: window.__player.currentTime, adj: S.adj }; });
+    const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.011, `${msg}: ${a} vs ${b}`);
+    assert.strictEqual(await ui(page, 'slt-start-time').innerText(), '0:01.00');
+    assert.strictEqual(await ui(page, 'slt-end-time').innerText(), '0:02.00');
+
+    // line 1 is "cut in half": push its end later by 0.5s and check playback really goes to the new end
+    await ui(page, 'slt-end+0.5').click();
+    let s = await st();
+    near(s.end, 2.5, 'end +0.5');
+    assert.strictEqual(await ui(page, 'slt-end-time').innerText(), '0:02.50');
+    assert.ok(s.t < 1.05, 'replays the line right away so you hear the change, t=' + s.t);
+    let r = await record(page, 'S.rep >= 2', 6000);
+    const full = r.steps.filter(x => x.rep === 1)[0];
+    assert.ok(full.tMax >= 2.5 - core.TAIL - 0.1 && full.tMax <= 2.5 - core.TAIL + 0.1, 'loop now reaches the new end: ' + full.tMax);
+    await ui(page, 'slt-end-0.1').click();
+    await ui(page, 'slt-start+0.1').click();
+    await ui(page, 'slt-start-0.5').click();
+    s = await st(); near(s.start, 0.6, 'start'); near(s.end, 2.4, 'end');
+
+    // whole-song offset moves every line
+    await ui(page, 'slt-offset+0.1').click();
+    await ui(page, 'slt-offset+0.1').click();
+    assert.strictEqual(await ui(page, 'slt-offset').innerText(), '+0.2s');
+    s = await st(); near(s.start, 0.8, 'start with offset'); near(s.end, 2.6, 'end with offset');
+    const l2 = await page.evaluate(() => window.__SLT_DEBUG__.state.lines[1].start); near(l2, 2.2, 'other lines shifted too');
+    await ui(page, 'slt-offset-0.1').click();
+    await ui(page, 'slt-offset-0.1').click();
+
+    // ⏺ now: set the end to the current moment
+    await page.waitForFunction(() => window.__player.currentTime > 1.5 && window.__player.currentTime < 2.2);
+    const t0 = await page.evaluate(() => window.__player.currentTime);
+    await ui(page, 'slt-end-now').click();
+    s = await st(); assert.ok(s.end > t0 - 0.01 && s.end < t0 + 0.1, `end set to now ${s.end} ~ ${t0}`);
+
+    // join with next line, then split again
+    await ui(page, 'slt-join').click();
+    s = await st();
+    assert.strictEqual(s.text, 'First line Second line'); assert.strictEqual(s.count, 3); near(s.end, 3, 'joined end');
+    assert.strictEqual(await ui(page, 'slt-lyric').innerText(), 'First line Second line');
+    await ui(page, 'slt-join').click();
+    s = await st(); assert.strictEqual(s.text, 'First line Second line Third line'); assert.strictEqual(s.count, 2);
+    await ui(page, 'slt-split').click();
+    s = await st(); assert.strictEqual(s.text, 'First line'); assert.strictEqual(s.count, 4);
+    await ui(page, 'slt-join').click();
+
+    // saved per song: reload and start again -> same fixes
+    await page.reload(); await afterLoad(page);
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    s = await st();
+    assert.strictEqual(s.text, 'First line Second line'); near(s.start, 0.6, 'saved start');
+    // a different song is not affected
+    await page.evaluate(() => window.__changeTrack('TRACKBBBBBBBBBBBBBBBBB'));
+    await page.waitForFunction(() => !window.__SLT_DEBUG__.state.active);
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    s = await st(); assert.strictEqual(s.text, 'B one'); near(s.start, 1, 'other song untouched');
+    // reset song
+    await page.evaluate(() => window.__changeTrack('TRACKAAAAAAAAAAAAAAAAA'));
+    await page.waitForFunction(() => !window.__SLT_DEBUG__.state.active);
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    await ui(page, 'slt-reset-song').click();
+    s = await st(); assert.strictEqual(s.text, 'First line'); near(s.start, 1, 'reset'); near(s.end, 2, 'reset end');
+    assert.strictEqual(await page.evaluate(() => localStorage.getItem('slt-adj:TRACKAAAAAAAAAAAAAAAAA')), null);
+    // panel can fold the fix section away
+    await ui(page, 'slt-fix-toggle').click();
+    assert.strictEqual(await ui(page, 'slt-end+0.5').count(), 0);
+    await ui(page, 'slt-fix-toggle').click();
+    await ui(page, 'slt-toggle').click();
+    await page.close();
+  });
+
   await T('Spotify resetting speed and user seeking are handled', async () => {
     const page = await openPage(ctx);
     await chip(page, '🔁 Repeat').click();
@@ -353,7 +434,7 @@ async function run(name, fn) {
 
   if (only === 'screenshot') await run('screenshot', async () => {
     const page = await openPage(ctx);
-    await page.setViewportSize({ width: 420, height: 760 });
+    await page.setViewportSize({ width: 420, height: 1000 });
     await chip(page, '🏋️ Training').click();
     await chip(page, '5×').click();
     await ui(page, 'slt-toggle').click();

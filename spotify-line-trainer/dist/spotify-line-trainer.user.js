@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spotify Line Trainer
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.1.0
+// @version      1.2.0
 // @description  Loop every lyric line of a Spotify song N times at the speed you choose, or run the slow-to-fast training ladder.
 // @match        https://open.spotify.com/*
 // @run-at       document-start
@@ -17,7 +17,7 @@
   'use strict';
 
   const LEAD_IN = 0.1;   // seconds to start before a line so the first syllable isn't clipped
-  const TAIL = 0.05;     // seconds before the next line where a repetition ends
+  const TAIL = -0.1;     // a repetition ends this long before the next line (negative = slightly after, so last words aren't clipped)
   const MIN_LINE = 0.6;  // shortest playable line
   const MAX_LINE = 15;   // cap so long instrumental gaps aren't looped
 
@@ -106,7 +106,34 @@
     return idx;
   }
 
-  const api = { LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
+  // User timing fixes for one song (saved per track):
+  //   adj = { offset: seconds for every line, joins: [i, ...] (line i is joined with line i+1),
+  //           lines: { [id]: { ds, de } } (start / end nudges in seconds) }
+  // Returned lines keep id = index of their first original line and joined = how many lines were merged in.
+  function applyAdjustments(lines, adj) {
+    adj = adj || {};
+    const off = Number(adj.offset) || 0;
+    const joins = new Set((adj.joins || []).map(Number));
+    const per = adj.lines || {};
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const ln = { id: i, start: lines[i].start, end: lines[i].end, text: lines[i].text, joined: 0 };
+      while (joins.has(i) && i + 1 < lines.length) {
+        i++;
+        ln.end = Math.max(ln.end, lines[i].end);
+        ln.text += ' ' + lines[i].text;
+        ln.joined++;
+      }
+      const a = per[ln.id] || {};
+      ln.start = Math.max(0, ln.start + off + (Number(a.ds) || 0));
+      ln.end = ln.end + off + (Number(a.de) || 0);
+      if (ln.end < ln.start + 0.3) ln.end = ln.start + 0.3;
+      out.push(ln);
+    }
+    return out;
+  }
+
+  const api = { applyAdjustments, LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.__SLT_CORE__ = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -252,7 +279,8 @@
     settings: core.normalizeSettings({}), plan: core.plan({}),
     lines: [], trackId: null, line: 0, stage: 0, rep: 0,
     rate: 1, lastSeekAt: 0, timer: null, message: '', finished: false,
-    fullPlay: false // training done, now playing the whole song once at 100%
+    fullPlay: false, // training done, now playing the whole song once at 100%
+    baseLines: [], adj: {} // lyrics as Spotify gave them + the user's timing fixes for this song
   };
 
   function emit() {
@@ -265,7 +293,9 @@
       stage: S.stage, stageCount: S.plan.stages.length,
       rep: S.rep, reps: S.plan.reps, rate: S.rate,
       text: ln ? ln.text : '', nextText: S.lines[S.line + 1] ? S.lines[S.line + 1].text : '',
-      time: el ? el.currentTime : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0
+      time: el ? el.currentTime : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0,
+      joined: ln ? ln.joined : 0, offset: Number(S.adj.offset) || 0,
+      adjusted: !!(S.adj.offset || (S.adj.joins && S.adj.joins.length) || Object.keys(S.adj.lines || {}).length)
     };
     document.dispatchEvent(new CustomEvent('slt-state', { detail: JSON.stringify(state) }));
   }
@@ -303,8 +333,8 @@
     S.rate = S.plan.stages[S.stage];
     applyRate(el, S.rate);
     const target = Math.max(0, ln.start - core.LEAD_IN);
-    // moving on to the next line at the same speed: we're already there, don't stutter
-    if (!(allowContinue && el.currentTime >= target - 0.05 && el.currentTime < ln.start + 0.25)) seek(el, target);
+    // moving on to the next line at the same speed and we haven't passed its start yet: just keep playing
+    if (!(allowContinue && el.currentTime >= target - 0.05 && el.currentTime <= ln.start)) seek(el, target);
     emit();
   }
 
@@ -389,8 +419,10 @@
     const parsed = core.parseLyrics(json, el.duration);
     if (!parsed.synced) return stop('These lyrics are not time-synced, so lines can\'t be looped.');
 
-    S.lines = parsed.lines;
+    S.baseLines = parsed.lines;
     S.trackId = id;
+    S.adj = loadAdj(id);
+    S.lines = core.applyAdjustments(S.baseLines, S.adj);
     S.line = (opts.fromStart || S.settings.startFrom !== 'current') ? 0 : core.findLineAt(S.lines, el.currentTime);
     S.stage = 0; S.rep = 0;
     S.loading = false; S.active = true; S.message = '';
@@ -450,6 +482,77 @@
     if (Math.random() < 0.1) emit(); // keep the panel's progress bar moving
   }
 
+  // ---------- timing fixes ----------
+  const adjKey = id => 'slt-adj:' + id;
+  function loadAdj(id) {
+    try { return JSON.parse(localStorage.getItem(adjKey(id)) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function saveAdj() {
+    try {
+      if (!S.trackId) return;
+      const a = S.adj;
+      const empty = !a.offset && !(a.joins && a.joins.length) && !Object.keys(a.lines || {}).length;
+      if (empty) localStorage.removeItem(adjKey(S.trackId));
+      else localStorage.setItem(adjKey(S.trackId), JSON.stringify(a));
+    } catch (e) { /* ignore */ }
+  }
+  const round = v => Math.round(v * 100) / 100;
+
+  // Rebuild the line list after a fix, stay on the same line, and replay it so the change is heard right away.
+  function rebuild(keepId) {
+    S.lines = core.applyAdjustments(S.baseLines, S.adj);
+    let idx = S.lines.findIndex(l => l.id <= keepId && keepId <= l.id + l.joined);
+    S.line = idx < 0 ? Math.min(S.line, S.lines.length - 1) : idx;
+    saveAdj();
+    beginStep(false);
+  }
+
+  function fixTiming(cmd) {
+    if (!S.active || !S.lines.length) return;
+    const ln = S.lines[S.line];
+    const el = getMedia();
+    S.adj.lines = S.adj.lines || {};
+    const a = S.adj.lines[ln.id] = S.adj.lines[ln.id] || {};
+    switch (cmd.type) {
+      case 'nudge': { // move start or end by delta seconds
+        const k = cmd.field === 'start' ? 'ds' : 'de';
+        a[k] = round((a[k] || 0) + Number(cmd.delta || 0));
+        break;
+      }
+      case 'setNow': { // set start or end to "right now" in the song
+        if (!el) return;
+        const now = el.currentTime;
+        if (cmd.field === 'start') {
+          if (now >= ln.end - 0.3) return;
+          a.ds = round((a.ds || 0) + now - ln.start);
+        } else {
+          if (now <= ln.start + 0.3) return;
+          a.de = round((a.de || 0) + now - ln.end);
+        }
+        break;
+      }
+      case 'offset':
+        S.adj.offset = round((Number(S.adj.offset) || 0) + Number(cmd.delta || 0));
+        break;
+      case 'join': {
+        if (S.line >= S.lines.length - 1) return;
+        const last = ln.id + ln.joined; // last original line inside this one
+        S.adj.joins = [...new Set([...(S.adj.joins || []), last])];
+        delete a.de; // the end now comes from the joined line
+        break;
+      }
+      case 'split':
+        if (!ln.joined) return;
+        S.adj.joins = (S.adj.joins || []).filter(j => j < ln.id || j >= ln.id + ln.joined);
+        break;
+      case 'resetSong':
+        S.adj = {};
+        break;
+    }
+    if (S.adj.lines && S.adj.lines[ln.id] && !S.adj.lines[ln.id].ds && !S.adj.lines[ln.id].de) delete S.adj.lines[ln.id];
+    rebuild(ln.id);
+  }
+
   function jumpLine(delta) {
     if (!S.active || !S.lines.length) return;
     S.line = Math.max(0, Math.min(S.lines.length - 1, S.line + delta));
@@ -480,6 +583,7 @@
       case 'restart': jumpLine(0); break;
       case 'settings': updateSettings(cmd.settings); break;
       case 'ping': emit(); break;
+      case 'nudge': case 'setNow': case 'offset': case 'join': case 'split': case 'resetSong': fixTiming(cmd); break;
     }
   });
 
@@ -496,7 +600,7 @@
 
   const SPEEDS = [0.3, 0.5, 0.75, 1];
   const REPS = [3, 5, 7, 10];
-  const DEFAULTS = { mode: 'repeat', reps: 5, speed: 1, trainingReps: 5, trainingSpeeds: [0.3, 0.5, 0.75, 1], startFrom: 'first', autoNext: false, playFullAfter: true, minimized: false };
+  const DEFAULTS = { mode: 'repeat', reps: 5, speed: 1, trainingReps: 5, trainingSpeeds: [0.3, 0.5, 0.75, 1], startFrom: 'first', autoNext: false, playFullAfter: true, minimized: false, fixOpen: true };
   let settings = Object.assign({}, DEFAULTS);
   let state = { active: false };
 
@@ -556,6 +660,18 @@
     .panel { width: 360px; font-size: 14px; }
     .fab { width: 60px; height: 60px; }
   }
+  .fix { margin-top: 10px; border-top: 1px solid #333; padding-top: 8px; }
+  .fixhead { display: flex; justify-content: space-between; align-items: center; cursor: pointer; color: #ddd; font-weight: 700; font-size: 13px; background: none; border: 0; width: 100%; padding: 4px 0; }
+  .fixrow { display: flex; align-items: center; gap: 4px; margin: 6px 0; }
+  .fixlbl { width: 76px; color: #b3b3b3; font-size: 12px; line-height: 1.2; }
+  .fixlbl b { color: #fff; font-weight: 700; display: block; font-variant-numeric: tabular-nums; }
+  .mini { flex: 1; min-width: 0; padding: 7px 0; border-radius: 6px; border: 1px solid #3e3e3e; background: #2a2a2a; color: #fff; cursor: pointer; font-size: 12px; }
+  .mini:hover { border-color: #777; }
+  .mini.now { background: #1d5e35; border-color: #1d5e35; }
+  .mini:disabled { opacity: .35; cursor: default; }
+  .fixbtns { display: flex; gap: 6px; margin-top: 6px; }
+  .fixbtns .mini { padding: 8px 0; }
+  @media (pointer: coarse) { .mini { padding: 10px 0; font-size: 13px; } }
   .ladder { display: flex; gap: 4px; margin-top: 6px; }
   .ladder span { flex: 1; text-align: center; font-size: 11px; padding: 3px 0; border-radius: 4px; background: #333; color: #aaa; }
   .ladder span.done { background: #1d5e35; color: #fff; }
@@ -677,6 +793,7 @@
         box.append(h('div', { class: 'ladder' }, settings.trainingSpeeds.slice(0, state.stageCount).map((v, i) =>
           h('span', { class: i < state.stage ? 'done' : i === state.stage ? 'cur' : '' }, pct(v)))));
       }
+      box.append(fixBox());
       const bar = h('div', { class: 'bar' }, h('i'));
       bar.firstChild.style.width = (state.lineCount ? (100 * (state.line + 1) / state.lineCount) : 0) + '%';
       box.append(bar);
@@ -685,10 +802,41 @@
     return box;
   }
 
+  const fmtT = s => { s = Math.max(0, s); const m = Math.floor(s / 60); return m + ':' + (s - m * 60).toFixed(2).padStart(5, '0'); };
+  const sgn = v => (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v).toFixed(1);
+
+  function fixBox() {
+    const box = h('div', { class: 'fix', 'data-testid': 'slt-fix' },
+      h('button', { class: 'fixhead', 'data-testid': 'slt-fix-toggle', onclick: () => change({ fixOpen: !settings.fixOpen }) },
+        h('span', null, '⏱ Fix timing' + (state.adjusted ? ' •' : '')), h('span', null, settings.fixOpen ? '▾' : '▸')));
+    if (!settings.fixOpen) return box;
+    const nudgeRow = (field, label, value) => h('div', { class: 'fixrow' },
+      h('div', { class: 'fixlbl' }, label, h('b', { 'data-testid': 'slt-' + field + '-time' }, fmtT(value))),
+      [-0.5, -0.1, 0.1, 0.5].map(d => h('button', { class: 'mini', 'data-testid': `slt-${field}${d > 0 ? '+' : '-'}${Math.abs(d)}`,
+        onclick: () => send('nudge', { field, delta: d }) }, sgn(d))),
+      h('button', { class: 'mini now', title: `Set the ${field} to this moment`, 'data-testid': `slt-${field}-now`,
+        onclick: () => send('setNow', { field }) }, '⏺ now'));
+    const joinBtn = h('button', { class: 'mini', 'data-testid': 'slt-join', onclick: () => send('join') }, '🔗 Join next');
+    if (state.line >= state.lineCount - 1) joinBtn.setAttribute('disabled', '');
+    const splitBtn = h('button', { class: 'mini', 'data-testid': 'slt-split', onclick: () => send('split') }, '✂️ Split');
+    if (!state.joined) splitBtn.setAttribute('disabled', '');
+    box.append(
+      nudgeRow('start', 'Start', state.lineStart),
+      nudgeRow('end', 'End', state.lineEnd),
+      h('div', { class: 'fixrow' },
+        h('div', { class: 'fixlbl' }, 'Whole song', h('b', { 'data-testid': 'slt-offset' }, sgn(state.offset) + 's')),
+        h('button', { class: 'mini', 'data-testid': 'slt-offset-0.1', onclick: () => send('offset', { delta: -0.1 }) }, 'earlier −0.1'),
+        h('button', { class: 'mini', 'data-testid': 'slt-offset+0.1', onclick: () => send('offset', { delta: 0.1 }) }, 'later +0.1')),
+      h('div', { class: 'fixbtns' }, joinBtn, splitBtn,
+        h('button', { class: 'mini', 'data-testid': 'slt-reset-song', onclick: () => send('resetSong') }, '↺ Reset song')),
+      h('div', { class: 'hint' }, 'Line cut off? Push End later or 🔗 join it with the next line. Tap ⏺ now at the exact moment to set it. Fixes are saved for this song.'));
+    return box;
+  }
+
   let lastKey = '';
   document.addEventListener('slt-state', ev => {
     try { state = JSON.parse(ev.detail); } catch (e) { return; }
-    const key = [state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
+    const key = [state.lineStart, state.lineEnd, state.offset, state.joined, state.adjusted, state.lineCount, state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
     if (key !== lastKey) { lastKey = key; render(); }
   });
 

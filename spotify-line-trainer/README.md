@@ -11,6 +11,18 @@ Loops every lyric line of the song playing in the **Spotify Web Player** (open.s
 | 🔁 **Repeat** | Each line plays **3 / 5 / 7 / 10×** at **30 / 50 / 75 / 100 %** speed, then moves to the next line, first to last. |
 | 🏋️ **Training** | Each line plays 5× at 30 %, 5× at 50 %, 5× at 75 %, 5× at 100 %, then the next line. When the last line is done, **the whole song plays once from the start at 100 %**. You can change the repeat count, take speeds out of the ladder, and turn off the whole-song replay. |
 
+### ⏱ Fix timing (when a line is cut off or starts late)
+
+Spotify's lyric timestamps aren't always exact, and sometimes one sung sentence is split over two lines. While training, open **⏱ Fix timing**:
+
+- **Start / End −0.5 −0.1 +0.1 +0.5**: move where this line starts or ends. It replays right away so you hear the change.
+- **⏺ now**: tap at the exact moment the singer starts or finishes the line.
+- **🔗 Join next**: merge a half-sentence with the next line. **✂️ Split** undoes it.
+- **Whole song earlier / later**: shift every line at once if all of them are early or late.
+- **↺ Reset song**: forget the fixes for this song.
+
+Fixes are saved per song, so you only fix a song once.
+
 The voice keeps its normal pitch when slowed down. You can also:
 - start from the **first line** or the **current line**
 - use ⏮ / ↻ / ⏭ to go to the previous line, restart the line, or skip to the next line

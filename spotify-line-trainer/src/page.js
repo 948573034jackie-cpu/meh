@@ -138,7 +138,8 @@
     settings: core.normalizeSettings({}), plan: core.plan({}),
     lines: [], trackId: null, line: 0, stage: 0, rep: 0,
     rate: 1, lastSeekAt: 0, timer: null, message: '', finished: false,
-    fullPlay: false // training done, now playing the whole song once at 100%
+    fullPlay: false, // training done, now playing the whole song once at 100%
+    baseLines: [], adj: {} // lyrics as Spotify gave them + the user's timing fixes for this song
   };
 
   function emit() {
@@ -151,7 +152,9 @@
       stage: S.stage, stageCount: S.plan.stages.length,
       rep: S.rep, reps: S.plan.reps, rate: S.rate,
       text: ln ? ln.text : '', nextText: S.lines[S.line + 1] ? S.lines[S.line + 1].text : '',
-      time: el ? el.currentTime : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0
+      time: el ? el.currentTime : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0,
+      joined: ln ? ln.joined : 0, offset: Number(S.adj.offset) || 0,
+      adjusted: !!(S.adj.offset || (S.adj.joins && S.adj.joins.length) || Object.keys(S.adj.lines || {}).length)
     };
     document.dispatchEvent(new CustomEvent('slt-state', { detail: JSON.stringify(state) }));
   }
@@ -189,8 +192,8 @@
     S.rate = S.plan.stages[S.stage];
     applyRate(el, S.rate);
     const target = Math.max(0, ln.start - core.LEAD_IN);
-    // moving on to the next line at the same speed: we're already there, don't stutter
-    if (!(allowContinue && el.currentTime >= target - 0.05 && el.currentTime < ln.start + 0.25)) seek(el, target);
+    // moving on to the next line at the same speed and we haven't passed its start yet: just keep playing
+    if (!(allowContinue && el.currentTime >= target - 0.05 && el.currentTime <= ln.start)) seek(el, target);
     emit();
   }
 
@@ -275,8 +278,10 @@
     const parsed = core.parseLyrics(json, el.duration);
     if (!parsed.synced) return stop('These lyrics are not time-synced, so lines can\'t be looped.');
 
-    S.lines = parsed.lines;
+    S.baseLines = parsed.lines;
     S.trackId = id;
+    S.adj = loadAdj(id);
+    S.lines = core.applyAdjustments(S.baseLines, S.adj);
     S.line = (opts.fromStart || S.settings.startFrom !== 'current') ? 0 : core.findLineAt(S.lines, el.currentTime);
     S.stage = 0; S.rep = 0;
     S.loading = false; S.active = true; S.message = '';
@@ -336,6 +341,77 @@
     if (Math.random() < 0.1) emit(); // keep the panel's progress bar moving
   }
 
+  // ---------- timing fixes ----------
+  const adjKey = id => 'slt-adj:' + id;
+  function loadAdj(id) {
+    try { return JSON.parse(localStorage.getItem(adjKey(id)) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function saveAdj() {
+    try {
+      if (!S.trackId) return;
+      const a = S.adj;
+      const empty = !a.offset && !(a.joins && a.joins.length) && !Object.keys(a.lines || {}).length;
+      if (empty) localStorage.removeItem(adjKey(S.trackId));
+      else localStorage.setItem(adjKey(S.trackId), JSON.stringify(a));
+    } catch (e) { /* ignore */ }
+  }
+  const round = v => Math.round(v * 100) / 100;
+
+  // Rebuild the line list after a fix, stay on the same line, and replay it so the change is heard right away.
+  function rebuild(keepId) {
+    S.lines = core.applyAdjustments(S.baseLines, S.adj);
+    let idx = S.lines.findIndex(l => l.id <= keepId && keepId <= l.id + l.joined);
+    S.line = idx < 0 ? Math.min(S.line, S.lines.length - 1) : idx;
+    saveAdj();
+    beginStep(false);
+  }
+
+  function fixTiming(cmd) {
+    if (!S.active || !S.lines.length) return;
+    const ln = S.lines[S.line];
+    const el = getMedia();
+    S.adj.lines = S.adj.lines || {};
+    const a = S.adj.lines[ln.id] = S.adj.lines[ln.id] || {};
+    switch (cmd.type) {
+      case 'nudge': { // move start or end by delta seconds
+        const k = cmd.field === 'start' ? 'ds' : 'de';
+        a[k] = round((a[k] || 0) + Number(cmd.delta || 0));
+        break;
+      }
+      case 'setNow': { // set start or end to "right now" in the song
+        if (!el) return;
+        const now = el.currentTime;
+        if (cmd.field === 'start') {
+          if (now >= ln.end - 0.3) return;
+          a.ds = round((a.ds || 0) + now - ln.start);
+        } else {
+          if (now <= ln.start + 0.3) return;
+          a.de = round((a.de || 0) + now - ln.end);
+        }
+        break;
+      }
+      case 'offset':
+        S.adj.offset = round((Number(S.adj.offset) || 0) + Number(cmd.delta || 0));
+        break;
+      case 'join': {
+        if (S.line >= S.lines.length - 1) return;
+        const last = ln.id + ln.joined; // last original line inside this one
+        S.adj.joins = [...new Set([...(S.adj.joins || []), last])];
+        delete a.de; // the end now comes from the joined line
+        break;
+      }
+      case 'split':
+        if (!ln.joined) return;
+        S.adj.joins = (S.adj.joins || []).filter(j => j < ln.id || j >= ln.id + ln.joined);
+        break;
+      case 'resetSong':
+        S.adj = {};
+        break;
+    }
+    if (S.adj.lines && S.adj.lines[ln.id] && !S.adj.lines[ln.id].ds && !S.adj.lines[ln.id].de) delete S.adj.lines[ln.id];
+    rebuild(ln.id);
+  }
+
   function jumpLine(delta) {
     if (!S.active || !S.lines.length) return;
     S.line = Math.max(0, Math.min(S.lines.length - 1, S.line + delta));
@@ -366,6 +442,7 @@
       case 'restart': jumpLine(0); break;
       case 'settings': updateSettings(cmd.settings); break;
       case 'ping': emit(); break;
+      case 'nudge': case 'setNow': case 'offset': case 'join': case 'split': case 'resetSong': fixTiming(cmd); break;
     }
   });
 

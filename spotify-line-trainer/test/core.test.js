@@ -77,3 +77,17 @@ test('findLineAt', () => {
   assert.strictEqual(core.findLineAt(lines, 5), 1);
   assert.strictEqual(core.findLineAt(lines, 100), 2);
 });
+
+test('applyAdjustments: offset, nudges, joins', () => {
+  const base = [{ start: 1, end: 2, text: 'a' }, { start: 2, end: 3, text: 'b' }, { start: 3, end: 4, text: 'c' }, { start: 4, end: 6, text: 'd' }];
+  const same = core.applyAdjustments(base, {});
+  assert.deepStrictEqual(same.map(l => [l.id, l.start, l.end, l.text, l.joined]), [[0, 1, 2, 'a', 0], [1, 2, 3, 'b', 0], [2, 3, 4, 'c', 0], [3, 4, 6, 'd', 0]]);
+  const r = core.applyAdjustments(base, { offset: 0.2, joins: [0, 1], lines: { 0: { ds: -0.5, de: 0.3 }, 3: { de: 1 } } });
+  assert.deepStrictEqual(r.map(l => [l.id, +l.start.toFixed(2), +l.end.toFixed(2), l.text, l.joined]), [[0, 0.7, 4.5, 'a b c', 2], [3, 4.2, 7.2, 'd', 0]]);
+  // end can never go before start
+  const bad = core.applyAdjustments(base, { lines: { 1: { de: -5 } } });
+  assert.ok(bad[1].end > bad[1].start);
+  // start clamps at 0, joining the last line is a no-op
+  const edge = core.applyAdjustments(base, { offset: -3, joins: [3] });
+  assert.strictEqual(edge[0].start, 0); assert.strictEqual(edge.length, 4);
+});

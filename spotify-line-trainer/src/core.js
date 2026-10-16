@@ -3,7 +3,7 @@
   'use strict';
 
   const LEAD_IN = 0.1;   // seconds to start before a line so the first syllable isn't clipped
-  const TAIL = 0.05;     // seconds before the next line where a repetition ends
+  const TAIL = -0.1;     // a repetition ends this long before the next line (negative = slightly after, so last words aren't clipped)
   const MIN_LINE = 0.6;  // shortest playable line
   const MAX_LINE = 15;   // cap so long instrumental gaps aren't looped
 
@@ -92,7 +92,34 @@
     return idx;
   }
 
-  const api = { LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
+  // User timing fixes for one song (saved per track):
+  //   adj = { offset: seconds for every line, joins: [i, ...] (line i is joined with line i+1),
+  //           lines: { [id]: { ds, de } } (start / end nudges in seconds) }
+  // Returned lines keep id = index of their first original line and joined = how many lines were merged in.
+  function applyAdjustments(lines, adj) {
+    adj = adj || {};
+    const off = Number(adj.offset) || 0;
+    const joins = new Set((adj.joins || []).map(Number));
+    const per = adj.lines || {};
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const ln = { id: i, start: lines[i].start, end: lines[i].end, text: lines[i].text, joined: 0 };
+      while (joins.has(i) && i + 1 < lines.length) {
+        i++;
+        ln.end = Math.max(ln.end, lines[i].end);
+        ln.text += ' ' + lines[i].text;
+        ln.joined++;
+      }
+      const a = per[ln.id] || {};
+      ln.start = Math.max(0, ln.start + off + (Number(a.ds) || 0));
+      ln.end = ln.end + off + (Number(a.de) || 0);
+      if (ln.end < ln.start + 0.3) ln.end = ln.start + 0.3;
+      out.push(ln);
+    }
+    return out;
+  }
+
+  const api = { applyAdjustments, LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.__SLT_CORE__ = api;
 })(typeof window !== 'undefined' ? window : globalThis);
