@@ -21,11 +21,13 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 
 ## Install (2 minutes)
 
+On a Mac (MacBook) or PC, in Chrome:
+
 1. Download this repository (green **Code** button → **Download ZIP**) and unzip it.
 2. Open Chrome and go to `chrome://extensions`.
 3. Turn on **Developer mode** (top right).
 4. Click **Load unpacked** and pick the unzipped folder (the one with `manifest.json` in it).
-5. Open any YouTube video. You'll see a new waveform button in the player controls (bottom right of the video). You can also click the extension icon or press **Alt+L**.
+5. Open any YouTube video. You'll see a new waveform button in the player controls (bottom right of the video). You can also click the extension icon or press **Alt+L** (**Option+L** on a Mac).
 
 ## iPhone and iPad (Safari)
 
@@ -35,6 +37,9 @@ Chrome on iPhone/iPad can't run extensions, so there is a **script version** tha
 - **For drummers (laptop Chrome):**
   - **Drums view** (on by default on a computer): the wave is split into three layers like a DJ deck, kick and bass in **red**, the middle in **amber**, snare and hi-hats in **white**, each scaled on its own so quiet hi-hats still show. Under the wave, **drum lanes** mark every **kick (KK)**, **snare (SN)** and **hi-hat (HH)** hit, like a drum chart.
   - **Beat grid:** the looper finds the tempo (BPM) and every beat, following a drummer who drifts a little, and finds the **1** of each bar (kick on 1 and 3, snare on 2 and 4). Bar lines carry the bar number; zoom in and you see **1 2 3 4** on every beat.
+  - **DJ mouse:** drag the wave and the song moves with it like a record; one click stops / plays; **double-click** sets **A**, double-click again sets **B** and the loop plays. **Shift+drag** draws a loop. The wave slides under a fixed playhead (DJ view). Prefer the old way? Turn off **DJ mouse** in ⚙.
+  - **BPM, found by itself:** when you open the looper it reads and analyses the whole song straight away (a few seconds, muted), so the tempo, the beats and Q are ready when you start practising. Next time the song opens instantly from memory.
+  - **Hot cues C1–C4:** click an empty pad to mark the spot (on the beat with Q), click it again to jump there and play. Shift-click or right-click clears it. Coloured markers show them on the wave.
   - **Q (auto quantize):** turn it on and A and B always land exactly on a beat, whether you click, drag, move a flag or press [ ]. ‹ › then move A or B by one beat. Key: **q**.
   - **Beat loops 1 · 2 · 4 · 8 · 16:** like a DJ controller, loop that many beats from the beat you're on. Press another size while it loops and the length changes from the same start.
   - Grid wrong? **½** / **2×** fix the tempo, **1▸** moves the bar start one beat. Saved per video.
