@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spotify Line Trainer
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.2.0
+// @version      1.3.0
 // @description  Loop every lyric line of a Spotify song N times at the speed you choose, or run the slow-to-fast training ladder.
 // @match        https://open.spotify.com/*
 // @run-at       document-start
@@ -164,13 +164,65 @@
     return origPlay.apply(this, arguments);
   };
 
+  // Watch every seek anyone makes (Spotify included). When Spotify jumps to a lyric line we
+  // learn exactly which element is its music player and how its clock maps to song time.
+  const seekLog = [];
+  let ourSeek = false;
+  const ctDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+  if (ctDesc && ctDesc.set && ctDesc.configurable) {
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+      configurable: true, enumerable: ctDesc.enumerable,
+      get() { return ctDesc.get.call(this); },
+      set(v) {
+        mediaEls.add(this);
+        if (!ourSeek) { seekLog.push({ el: this, v: Number(v), at: performance.now() }); if (seekLog.length > 50) seekLog.shift(); }
+        ctDesc.set.call(this, v);
+      }
+    });
+  }
+
+  // Spotify's own position / duration under the progress bar, in whole seconds.
+  function parseClock(s) {
+    const m = /(-?)(?:(\d+):)?(\d+):(\d{2})/.exec(String(s || ''));
+    if (!m) return null;
+    const v = (+(m[2] || 0)) * 3600 + (+m[3]) * 60 + (+m[4]);
+    return m[1] ? -v : v;
+  }
+  function spotifyClock() {
+    const pe = document.querySelector('[data-testid="playback-position"]');
+    const de = document.querySelector('[data-testid="playback-duration"]');
+    const p = pe ? parseClock(pe.textContent) : null;
+    let d = de ? parseClock(de.textContent) : null;
+    if (d != null && d < 0 && p != null) d = p - d; // "remaining time" display
+    return p == null && d == null ? null : { p, d };
+  }
+
+  // Pick Spotify's real music player, not the looping Canvas video or a muted preview.
+  function scoreMedia(e, clock) {
+    let s = 0;
+    if (e === S.el) s += 60;
+    if (!e.paused && !e.ended) s += 30;
+    if (e.loop) s -= 100;
+    if (e.muted) s -= 40;
+    if (e.videoWidth > 0) s -= 50;
+    if (e.isConnected) s -= 10;
+    if (e.readyState > 0) s += 5;
+    const dur = e.duration;
+    if (Number.isFinite(dur)) {
+      if (dur < 30) s -= 30;
+      if (clock && clock.d > 0 && dur >= clock.d - 3) s += Math.abs(dur - clock.d) < 3 ? 40 : 20;
+    }
+    return s;
+  }
   function getMedia() {
     const all = new Set(mediaEls);
     document.querySelectorAll('audio, video').forEach(e => all.add(e));
     const list = [...all].filter(e => e.currentSrc || e.src || e.srcObject);
-    return list.find(e => !e.paused && !e.ended)
-      || list.filter(e => e.readyState > 0).sort((a, b) => b.currentTime - a.currentTime)[0]
-      || list[list.length - 1] || null;
+    if (!list.length) return null;
+    const clock = spotifyClock();
+    let best = null, bestScore = -Infinity;
+    for (const e of list) { const sc = scoreMedia(e, clock); if (sc > bestScore) { best = e; bestScore = sc; } }
+    return bestScore > -60 ? best : null; // a looping muted clip is never the music
   }
 
   // ---------- auth + lyrics capture ----------
@@ -280,7 +332,8 @@
     lines: [], trackId: null, line: 0, stage: 0, rep: 0,
     rate: 1, lastSeekAt: 0, timer: null, message: '', finished: false,
     fullPlay: false, // training done, now playing the whole song once at 100%
-    baseLines: [], adj: {} // lyrics as Spotify gave them + the user's timing fixes for this song
+    baseLines: [], adj: {}, // lyrics as Spotify gave them + the user's timing fixes for this song
+    el: null, offset: 0, sync: 'none', syncing: false, mismatch: 0, lastD: 0, lastCheck: 0, lastResync: 0 // song time = el.currentTime - offset
   };
 
   function emit() {
@@ -293,8 +346,9 @@
       stage: S.stage, stageCount: S.plan.stages.length,
       rep: S.rep, reps: S.plan.reps, rate: S.rate,
       text: ln ? ln.text : '', nextText: S.lines[S.line + 1] ? S.lines[S.line + 1].text : '',
-      time: el ? el.currentTime : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0,
+      time: el ? trackTime(el) : 0, lineStart: ln ? ln.start : 0, lineEnd: ln ? ln.end : 0,
       joined: ln ? ln.joined : 0, offset: Number(S.adj.offset) || 0,
+      sync: S.sync, syncing: S.syncing, clockOffset: S.offset,
       adjusted: !!(S.adj.offset || (S.adj.joins && S.adj.joins.length) || Object.keys(S.adj.lines || {}).length)
     };
     document.dispatchEvent(new CustomEvent('slt-state', { detail: JSON.stringify(state) }));
@@ -308,21 +362,30 @@
     } catch (e) { /* ignore */ }
   }
 
+  const trackTime = el => el.currentTime - S.offset;
+  function trackDuration(el) {
+    const c = spotifyClock();
+    if (c && c.d > 0) return c.d;
+    return el && Number.isFinite(el.duration) ? el.duration - S.offset : NaN;
+  }
+
   function seekViaProgressBar(t, el) {
     const input = document.querySelector('[data-testid="playback-progressbar"] input[type="range"]');
-    if (!input || !el || !el.duration) return;
-    const max = Number(input.max) || el.duration;
-    const v = Math.round(t * max / el.duration);
+    const dur = trackDuration(el);
+    if (!input || !el || !dur) return;
+    const max = Number(input.max) || dur;
+    const v = Math.round(t * max / dur);
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(v));
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  function seek(el, t) {
+  function seek(el, t) { // t = song time
     S.lastSeekAt = performance.now();
-    try { el.currentTime = t; } catch (e) { /* ignore */ }
+    ourSeek = true;
+    try { el.currentTime = Math.max(0, t + S.offset); } catch (e) { /* ignore */ } finally { ourSeek = false; }
     setTimeout(() => {
-      if ((S.active || S.fullPlay) && Math.abs(el.currentTime - t) > 1.5) seekViaProgressBar(t, el);
+      if ((S.active || S.fullPlay) && !S.syncing && Math.abs(trackTime(el) - t) > 1.5) seekViaProgressBar(t, el);
     }, 400);
   }
 
@@ -334,7 +397,8 @@
     applyRate(el, S.rate);
     const target = Math.max(0, ln.start - core.LEAD_IN);
     // moving on to the next line at the same speed and we haven't passed its start yet: just keep playing
-    if (!(allowContinue && el.currentTime >= target - 0.05 && el.currentTime <= ln.start)) seek(el, target);
+    const now = trackTime(el);
+    if (!(allowContinue && now >= target - 0.05 && now <= ln.start)) seek(el, target);
     emit();
   }
 
@@ -416,14 +480,25 @@
     if (token !== startToken) return;
     if (json === undefined) return stop('Could not load lyrics. Click the 🎤 lyrics button in Spotify once, then press Start again.');
     if (json === null) return stop('This song has no lyrics on Spotify.');
-    const parsed = core.parseLyrics(json, el.duration);
+    if (S.trackId !== id) { S.el = null; S.offset = 0; S.sync = 'none'; }
+    const parsed = core.parseLyrics(json, trackDuration(el));
     if (!parsed.synced) return stop('These lyrics are not time-synced, so lines can\'t be looped.');
 
     S.baseLines = parsed.lines;
     S.trackId = id;
     S.adj = loadAdj(id);
     S.lines = core.applyAdjustments(S.baseLines, S.adj);
-    S.line = (opts.fromStart || S.settings.startFrom !== 'current') ? 0 : core.findLineAt(S.lines, el.currentTime);
+    const fromCurrent = !opts.fromStart && S.settings.startFrom === 'current';
+    const clk = spotifyClock();
+    const posBefore = clk && clk.p != null ? clk.p : trackTime(el);
+    const elTimeBefore = el.currentTime;
+
+    // Line up with Spotify's own clock (the same one its lyric view uses).
+    S.message = 'Syncing with Spotify…'; emit();
+    await syncWithSpotify(fromCurrent ? core.findLineAt(S.baseLines, posBefore) : 0, el);
+    if (token !== startToken) return;
+    el = getMedia() || el;
+    S.line = fromCurrent ? core.findLineAt(S.lines, (S.el === el ? elTimeBefore : el.currentTime) - S.offset) : 0;
     S.stage = 0; S.rep = 0;
     S.loading = false; S.active = true; S.message = '';
     beginStep(false);
@@ -447,10 +522,11 @@
       }
       if (!el) return;
       applyRate(el, 1);
-      if (el.ended || (el.duration && el.currentTime >= el.duration - 0.25)) songDone();
+      const dur = trackDuration(el);
+      if (el.ended || (dur && trackTime(el) >= dur - 0.25)) songDone();
       return;
     }
-    if (!S.active) return;
+    if (!S.active || S.syncing) return;
     if (id && S.trackId && id !== S.trackId) {
       if (S.settings.autoNext) start(S.settings, { fromStart: true });
       else stop('Song changed — press Start to train this one.');
@@ -460,10 +536,11 @@
     if (!el) return;
     applyRate(el, S.rate); // Spotify sometimes resets the speed
     if (el.paused) return;
-    const t = el.currentTime;
+    const t = trackTime(el);
     const ln = S.lines[S.line];
     const sinceSeek = performance.now() - S.lastSeekAt;
     if (sinceSeek < 250) return; // let our own seek settle
+    if (driftCheck(el, t, sinceSeek)) return;
 
     // user dragged the progress bar somewhere else -> follow them
     if (sinceSeek > 800 && (t < ln.start - core.LEAD_IN - 1.0 || t > ln.end + 1.5)) {
@@ -480,6 +557,138 @@
       return;
     }
     if (Math.random() < 0.1) emit(); // keep the panel's progress bar moving
+  }
+
+  // ---------- sync with Spotify's clock ----------
+  const norm = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  function lyricsButtonActive(btn) {
+    return btn && (btn.getAttribute('data-active') === 'true' || btn.getAttribute('aria-pressed') === 'true');
+  }
+  // Spotify's lyric line element for baseLines[idx] (handles repeated lines like a chorus).
+  function findLyricNode(idx) {
+    const line = S.baseLines[idx];
+    const target = norm(line && line.text);
+    if (!target || line.text.includes(' / ')) return null;
+    const occurrence = S.baseLines.slice(0, idx).filter(l => norm(l.text) === target).length;
+    const bad = n => n.closest('a, button, input, footer, nav, [data-testid="now-playing-widget"], #slt-root');
+    let nodes = [...document.querySelectorAll('[data-testid="fullscreen-lyric"], [data-testid="lyrics-line"]')]
+      .filter(n => norm(n.textContent) === target && !bad(n));
+    if (!nodes.length) {
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let n; (n = w.nextNode());) {
+        if (norm(n.data) === target && n.parentElement && !bad(n.parentElement)) nodes.push(n.parentElement);
+      }
+    }
+    return nodes[Math.min(occurrence, nodes.length - 1)] || null;
+  }
+
+  // Tap a lyric line the way you would, and see exactly where Spotify jumps.
+  async function syncViaLyricTap(preferIdx) {
+    let attempts = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      const order = [...S.baseLines.keys()].sort((a, b) => Math.abs(a - preferIdx) - Math.abs(b - preferIdx) || a - b);
+      for (const i of order) {
+        const node = findLyricNode(i);
+        if (!node) continue;
+        const t0 = performance.now();
+        node.click();
+        for (let k = 0; k < 30; k++) {
+          await sleep(50);
+          const hit = seekLog.find(x => x.at >= t0);
+          if (hit) return { el: hit.el, offset: Math.round((hit.v - S.baseLines[i].start) * 1000) / 1000 };
+        }
+        if (++attempts >= 3) return null; // tapping lyrics doesn't seek here
+      }
+      if (pass === 0) { // open Spotify's lyrics view and try again
+        const btn = document.querySelector('[data-testid="lyrics-button"]');
+        if (!btn || lyricsButtonActive(btn)) return null;
+        btn.click();
+        for (let k = 0; k < 30 && !findLyricNode(preferIdx) && !findLyricNode(0); k++) await sleep(100);
+      }
+    }
+    return null;
+  }
+
+  // Fallback: compare with the m:ss clock under Spotify's progress bar.
+  async function syncViaClock(el) {
+    if (!el || el.paused) return null;
+    let c = spotifyClock();
+    if (!c || c.p == null) return null;
+    let last = c.p;
+    const diffs = [];
+    const t0 = performance.now();
+    while (performance.now() - t0 < 3300 && diffs.length < 3) {
+      await sleep(15);
+      c = spotifyClock();
+      if (!c || c.p == null) return null;
+      if (c.p !== last) { diffs.push(el.currentTime - c.p); last = c.p; }
+    }
+    if (!diffs.length) return null;
+    const off = Math.min(...diffs); // the clock ticks over just after a whole second passes
+    return Math.abs(off) < 0.75 ? 0 : Math.round(off * 1000) / 1000;
+  }
+
+  async function syncWithSpotify(preferIdx, el) {
+    S.syncing = true; emit();
+    try {
+      const tap = await syncViaLyricTap(preferIdx);
+      if (tap) { S.el = tap.el; S.offset = tap.offset; S.sync = 'spotify'; return; }
+      const off = await syncViaClock(getMedia() || el);
+      if (off != null) { S.el = getMedia(); S.offset = off; S.sync = 'clock'; return; }
+      S.sync = 'none';
+    } finally {
+      S.syncing = false; S.mismatch = 0;
+    }
+  }
+
+  async function resync() {
+    if (!S.active || S.syncing) return;
+    const ln = S.lines[S.line];
+    await syncWithSpotify(ln ? ln.id : 0, getMedia());
+    if (S.active) beginStep(false);
+  }
+
+  // While playing at 100%, keep checking against Spotify's clock; if they disagree, sync again.
+  function driftCheck(el, t, sinceSeek) {
+    const now = performance.now();
+    if (now - S.lastCheck < 1000) return false;
+    S.lastCheck = now;
+    if (S.rate !== 1 || sinceSeek < 1500) return false;
+    const c = spotifyClock();
+    if (!c || c.p == null) return false;
+    const d = t - c.p; // should be within [0, 1) plus a little UI lag
+    if (d < -1.5 || d > 2.5) {
+      // only a steady disagreement counts (a jumpy one is just the clock display lagging)
+      S.mismatch = S.mismatch && Math.abs(d - S.lastD) < 1.2 ? S.mismatch + 1 : 1; // the m:ss clock only has whole seconds
+      S.lastD = d;
+    } else S.mismatch = 0;
+    if (S.mismatch >= 3 && now - S.lastResync > 20000) {
+      S.mismatch = 0; S.lastResync = now;
+      resync();
+      return true;
+    }
+    return false;
+  }
+
+  function diagnostics() {
+    const clock = spotifyClock();
+    const all = new Set(mediaEls);
+    document.querySelectorAll('audio, video').forEach(e => all.add(e));
+    const chosen = getMedia();
+    return {
+      version: '1.3.0', ua: navigator.userAgent, url: location.href, trackId: S.trackId, currentTrack: currentTrackId(),
+      sync: S.sync, offset: S.offset, active: S.active, line: S.line, lines: S.lines.length,
+      spotifyClock: clock, songTime: chosen ? +trackTime(chosen).toFixed(3) : null,
+      media: [...all].map(e => ({
+        chosen: e === chosen, locked: e === S.el, tag: e.tagName, inDom: e.isConnected, muted: e.muted, loop: e.loop,
+        paused: e.paused, t: +e.currentTime.toFixed(3), dur: e.duration, rate: e.playbackRate, vw: e.videoWidth,
+        src: String(e.currentSrc || e.src || (e.srcObject ? 'srcObject' : '')).slice(0, 40), score: scoreMedia(e, clock)
+      })),
+      seeks: seekLog.slice(-6).map(x => ({ v: +x.v.toFixed(3), ago: Math.round(performance.now() - x.at), chosen: x.el === chosen })),
+      lyricNodes: document.querySelectorAll('[data-testid="fullscreen-lyric"], [data-testid="lyrics-line"]').length,
+      firstLines: S.baseLines.slice(0, 3).map(l => [l.start, l.text]),
+      lyricsButton: (b => b ? { active: lyricsButtonActive(b) } : null)(document.querySelector('[data-testid="lyrics-button"]'))
+    };
   }
 
   // ---------- timing fixes ----------
@@ -521,7 +730,7 @@
       }
       case 'setNow': { // set start or end to "right now" in the song
         if (!el) return;
-        const now = el.currentTime;
+        const now = trackTime(el);
         if (cmd.field === 'start') {
           if (now >= ln.end - 0.3) return;
           a.ds = round((a.ds || 0) + now - ln.start);
@@ -583,12 +792,14 @@
       case 'restart': jumpLine(0); break;
       case 'settings': updateSettings(cmd.settings); break;
       case 'ping': emit(); break;
+      case 'resync': resync(); break;
+      case 'diag': document.dispatchEvent(new CustomEvent('slt-diag', { detail: JSON.stringify(diagnostics(), null, 1) })); break;
       case 'nudge': case 'setNow': case 'offset': case 'join': case 'split': case 'resetSong': fixTiming(cmd); break;
     }
   });
 
   // test hook (harmless in production)
-  window.__SLT_DEBUG__ = { state: S, auth, lyricsCache, getMedia, currentTrackId };
+  window.__SLT_DEBUG__ = { state: S, auth, lyricsCache, getMedia, currentTrackId, trackTime: () => { const e = getMedia(); return e ? trackTime(e) : NaN; }, diagnostics };
 })();
 
 // ---- src/ui.js ----
@@ -672,6 +883,11 @@
   .fixbtns { display: flex; gap: 6px; margin-top: 6px; }
   .fixbtns .mini { padding: 8px 0; }
   @media (pointer: coarse) { .mini { padding: 10px 0; font-size: 13px; } }
+  .sync { font-size: 11px; margin-top: 4px; color: #8a8a8a; }
+  .sync.ok { color: #1ed760; } .sync.warn { color: #f3c969; }
+  .foot { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .link { background: none; border: 0; color: #8a8a8a; font-size: 11px; cursor: pointer; text-decoration: underline; padding: 2px; }
+  .diagbox { width: 100%; height: 140px; margin-top: 6px; background: #000; color: #9f9; font: 10px monospace; border: 1px solid #333; border-radius: 6px; }
   .ladder { display: flex; gap: 4px; margin-top: 6px; }
   .ladder span { flex: 1; text-align: center; font-size: 11px; padding: 3px 0; border-radius: 4px; background: #333; color: #aaa; }
   .ladder span.done { background: #1d5e35; color: #fff; }
@@ -775,7 +991,9 @@
           : h('button', { class: 'big', 'data-testid': 'slt-toggle', onclick: () => send('start', { settings }) }, '▶ Start'),
         h('button', { class: 'nav', title: 'Next line', disabled: '', 'data-testid': 'slt-next', onclick: () => send('next') }, '⏭')),
 
-      statusBox());
+      statusBox(),
+      h('div', { class: 'foot' }, h('button', { class: 'link', 'data-testid': 'slt-diag', onclick: copyDiag }, diagMsg || 'Copy debug info')),
+      diagText ? (() => { const t = h('textarea', { class: 'diagbox', readonly: '' }); t.value = diagText; return t; })() : null);
     if (state.active) panel.querySelectorAll('.nav').forEach(b => b.removeAttribute('disabled'));
     root.append(panel);
   }
@@ -787,6 +1005,7 @@
       box.append(
         h('div', { class: 'meta', 'data-testid': 'slt-meta' },
           `Line ${state.line + 1}/${state.lineCount} · ${pct(state.rate)} · play ${state.rep + 1}/${state.reps}`),
+        syncLine(),
         h('div', { class: 'lyric', 'data-testid': 'slt-lyric' }, state.text),
         state.nextText ? h('div', { class: 'next' }, 'Next: ' + state.nextText) : null);
       if (state.stageCount > 1) {
@@ -827,16 +1046,38 @@
         h('div', { class: 'fixlbl' }, 'Whole song', h('b', { 'data-testid': 'slt-offset' }, sgn(state.offset) + 's')),
         h('button', { class: 'mini', 'data-testid': 'slt-offset-0.1', onclick: () => send('offset', { delta: -0.1 }) }, 'earlier −0.1'),
         h('button', { class: 'mini', 'data-testid': 'slt-offset+0.1', onclick: () => send('offset', { delta: 0.1 }) }, 'later +0.1')),
+      h('div', { class: 'fixbtns' },
+        h('button', { class: 'mini', 'data-testid': 'slt-resync', onclick: () => send('resync') }, '🔄 Re-sync')),
       h('div', { class: 'fixbtns' }, joinBtn, splitBtn,
         h('button', { class: 'mini', 'data-testid': 'slt-reset-song', onclick: () => send('resetSong') }, '↺ Reset song')),
       h('div', { class: 'hint' }, 'Line cut off? Push End later or 🔗 join it with the next line. Tap ⏺ now at the exact moment to set it. Fixes are saved for this song.'));
     return box;
   }
 
+  function syncLine() {
+    if (state.syncing) return h('div', { class: 'sync', 'data-testid': 'slt-sync' }, '⏳ Syncing with Spotify…');
+    if (state.sync === 'spotify') return h('div', { class: 'sync ok', 'data-testid': 'slt-sync' }, '✓ Synced to Spotify');
+    if (state.sync === 'clock') return h('div', { class: 'sync ok', 'data-testid': 'slt-sync' }, '≈ Synced to Spotify\'s clock');
+    return h('div', { class: 'sync warn', 'data-testid': 'slt-sync' }, '⚠ Not synced: open Spotify\'s lyrics (🎤), then tap 🔄 Re-sync');
+  }
+
+  // Debug report for when something's off on the real Spotify page: copy it and send it over.
+  let diagMsg = '', diagText = '';
+  function copyDiag() {
+    let text = '';
+    const onDiag = ev => { text = ev.detail; };
+    document.addEventListener('slt-diag', onDiag);
+    send('diag'); // page.js answers synchronously
+    document.removeEventListener('slt-diag', onDiag);
+    if (!text) text = '(no answer from the page script)';
+    const done = ok => { diagMsg = ok ? 'Copied! Paste it to Claude' : 'Select all & copy:'; diagText = ok ? '' : text; render(); };
+    try { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+  }
+
   let lastKey = '';
   document.addEventListener('slt-state', ev => {
     try { state = JSON.parse(ev.detail); } catch (e) { return; }
-    const key = [state.lineStart, state.lineEnd, state.offset, state.joined, state.adjusted, state.lineCount, state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
+    const key = [state.sync, state.syncing, state.lineStart, state.lineEnd, state.offset, state.joined, state.adjusted, state.lineCount, state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
     if (key !== lastKey) { lastKey = key; render(); }
   });
 

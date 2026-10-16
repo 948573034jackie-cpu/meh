@@ -78,6 +78,11 @@
   .fixbtns { display: flex; gap: 6px; margin-top: 6px; }
   .fixbtns .mini { padding: 8px 0; }
   @media (pointer: coarse) { .mini { padding: 10px 0; font-size: 13px; } }
+  .sync { font-size: 11px; margin-top: 4px; color: #8a8a8a; }
+  .sync.ok { color: #1ed760; } .sync.warn { color: #f3c969; }
+  .foot { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .link { background: none; border: 0; color: #8a8a8a; font-size: 11px; cursor: pointer; text-decoration: underline; padding: 2px; }
+  .diagbox { width: 100%; height: 140px; margin-top: 6px; background: #000; color: #9f9; font: 10px monospace; border: 1px solid #333; border-radius: 6px; }
   .ladder { display: flex; gap: 4px; margin-top: 6px; }
   .ladder span { flex: 1; text-align: center; font-size: 11px; padding: 3px 0; border-radius: 4px; background: #333; color: #aaa; }
   .ladder span.done { background: #1d5e35; color: #fff; }
@@ -181,7 +186,9 @@
           : h('button', { class: 'big', 'data-testid': 'slt-toggle', onclick: () => send('start', { settings }) }, '▶ Start'),
         h('button', { class: 'nav', title: 'Next line', disabled: '', 'data-testid': 'slt-next', onclick: () => send('next') }, '⏭')),
 
-      statusBox());
+      statusBox(),
+      h('div', { class: 'foot' }, h('button', { class: 'link', 'data-testid': 'slt-diag', onclick: copyDiag }, diagMsg || 'Copy debug info')),
+      diagText ? (() => { const t = h('textarea', { class: 'diagbox', readonly: '' }); t.value = diagText; return t; })() : null);
     if (state.active) panel.querySelectorAll('.nav').forEach(b => b.removeAttribute('disabled'));
     root.append(panel);
   }
@@ -193,6 +200,7 @@
       box.append(
         h('div', { class: 'meta', 'data-testid': 'slt-meta' },
           `Line ${state.line + 1}/${state.lineCount} · ${pct(state.rate)} · play ${state.rep + 1}/${state.reps}`),
+        syncLine(),
         h('div', { class: 'lyric', 'data-testid': 'slt-lyric' }, state.text),
         state.nextText ? h('div', { class: 'next' }, 'Next: ' + state.nextText) : null);
       if (state.stageCount > 1) {
@@ -233,16 +241,38 @@
         h('div', { class: 'fixlbl' }, 'Whole song', h('b', { 'data-testid': 'slt-offset' }, sgn(state.offset) + 's')),
         h('button', { class: 'mini', 'data-testid': 'slt-offset-0.1', onclick: () => send('offset', { delta: -0.1 }) }, 'earlier −0.1'),
         h('button', { class: 'mini', 'data-testid': 'slt-offset+0.1', onclick: () => send('offset', { delta: 0.1 }) }, 'later +0.1')),
+      h('div', { class: 'fixbtns' },
+        h('button', { class: 'mini', 'data-testid': 'slt-resync', onclick: () => send('resync') }, '🔄 Re-sync')),
       h('div', { class: 'fixbtns' }, joinBtn, splitBtn,
         h('button', { class: 'mini', 'data-testid': 'slt-reset-song', onclick: () => send('resetSong') }, '↺ Reset song')),
       h('div', { class: 'hint' }, 'Line cut off? Push End later or 🔗 join it with the next line. Tap ⏺ now at the exact moment to set it. Fixes are saved for this song.'));
     return box;
   }
 
+  function syncLine() {
+    if (state.syncing) return h('div', { class: 'sync', 'data-testid': 'slt-sync' }, '⏳ Syncing with Spotify…');
+    if (state.sync === 'spotify') return h('div', { class: 'sync ok', 'data-testid': 'slt-sync' }, '✓ Synced to Spotify');
+    if (state.sync === 'clock') return h('div', { class: 'sync ok', 'data-testid': 'slt-sync' }, '≈ Synced to Spotify\'s clock');
+    return h('div', { class: 'sync warn', 'data-testid': 'slt-sync' }, '⚠ Not synced: open Spotify\'s lyrics (🎤), then tap 🔄 Re-sync');
+  }
+
+  // Debug report for when something's off on the real Spotify page: copy it and send it over.
+  let diagMsg = '', diagText = '';
+  function copyDiag() {
+    let text = '';
+    const onDiag = ev => { text = ev.detail; };
+    document.addEventListener('slt-diag', onDiag);
+    send('diag'); // page.js answers synchronously
+    document.removeEventListener('slt-diag', onDiag);
+    if (!text) text = '(no answer from the page script)';
+    const done = ok => { diagMsg = ok ? 'Copied! Paste it to Claude' : 'Select all & copy:'; diagText = ok ? '' : text; render(); };
+    try { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+  }
+
   let lastKey = '';
   document.addEventListener('slt-state', ev => {
     try { state = JSON.parse(ev.detail); } catch (e) { return; }
-    const key = [state.lineStart, state.lineEnd, state.offset, state.joined, state.adjusted, state.lineCount, state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
+    const key = [state.sync, state.syncing, state.lineStart, state.lineEnd, state.offset, state.joined, state.adjusted, state.lineCount, state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
     if (key !== lastKey) { lastKey = key; render(); }
   });
 

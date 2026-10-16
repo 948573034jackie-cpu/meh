@@ -20,7 +20,8 @@ function wav(seconds) {
   for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round(3000 * Math.sin(2 * Math.PI * 220 * i / rate)), 44 + i * 2);
   return buf;
 }
-const AUDIO = wav(30);
+const AUDIO = wav(35); // 30s song + room for the player-clock offset
+const CANVAS = wav(4);
 
 const L = (ms, words) => ({ startTimeMs: String(ms), words, endTimeMs: '0', syllables: [] });
 const LYRICS = {
@@ -49,6 +50,7 @@ async function launch() {
   if (MODE === 'userscript') await ctx.addInitScript({ content: USERSCRIPT });
   await ctx.route('https://open.spotify.com/**', route => {
     const url = route.request().url();
+    if (url.includes('/audio/canvas')) return fulfillRange(route, CANVAS);
     if (url.includes('/audio/')) return fulfillRange(route, AUDIO);
     return route.fulfill({ status: 200, contentType: 'text/html', body: MOCK });
   });
@@ -92,17 +94,17 @@ async function record(page, until, timeoutMs) {
       if (S.active) {
         const key = S.line + ':' + S.stage + ':' + S.rep;
         if (!cur || cur.key !== key) {
-          cur = { key, line: S.line, stage: S.stage, rep: S.rep, rate: S.rate, wallStart: performance.now(), tMin: v.currentTime, tMax: v.currentTime, rates: new Set() };
+          cur = { key, line: S.line, stage: S.stage, rep: S.rep, rate: S.rate, wallStart: performance.now(), tMin: window.__pos(), tMax: window.__pos(), rates: new Set() };
           steps.push(cur);
         }
         cur.wallEnd = performance.now();
-        cur.tMin = Math.min(cur.tMin, v.currentTime); cur.tMax = Math.max(cur.tMax, v.currentTime);
+        cur.tMin = Math.min(cur.tMin, window.__pos()); cur.tMax = Math.max(cur.tMax, window.__pos());
         cur.rates.add(v.playbackRate);
       }
       if (new Function('S', 'v', 'return ' + until)(S, v)) break;
       await new Promise(r => setTimeout(r, 10));
     }
-    return { steps: steps.map(s => ({ ...s, rates: [...s.rates] })), final: JSON.parse(JSON.stringify({ ...D.state, timer: null })), rate: v.playbackRate, t: v.currentTime, paused: v.paused };
+    return { steps: steps.map(s => ({ ...s, rates: [...s.rates] })), final: JSON.parse(JSON.stringify({ ...D.state, timer: null })), rate: v.playbackRate, t: window.__pos(), paused: v.paused };
   }, { until, timeoutMs });
 }
 
@@ -176,10 +178,10 @@ async function run(name, fn) {
     assert.match(await ui(page, 'slt-msg').innerText(), /whole song/i);
     assert.strictEqual(await ui(page, 'slt-toggle').innerText(), '■ Stop');
     await page.waitForTimeout(2000);
-    let s = await page.evaluate(() => ({ t: window.__player.currentTime, rate: window.__player.playbackRate, fp: window.__SLT_DEBUG__.state.fullPlay }));
+    let s = await page.evaluate(() => ({ t: window.__pos(), rate: window.__player.playbackRate, fp: window.__SLT_DEBUG__.state.fullPlay }));
     assert.ok(s.fp && s.t > 1.7 && s.t < 2.6 && s.rate === 1, 'plays straight through without looping: ' + JSON.stringify(s));
     // jump near the end of the song and let it finish
-    await page.evaluate(() => { window.__player.currentTime = window.__player.duration - 1; });
+    await page.evaluate(() => { window.__seekTrack(29); });
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.finished && !window.__SLT_DEBUG__.state.fullPlay, null, { timeout: 5000 });
     assert.match(await ui(page, 'slt-msg').innerText(), /finished/i);
     assert.strictEqual(await ui(page, 'slt-toggle').innerText(), '▶ Start');
@@ -227,12 +229,12 @@ async function run(name, fn) {
     await ui(page, 'slt-next').click();
     await ui(page, 'slt-next').click(); // clamp at last
     await page.waitForTimeout(150);
-    let s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, t: window.__player.currentTime }));
+    let s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, t: window.__pos() }));
     assert.strictEqual(s.line, 3);
     assert.ok(Math.abs(s.t - (20 - core.LEAD_IN)) < 0.3, 'seeked to last line, t=' + s.t);
     await ui(page, 'slt-prev').click();
     await page.waitForTimeout(150);
-    s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, t: window.__player.currentTime }));
+    s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, t: window.__pos() }));
     assert.strictEqual(s.line, 2);
     assert.ok(Math.abs(s.t - (3 - core.LEAD_IN)) < 0.3);
     // live speed change while running
@@ -243,7 +245,7 @@ async function run(name, fn) {
     await page.waitForTimeout(600);
     await ui(page, 'slt-restart').click();
     await page.waitForTimeout(80);
-    s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, rep: window.__SLT_DEBUG__.state.rep, t: window.__player.currentTime }));
+    s = await page.evaluate(() => ({ line: window.__SLT_DEBUG__.state.line, rep: window.__SLT_DEBUG__.state.rep, t: window.__pos() }));
     assert.strictEqual(s.line, 2); assert.strictEqual(s.rep, 0);
     assert.ok(s.t < 3.05, 'restart rewinds, t=' + s.t);
     await ui(page, 'slt-toggle').click();
@@ -258,7 +260,7 @@ async function run(name, fn) {
     await chip(page, '100%').click();
     await ui(page, 'slt-toggle').click();
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
-    const st = () => page.evaluate(() => { const S = window.__SLT_DEBUG__.state, l = S.lines[S.line]; return { line: S.line, start: l.start, end: l.end, text: l.text, count: S.lines.length, t: window.__player.currentTime, adj: S.adj }; });
+    const st = () => page.evaluate(() => { const S = window.__SLT_DEBUG__.state, l = S.lines[S.line]; return { line: S.line, start: l.start, end: l.end, text: l.text, count: S.lines.length, t: window.__pos(), adj: S.adj }; });
     const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.011, `${msg}: ${a} vs ${b}`);
     assert.strictEqual(await ui(page, 'slt-start-time').innerText(), '0:01.00');
     assert.strictEqual(await ui(page, 'slt-end-time').innerText(), '0:02.00');
@@ -287,8 +289,8 @@ async function run(name, fn) {
     await ui(page, 'slt-offset-0.1').click();
 
     // ⏺ now: set the end to the current moment
-    await page.waitForFunction(() => window.__player.currentTime > 1.5 && window.__player.currentTime < 2.2);
-    const t0 = await page.evaluate(() => window.__player.currentTime);
+    await page.waitForFunction(() => window.__pos() > 1.5 && window.__pos() < 2.2);
+    const t0 = await page.evaluate(() => window.__pos());
     await ui(page, 'slt-end-now').click();
     s = await st(); assert.ok(s.end > t0 - 0.01 && s.end < t0 + 0.1, `end set to now ${s.end} ~ ${t0}`);
 
@@ -331,6 +333,71 @@ async function run(name, fn) {
     await page.close();
   });
 
+  await T('sync: taps a Spotify lyric line, finds the real player (not the Canvas video) and its clock offset', async () => {
+    const page = await openPage(ctx);
+    await chip(page, '🔁 Repeat').click(); await chip(page, '3×').click(); await chip(page, '75%').click();
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    const s = await page.evaluate(() => { const D = window.__SLT_DEBUG__; const c = document.querySelector('video[loop]');
+      return { sync: D.state.sync, offset: D.state.offset, isPlayer: D.state.el === window.__player, chosen: D.getMedia() === window.__player, canvasRate: c.playbackRate, playerRate: window.__player.playbackRate }; });
+    assert.strictEqual(s.sync, 'spotify'); assert.strictEqual(s.offset, 3.7);
+    assert.ok(s.isPlayer && s.chosen, 'locked onto the music player');
+    assert.strictEqual(s.canvasRate, 1, 'Canvas video left alone'); assert.strictEqual(s.playerRate, 0.75);
+    assert.match(await ui(page, 'slt-sync').innerText(), /Synced to Spotify/);
+    const r = await record(page, 'S.line === 1', 8000);
+    checkSteps(r.steps.filter(x => x.line < 1), lines.slice(0, 1), { mode: 'repeat', reps: 3, speed: 0.75 }, 'synced');
+    // debug report works and is valid JSON
+    const diag = JSON.parse(await page.evaluate(() => { let t = ''; const f = e => { t = e.detail; }; document.addEventListener('slt-diag', f);
+      document.dispatchEvent(new CustomEvent('slt-cmd', { detail: '{"type":"diag"}' })); document.removeEventListener('slt-diag', f); return t; }));
+    assert.strictEqual(diag.sync, 'spotify'); assert.ok(diag.media.length >= 2);
+    await ui(page, 'slt-toggle').click();
+    await page.close();
+  });
+
+  await T('sync fallback: no tappable lyric lines -> uses Spotify\'s m:ss clock', async () => {
+    const page = await openPage(ctx, '?nolyricsdom');
+    await chip(page, '🔁 Repeat').click(); await chip(page, '3×').click(); await chip(page, '100%').click();
+    await page.evaluate(() => window.__player.play());
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active, null, { timeout: 10000 });
+    const s = await page.evaluate(() => ({ sync: window.__SLT_DEBUG__.state.sync, offset: window.__SLT_DEBUG__.state.offset }));
+    assert.strictEqual(s.sync, 'clock');
+    assert.ok(Math.abs(s.offset - 3.7) < 0.15, 'clock offset ' + s.offset);
+    const r = await record(page, 'S.line === 1', 8000);
+    const first = r.steps[0];
+    assert.ok(Math.abs(first.tMin - (lines[0].start - core.LEAD_IN)) < 0.2, 'starts at line 1 (song time) ' + first.tMin);
+    await ui(page, 'slt-toggle').click();
+    await page.close();
+  });
+
+  await T('sync: player clock with no offset also works', async () => {
+    const page = await openPage(ctx, '?off=0');
+    await chip(page, '🔁 Repeat').click(); await chip(page, '3×').click(); await chip(page, '100%').click();
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    assert.strictEqual(await page.evaluate(() => window.__SLT_DEBUG__.state.offset), 0);
+    const r = await record(page, 'S.line === 2', 15000);
+    checkSteps(r.steps.filter(x => x.line < 2), lines.slice(0, 2), { mode: 'repeat', reps: 3, speed: 1 }, 'off0');
+    await ui(page, 'slt-toggle').click();
+    await page.close();
+  });
+
+  await T('sync: if Spotify\'s clock shifts mid-song, it re-syncs by itself', async () => {
+    const page = await openPage(ctx);
+    await chip(page, '🔁 Repeat').click(); await chip(page, '10×').click(); await chip(page, '100%').click();
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);
+    await ui(page, 'slt-end+0.5').click(); for (let i = 0; i < 5; i++) await ui(page, 'slt-end+0.5').click(); // line 1 now 4s long
+    await page.evaluate(() => window.__setOffset(0.7)); // Spotify's mapping changes under us (3s)
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.offset === 0.7 && !window.__SLT_DEBUG__.state.syncing, null, { timeout: 25000 });
+    await page.waitForTimeout(300);
+    const t = await page.evaluate(() => window.__pos());
+    assert.ok(t > 0.8 && t < 5.2, 'back on line 1 in song time: ' + t);
+    await ui(page, 'slt-reset-song').click();
+    await ui(page, 'slt-toggle').click();
+    await page.close();
+  });
+
   await T('Spotify resetting speed and user seeking are handled', async () => {
     const page = await openPage(ctx);
     await chip(page, '🔁 Repeat').click();
@@ -342,9 +409,9 @@ async function run(name, fn) {
     await page.waitForTimeout(80);
     assert.strictEqual(await page.evaluate(() => window.__player.playbackRate), 0.5, 'speed re-applied');
     await page.waitForTimeout(900);
-    await page.evaluate(() => { window.__player.currentTime = 20.3; }); // user drags progress bar
+    await page.evaluate(() => { window.__seekTrack(20.3); }); // user drags progress bar
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.line === 3, null, { timeout: 3000 });
-    const s = await page.evaluate(() => ({ rep: window.__SLT_DEBUG__.state.rep, t: window.__player.currentTime }));
+    const s = await page.evaluate(() => ({ rep: window.__SLT_DEBUG__.state.rep, t: window.__pos() }));
     assert.strictEqual(s.rep, 0);
     assert.ok(s.t < 20.2, 'snapped to start of that line, t=' + s.t);
     // pausing: engine waits, doesn't advance
@@ -357,7 +424,7 @@ async function run(name, fn) {
 
   await T('start from current line; starts playback if paused', async () => {
     const page = await openPage(ctx);
-    await page.evaluate(() => { window.__player.pause(); window.__player.currentTime = 2.5; });
+    await page.evaluate(() => { window.__player.pause(); window.__seekTrack(2.5); });
     await chip(page, 'Current line').click();
     await ui(page, 'slt-toggle').click();
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.active);

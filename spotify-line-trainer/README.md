@@ -11,6 +11,16 @@ Loops every lyric line of the song playing in the **Spotify Web Player** (open.s
 | 🔁 **Repeat** | Each line plays **3 / 5 / 7 / 10×** at **30 / 50 / 75 / 100 %** speed, then moves to the next line, first to last. |
 | 🏋️ **Training** | Each line plays 5× at 30 %, 5× at 50 %, 5× at 75 %, 5× at 100 %, then the next line. When the last line is done, **the whole song plays once from the start at 100 %**. You can change the repeat count, take speeds out of the ladder, and turn off the whole-song replay. |
 
+### 🎯 How it stays in sync with Spotify
+
+When you press Start, the trainer **taps one of Spotify's own lyric lines for you** (it opens Spotify's 🎤 lyrics view if needed) and watches exactly where Spotify's player jumps. That tells it:
+- which element is the real music player. Spotify also plays a looping, muted **Canvas** video behind many songs, and older versions sometimes grabbed that by mistake, which caused wrong-line loops and half lines.
+- how Spotify's player clock maps to song time, so every loop starts exactly where tapping that lyric in Spotify would.
+
+The panel shows **✓ Synced to Spotify**. If the lyric lines can't be tapped, it syncs to the m:ss clock under the progress bar instead (**≈**). While playing at 100%, it keeps checking against Spotify's clock and re-syncs by itself if they drift apart. **🔄 Re-sync** (under Fix timing) does it by hand.
+
+If timing still looks wrong on a song, tap **Copy debug info** at the bottom of the panel and send it over. It shows exactly what the trainer sees on your Spotify page.
+
 ### ⏱ Fix timing (when a line is cut off or starts late)
 
 Spotify's lyric timestamps aren't always exact, and sometimes one sung sentence is split over two lines. While training, open **⏱ Fix timing**:

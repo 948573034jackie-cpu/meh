@@ -1,27 +1,64 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Mock Spotify</title></head>
 <body style="background:#121212;color:#fff">
+<main id="main"></main>
 <footer>
   <div data-testid="now-playing-widget"><a id="np" href="/album/AAAAAAAAAAAAAAAAAAAAAA?highlight=spotify:track:TRACKAAAAAAAAAAAAAAAAA">Song A</a></div>
   <button data-testid="control-button-playpause" id="pp">play</button>
-  <button data-testid="lyrics-button" id="ly">lyrics</button>
+  <button data-testid="lyrics-button" id="ly" aria-pressed="false">lyrics</button>
+  <div data-testid="playback-position" id="pos">0:00</div>
   <div data-testid="playback-progressbar"><input type="range" min="0" max="1000"></div>
+  <div data-testid="playback-duration" id="dur">0:30</div>
 </footer>
 <script>
-  // like Spotify: media element created by script, never attached to the DOM
-  const v = document.createElement('video');
+  // Behaves like the real web player in the ways that matter for timing:
+  //  - a looping, muted "Canvas" video is created first and plays in the page
+  //  - the music player's clock is OFFSET seconds ahead of song time (el.currentTime = song time + OFFSET)
+  //  - tapping a lyric line seeks to exactly that line (like Spotify)
+  //  - an m:ss clock under the progress bar shows Spotify's song position
+  const q = new URLSearchParams(location.search);
+  let OFFSET = q.has('off') ? Number(q.get('off')) : 3.7;
+  const TRACK_DUR = 30;
+
+  const canvas = document.createElement('video');
+  canvas.loop = true; canvas.muted = true; canvas.src = '/audio/canvas.wav';
+  document.body.append(canvas);
+  canvas.play().catch(() => {});
+
+  const v = document.createElement('video'); // music player, never attached to the DOM
   window.__player = v;
   v.src = '/audio/song.wav';
   v.preload = 'auto';
+  v.addEventListener('loadedmetadata', () => { v.currentTime = OFFSET; });
+  window.__pos = () => v.currentTime - OFFSET;
+  window.__seekTrack = t => { v.currentTime = t + OFFSET; };
+  window.__setOffset = o => { OFFSET = o; };
   document.getElementById('pp').onclick = () => (v.paused ? v.play() : v.pause());
-  // Spotify sends authenticated requests on load; mimic one so the extension can learn the token
-  if (!location.search.includes('noauth')) {
+
+  const fmt = s => { s = Math.max(0, Math.floor(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  setInterval(() => { document.getElementById('pos').textContent = fmt(window.__pos()); }, 100);
+
+  if (!q.has('noauth')) {
     fetch('https://spclient.wg.spotify.com/melody/v1/ping', { headers: { authorization: 'Bearer TESTTOKEN', 'client-token': 'CT' } });
   }
-  document.getElementById('ly').onclick = () => {
-    const id = document.getElementById('np').getAttribute('href').match(/track:(\w{22})/)[1];
-    fetch('https://spclient.wg.spotify.com/color-lyrics/v2/track/' + id + '/image/x?format=json', { headers: { authorization: 'Bearer TESTTOKEN' } });
-  };
-  window.__changeTrack = (id) => { document.getElementById('np').setAttribute('href', '/album/X?highlight=spotify:track:' + id); v.currentTime = 0; };
+  const trackId = () => document.getElementById('np').getAttribute('href').match(/track:(\w{22})/)[1];
+  const ly = document.getElementById('ly');
+  async function renderLyrics() {
+    const main = document.getElementById('main');
+    main.textContent = '';
+    if (ly.getAttribute('aria-pressed') !== 'true') return;
+    const r = await fetch('https://spclient.wg.spotify.com/color-lyrics/v2/track/' + trackId() + '/image/x?format=json', { headers: { authorization: 'Bearer TESTTOKEN' } });
+    if (!r.ok || q.has('nolyricsdom')) return;
+    const j = await r.json();
+    for (const l of j.lyrics.lines) {
+      const d = document.createElement('div');
+      d.setAttribute('data-testid', 'fullscreen-lyric');
+      d.textContent = l.words;
+      d.onclick = () => { window.__seekTrack(Number(l.startTimeMs) / 1000); if (v.paused) v.play(); };
+      main.append(d);
+    }
+  }
+  ly.onclick = () => { ly.setAttribute('aria-pressed', ly.getAttribute('aria-pressed') === 'true' ? 'false' : 'true'); renderLyrics(); };
+  window.__changeTrack = (id) => { document.getElementById('np').setAttribute('href', '/album/X?highlight=spotify:track:' + id); window.__seekTrack(0); renderLyrics(); };
 </script>
 </body></html>
