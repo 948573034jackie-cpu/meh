@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Line Trainer">
+<meta name="theme-color" content="#121212">
+<title>Line Trainer</title>
+<link rel="apple-touch-icon" href="__ICON__">
+<link rel="icon" href="__ICON__">
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">🎤 Line Trainer</div>
+  <div class="songinfo" id="songinfo">Open a song to start</div>
+  <div class="topbtns">
+    <button class="btn" id="btnLib" data-testid="lib">📚 Library</button>
+    <label class="btn primary" for="file" data-testid="open">📂 Open song</label>
+    <input type="file" id="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg" hidden>
+  </div>
+</header>
+<main class="layout">
+  <section class="lyricswrap">
+    <div class="lyricsbar">
+      <span id="lyrStatus" data-testid="lyr-status">No lyrics yet</span>
+      <button class="btn small" id="btnFind" data-testid="find">🔎 Lyrics</button>
+    </div>
+    <div class="lyrics" id="lyrics" data-testid="lyrics"></div>
+  </section>
+  <aside class="panel" id="panel"></aside>
+</main>
+<footer class="transport">
+  <button class="round" id="btnPlay" data-testid="play">▶</button>
+  <span class="time" id="tCur">0:00</span>
+  <input type="range" id="seek" min="0" max="1000" value="0" data-testid="seek">
+  <span class="time" id="tDur">0:00</span>
+</footer>
+<audio id="audio" playsinline preload="auto"></audio>
+
+<div class="modal" id="findModal" hidden>
+  <div class="sheet">
+    <div class="sheethead"><b>Find lyrics</b><button class="btn small" data-close>✕</button></div>
+    <div class="row"><input id="q" class="input" placeholder="Song name and artist" data-testid="q"><button class="btn primary" id="btnSearch" data-testid="search">Search</button></div>
+    <div id="results" class="results" data-testid="results"></div>
+    <details class="paste"><summary>Paste lyrics instead (LRC with [mm:ss.xx] times)</summary>
+      <textarea id="lrcText" class="input" rows="8" placeholder="[00:12.30] First line&#10;[00:15.80] Second line" data-testid="lrc"></textarea>
+      <button class="btn primary" id="btnPaste" data-testid="paste">Use these lyrics</button>
+    </details>
+  </div>
+</div>
+<div class="modal" id="libModal" hidden>
+  <div class="sheet">
+    <div class="sheethead"><b>Your songs</b><button class="btn small" data-close>✕</button></div>
+    <div id="libList" class="results" data-testid="liblist"></div>
+  </div>
+</div>
+<script>/*__CORE__*/</script>
+<script>/*__APP__*/</script>
+</body>
+</html>
