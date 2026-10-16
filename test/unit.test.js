@@ -242,3 +242,78 @@ test('trainerRepFor: the loop that plays at a speed (inverse of trainerRate)', (
     }
   }
 });
+
+test('chord names: real chords yes, words no', () => {
+  for (const c of ['Am', 'F#m7b5', 'Cmaj7', 'Bb13', 'C7#9', 'Dsus4', 'Gadd9', 'E7(#9)', 'A/C#', 'Eb', 'Dm(maj7)', 'G/B', 'Fmaj7', 'Fm7', 'B7b13', 'Cdim7', 'Caug', '(Am)']) assert.ok(C.isChord(c), c);
+  for (const w of ['Hello', 'Be', 'Chorus', 'Am I', 'x2', 'N.C.', 'Bridge']) assert.ok(!C.isChord(w), w);
+  assert.deepEqual(C.chordLine('Fmaj7   Fm7   | C   G |').map((x) => x.c), ['Fmaj7', 'Fm7', 'C', 'G']);
+  assert.equal(C.chordLine('Hello from the other side'), null);
+});
+
+test('chord sheet (Ultimate Guitar text with page junk) goes onto the synced lines', () => {
+  const sheet = [
+    'Ultimate Guitar  Tabs  Courses  Log in', 'Hello chords by Adele', '[Intro]', 'Fmaj7   Fm7   | C   G |', '',
+    '[Verse 1]', 'F                         Am          G', "Hello, it's me, I was wondering if you would", '',
+    '[Chorus]', 'F                  Am', 'Hello from the other side', 'Dm7b5/Ab    Bb13   C7#9', 'I must have called a thousand times',
+    'Related tabs  Rate this tab  Print',
+  ].join('\n');
+  const lyrics = ["Hello, it's me", 'I was wondering if you would', 'Hello from the other side', 'I must have called a thousand times', 'Hello from the other side'];
+  const r = C.alignChordSheet(C.parseChordSheet(sheet), lyrics);
+  const at = (k) => r.lines[k].chords.map((c) => `${c.c}:${lyrics[k].slice(c.at).split(' ')[0]}`);
+  assert.deepEqual(at(0), ['F:Hello,']);
+  assert.deepEqual(at(1), ['Am:ering', 'G:would'], 'second half of a long sheet line');
+  assert.deepEqual(at(2), ['F:Hello', 'Am:r']);
+  assert.deepEqual(at(3), ['Dm7b5/Ab:I', 'Bb13:called', 'C7#9:a']);
+  assert.deepEqual(at(4), ['F:Hello', 'Am:r'], 'repeated chorus gets the same chords');
+  assert.equal(r.lines[0].sec, 'Verse 1');
+  assert.deepEqual(r.lines[0].pre, [{ sec: 'Intro', chords: ['Fmaj7', 'Fm7', 'C', 'G'] }]);
+  assert.equal(r.lines[2].sec, 'Chorus');
+});
+
+test('ChordPro sheets too', () => {
+  const items = C.parseChordSheet('{soc}\n[C]Let it [G]be, let it [Am]be\n{eoc}');
+  assert.deepEqual(items, [{ type: 'sec', name: 'Chorus' }, { type: 'line', text: 'Let it be, let it be', chords: [{ at: 0, c: 'C' }, { at: 7, c: 'G' }, { at: 18, c: 'Am' }] }]);
+});
+
+test('transpose keeps the chord type and the bass note', () => {
+  assert.equal(C.transposeChord('F#m7/C#', 2), 'G#m7/D#');
+  assert.equal(C.transposeChord('Bb13', 1, true), 'B13');
+  assert.equal(C.transposeChord('Dm7b5/Ab', -2, true), 'Cm7b5/Gb');
+  assert.equal(C.transposeChord('C', 0), 'C');
+  assert.ok(C.prefersFlats(['F', 'Bb', 'C']));
+  assert.ok(!C.prefersFlats(['E', 'A', 'B']));
+});
+
+test('sections from the lyrics alone: verse, pre-chorus, chorus, bridge, outro', () => {
+  for (const gapless of [true, false]) {
+    let t = 8;
+    const L = [];
+    const add = (arr) => { for (const x of arr) { L.push({ t, text: x }); t += 3; } if (!gapless) t += 6; };
+    const PC = ['and I feel it coming', 'feel it coming now'];
+    const CH = ['hold on hold on to me', 'never let me go', 'hold on hold on to me', 'we will never know'];
+    add(['walking down the street tonight', 'nothing feels the same', 'city lights are fading out', 'no one knows my name']);
+    add(PC); add(CH);
+    add(['morning comes and you are gone', 'coffee getting cold', 'pictures hanging on the wall', 'stories never told']);
+    add(PC); add(CH);
+    add(['maybe we were young', 'maybe we were wrong', 'maybe this is where we belong']);
+    add(CH); add(['hold on', 'hold on']);
+    const r = C.detectSections(L);
+    assert.equal(r.sections.map((s) => `${s.name}@${s.i0}`).join(' '),
+      'Verse 1@0 Pre-Chorus@4 Chorus@6 Verse 2@10 Pre-Chorus@14 Chorus@16 Bridge@20 Chorus@23 Outro@27', gapless ? 'no breaks' : 'with breaks');
+  }
+});
+
+test('a cappella timing: lyric lines land on where the singing starts', () => {
+  const R = 50;
+  const peak = new Uint8Array(60 * R);
+  const lines = [5, 9.2, 13.1, 17.8, 22, 26.5, 31, 35.4, 40, 44.6];
+  const err = [0.12, -0.08, 0.2, 0, -0.15, 0.05, 0.1, -0.1, 0.18, 0];
+  const truth = lines.map((t, i) => t + 3.4 + err[i]);
+  for (const s of truth) for (let i = Math.round(s * R); i < Math.round((s + 2.6) * R); i++) peak[i] = 120 + ((i * 7) % 40);
+  for (let i = 0; i < peak.length; i++) if (!peak[i]) peak[i] = i % 13 === 0 ? 6 : 1; // breathing noise
+  const on = C.findOnsets(peak, R, peak.length);
+  assert.equal(on.length, 10);
+  const a = C.alignToOnsets(lines, on, on[0] - lines[0]);
+  const fine = C.snapToOnsets(lines, on, a.offset);
+  lines.forEach((t, i) => assert.ok(Math.abs(t + a.offset + fine[i] - truth[i]) < 0.03, `line ${i}`));
+});

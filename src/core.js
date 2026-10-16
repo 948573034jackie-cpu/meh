@@ -414,11 +414,588 @@
       .map((x) => x.r);
   }
 
+  // ---------------------------------------------------------------------------
+  // Chords (Ultimate Guitar style "chords over lyrics", or ChordPro [Am]words)
+  // ---------------------------------------------------------------------------
+  const NOTES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const NOTES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+  const NOTE_INDEX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const CHORD_RE = /^[A-G](?:#|b|♯|♭)?(?:maj|min|mi|ma|m|M|dim|aug|sus|add|alt|°|ø|\+|-|Δ|\d{1,2}|b\d{1,2}|#\d{1,2}|♭\d{1,2}|♯\d{1,2}|no\d|omit\d|\((?:[^()]{1,12})\))*(?:\/[A-G](?:#|b|♯|♭)?)?$/;
+  const BAR_TOKEN = /^(?:\|+|\/+|-+|%|\*+|\.+|:?\|\|?:?|x\d+|\d+x|\(x\d+\)|\(\d+x\)|N\.?C\.?|n\.?c\.?|\(|\))$/;
+  const SECTION_WORDS = 'intro|verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|outro|hook|pre[- ]?hook|refrain|interlude|instrumental|solo|break|breakdown|tag|coda|ending|drop';
+  const SECTION_LINE = new RegExp(`^\\s*(?:\\[\\s*)?((?:${SECTION_WORDS})(?:\\s*\\d+)?(?:\\s*[:\\-–]?\\s*(?:x\\s*\\d+|\\d+\\s*x))?)\\s*(?:\\]\\s*)?:?\\s*$`, 'i');
+
+  function unwrap(tok) {
+    const t = String(tok || '');
+    return /^\(.*\)$/.test(t) && !/^\([^()]*\)[^()]/.test(t) ? t.slice(1, -1) : t; // "(Am)" -> "Am", but keep "E7(#9)"
+  }
+
+  function isChord(tok) {
+    const t = unwrap(tok);
+    return !!t && CHORD_RE.test(t);
+  }
+
+  /** A line made only of chords (and bar marks like | or x2). Returns [{col, c}] or null. */
+  function chordLine(line) {
+    const out = [];
+    const re = /\S+/g;
+    let m;
+    let any = false;
+    while ((m = re.exec(line))) {
+      const tok = m[0];
+      if (isChord(tok)) {
+        out.push({ col: m.index, c: unwrap(tok) });
+        any = true;
+      } else if (!BAR_TOKEN.test(tok)) return null;
+    }
+    return any ? out : null;
+  }
+
+  function sectionName(line) {
+    const m = String(line).match(SECTION_LINE);
+    if (!m) return null;
+    return m[1].replace(/\s+/g, ' ').replace(/\s*[:\-–]?\s*(x\s*\d+|\d+\s*x)$/i, '').trim()
+      .replace(/^./, (c) => c.toUpperCase());
+  }
+
+  /**
+   * Reads a chord sheet (pasted from Ultimate Guitar or similar, or ChordPro)
+   * into items: {type:'sec', name} | {type:'line', text, chords:[{at, c}]} |
+   * {type:'chords', chords:[c...]}. Page junk comes through as plain lines;
+   * matching against the synced lyrics drops it later.
+   */
+  function parseChordSheet(text) {
+    let src = String(text || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ');
+    src = src.replace(/\[\/?(?:ch|tab)\]/g, ''); // Ultimate Guitar's raw markup
+    const raw = src.split('\n');
+    const items = [];
+    let pending = null; // chord line waiting for its lyric line
+    const flush = () => {
+      if (pending) items.push({ type: 'chords', chords: pending.map((x) => x.c) });
+      pending = null;
+    };
+    for (const lineRaw of raw) {
+      const line = lineRaw.replace(/\s+$/, '');
+      if (!line.trim()) {
+        flush();
+        continue;
+      }
+      // ChordPro directives {start_of_chorus} {c: Verse 2} {title: ...}
+      const dir = line.match(/^\s*\{\s*([a-z_]+)\s*(?::\s*([^}]*))?\}\s*$/i);
+      if (dir) {
+        flush();
+        const k = dir[1].toLowerCase();
+        const v = (dir[2] || '').trim();
+        if (k === 'soc' || k === 'start_of_chorus') items.push({ type: 'sec', name: v || 'Chorus' });
+        else if (k === 'sov' || k === 'start_of_verse') items.push({ type: 'sec', name: v || 'Verse' });
+        else if (k === 'sob' || k === 'start_of_bridge') items.push({ type: 'sec', name: v || 'Bridge' });
+        else if ((k === 'c' || k === 'comment' || k === 'ci') && sectionName(v)) items.push({ type: 'sec', name: sectionName(v) });
+        continue;
+      }
+      const sec = sectionName(line);
+      if (sec) {
+        flush();
+        items.push({ type: 'sec', name: sec });
+        continue;
+      }
+      const cl = chordLine(line);
+      if (cl) {
+        flush();
+        pending = cl;
+        continue;
+      }
+      // Tab lines (e|---3---|) are not lyrics.
+      if (/^[eBGDAE]\|[-\d|hpbr/\\~x ]+$/.test(line.trim())) {
+        flush();
+        continue;
+      }
+      // ChordPro inline chords: [Am]Hello [F]world
+      if (/\[[A-G][^\]\s]{0,10}\]/.test(line)) {
+        const chords = [];
+        let textOut = '';
+        let last = 0;
+        const re = /\[([^\]\s]{1,12})\]/g;
+        let m;
+        let ok = false;
+        while ((m = re.exec(line))) {
+          textOut += line.slice(last, m.index);
+          last = m.index + m[0].length;
+          if (isChord(m[1])) {
+            chords.push({ at: textOut.length, c: m[1] });
+            ok = true;
+          } else textOut += m[0];
+        }
+        textOut += line.slice(last);
+        if (ok) {
+          flush();
+          const t = textOut.replace(/\s+$/, '');
+          const lead = t.length - t.trimStart().length;
+          if (t.trim()) items.push({ type: 'line', text: t.trim(), chords: chords.map((x) => ({ at: Math.max(0, x.at - lead), c: x.c })) });
+          else items.push({ type: 'chords', chords: chords.map((x) => x.c) });
+          continue;
+        }
+      }
+      // A lyric line, with the chord line above it (if any).
+      const lead = line.length - line.trimStart().length;
+      const t = line.trim();
+      const chords = pending ? pending.map((x) => ({ at: Math.max(0, x.col - lead), c: x.c })) : [];
+      pending = null;
+      items.push({ type: 'line', text: t, chords });
+    }
+    flush();
+    return items;
+  }
+
+  function normWords(x) {
+    return String(x || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .replace(/[’'`]/g, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  }
+
+  function lineSim(a, b) {
+    return lineMatch(a, b).sim;
+  }
+
+  // Word overlap of two lines: { sim (0..1), common, total }
+  function lineMatch(a, b) {
+    const A = normWords(a);
+    const B = normWords(b);
+    if (!A.length || !B.length) return { sim: 0, common: 0, total: A.length + B.length };
+    const bag = new Map();
+    for (const w of B) bag.set(w, (bag.get(w) || 0) + 1);
+    let common = 0;
+    for (const w of A) {
+      const n = bag.get(w);
+      if (n) {
+        common++;
+        bag.set(w, n - 1);
+      }
+    }
+    return { sim: (2 * common) / (A.length + B.length), common, total: A.length + B.length };
+  }
+
+  // Word positions in a line: [{w, start, end}]
+  function wordSpans(text) {
+    const out = [];
+    const re = /[\p{L}\p{N}’'`]+/gu;
+    let m;
+    while ((m = re.exec(text))) out.push({ w: m[0].toLowerCase().replace(/[’'`]/g, ''), start: m.index, end: m.index + m[0].length });
+    return out;
+  }
+
+  // Longest common subsequence of words: map from a-index to b-index.
+  function lcsMap(a, b) {
+    const n = a.length;
+    const m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const map = new Map();
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) {
+        map.set(i, j);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    return map;
+  }
+
+  /** Moves chord positions from the sheet's text onto the (slightly different) lyric text. */
+  function mapChordsToText(sheetText, chords, target) {
+    const A = wordSpans(sheetText);
+    const B = wordSpans(target);
+    if (!B.length) return chords.map((x) => ({ at: 0, c: x.c }));
+    const map = lcsMap(A.map((x) => x.w), B.map((x) => x.w));
+    const out = [];
+    for (const ch of chords) {
+      if (!A.length || ch.at <= A[0].start) {
+        out.push({ at: 0, c: ch.c });
+        continue;
+      }
+      if (ch.at >= A[A.length - 1].end) {
+        out.push({ at: target.length, c: ch.c, after: true });
+        continue;
+      }
+      let w = A.length - 1;
+      for (let k = 0; k < A.length; k++) {
+        if (ch.at < A[k].end) {
+          w = k;
+          break;
+        }
+      }
+      const inWord = Math.max(0, ch.at - A[w].start);
+      let wb = map.get(w);
+      if (wb == null) {
+        // Nearest matched word before (or after), shifted by the word distance.
+        let k = w - 1;
+        while (k >= 0 && map.get(k) == null) k--;
+        if (k >= 0) wb = map.get(k) + (w - k);
+        else {
+          k = w + 1;
+          while (k < A.length && map.get(k) == null) k++;
+          wb = k < A.length ? map.get(k) - (k - w) : Math.round((w / A.length) * B.length);
+        }
+        wb = Math.max(0, Math.min(B.length - 1, wb));
+      }
+      const tw = B[wb];
+      out.push({ at: tw.start + Math.min(inWord, Math.max(0, tw.end - tw.start - 1)), c: ch.c });
+    }
+    return out.sort((x, y) => x.at - y.at);
+  }
+
+  /**
+   * Puts a parsed chord sheet onto the synced lyric lines.
+   * Returns { lines: for each lyric line { chords:[{at,c}], sec, pre:[{sec, chords}] }, matched }.
+   * Lines are matched in order by their words, so page junk and small lyric
+   * differences don't matter. A sheet line may cover two lyric lines (or the
+   * other way round). Choruses written only once in the sheet get their
+   * chords copied to the repeats.
+   */
+  function alignChordSheet(items, lyricTexts) {
+    const SL = [];
+    let sec = null;
+    let pre = [];
+    for (const it of items) {
+      if (it.type === 'sec') sec = it.name;
+      else if (it.type === 'chords') {
+        pre.push({ sec, chords: it.chords });
+        sec = null; // the section's name goes with its chords (an intro of chords only)
+      } else if (it.type === 'line') {
+        SL.push({ text: it.text, chords: it.chords, sec, pre });
+        sec = null;
+        pre = [];
+      }
+    }
+    const n = SL.length;
+    const m = lyricTexts.length;
+    const out = lyricTexts.map(() => ({ chords: [], sec: null, pre: [] }));
+    if (!n || !m) return { lines: out, matched: 0 };
+    const MIN = 0.5;
+    const cache = new Map();
+    // Value of matching two texts: words in common, minus a little for words left over.
+    const S = (a, b) => {
+      const k = a + '\u0001' + b;
+      if (!cache.has(k)) {
+        const r = lineMatch(a, b);
+        cache.set(k, { sim: r.sim, v: 2 * r.common - 0.5 * (r.total - 2 * r.common) });
+      }
+      return cache.get(k);
+    };
+    // Candidate moves at (i, j): 1 sheet line : 1 lyric line, 1 : 2, 2 : 1.
+    const moves = (i, j) => {
+      const r = [];
+      if (i < n && j < m) r.push({ di: 1, dj: 1, s: S(SL[i].text, lyricTexts[j]) });
+      if (i < n && j + 1 < m) r.push({ di: 1, dj: 2, s: S(SL[i].text, lyricTexts[j] + ' ' + lyricTexts[j + 1]) });
+      if (i + 1 < n && j < m) r.push({ di: 2, dj: 1, s: S(SL[i].text + ' ' + SL[i + 1].text, lyricTexts[j]) });
+      return r.filter((x) => x.s.sim >= MIN && x.s.v > 0);
+    };
+    const dp = Array.from({ length: n + 2 }, () => new Float32Array(m + 2));
+    const how = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(null));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        let best = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        let mv = null;
+        for (const x of moves(i, j)) {
+          const v = x.s.v + dp[i + x.di][j + x.dj];
+          if (v > best + 1e-6) {
+            best = v;
+            mv = x;
+          }
+        }
+        dp[i][j] = best;
+        how[i][j] = mv;
+      }
+    }
+    let i = 0;
+    let j = 0;
+    let matched = 0;
+    const got = new Array(m).fill(false);
+    const put = (k, chords, from) => {
+      out[k].chords = chords;
+      if (from) {
+        out[k].sec = from.sec;
+        out[k].pre = from.pre;
+      }
+      got[k] = true;
+    };
+    while (i < n && j < m) {
+      const mv = how[i][j];
+      if (mv) {
+        if (mv.di === 1 && mv.dj === 1) put(j, mapChordsToText(SL[i].text, SL[i].chords, lyricTexts[j]), SL[i]);
+        else if (mv.dj === 2) {
+          const a = lyricTexts[j];
+          const all = mapChordsToText(SL[i].text, SL[i].chords, a + ' ' + lyricTexts[j + 1]);
+          put(j, all.filter((c) => c.at < a.length + 1 && !(c.at === a.length + 1)).map((c) => ({ ...c, at: Math.min(c.at, a.length) })), SL[i]);
+          put(j + 1, all.filter((c) => c.at >= a.length + 1).map((c) => ({ ...c, at: c.at - a.length - 1 })), null);
+        } else {
+          const a = SL[i].text;
+          const chords = SL[i].chords.concat(SL[i + 1].chords.map((c) => ({ ...c, at: c.at + a.length + 1 })));
+          put(j, mapChordsToText(a + ' ' + SL[i + 1].text, chords, lyricTexts[j]), SL[i]);
+        }
+        matched++;
+        i += mv.di;
+        j += mv.dj;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    // Repeats the sheet didn't write out again: same words, same chords.
+    const byText = new Map();
+    for (let k = 0; k < m; k++) if (got[k] && out[k].chords.length) byText.set(normWords(lyricTexts[k]).join(' '), out[k].chords);
+    for (let k = 0; k < m; k++) {
+      if (got[k]) continue;
+      const c = byText.get(normWords(lyricTexts[k]).join(' '));
+      if (c) out[k].chords = c.map((x) => ({ ...x }));
+    }
+    return { lines: out, matched, sheetLines: n };
+  }
+
+  function chordParts(c) {
+    const m = String(c).match(/^([A-G])(#|b|♯|♭)?(.*?)(?:\/([A-G])(#|b|♯|♭)?)?$/);
+    if (!m) return null;
+    const acc = (a) => (a === '#' || a === '♯' ? 1 : a === 'b' || a === '♭' ? -1 : 0);
+    return { root: (NOTE_INDEX[m[1]] + acc(m[2]) + 12) % 12, qual: m[3] || '', bass: m[4] ? (NOTE_INDEX[m[4]] + acc(m[5]) + 12) % 12 : null };
+  }
+
+  /** Transposes a chord by n semitones: transposeChord('F#m7/C#', 2) -> 'G#m7/D#'. */
+  function transposeChord(c, n, flats) {
+    const p = chordParts(c);
+    if (!p || !n) return c;
+    const names = flats ? NOTES_FLAT : NOTES_SHARP;
+    const r = names[(p.root + n + 120) % 12];
+    return r + p.qual + (p.bass != null ? '/' + names[(p.bass + n + 120) % 12] : '');
+  }
+
+  /** Should these chords be spelled with flats (Bb) rather than sharps (A#)? */
+  function prefersFlats(chords, n = 0) {
+    let flat = 0;
+    let sharp = 0;
+    for (const c of chords) {
+      if (/^[A-G](b|♭)/.test(c)) flat++;
+      else if (/^[A-G](#|♯)/.test(c)) sharp++;
+    }
+    if (flat !== sharp) return flat > sharp;
+    const first = chords.length ? chordParts(chords[0]) : null;
+    if (!first) return false;
+    return [5, 10, 3, 8, 1, 6].includes((first.root + n + 120) % 12); // F Bb Eb Ab Db Gb keys
+  }
+
+  // ---------------------------------------------------------------------------
+  // Song sections from the lyrics alone (no chord sheet): repeated blocks are
+  // the chorus, a repeated block right before every chorus is the pre-chorus,
+  // a one-off block late in the song is the bridge.
+  // ---------------------------------------------------------------------------
+  function detectSections(lines) {
+    const sung = (k) => !!lines[k] && !!String(lines[k].text || '').replace(/[♪♫\s]/g, '');
+    const idx = [];
+    for (let k = 0; k < lines.length; k++) if (sung(k)) idx.push(k);
+    const names = new Array(lines.length).fill(null);
+    if (idx.length < 2) return { names, sections: idx.length ? [{ name: 'Verse 1', i0: idx[0], i1: idx[0] }] : [] };
+    const gaps = [];
+    for (let a = 1; a < idx.length; a++) gaps.push(lines[idx[a]].t - lines[idx[a - 1]].t);
+    const sorted = gaps.slice().sort((x, y) => x - y);
+    const med = sorted[Math.floor(sorted.length / 2)] || 3;
+    const bigGap = Math.max(5.5, med * 2.2);
+    // 1) Blocks: split at instrumental breaks (empty lines or long gaps).
+    let blocks = [];
+    let cur = [idx[0]];
+    for (let a = 1; a < idx.length; a++) {
+      const k = idx[a];
+      const prev = idx[a - 1];
+      let breakHere = lines[k].t - lines[prev].t > bigGap;
+      for (let e = prev + 1; e < k; e++) if (!sung(e)) breakHere = true;
+      if (breakHere) {
+        blocks.push(cur);
+        cur = [];
+      }
+      cur.push(k);
+    }
+    blocks.push(cur);
+    // 2) Long blocks: also split where a run of lines that repeats elsewhere starts.
+    const key = (k) => normWords(lines[k].text).join(' ');
+    const count = new Map();
+    for (const k of idx) count.set(key(k), (count.get(key(k)) || 0) + 1);
+    // Where else (how many lines away) each line's words come back: lines of
+    // one section repeat together, at the same distances.
+    const pos = new Map(idx.map((k, a) => [k, a]));
+    const shifts = new Map();
+    for (const k of idx) {
+      const set = new Set();
+      for (const k2 of idx) if (k2 !== k && key(k2) === key(k)) set.add(pos.get(k2) - pos.get(k));
+      shifts.set(k, set);
+    }
+    const jac = (x, y) => {
+      let c = 0;
+      for (const v of x) if (y.has(v)) c++;
+      return c / (x.size + y.size - c || 1);
+    };
+    const refined = [];
+    for (const b of blocks) {
+      if (b.length < 5) {
+        refined.push(b);
+        continue;
+      }
+      let part = [b[0]];
+      for (let a = 1; a < b.length; a++) {
+        const A = shifts.get(b[a - 1]);
+        const B = shifts.get(b[a]);
+        const change = (A.size > 0) !== (B.size > 0) || (A.size > 0 && B.size > 0 && jac(A, B) < 0.3);
+        if (change && part.length >= 2 && b.length - a >= 2) {
+          refined.push(part);
+          part = [];
+        }
+        part.push(b[a]);
+      }
+      refined.push(part);
+    }
+    blocks = refined;
+    // 3) Group blocks that are (mostly) the same words.
+    const text = blocks.map((b) => b.map(key));
+    const blockSim = (x, y) => {
+      const A = text[x];
+      const B = text[y];
+      let s = 0;
+      for (const l of A) s += Math.max(...B.map((m) => (m === l ? 1 : lineSim(l, m))));
+      return s / Math.max(A.length, B.length);
+    };
+    const group = blocks.map((_, x) => x);
+    for (let x = 0; x < blocks.length; x++) {
+      for (let y = 0; y < x; y++) {
+        if (group[y] === y && blockSim(x, y) >= 0.6) {
+          group[x] = y;
+          break;
+        }
+      }
+    }
+    const members = new Map();
+    group.forEach((g, x) => members.set(g, [...(members.get(g) || []), x]));
+    // Chorus: the repeated group with the most sung lines in total.
+    let chorus = -1;
+    let best = 0;
+    for (const [g, xs] of members) {
+      if (xs.length < 2) continue;
+      const w = xs.reduce((s, x) => s + blocks[x].length, 0);
+      if (w > best) {
+        best = w;
+        chorus = g;
+      }
+    }
+    const label = new Array(blocks.length).fill(null);
+    if (chorus >= 0) for (const x of members.get(chorus)) label[x] = 'Chorus';
+    // Pre-chorus: another repeated group whose blocks sit right before choruses.
+    for (const [g, xs] of members) {
+      if (g === chorus || xs.length < 2) continue;
+      if (xs.every((x) => label[x + 1] === 'Chorus')) for (const x of xs) label[x] = 'Pre-Chorus';
+    }
+    const firstChorus = label.indexOf('Chorus');
+    const lastChorus = label.lastIndexOf('Chorus');
+    const chorusCount = label.filter((l) => l === 'Chorus').length;
+    let verse = 0;
+    const verseOf = new Map(); // repeated verse-like groups keep one number
+    for (let x = 0; x < blocks.length; x++) {
+      if (label[x]) continue;
+      const single = members.get(group[x]).length === 1;
+      const seenChoruses = label.slice(0, x).filter((l) => l === 'Chorus').length;
+      if (single && chorusCount >= 2 && x > firstChorus && seenChoruses >= 2 && x < lastChorus) label[x] = 'Bridge';
+      else if (single && chorusCount >= 1 && x > lastChorus && x === blocks.length - 1) label[x] = 'Outro';
+      else if (!single && verseOf.has(group[x])) label[x] = verseOf.get(group[x]);
+      else {
+        label[x] = `Verse ${++verse}`;
+        if (!single) verseOf.set(group[x], label[x]);
+      }
+    }
+    if (verse === 1) for (let x = 0; x < label.length; x++) if (label[x] === 'Verse 1') label[x] = 'Verse';
+    const sections = blocks.map((b, x) => ({ name: label[x], i0: b[0], i1: b[b.length - 1] }));
+    for (const s of sections) names[s.i0] = s.name;
+    return { names, sections };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timing: where singing (or any sound) starts after a quiet moment.
+  // For a cappella these are the line starts, so the lyrics can be lined up
+  // with them exactly.
+  // ---------------------------------------------------------------------------
+  function findOnsets(peak, binRate, n, opts = {}) {
+    const len = Math.min(n, peak.length);
+    if (!len) return [];
+    const hist = Array.from(peak.subarray ? peak.subarray(0, len) : peak.slice(0, len)).filter((x) => x > 0).sort((x, y) => x - y);
+    if (!hist.length) return [];
+    const p90 = hist[Math.floor(hist.length * 0.9)];
+    const thr = Math.max(2, p90 * (opts.frac || 0.18));
+    const quiet = Math.round((opts.quiet || 0.16) * binRate);
+    const out = [];
+    let below = quiet;
+    for (let i = 0; i < len; i++) {
+      if (peak[i] <= thr) below++;
+      else {
+        if (below >= quiet) out.push(i / binRate);
+        below = 0;
+      }
+    }
+    return out;
+  }
+
+  function nearest(sorted, x) {
+    let lo = 0;
+    let hi = sorted.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    const a = sorted[lo];
+    const b = lo > 0 ? sorted[lo - 1] : a;
+    return Math.abs(a - x) < Math.abs(b - x) ? a : b;
+  }
+
+  /**
+   * Best shift of the lyric line times onto the sound onsets, searched around
+   * a first guess: { offset, score } (score 0..1 = share of lines that land on
+   * a sound start).
+   */
+  function alignToOnsets(times, onsets, guess = 0, range = 1.5, step = 0.02, tol = 0.25) {
+    if (!times.length || !onsets.length) return { offset: guess, score: 0 };
+    let best = { offset: guess, score: -1 };
+    for (let o = guess - range; o <= guess + range + 1e-9; o += step) {
+      let s = 0;
+      for (const t of times) {
+        const nb = nearest(onsets, t + o);
+        const d = Math.abs(nb - (t + o));
+        if (d < tol) s += 1 - d / tol;
+      }
+      if (s > best.score + 1e-9 || (Math.abs(s - best.score) < 1e-9 && Math.abs(o - guess) < Math.abs(best.offset - guess))) best = { offset: o, score: s };
+    }
+    return { offset: Math.round(best.offset * 100) / 100, score: best.score / times.length };
+  }
+
+  /** Per-line fine-tune: each line start moves onto the sound start right next to it (within maxShift s). */
+  function snapToOnsets(times, onsets, offset, maxShift = 0.3) {
+    const out = times.map(() => 0);
+    let prev = -Infinity;
+    times.forEach((t, k) => {
+      const x = t + offset;
+      const nb = nearest(onsets, x);
+      if (nb != null && Math.abs(nb - x) <= maxShift && nb > prev + 0.1) {
+        out[k] = Math.round((nb - x) * 100) / 100;
+        prev = nb;
+      } else prev = x;
+    });
+    return out;
+  }
+
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
+    isChord, chordLine, parseChordSheet, alignChordSheet, mapChordsToText, lineSim, transposeChord, prefersFlats,
+    detectSections, findOnsets, alignToOnsets, snapToOnsets,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
