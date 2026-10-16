@@ -28,7 +28,8 @@ const results = [];
 async function step(name, fn) {
   const t0 = Date.now();
   try {
-    await fn();
+    // A step that hangs fails after 10 minutes instead of stalling the run.
+    await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('step took over 10 minutes')), 600000).unref())]);
     results.push(`  ok   ${name} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     console.log(`ok   ${name}`);
   } catch (e) {
@@ -348,7 +349,7 @@ await step('speed trainer: after 100%, plays 10 times at full speed and then sto
   assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
   assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');
   await page.screenshot({ path: path.join(SHOTS, '4b-trainer-done.png') });
-  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
   await sleep(300);
 });
 
@@ -511,7 +512,7 @@ await step('a loop at the very end never lets the video end', async () => {
 });
 
 await step('play / pause button', async () => {
-  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
   await sleep(200);
   await shadowClick('button.play-btn');
   assert((await vstate()).paused, 'paused');
@@ -596,7 +597,7 @@ await step('↺ 5s plays the last 5 seconds again; 5s ↻ skips ahead', async ()
   await shadowClick('button', 'Forward 5 seconds');
   v = await vstate();
   assert(Math.abs(v.t - t0 - 5) < 0.1, `forward 5 s (${t0.toFixed(2)} -> ${v.t.toFixed(2)})`);
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
 });
 
 await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, then 10 at 100%), then stops and puts the speed back', async () => {
@@ -630,7 +631,7 @@ await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, th
 });
 
 await step('line practice: tap ⟳ again to stop early; speed comes back and it plays on', async () => {
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
   await lineBtn(1);
   let h = await host();
   assert(h.lineLoop === '2.00,4.00', `line 2 (${h.lineLoop})`);

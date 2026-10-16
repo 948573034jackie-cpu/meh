@@ -26,7 +26,8 @@ let page;
 async function step(name, fn) {
   if (process.env.ONLY && !new RegExp(process.env.ONLY).test(name)) return; // run only some steps while debugging
   try {
-    await fn();
+    // A step that hangs fails after 10 minutes instead of stalling the run.
+    await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('step took over 10 minutes')), 600000).unref())]);
     results.push(`  ok   ${name}`);
     console.log(`ok   ${name}`);
   } catch (e) {
@@ -202,7 +203,7 @@ await step('drag the wave like a DJ: finger holds the song, moving it moves the 
 });
 
 await step('a quick tap on the wave pauses, another tap plays; a long hold just holds', async () => {
-  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
   await sleep(300);
   const b = await waveBox();
   const x = b.x + b.w * 0.3;
@@ -340,7 +341,7 @@ await step('drag a flag with a finger', async () => {
   const h2 = await host();
   assert(Number(h2.b) > Number(h.b) + 0.5, `B moved right (${h.b} -> ${h2.b})`);
   assert(h2.a === h.a, 'A unchanged');
-  await page.evaluate(() => document.querySelector('#movie_player video').play());
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
 });
 
 await step('pinch with two fingers zooms in; Whole song / Zoom in button', async () => {
@@ -492,7 +493,8 @@ await step('lyrics: A / B buttons at the right of the lines loop from one line t
     await page.touchscreen.tap(b.x, b.y);
     if (process.env.DEBUG) console.log('tapped', i);
   };
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
+  await waitFor(async () => !(await vstate()).paused, 5000, 'video plays');
   await tapRight(2); // "Line 3 (0:04)"
   let h = await host();
   assert(h.abStart === '2' && h.pending === '4.000', `A waits at line 3 (${h.abStart}, ${h.pending})`);
