@@ -331,5 +331,8 @@ button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
 button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3; }
-.bpm { min-width: 74px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: #ffb74d; }
+.bpm { min-width: 84px; text-align: center; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; color: #ffb74d; }
+.cues { display: inline-flex; gap: 2px; }
+button.cue-btn { min-width: 34px; padding: 0 6px; font-weight: 800; color: var(--cue); border-color: color-mix(in srgb, var(--cue) 35%, transparent); background: transparent; }
+button.cue-btn.set { background: var(--cue); color: #0b0e14; border-color: var(--cue); }
 `;

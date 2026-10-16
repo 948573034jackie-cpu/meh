@@ -1181,26 +1181,76 @@
     return { bpm: Math.round(600 / avg) / 10, beats, first, confidence: tempo.confidence };
   }
 
-  /** Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}] */
+  /**
+   * Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}].
+   * Each hit is sorted by which bands jump together: a kick is led by the
+   * lows, a snare is a burst in the mids and the highs together, a hi-hat is
+   * highs with little middle (or riding on top of a kick).
+   */
   function drumHits(P, durationSec) {
     const br = P.binRate;
     const n = Math.min(P.n, Math.ceil(durationSec * br));
-    const f = drumFlux(P, n);
-    const pick = (a, kind, pct) => {
-      const vals = Array.from(a).filter((v) => v > 0).sort((x, y) => x - y);
-      if (vals.length < 10) return [];
-      // Above the background (noise makes many small jumps), relative to the loudest hits.
-      const thr = Math.max(6, vals[Math.floor(vals.length * pct)], vals[Math.floor(vals.length * 0.995)] * 0.35);
+    const dl = new Float32Array(n);
+    const dm = new Float32Array(n);
+    const dh = new Float32Array(n);
+    for (let i = 1; i < n; i++) {
+      if (!P.cov[i] || !P.cov[i - 1]) continue;
+      dl[i] = Math.max(0, P.low[i] - P.low[i - 1]);
+      dm[i] = Math.max(0, P.mid[i] - P.mid[i - 1]);
+      dh[i] = Math.max(0, P.high[i] - P.high[i - 1]);
+    }
+    const peaksOf = (a) => {
       const out = [];
-      for (let i = 1; i < a.length - 1; i++) {
-        if (a[i] > thr && a[i] >= a[i - 1] && a[i] > a[i + 1]) {
-          if (out.length && i / br - out[out.length - 1].t < 0.06) continue; // one hit, not two
-          out.push({ t: i / br, kind, v: Math.min(1, a[i] / (thr * 3)) });
-        }
-      }
-      return out;
+      for (let i = 1; i < n - 1; i++) if (a[i] > 0 && a[i] >= a[i - 1] && a[i] > a[i + 1]) out.push(a[i]);
+      return out.sort((x, y) => x - y);
     };
-    return [...pick(f.kick, 'kick', 0.8), ...pick(f.snare, 'snare', 0.85), ...pick(f.hat, 'hat', 0.8)].sort((x, y) => x.t - y.t);
+    const loud = (a, floor) => {
+      const pk = peaksOf(a);
+      return pk.length ? Math.max(floor, pk[Math.floor(pk.length * 0.99)] * 0.22) : Infinity;
+    };
+    const thrK = loud(dl, 10);
+    const thrH = loud(dh, 8);
+    const at = (a, i) => Math.max(a[i - 1] || 0, a[i], a[i + 1] || 0);
+    const isPeak = (i) => {
+      const e = (k) => dl[k] + 0.6 * dm[k] + 0.8 * dh[k];
+      const env = e(i);
+      return env > 0 && env >= e(i - 1) && env > e(i + 1);
+    };
+    // A snare is a loud burst in the mids and highs together; hi-hats make a
+    // smaller one. "Loud" is measured against this song's own snares (the
+    // top of all mid+high bursts that are not kicks).
+    const burst = [];
+    for (let i = 1; i < n - 1; i++) {
+      if (!isPeak(i)) continue;
+      const L = at(dl, i);
+      const M = at(dm, i);
+      const H = at(dh, i);
+      if (L >= thrK && L >= M) continue;
+      burst.push(Math.min(M, H * 1.5) + 0.25 * M);
+    }
+    burst.sort((x, y) => x - y);
+    const thrS = burst.length ? Math.max(12, burst[Math.floor(burst.length * 0.92)] * 0.5) : Infinity;
+    const out = [];
+    const last = { kick: -1, snare: -1, hat: -1 };
+    const push = (kind, i, v, thr) => {
+      const t = i / br;
+      if (t - last[kind] < 0.06) return; // one hit, not two
+      last[kind] = t;
+      out.push({ t, kind, v: Math.min(1, v / (thr * 3)) });
+    };
+    for (let i = 1; i < n - 1; i++) {
+      if (!isPeak(i)) continue;
+      const L = at(dl, i);
+      const M = at(dm, i);
+      const H = at(dh, i);
+      const kick = L >= thrK && L >= M;
+      const snare = !kick && H >= 0.35 * M && Math.min(M, H * 1.5) + 0.25 * M >= thrS;
+      if (kick) push('kick', i, L, thrK);
+      if (snare) push('snare', i, M, thrS);
+      // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
+      if (!snare && H >= (kick ? thrH * 1.5 : thrH)) push('hat', i, H, thrH);
+    }
+    return out.sort((x, y) => x.t - y.t);
   }
 
   /** Index of the beat nearest to t (beats sorted). */

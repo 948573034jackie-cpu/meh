@@ -375,7 +375,7 @@ test('no beat grid without a steady beat; drum hits sorted into kick / snare / h
   const count = (k) => hits.filter((h) => h.kind === k).length;
   assert.ok(Math.abs(count('kick') - 24) <= 1, `kicks ${count('kick')}`);
   assert.ok(Math.abs(count('snare') - 23) <= 2, `snares ${count('snare')}`);
-  assert.ok(Math.abs(count('hat') - 94) <= 3, `hats ${count('hat')}`);
+  assert.ok(Math.abs(count('hat') - 70) <= 3, `hats ${count('hat')} (the 94 hi-hats minus those under a snare)`);
   assert.equal(C.beatTime([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 12), 13, 'beats go on past the end at the same tempo');
   assert.equal(C.nearestBeatIndex([1, 2, 3], 2.4), 1);
 });

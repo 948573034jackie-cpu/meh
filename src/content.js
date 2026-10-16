@@ -103,6 +103,7 @@
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
+    mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
     waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
@@ -118,6 +119,7 @@
     gridBase: null, // beats found in this video's wave: { vid, g, hits }
     grid: null, // the beat grid in use (after ½ / 2× / move-the-1)
     gridAdj: { scale: 1, shift: 0 },
+    cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
     vid: null,
     mainVid: null,
@@ -328,6 +330,7 @@
     S.grid = null;
     S.gridAdj = { scale: 1, shift: 0 };
     S.gridTried = 0;
+    S.cues = [null, null, null, null];
     S.dirty = true;
     renderUI();
     if (vid) loadVideoData(vid);
@@ -348,6 +351,7 @@
     const st = r['ytl:v:' + vid];
     if (st) {
       const num = Number.isFinite;
+      if (Array.isArray(st.cues)) S.cues = [0, 1, 2, 3].map((i) => (Number.isFinite(st.cues[i]) ? st.cues[i] : null));
       if (st.gridAdj && [0.5, 1, 2].includes(st.gridAdj.scale)) {
         S.gridAdj = { scale: st.gridAdj.scale, shift: ((st.gridAdj.shift | 0) % 4 + 4) % 4 };
         applyGridAdj();
@@ -379,7 +383,7 @@
     clearTimeout(videoStateTimer);
     if (!S.vid) return;
     const hasLoop = S.a != null && S.b != null;
-    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift) {
+    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift && !S.cues.some((c) => c != null)) {
       storage.remove('ytl:v:' + S.vid);
       return;
     }
@@ -392,6 +396,7 @@
         rateOwned: S.rateOwned,
         saved: S.saved,
         gridAdj: S.gridAdj.scale !== 1 || S.gridAdj.shift ? S.gridAdj : undefined,
+        cues: S.cues.some((c) => c != null) ? S.cues : undefined,
         t: Date.now(),
       },
     });
@@ -1139,6 +1144,29 @@
     const per = 60 / G.bpm;
     const n = Math.round((S.b - S.a) / per);
     return ok(S.a, ia) && Math.abs(C.beatTime(B, ia + n) - S.b) < 0.03 ? n : 0;
+  }
+
+  // Hot cues 1-4, like a DJ controller: click an empty pad to mark the spot
+  // (on the beat with Q), click it again to jump there and play.
+  // Shift-click or right-click clears it.
+  const CUE_COLORS = ['#ff4d6d', '#ffb000', '#3ddc84', '#4da3ff'];
+  function cueTap(i, e) {
+    const v = S.video;
+    if (!v || !dur()) return;
+    if (e && (e.shiftKey || e.type === 'contextmenu')) {
+      if (e.type === 'contextmenu') e.preventDefault();
+      S.cues[i] = null;
+      flash(`Cue ${i + 1} cleared.`, 1500);
+    } else if (S.cues[i] == null) {
+      S.cues[i] = qT(v.currentTime);
+      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}. Click it to jump back here.`, 2500);
+    } else {
+      userSeek(S.cues[i]);
+      play();
+    }
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
   }
 
   function toggleDrumView() {
@@ -2269,7 +2297,7 @@
     autoScanTimer = setTimeout(() => {
       autoScanTimer = 0;
       if (S.vid === vid && autoScanWanted()) startScan();
-    }, 1200);
+    }, 500);
   }
 
   function startScan() {
@@ -2566,11 +2594,18 @@
       return b;
     });
     ui.bpm = h('span', { class: 'bpm', title: 'Tempo found in the song (beats per minute)', text: '— BPM' });
+    ui.cueBtns = [0, 1, 2, 3].map((i) => {
+      const b = btn(`C${i + 1}`, `Hot cue ${i + 1}: click to mark this spot (on the beat with Q), click again to jump here. Shift-click or right-click clears it.`, (e) => cueTap(i, e), 'cue-btn');
+      b.style.setProperty('--cue', CUE_COLORS[i]);
+      b.addEventListener('contextmenu', (e) => cueTap(i, e));
+      return b;
+    });
     ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       ui.qBtn,
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
+      h('span', { class: 'cues' }, ...ui.cueBtns),
       btn('½', 'Half the tempo (the grid has twice too many beats)', () => adjustGrid('half'), 'grid-btn'),
       btn('2×', 'Double the tempo (the grid has half the beats)', () => adjustGrid('double'), 'grid-btn'),
       btn('1▸', 'Move the "1" (start of the bar) one beat later', () => adjustGrid('shift'), 'grid-btn'),
@@ -2582,8 +2617,9 @@
     const G = S.grid;
     ui.qBtn.classList.toggle('on', !!settings.quantize);
     ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
-    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : '— BPM';
+    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
     ui.bpm.title = G ? 'Tempo found in the song (beats per minute)' : gridMissingText();
+    ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
     for (const b of ui.beatBtns) {
       b.classList.toggle('on', !!n && S.loopOn && Number(b.dataset.n) === n);
@@ -2707,6 +2743,15 @@
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
+    ui.djMouseChk = h('input', { type: 'checkbox' });
+    ui.djMouseChk.checked = settings.mouseDJ;
+    ui.djMouseChk.addEventListener('change', () => {
+      settings.mouseDJ = ui.djMouseChk.checked;
+      saveSettings();
+      ui.djMouseChk.blur();
+      S.dirty = true;
+      renderUI();
+    });
     ui.restSel = select(PART_RESTS, (v) => (v ? `${v}s` : 'none'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Practice: rest between the parts of the song');
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
@@ -2717,6 +2762,7 @@
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
         IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
       TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
+      TOUCH ? null : h('label', { class: 'check', title: 'On: drag the wave like a record, click = play / pause, double-click = A then B (Shift+drag draws a loop). Off: click the start, then the end.' }, ui.djMouseChk, 'DJ mouse (drag the wave)'),
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
       ui.rescanBtn,
@@ -2780,7 +2826,8 @@
           h('li', {}, h('b', { text: 'Loop from the lyrics: ' }), 'tap A at the right of the first line, then B on the last line: those lines loop and the Trainer starts.'),
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
-          h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
+          h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
@@ -3169,7 +3216,8 @@
     } else if (!dur()) {
       setHint(['Waiting for the video…']);
     } else if (pending) {
-      setHint(TOUCH ? [['A is set. Move to where the loop ends and tap B'], ' (or double-tap the wave there).'] : [['Now click where the loop should END'], '  (Esc to cancel)']);
+      setHint(TOUCH ? [['A is set. Move to where the loop ends and tap B'], ' (or double-tap the wave there).']
+        : settings.mouseDJ ? [['A is set. Double-click where the loop should END'], ' (or press B / ]). Esc cancels.'] : [['Now click where the loop should END'], '  (Esc to cancel)']);
     } else if (hasLoop()) {
       const len = S.b - S.a;
       setHint([
@@ -3180,6 +3228,7 @@
     } else {
       setHint(TOUCH
         ? [['Tap the wave'], ' to stop / play, ', ['drag it'], ' to move the song. Tap ', ['A'], ' where the loop starts, ', ['B'], ' where it ends.']
+        : settings.mouseDJ ? [['Click the wave'], ' to stop / play, ', ['drag it'], ' to move the song, ', ['double-click'], ' for A, then B. Shift+drag draws a loop. ', ['Q'], ' snaps to the beat.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -3211,6 +3260,8 @@
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.quant = settings.quantize ? 'on' : '';
+    d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
+    d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
     d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
     d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
@@ -3364,22 +3415,28 @@
   }
 
   // Keeps the playhead about a quarter of the way in, so you see what's coming.
+  // The DJ deck feel (wave slides under a fixed playhead, drag moves the song):
+  // always on touch screens, and on a computer with the DJ mouse on.
+  function djDeck() {
+    return TOUCH || !!settings.mouseDJ;
+  }
+
   function focusFollow(force) {
     if (!settings.zoomFocus || !S.video || (drag && drag.mode !== 'scrub')) return;
     const d = dur();
     if (!d) return;
     const len = Math.min(focusLen(), d);
     if (len >= d) return;
-    if (!force && now() - S.lastViewTouch < (TOUCH ? 600 : 2000)) return;
+    if (!force && now() - S.lastViewTouch < (djDeck() ? 600 : 2000)) return;
     const t = drag && drag.mode === 'scrub' && drag.t != null ? drag.t : S.video.currentTime;
-    // Touch screens get a DJ deck: the playhead stays in the middle and the wave moves.
-    if (!force && S.view && !TOUCH) {
+    // DJ deck: the playhead stays in the middle and the wave moves.
+    if (!force && S.view && !djDeck()) {
       const { s, e } = viewRange();
       // While looping a part that fits on screen, hold still on it.
       if (S.loopOn && hasLoop() && S.a >= s && S.b <= e && S.b - S.a < len) return;
       if (S.video.paused && t >= s && t <= e) return;
     }
-    const s0 = t - len * (TOUCH ? 0.5 : 0.25);
+    const s0 = t - len * (djDeck() ? 0.5 : 0.25);
     const was = S.view;
     setView(s0, s0 + len, true);
     if (!was !== !S.view) renderUI();
@@ -3579,7 +3636,8 @@
         continue;
       }
       bands.forEach((bd, j) => {
-        const h = Math.pow(lift(vals[j], bd.m), 1.35) * amp * bd.k;
+        // The bands are stored compressed; expand them so hits stand out from the rest.
+        const h = Math.pow(lift(vals[j], bd.m), 2.2) * amp * bd.k;
         if (h < dpr * 0.5) return;
         const [r, g2, b2] = bd.col;
         bctx.fillStyle = `rgba(${r},${g2},${b2},${bd.a})`;
@@ -3706,6 +3764,20 @@
 
     drawGrid(ctx, g, top, wh);
     drawLanes(ctx, g, top, wh);
+    // Hot cue markers.
+    S.cues.forEach((c, i) => {
+      if (c == null) return;
+      const x = xAt(c, g);
+      if (x < -8 || x > g.w + 8) return;
+      ctx.fillStyle = CUE_COLORS[i];
+      ctx.fillRect(Math.round(x), top, 1, wh);
+      ctx.beginPath();
+      ctx.moveTo(x, top + wh);
+      ctx.lineTo(x + 9, top + wh);
+      ctx.lineTo(x, top + wh - 11);
+      ctx.closePath();
+      ctx.fill();
+    });
 
     // Loop region
     const showA = S.pendingA != null ? S.pendingA : S.a;
@@ -3915,7 +3987,7 @@
         drag = { mode: 'seek' };
         userSeek(t);
       } else if (g.miniH && y >= g.waveTop + g.waveH) {
-        if (TOUCH && settings.zoomFocus) {
+        if (djDeck() && settings.zoomFocus) {
           // DJ view: the little whole-song map jumps the song there.
           drag = { mode: 'miniSeek' };
           userSeek((x / g.w) * dur());
@@ -3933,7 +4005,9 @@
         } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
-        } else if (e.pointerType === 'touch') {
+        } else if (e.pointerType === 'touch' || (settings.mouseDJ && !e.shiftKey)) {
+          // Like a record: hold to stop, drag to move the song, click to
+          // play/pause, double-click for A then B. (Shift+drag draws a loop.)
           drag = startScrub(x, g);
         } else {
           drag = { mode: 'select', x0: x, t0: t, t1: t, moved: false };
@@ -4310,6 +4384,11 @@
       // Touch screens start in the DJ view (zoomed, wave scrolls under a fixed playhead).
       if (TOUCH && !settings.djDefault) {
         settings.djDefault = true;
+        settings.zoomFocus = true;
+      }
+      // Computers get the DJ deck view too (wave slides under the playhead).
+      if (!TOUCH && !settings.djDesk) {
+        settings.djDesk = true;
         settings.zoomFocus = true;
       }
       // Touch screens: lyrics on (at the top of the screen) unless turned off since.

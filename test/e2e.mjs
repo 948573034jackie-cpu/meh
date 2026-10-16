@@ -165,6 +165,20 @@ await step('button below the video (next to Like/Share) opens and closes the pan
   await waitFor(async () => (await host()).display === 'block', 2000, 'open again');
 });
 
+await step('on a computer the DJ deck is on by default; these tests switch to the classic mouse and the whole-song view', async () => {
+  const h = await host();
+  assert(h.mouse === 'dj', `DJ mouse by default (${h.mouse})`);
+  assert(h.zoom && Number(h.zoom) < DUR, `DJ view (zoomed) by default (${h.zoom})`);
+  await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const chk = [...root.querySelectorAll('label.check')].find((l) => l.textContent.includes('DJ mouse')).querySelector('input');
+    chk.click();
+  });
+  await shadowClick('button', 'Show the whole song');
+  const h2 = await host();
+  assert(h2.mouse === 'classic' && h2.zoom === '', `classic + whole song (${h2.mouse} ${h2.zoom})`);
+});
+
 await step('auto scan reads the whole song and puts playback back', async () => {
   tBeforeScan = (await vstate()).t;
   await waitFor(async () => (await host()).scanning === 'true', 5000, 'scan started');
@@ -859,6 +873,66 @@ await step('beat loops: 4 beats from the beat you are on, then 8 keeps the start
   const t = (await vstate()).t;
   assert(t >= beatAt(14) - 0.05 && t < beatAt(22) + 0.1, `inside the beat loop (t=${t.toFixed(2)})`);
   await shadowClick('button', 'Clear the loop');
+});
+
+await step('DJ mouse: drag the wave like a record, click = stop / play, double-click = A then B (on the beat with Q); hot cues', async () => {
+  await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    [...root.querySelectorAll('label.check')].find((l) => l.textContent.includes('DJ mouse')).querySelector('input').click();
+  });
+  assert((await host()).mouse === 'dj', 'DJ mouse on');
+  if (!(await host()).zoom) await shadowClick('button.zoom-toggle'); // DJ view: the wave slides under the playhead
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 12; v.play().catch(() => {}); });
+  await sleep(600);
+  const b = await waveBox();
+  const y = b.y + 18 + (b.h - 18) * 0.45;
+  // Click: stop. Click again (slowly, not a double-click): play.
+  await page.mouse.click(b.x + b.w * 0.5, y);
+  await sleep(500);
+  assert((await vstate()).paused, 'a click stops it');
+  await page.mouse.click(b.x + b.w * 0.5, y);
+  await waitFor(async () => !(await vstate()).paused, 2000, 'another click plays');
+  // Drag: the song moves with the mouse, held while dragging, plays on after.
+  const t0 = (await vstate()).t;
+  await page.mouse.move(b.x + b.w * 0.6, y);
+  await page.mouse.down();
+  for (let i = 1; i <= 10; i++) await page.mouse.move(b.x + b.w * 0.6 - i * 20, y);
+  await sleep(150);
+  let v = await vstate();
+  assert(v.paused && v.t > t0 + 0.5, `dragging left moves the song forward and holds it (${t0.toFixed(2)} -> ${v.t.toFixed(2)})`);
+  await page.mouse.up();
+  await waitFor(async () => !(await vstate()).paused, 2000, 'plays on after the drag');
+  assert(!(await host()).a, 'dragging made no loop');
+  // Double-click twice with Q on: A and B on beats, loop plays.
+  await shadowClick('button.q-btn');
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await sleep(700); // DJ view settles
+  const view = (await host()).view.split(',').map(Number);
+  const xAtT = (t) => b.x + ((t - view[0]) / (view[1] - view[0])) * b.w;
+  const tA = view[0] + (view[1] - view[0]) * 0.3;
+  const tB = view[0] + (view[1] - view[0]) * 0.7;
+  await page.mouse.dblclick(xAtT(tA), y);
+  let h = await host();
+  const near = (x) => { const k = Math.round((x - 0.8) / BEAT); return Math.abs(x - beatAt(k)) < 0.03; };
+  assert(h.pending && near(Number(h.pending)), `A waits on a beat (${h.pending})`);
+  await page.mouse.dblclick(xAtT(tB), y);
+  h = await host();
+  assert(!h.pending && h.loop === 'true' && near(Number(h.a)) && near(Number(h.b)), `loop on beats (${h.a}-${h.b})`);
+  await waitFor(async () => !(await vstate()).paused, 2000, 'the loop plays');
+  await shadowClick('button.q-btn');
+  await shadowClick('button', 'Clear the loop');
+  // Hot cue 1: set (on the beat with Q), jump back to it.
+  await page.evaluate((t) => { document.querySelector('#movie_player video').currentTime = t; }, beatAt(20) + 0.2);
+  await shadowClick('button.q-btn');
+  await shadowClick('button.cue-btn');
+  const c1 = Number((await host()).cues.split(',')[0]);
+  assert(Math.abs(c1 - beatAt(20)) < 0.03, `cue 1 on the beat (${c1})`);
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 3; });
+  await shadowClick('button.cue-btn');
+  v = await vstate();
+  assert(Math.abs(v.t - c1) < 0.1 && !v.paused, `jumped to cue 1 and plays (t=${v.t.toFixed(2)})`);
+  await shadowClick('button.q-btn');
+  await page.screenshot({ path: path.join(SHOTS, '11-dj-mouse.png') });
 });
 
 await step('grid tools: ½ and 2× tempo, move the "1"', async () => {

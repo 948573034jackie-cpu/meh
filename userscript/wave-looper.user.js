@@ -2071,26 +2071,76 @@ globalThis.YTL_STORAGE = (() => {
     return { bpm: Math.round(600 / avg) / 10, beats, first, confidence: tempo.confidence };
   }
 
-  /** Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}] */
+  /**
+   * Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}].
+   * Each hit is sorted by which bands jump together: a kick is led by the
+   * lows, a snare is a burst in the mids and the highs together, a hi-hat is
+   * highs with little middle (or riding on top of a kick).
+   */
   function drumHits(P, durationSec) {
     const br = P.binRate;
     const n = Math.min(P.n, Math.ceil(durationSec * br));
-    const f = drumFlux(P, n);
-    const pick = (a, kind, pct) => {
-      const vals = Array.from(a).filter((v) => v > 0).sort((x, y) => x - y);
-      if (vals.length < 10) return [];
-      // Above the background (noise makes many small jumps), relative to the loudest hits.
-      const thr = Math.max(6, vals[Math.floor(vals.length * pct)], vals[Math.floor(vals.length * 0.995)] * 0.35);
+    const dl = new Float32Array(n);
+    const dm = new Float32Array(n);
+    const dh = new Float32Array(n);
+    for (let i = 1; i < n; i++) {
+      if (!P.cov[i] || !P.cov[i - 1]) continue;
+      dl[i] = Math.max(0, P.low[i] - P.low[i - 1]);
+      dm[i] = Math.max(0, P.mid[i] - P.mid[i - 1]);
+      dh[i] = Math.max(0, P.high[i] - P.high[i - 1]);
+    }
+    const peaksOf = (a) => {
       const out = [];
-      for (let i = 1; i < a.length - 1; i++) {
-        if (a[i] > thr && a[i] >= a[i - 1] && a[i] > a[i + 1]) {
-          if (out.length && i / br - out[out.length - 1].t < 0.06) continue; // one hit, not two
-          out.push({ t: i / br, kind, v: Math.min(1, a[i] / (thr * 3)) });
-        }
-      }
-      return out;
+      for (let i = 1; i < n - 1; i++) if (a[i] > 0 && a[i] >= a[i - 1] && a[i] > a[i + 1]) out.push(a[i]);
+      return out.sort((x, y) => x - y);
     };
-    return [...pick(f.kick, 'kick', 0.8), ...pick(f.snare, 'snare', 0.85), ...pick(f.hat, 'hat', 0.8)].sort((x, y) => x.t - y.t);
+    const loud = (a, floor) => {
+      const pk = peaksOf(a);
+      return pk.length ? Math.max(floor, pk[Math.floor(pk.length * 0.99)] * 0.22) : Infinity;
+    };
+    const thrK = loud(dl, 10);
+    const thrH = loud(dh, 8);
+    const at = (a, i) => Math.max(a[i - 1] || 0, a[i], a[i + 1] || 0);
+    const isPeak = (i) => {
+      const e = (k) => dl[k] + 0.6 * dm[k] + 0.8 * dh[k];
+      const env = e(i);
+      return env > 0 && env >= e(i - 1) && env > e(i + 1);
+    };
+    // A snare is a loud burst in the mids and highs together; hi-hats make a
+    // smaller one. "Loud" is measured against this song's own snares (the
+    // top of all mid+high bursts that are not kicks).
+    const burst = [];
+    for (let i = 1; i < n - 1; i++) {
+      if (!isPeak(i)) continue;
+      const L = at(dl, i);
+      const M = at(dm, i);
+      const H = at(dh, i);
+      if (L >= thrK && L >= M) continue;
+      burst.push(Math.min(M, H * 1.5) + 0.25 * M);
+    }
+    burst.sort((x, y) => x - y);
+    const thrS = burst.length ? Math.max(12, burst[Math.floor(burst.length * 0.92)] * 0.5) : Infinity;
+    const out = [];
+    const last = { kick: -1, snare: -1, hat: -1 };
+    const push = (kind, i, v, thr) => {
+      const t = i / br;
+      if (t - last[kind] < 0.06) return; // one hit, not two
+      last[kind] = t;
+      out.push({ t, kind, v: Math.min(1, v / (thr * 3)) });
+    };
+    for (let i = 1; i < n - 1; i++) {
+      if (!isPeak(i)) continue;
+      const L = at(dl, i);
+      const M = at(dm, i);
+      const H = at(dh, i);
+      const kick = L >= thrK && L >= M;
+      const snare = !kick && H >= 0.35 * M && Math.min(M, H * 1.5) + 0.25 * M >= thrS;
+      if (kick) push('kick', i, L, thrK);
+      if (snare) push('snare', i, M, thrS);
+      // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
+      if (!snare && H >= (kick ? thrH * 1.5 : thrH)) push('hat', i, H, thrH);
+    }
+    return out.sort((x, y) => x.t - y.t);
   }
 
   /** Index of the beat nearest to t (beats sorted). */
@@ -2462,7 +2512,10 @@ button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
 button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3; }
-.bpm { min-width: 74px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: #ffb74d; }
+.bpm { min-width: 84px; text-align: center; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; color: #ffb74d; }
+.cues { display: inline-flex; gap: 2px; }
+button.cue-btn { min-width: 34px; padding: 0 6px; font-weight: 800; color: var(--cue); border-color: color-mix(in srgb, var(--cue) 35%, transparent); background: transparent; }
+button.cue-btn.set { background: var(--cue); color: #0b0e14; border-color: var(--cue); }
 `;
 
 /*
@@ -3031,6 +3084,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
+    mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
     waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
@@ -3046,6 +3100,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     gridBase: null, // beats found in this video's wave: { vid, g, hits }
     grid: null, // the beat grid in use (after ½ / 2× / move-the-1)
     gridAdj: { scale: 1, shift: 0 },
+    cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
     vid: null,
     mainVid: null,
@@ -3256,6 +3311,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     S.grid = null;
     S.gridAdj = { scale: 1, shift: 0 };
     S.gridTried = 0;
+    S.cues = [null, null, null, null];
     S.dirty = true;
     renderUI();
     if (vid) loadVideoData(vid);
@@ -3276,6 +3332,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const st = r['ytl:v:' + vid];
     if (st) {
       const num = Number.isFinite;
+      if (Array.isArray(st.cues)) S.cues = [0, 1, 2, 3].map((i) => (Number.isFinite(st.cues[i]) ? st.cues[i] : null));
       if (st.gridAdj && [0.5, 1, 2].includes(st.gridAdj.scale)) {
         S.gridAdj = { scale: st.gridAdj.scale, shift: ((st.gridAdj.shift | 0) % 4 + 4) % 4 };
         applyGridAdj();
@@ -3307,7 +3364,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     clearTimeout(videoStateTimer);
     if (!S.vid) return;
     const hasLoop = S.a != null && S.b != null;
-    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift) {
+    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift && !S.cues.some((c) => c != null)) {
       storage.remove('ytl:v:' + S.vid);
       return;
     }
@@ -3320,6 +3377,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         rateOwned: S.rateOwned,
         saved: S.saved,
         gridAdj: S.gridAdj.scale !== 1 || S.gridAdj.shift ? S.gridAdj : undefined,
+        cues: S.cues.some((c) => c != null) ? S.cues : undefined,
         t: Date.now(),
       },
     });
@@ -4067,6 +4125,29 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const per = 60 / G.bpm;
     const n = Math.round((S.b - S.a) / per);
     return ok(S.a, ia) && Math.abs(C.beatTime(B, ia + n) - S.b) < 0.03 ? n : 0;
+  }
+
+  // Hot cues 1-4, like a DJ controller: click an empty pad to mark the spot
+  // (on the beat with Q), click it again to jump there and play.
+  // Shift-click or right-click clears it.
+  const CUE_COLORS = ['#ff4d6d', '#ffb000', '#3ddc84', '#4da3ff'];
+  function cueTap(i, e) {
+    const v = S.video;
+    if (!v || !dur()) return;
+    if (e && (e.shiftKey || e.type === 'contextmenu')) {
+      if (e.type === 'contextmenu') e.preventDefault();
+      S.cues[i] = null;
+      flash(`Cue ${i + 1} cleared.`, 1500);
+    } else if (S.cues[i] == null) {
+      S.cues[i] = qT(v.currentTime);
+      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}. Click it to jump back here.`, 2500);
+    } else {
+      userSeek(S.cues[i]);
+      play();
+    }
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
   }
 
   function toggleDrumView() {
@@ -5197,7 +5278,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     autoScanTimer = setTimeout(() => {
       autoScanTimer = 0;
       if (S.vid === vid && autoScanWanted()) startScan();
-    }, 1200);
+    }, 500);
   }
 
   function startScan() {
@@ -5494,11 +5575,18 @@ if (typeof exports === 'object' && typeof module === 'object') {
       return b;
     });
     ui.bpm = h('span', { class: 'bpm', title: 'Tempo found in the song (beats per minute)', text: '— BPM' });
+    ui.cueBtns = [0, 1, 2, 3].map((i) => {
+      const b = btn(`C${i + 1}`, `Hot cue ${i + 1}: click to mark this spot (on the beat with Q), click again to jump here. Shift-click or right-click clears it.`, (e) => cueTap(i, e), 'cue-btn');
+      b.style.setProperty('--cue', CUE_COLORS[i]);
+      b.addEventListener('contextmenu', (e) => cueTap(i, e));
+      return b;
+    });
     ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       ui.qBtn,
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
+      h('span', { class: 'cues' }, ...ui.cueBtns),
       btn('½', 'Half the tempo (the grid has twice too many beats)', () => adjustGrid('half'), 'grid-btn'),
       btn('2×', 'Double the tempo (the grid has half the beats)', () => adjustGrid('double'), 'grid-btn'),
       btn('1▸', 'Move the "1" (start of the bar) one beat later', () => adjustGrid('shift'), 'grid-btn'),
@@ -5510,8 +5598,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const G = S.grid;
     ui.qBtn.classList.toggle('on', !!settings.quantize);
     ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
-    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : '— BPM';
+    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
     ui.bpm.title = G ? 'Tempo found in the song (beats per minute)' : gridMissingText();
+    ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
     for (const b of ui.beatBtns) {
       b.classList.toggle('on', !!n && S.loopOn && Number(b.dataset.n) === n);
@@ -5635,6 +5724,15 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
+    ui.djMouseChk = h('input', { type: 'checkbox' });
+    ui.djMouseChk.checked = settings.mouseDJ;
+    ui.djMouseChk.addEventListener('change', () => {
+      settings.mouseDJ = ui.djMouseChk.checked;
+      saveSettings();
+      ui.djMouseChk.blur();
+      S.dirty = true;
+      renderUI();
+    });
     ui.restSel = select(PART_RESTS, (v) => (v ? `${v}s` : 'none'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Practice: rest between the parts of the song');
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
@@ -5645,6 +5743,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
         IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
       TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
+      TOUCH ? null : h('label', { class: 'check', title: 'On: drag the wave like a record, click = play / pause, double-click = A then B (Shift+drag draws a loop). Off: click the start, then the end.' }, ui.djMouseChk, 'DJ mouse (drag the wave)'),
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
       ui.rescanBtn,
@@ -5708,7 +5807,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
           h('li', {}, h('b', { text: 'Loop from the lyrics: ' }), 'tap A at the right of the first line, then B on the last line: those lines loop and the Trainer starts.'),
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
-          h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
+          h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
@@ -6097,7 +6197,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } else if (!dur()) {
       setHint(['Waiting for the video…']);
     } else if (pending) {
-      setHint(TOUCH ? [['A is set. Move to where the loop ends and tap B'], ' (or double-tap the wave there).'] : [['Now click where the loop should END'], '  (Esc to cancel)']);
+      setHint(TOUCH ? [['A is set. Move to where the loop ends and tap B'], ' (or double-tap the wave there).']
+        : settings.mouseDJ ? [['A is set. Double-click where the loop should END'], ' (or press B / ]). Esc cancels.'] : [['Now click where the loop should END'], '  (Esc to cancel)']);
     } else if (hasLoop()) {
       const len = S.b - S.a;
       setHint([
@@ -6108,6 +6209,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } else {
       setHint(TOUCH
         ? [['Tap the wave'], ' to stop / play, ', ['drag it'], ' to move the song. Tap ', ['A'], ' where the loop starts, ', ['B'], ' where it ends.']
+        : settings.mouseDJ ? [['Click the wave'], ' to stop / play, ', ['drag it'], ' to move the song, ', ['double-click'], ' for A, then B. Shift+drag draws a loop. ', ['Q'], ' snaps to the beat.']
         : [['Click the wave to set the loop START'], ', then click the END. Or drag across a part. Click the time ruler to jump.']);
     }
 
@@ -6139,6 +6241,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.quant = settings.quantize ? 'on' : '';
+    d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
+    d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
     d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
     d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
@@ -6292,22 +6396,28 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   // Keeps the playhead about a quarter of the way in, so you see what's coming.
+  // The DJ deck feel (wave slides under a fixed playhead, drag moves the song):
+  // always on touch screens, and on a computer with the DJ mouse on.
+  function djDeck() {
+    return TOUCH || !!settings.mouseDJ;
+  }
+
   function focusFollow(force) {
     if (!settings.zoomFocus || !S.video || (drag && drag.mode !== 'scrub')) return;
     const d = dur();
     if (!d) return;
     const len = Math.min(focusLen(), d);
     if (len >= d) return;
-    if (!force && now() - S.lastViewTouch < (TOUCH ? 600 : 2000)) return;
+    if (!force && now() - S.lastViewTouch < (djDeck() ? 600 : 2000)) return;
     const t = drag && drag.mode === 'scrub' && drag.t != null ? drag.t : S.video.currentTime;
-    // Touch screens get a DJ deck: the playhead stays in the middle and the wave moves.
-    if (!force && S.view && !TOUCH) {
+    // DJ deck: the playhead stays in the middle and the wave moves.
+    if (!force && S.view && !djDeck()) {
       const { s, e } = viewRange();
       // While looping a part that fits on screen, hold still on it.
       if (S.loopOn && hasLoop() && S.a >= s && S.b <= e && S.b - S.a < len) return;
       if (S.video.paused && t >= s && t <= e) return;
     }
-    const s0 = t - len * (TOUCH ? 0.5 : 0.25);
+    const s0 = t - len * (djDeck() ? 0.5 : 0.25);
     const was = S.view;
     setView(s0, s0 + len, true);
     if (!was !== !S.view) renderUI();
@@ -6507,7 +6617,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
         continue;
       }
       bands.forEach((bd, j) => {
-        const h = Math.pow(lift(vals[j], bd.m), 1.35) * amp * bd.k;
+        // The bands are stored compressed; expand them so hits stand out from the rest.
+        const h = Math.pow(lift(vals[j], bd.m), 2.2) * amp * bd.k;
         if (h < dpr * 0.5) return;
         const [r, g2, b2] = bd.col;
         bctx.fillStyle = `rgba(${r},${g2},${b2},${bd.a})`;
@@ -6634,6 +6745,20 @@ if (typeof exports === 'object' && typeof module === 'object') {
 
     drawGrid(ctx, g, top, wh);
     drawLanes(ctx, g, top, wh);
+    // Hot cue markers.
+    S.cues.forEach((c, i) => {
+      if (c == null) return;
+      const x = xAt(c, g);
+      if (x < -8 || x > g.w + 8) return;
+      ctx.fillStyle = CUE_COLORS[i];
+      ctx.fillRect(Math.round(x), top, 1, wh);
+      ctx.beginPath();
+      ctx.moveTo(x, top + wh);
+      ctx.lineTo(x + 9, top + wh);
+      ctx.lineTo(x, top + wh - 11);
+      ctx.closePath();
+      ctx.fill();
+    });
 
     // Loop region
     const showA = S.pendingA != null ? S.pendingA : S.a;
@@ -6843,7 +6968,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         drag = { mode: 'seek' };
         userSeek(t);
       } else if (g.miniH && y >= g.waveTop + g.waveH) {
-        if (TOUCH && settings.zoomFocus) {
+        if (djDeck() && settings.zoomFocus) {
           // DJ view: the little whole-song map jumps the song there.
           drag = { mode: 'miniSeek' };
           userSeek((x / g.w) * dur());
@@ -6861,7 +6986,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
         } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
-        } else if (e.pointerType === 'touch') {
+        } else if (e.pointerType === 'touch' || (settings.mouseDJ && !e.shiftKey)) {
+          // Like a record: hold to stop, drag to move the song, click to
+          // play/pause, double-click for A then B. (Shift+drag draws a loop.)
           drag = startScrub(x, g);
         } else {
           drag = { mode: 'select', x0: x, t0: t, t1: t, moved: false };
@@ -7238,6 +7365,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
       // Touch screens start in the DJ view (zoomed, wave scrolls under a fixed playhead).
       if (TOUCH && !settings.djDefault) {
         settings.djDefault = true;
+        settings.zoomFocus = true;
+      }
+      // Computers get the DJ deck view too (wave slides under the playhead).
+      if (!TOUCH && !settings.djDesk) {
+        settings.djDesk = true;
         settings.zoomFocus = true;
       }
       // Touch screens: lyrics on (at the top of the screen) unless turned off since.
