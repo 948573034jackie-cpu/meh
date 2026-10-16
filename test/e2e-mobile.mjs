@@ -433,7 +433,8 @@ await step('lyrics: tap the left side of a line to practise it (from 30%), tap a
       const body = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body');
       body.dispatchEvent(new WheelEvent('wheel')); // like a finger on the lyrics: pauses auto-scroll
       const p = body.querySelectorAll('p')[3];
-      body.scrollTo({ top: p.offsetTop - body.clientHeight / 2 + p.offsetHeight / 2, behavior: 'instant' });
+      const pr = p.getBoundingClientRect(); const br = body.getBoundingClientRect();
+      body.scrollTo({ top: body.scrollTop + pr.top - br.top - body.clientHeight / 2 + pr.height / 2, behavior: 'instant' });
     });
     await sleep(400); // let any smooth scroll settle
     return page.evaluate(() => {
