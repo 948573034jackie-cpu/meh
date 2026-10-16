@@ -82,3 +82,18 @@ button, label.btn, input, textarea { font: inherit; }
 .paste textarea { margin: 8px 0; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .empty-state { color: var(--dim); font-size: 15px; line-height: 1.5; padding: 10px 0; }
 .empty-state b { color: #fff; }
+
+.ytwrap { margin: 8px 16px 0; width: min(420px, calc(100% - 32px)); aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: #000; flex: none; }
+.ytwrap[hidden] { display: none; }
+.ytwrap > * { width: 100%; height: 100%; border: 0; display: block; }
+.songinfo .tag { vertical-align: middle; margin-left: 6px; }
+.chips .chip { min-width: 0; }
+
+.npbar { margin: 8px 16px 0; padding: 10px 12px; border-radius: 10px; background: #1d3a27; color: #fff; font-size: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: none; }
+.npbar[hidden] { display: none; }
+.npbar .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: blink 1.4s infinite; flex: none; }
+@keyframes blink { 50% { opacity: .3; } }
+.npbar .grow { flex: 1; min-width: 0; }
+.steps { color: #ddd; font-size: 14px; line-height: 1.5; padding-left: 20px; }
+.steps a { color: var(--green); }
+#btnFollow.on { background: #1d3a27; border-color: var(--green); color: var(--green); }

@@ -43,7 +43,7 @@ test('parseLyrics: works without known duration (last line capped)', () => {
 
 test('normalizeSettings sanitises bad values', () => {
   const s = core.normalizeSettings({ mode: 'x', reps: 4, speed: 2, trainingSpeeds: [1, 0.3, 'bad', 0.3], trainingReps: '7' });
-  assert.deepStrictEqual(s, { mode: 'repeat', reps: 5, speed: 1, trainingReps: 7, trainingSpeeds: [0.3, 1], startFrom: 'first', autoNext: false, playFullAfter: true });
+  assert.deepStrictEqual(s, { mode: 'repeat', reps: 5, speed: 1, trainingReps: 7, trainingSpeeds: [0.3, 1], startFrom: 'first', autoNext: false, playFullAfter: true, practiceRamp: 10, practiceNormal: 10, practiceRest: 30 });
   assert.deepStrictEqual(core.normalizeSettings({ trainingSpeeds: [] }).trainingSpeeds, [0.3, 0.5, 0.75, 1]);
 });
 
@@ -90,4 +90,19 @@ test('applyAdjustments: offset, nudges, joins', () => {
   // start clamps at 0, joining the last line is a no-op
   const edge = core.applyAdjustments(base, { offset: -3, joins: [3] });
   assert.strictEqual(edge[0].start, 0); assert.strictEqual(edge.length, 4);
+});
+
+test('practice mode: 10 plays speeding up 30%->100%, then 10 at 100% = 20 per line', () => {
+  const p = core.plan({ mode: 'practice' });
+  assert.deepStrictEqual(p.stages, [0.3, 0.37, 0.44, 0.51, 0.58, 0.65, 0.72, 0.79, 0.86, 0.93, 1]);
+  assert.strictEqual(core.playsPerLine(p), 20);
+  assert.strictEqual(p.rest, 30);
+  const seq = walk(2, { mode: 'practice' });
+  assert.strictEqual(seq.length, 40);
+  assert.deepStrictEqual(seq.slice(0, 20).map(s => s[1]), [0.3, 0.37, 0.44, 0.51, 0.58, 0.65, 0.72, 0.79, 0.86, 0.93, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.ok(seq.slice(20).every(s => s[0] === 1));
+  const q = core.plan({ mode: 'practice', practiceRamp: 5, practiceNormal: 5, practiceRest: 0 });
+  assert.deepStrictEqual(q.stages, [0.3, 0.44, 0.58, 0.72, 0.86, 1]);
+  assert.strictEqual(core.playsPerLine(q), 10); assert.strictEqual(q.rest, 0);
+  assert.strictEqual(core.playIndex(p, { stage: 10, rep: 3 }), 14);
 });

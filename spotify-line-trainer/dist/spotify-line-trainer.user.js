@@ -65,11 +65,14 @@
 
   const SPEEDS = [0.3, 0.5, 0.75, 1];
   const REPS = [3, 5, 7, 10];
+  const RAMP = [5, 7, 10, 15];      // practice: plays while speeding up 30% -> 100%
+  const NORMAL = [5, 10, 15];       // practice: plays at 100% afterwards
+  const REST = [0, 20, 30, 40];     // practice: seconds of rest before the next line
 
   function normalizeSettings(s) {
     s = Object.assign({}, s || {});
     const out = {
-      mode: s.mode === 'training' ? 'training' : 'repeat',
+      mode: s.mode === 'training' || s.mode === 'practice' ? s.mode : 'repeat',
       reps: REPS.includes(+s.reps) ? +s.reps : 5,
       speed: SPEEDS.includes(+s.speed) ? +s.speed : 1,
       trainingReps: REPS.includes(+s.trainingReps) ? +s.trainingReps : 5,
@@ -78,22 +81,41 @@
         : SPEEDS.slice(),
       startFrom: s.startFrom === 'current' ? 'current' : 'first',
       autoNext: !!s.autoNext,
-      playFullAfter: s.playFullAfter !== false
+      playFullAfter: s.playFullAfter !== false,
+      practiceRamp: RAMP.includes(+s.practiceRamp) ? +s.practiceRamp : 10,
+      practiceNormal: NORMAL.includes(+s.practiceNormal) ? +s.practiceNormal : 10,
+      practiceRest: REST.includes(+s.practiceRest) ? +s.practiceRest : 30
     };
     if (!out.trainingSpeeds.length) out.trainingSpeeds = SPEEDS.slice();
     return out;
   }
 
+  // Practice ramp: n plays speeding up evenly from 30% towards 100% (0.30, 0.37, ... 0.93 for n = 10).
+  function rampSpeeds(n) {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(Math.round((0.3 + 0.7 * i / n) * 100) / 100);
+    return out;
+  }
+
+  // stages = speeds in order; reps = plays per stage (a number, or one per stage); rest = seconds between lines
   function plan(settings) {
     const s = normalizeSettings(settings);
+    if (s.mode === 'practice') {
+      const ramp = rampSpeeds(s.practiceRamp);
+      return { stages: ramp.concat([1]), reps: ramp.map(() => 1).concat([s.practiceNormal]), rest: s.practiceRest };
+    }
     return s.mode === 'training'
-      ? { stages: s.trainingSpeeds, reps: s.trainingReps }
-      : { stages: [s.speed], reps: s.reps };
+      ? { stages: s.trainingSpeeds, reps: s.trainingReps, rest: 0 }
+      : { stages: [s.speed], reps: s.reps, rest: 0 };
   }
+  const repsAt = (p, stage) => Array.isArray(p.reps) ? p.reps[stage] : p.reps;
+  // total plays of one line, and which play (1-based) a position is
+  function playsPerLine(p) { let n = 0; for (let i = 0; i < p.stages.length; i++) n += repsAt(p, i); return n; }
+  function playIndex(p, pos) { let n = 0; for (let i = 0; i < pos.stage; i++) n += repsAt(p, i); return n + pos.rep + 1; }
 
   // pos = {line, stage, rep}; returns next pos or {done:true}
   function advance(pos, lineCount, p) {
-    if (pos.rep + 1 < p.reps) return { line: pos.line, stage: pos.stage, rep: pos.rep + 1 };
+    if (pos.rep + 1 < repsAt(p, pos.stage)) return { line: pos.line, stage: pos.stage, rep: pos.rep + 1 };
     if (pos.stage + 1 < p.stages.length) return { line: pos.line, stage: pos.stage + 1, rep: 0 };
     if (pos.line + 1 < lineCount) return { line: pos.line + 1, stage: 0, rep: 0 };
     return { done: true };
@@ -133,7 +155,7 @@
     return out;
   }
 
-  const api = { applyAdjustments, LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
+  const api = { RAMP, NORMAL, REST, rampSpeeds, repsAt, playsPerLine, playIndex, applyAdjustments, LEAD_IN, TAIL, MIN_LINE, MAX_LINE, SPEEDS, REPS, isLyricText, parseLyrics, normalizeSettings, plan, advance, findLineAt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.__SLT_CORE__ = api;
 })(typeof window !== 'undefined' ? window : globalThis);

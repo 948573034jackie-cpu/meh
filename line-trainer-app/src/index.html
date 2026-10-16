@@ -19,12 +19,16 @@
   <div class="songinfo" id="songinfo">Open a song to start</div>
   <div class="topbtns">
     <button class="btn" id="btnLib" data-testid="lib">📚 Library</button>
-    <label class="btn primary" for="file" data-testid="open">📂 Open song</label>
+    <label class="btn" for="file" data-testid="open">📂 Open file</label>
+    <button class="btn" id="btnSpot" data-testid="spot">🎵 Spotify link</button>
+    <button class="btn primary" id="btnFollow" data-testid="follow">🔗 Follow my Spotify</button>
     <input type="file" id="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.flac,.ogg" hidden>
   </div>
 </header>
 <main class="layout">
   <section class="lyricswrap">
+    <div class="npbar" id="npbar" hidden data-testid="npbar"></div>
+    <div class="ytwrap" id="ytwrap" hidden><div id="yt"></div></div>
     <div class="lyricsbar">
       <span id="lyrStatus" data-testid="lyr-status">No lyrics yet</span>
       <button class="btn small" id="btnFind" data-testid="find">🔎 Lyrics</button>
@@ -50,6 +54,28 @@
       <textarea id="lrcText" class="input" rows="8" placeholder="[00:12.30] First line&#10;[00:15.80] Second line" data-testid="lrc"></textarea>
       <button class="btn primary" id="btnPaste" data-testid="paste">Use these lyrics</button>
     </details>
+  </div>
+</div>
+<div class="modal" id="spotModal" hidden>
+  <div class="sheet">
+    <div class="sheethead"><b>🎵 Song from Spotify</b><button class="btn small" data-close>✕</button></div>
+    <div id="spotBody"></div>
+  </div>
+</div>
+<div class="modal" id="followModal" hidden>
+  <div class="sheet">
+    <div class="sheethead"><b>🔗 Follow my Spotify</b><button class="btn small" data-close>✕</button></div>
+    <div class="hint">The app sees what Spotify is playing through <b>Last.fm</b> (free, works with free Spotify). One-time setup:</div>
+    <ol class="steps">
+      <li>Make a free account at <a href="https://www.last.fm/join" target="_blank" rel="noopener">last.fm/join</a>.</li>
+      <li>Open <a href="https://www.last.fm/settings/applications" target="_blank" rel="noopener">last.fm/settings/applications</a> → <b>Spotify Scrobbling → Connect</b>, and log in to Spotify.</li>
+      <li>Get a free API key at <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">last.fm/api/account/create</a> (any app name, e.g. “Line Trainer”; the other fields can stay empty). Copy the <b>API key</b>.</li>
+      <li>Fill in both boxes below and tap <b>Start following</b>.</li>
+    </ol>
+    <div class="label">Last.fm username</div><input id="fmUser" class="input" autocapitalize="off" autocorrect="off" data-testid="fm-user">
+    <div class="label">Last.fm API key</div><input id="fmKey" class="input" autocapitalize="off" autocorrect="off" data-testid="fm-key">
+    <div class="row" style="margin-top:12px"><button class="btn primary" id="fmStart" data-testid="fm-start">Start following</button><button class="btn" id="fmStop" data-testid="fm-stop">Stop</button></div>
+    <div class="hint" id="fmNote" data-testid="fm-note"></div>
   </div>
 </div>
 <div class="modal" id="libModal" hidden>
