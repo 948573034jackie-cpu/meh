@@ -1457,7 +1457,7 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
 }
 .lyrics.top .lyr-resize:hover::after { background: var(--accent); }
-.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: 2.1em; }
+.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: calc(2.1em + 18px); }
 .lyr-loop {
   position: absolute; left: .25em; top: 50%; transform: translateY(-50%);
   width: 1.5em; height: 1.5em; min-width: 26px; min-height: 26px; border-radius: 50%;
@@ -1475,6 +1475,7 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   display: inline-flex; align-items: center; justify-content: center;
   font-size: .62em; font-weight: 800; color: #4ade80; border: 1px solid #23503a; background: rgba(34,197,94,.08);
 }
+@media (any-pointer: coarse) { .lyr-ab { min-width: 42px; min-height: 34px; font-size: 15px; } .lyr-body.synced p { padding-right: calc(2.1em + 30px); } }
 .lyr-body p.ab-start .lyr-ab { color: #062012; background: #4ade80; border-color: #4ade80; }
 .lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #f87171; border-color: #5a2a2a; background: rgba(248,113,113,.08); }
 .lyr-body p.in-ab { box-shadow: inset 3px 0 0 #4ade80, inset -3px 0 0 #f87171; }

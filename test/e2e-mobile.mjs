@@ -24,6 +24,7 @@ let failures = 0;
 const results = [];
 let page;
 async function step(name, fn) {
+  if (process.env.ONLY && !new RegExp(process.env.ONLY).test(name)) return; // run only some steps while debugging
   try {
     await fn();
     results.push(`  ok   ${name}`);
@@ -81,6 +82,8 @@ page = await ctx.newPage();
 const errors = [];
 page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+page.on('crash', () => console.log('!!! PAGE CRASHED'));
+browser.on('disconnected', () => console.log('!!! BROWSER DISCONNECTED'));
 
 const host = () => page.evaluate(() => {
   const h = document.getElementById('ytl-wave-looper');
@@ -485,7 +488,9 @@ await step('lyrics: A / B buttons at the right of the lines loop from one line t
       return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width };
     }, i);
     assert(b.w >= 26, `A/B button big enough to tap (${b.w}px)`);
+    if (process.env.DEBUG) console.log('tapRight', i, JSON.stringify(b));
     await page.touchscreen.tap(b.x, b.y);
+    if (process.env.DEBUG) console.log('tapped', i);
   };
   await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
   await tapRight(2); // "Line 3 (0:04)"
