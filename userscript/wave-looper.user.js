@@ -836,6 +836,7 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       if (!buf) buf = await decode(concat([job.init, job.media]));
     }
     if (!buf || !buf.length) return;
+    keepChunk(job, Math.max(0, buf.duration - skip));
     const chans = [];
     const from = Math.max(0, Math.min(buf.length, Math.round(skip * buf.sampleRate)));
     for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).subarray(from));
@@ -851,6 +852,95 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       mid: res.mid,
       high: res.high,
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Seamless loops: the audio of the loop, decoded at full quality, so the
+  // looper can play it from memory with no gap at all between B and A.
+  // The audio chunks of the current video are kept (a few MB per song).
+  // ---------------------------------------------------------------------------
+  const kept = new Map(); // vid -> [{ start, end, media, init, container, mp4 }]
+  let keptBytes = 0;
+  const KEEP_MAX = 96 * 1024 * 1024;
+
+  function keepChunk(job, durSec) {
+    if (!job.vid || !durSec) return;
+    let list = kept.get(job.vid);
+    if (!list) {
+      // Only the newest video's audio is kept.
+      for (const [v, l] of kept) {
+        for (const c of l) keptBytes -= c.media.length;
+        kept.delete(v);
+      }
+      list = [];
+      kept.set(job.vid, list);
+    }
+    const end = job.start + durSec;
+    // The same chunk decoded again (it grew): keep the bigger one.
+    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02);
+    if (i >= 0) {
+      if (list[i].media.length >= job.media.length) return;
+      keptBytes -= list[i].media.length;
+      list.splice(i, 1);
+    }
+    if (keptBytes + job.media.length > KEEP_MAX) return;
+    list.push({ start: job.start, end, media: job.media, init: job.init, container: job.container, mp4: job.mp4 });
+    keptBytes += job.media.length;
+    list.sort((a, b) => a.start - b.start);
+  }
+
+  // Contiguous chunks covering [a, b] (plus one before it as an Opus run-up).
+  function chunksFor(vid, a, b) {
+    const list = kept.get(vid) || [];
+    let i = list.findIndex((c) => c.end > a + 0.001);
+    if (i < 0 || list[i].start > a + 0.001) return null;
+    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1) i--; // run-up
+    const out = [list[i]];
+    while (out[out.length - 1].end < b - 0.001) {
+      const prev = out[out.length - 1];
+      const next = list.find((c) => c.start > prev.start + 0.01 && Math.abs(c.start - prev.end) < 0.1);
+      if (!next) return null;
+      out.push(next);
+    }
+    if (out.some((c) => c.init !== out[0].init || c.container !== out[0].container)) return null;
+    return out;
+  }
+
+  let fullCtx = null;
+  async function loopAudio(req) {
+    const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, ...extra });
+    try {
+      const sr = req.sr > 0 ? req.sr : 48000;
+      const list = chunksFor(req.vid, req.a, req.b);
+      if (!list) return reply({ ok: false, why: 'not loaded' });
+      const media = concat(list.map((c) => c.media));
+      if (!fullCtx || fullCtx.sampleRate !== sr) {
+        const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
+        fullCtx = new Ctor(2, 1, sr);
+      }
+      const dec = (bytes) => new Promise((resolve, reject) => {
+        const p = fullCtx.decodeAudioData(bytes.buffer, resolve, reject);
+        if (p && p.catch) p.catch(reject);
+      });
+      let buf = null;
+      if (list[0].container === 'mp4' && list[0].mp4 && list[0].mp4.asc) {
+        try {
+          const frags = mp4Fragments(media, list[0].mp4.timescale);
+          if (frags) buf = await dec(toAdts(frags.samples, list[0].mp4.asc));
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) buf = await dec(concat([list[0].init, media]));
+      const from = Math.round((req.a - list[0].start) * buf.sampleRate);
+      const to = Math.round((req.b - list[0].start) * buf.sampleRate);
+      if (from < 0 || to > buf.length || to - from < buf.sampleRate * 0.2) return reply({ ok: false, why: 'short' });
+      const ch0 = buf.getChannelData(0).slice(from, to);
+      const ch1 = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(from, to);
+      reply({ ok: true, sr: buf.sampleRate, a: req.a, b: req.b, ch0, ch1 });
+    } catch (e) {
+      reply({ ok: false, why: String((e && e.message) || e) });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -882,6 +972,7 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
   G.addEventListener('message', (e) => {
     if (e.source !== G || !e.data || e.data[TAG] !== 'cs') return;
     if (e.data.type === 'hello') postVideoInfo(true);
+    else if (e.data.type === 'loopAudio') loopAudio(e.data);
   });
   document.addEventListener('yt-navigate-finish', () => postVideoInfo(false), true);
   setInterval(() => postVideoInfo(false), 700);
@@ -3129,6 +3220,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
+    seamless: !IS_IOS, // loops play from memory: no gap at all between B and A
     mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
     waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
@@ -3265,7 +3357,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
       renderUI();
     }],
     ['playing', () => applyRate()],
-    ['pause', () => renderUI()],
+    ['pause', () => {
+      slStop();
+      renderUI();
+    }],
     ['seeked', () => (S.dirty = true)],
   ];
 
@@ -3281,6 +3376,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
       syncVideo();
     } else if (m.type === 'peaks') {
       onPeaks(m);
+    } else if (m.type === 'loopAudio') {
+      slOnAudio(m);
     }
   });
 
@@ -3476,6 +3573,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // At 100% speed the audio goes straight through, untouched.
   // ---------------------------------------------------------------------------
   const HQ = { ctx: null, node: null, src: null, video: null, mode: 'off', semis: null, failed: false, loading: false, lag: 0, analyser: null };
+  // Seamless loop state (see below).
+  const SL = { active: false, buf: null, bufKey: '', reqKey: '', reqId: 0, reqAt: 0, failKey: '', failAt: 0, wantKey: '', wantSince: 0,
+    src: null, gain: null, analyser: null, a: 0, len: 0, rate: 1, pos0: 0, ctx0: 0, loops: 0, useStretch: false, ourSeekAt: 0, minRms: 1, rmsTimer: 0 };
 
   function setPitchFlag(v, keep) {
     try {
@@ -3488,15 +3588,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
 
   // Called from taps/clicks in the panel: audio may only start after one.
   function hqGesture() {
-    if (!settings.hqAudio || HQ.failed) return;
+    if (!settings.hqAudio && !settings.seamless) return;
     if (HQ.ctx) {
       if (HQ.ctx.state !== 'running') HQ.ctx.resume().catch(() => {});
       return;
     }
-    if (typeof SignalsmithStretch !== 'function' || !window.AudioContext || !window.AudioWorkletNode) {
+    if (!window.AudioContext) {
       HQ.failed = true;
       return;
     }
+    const canStretch = typeof SignalsmithStretch === 'function' && !!window.AudioWorkletNode;
     try {
       HQ.ctx = new AudioContext({ latencyHint: 'playback' });
     } catch (e) {
@@ -3512,6 +3613,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) hqWake();
     });
+    if (!canStretch) {
+      HQ.failed = true; // no pitch engine here; seamless loops still work at 100%
+      return;
+    }
     HQ.loading = true;
     // eslint-disable-next-line no-undef
     SignalsmithStretch(HQ.ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] })
@@ -3561,60 +3666,287 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   // Routes the video's sound: straight through, or through the stretch engine.
+  // Takes over the video's sound (it then flows through our audio graph).
+  function hqRoute(v) {
+    if (HQ.video === v && HQ.src) return true;
+    if (!HQ.ctx || HQ.ctx.state !== 'running') return false;
+    try {
+      const src = HQ.ctx.createMediaElementSource(v);
+      if (HQ.src) {
+        try {
+          HQ.src.disconnect(); // an old, replaced video element
+        } catch (e) {
+          /* not connected */
+        }
+      }
+      HQ.src = src;
+      HQ.video = v;
+      HQ.mode = 'off'; // nothing is wired for this element yet
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Routes the video's sound: straight through, through the stretch engine,
+  // or (seamless loop) not at all, while the loop plays from memory.
   function updateHQ() {
     const v = S.video;
     if (!v) return;
-    const want = !!HQ.node && HQ.ctx.state === 'running' && hqWanted(v);
-    if (want && HQ.video !== v) {
-      try {
-        const src = HQ.ctx.createMediaElementSource(v); // from now on this video's sound flows through our graph
-        if (HQ.src) {
-          try {
-            HQ.src.disconnect(); // an old, replaced video element
-            HQ.node.disconnect(HQ.ctx.destination);
-          } catch (e) {
-            /* not connected */
-          }
-        }
-        HQ.src = src;
-        HQ.video = v;
-        HQ.mode = 'off'; // nothing is wired for this element yet
-      } catch (e) {
-        HQ.failed = true;
-      }
-    }
+    const want = !!HQ.node && !!HQ.ctx && HQ.ctx.state === 'running' && hqWanted(v);
+    if ((want || SL.active) && HQ.video !== v && !hqRoute(v) && want) HQ.failed = true;
     const routed = !!HQ.src && HQ.video === v;
-    const mode = routed ? (want && !HQ.failed ? 'stretch' : 'bypass') : 'off';
+    const mode = routed ? (SL.active ? 'seamless' : want && !HQ.failed ? 'stretch' : 'bypass') : 'off';
     if (routed && mode !== HQ.mode) {
       try {
         HQ.src.disconnect();
-        HQ.node.disconnect(HQ.ctx.destination);
       } catch (e) {
         /* not connected yet */
+      }
+      if (HQ.node) {
+        try {
+          HQ.node.disconnect(HQ.ctx.destination);
+        } catch (e) {
+          /* not connected yet */
+        }
       }
       if (mode === 'stretch') {
         HQ.src.connect(HQ.node);
         HQ.node.connect(HQ.ctx.destination);
-      } else {
+      } else if (mode === 'bypass') {
         HQ.src.connect(HQ.ctx.destination);
+      } else if (mode === 'seamless') {
+        // The video's own sound keeps flowing, at volume 0: Chrome moves the
+        // video on only while its sound is being played.
+        if (!HQ.mute) {
+          HQ.mute = HQ.ctx.createGain();
+          HQ.mute.gain.value = 0;
+          HQ.mute.connect(HQ.ctx.destination);
+        }
+        HQ.src.connect(HQ.mute);
+        if (HQ.node) HQ.node.connect(HQ.ctx.destination); // the loop's sound may go through it
       }
     }
     HQ.mode = mode;
-    if (mode === 'stretch') {
-      const semis = Math.round(-12 * Math.log2(v.playbackRate) * 1000) / 1000;
+    const stretchRate = mode === 'stretch' ? v.playbackRate : mode === 'seamless' && SL.useStretch ? SL.rate : null;
+    if (stretchRate != null && HQ.node) {
+      const semis = Math.round(-12 * Math.log2(stretchRate) * 1000) / 1000;
       if (semis !== HQ.semis) {
         HQ.semis = semis;
         HQ.node.schedule({ semitones: semis, formantCompensation: false });
       }
-      setPitchFlag(v, false); // tape-style input; the engine restores the pitch
-    } else {
-      HQ.semis = null;
-      setPitchFlag(v, settings.keepPitch);
-    }
+    } else HQ.semis = null;
+    setPitchFlag(v, mode === 'stretch' ? false : settings.keepPitch); // stretch: tape-style input, the engine restores the pitch
     if (hostEl) {
-      hostEl.dataset.hq = HQ.failed ? 'failed' : HQ.mode;
+      hostEl.dataset.hq = HQ.failed && mode !== 'seamless' ? 'failed' : HQ.mode;
       if (document.documentElement.dataset.ytlDebug === '1') hostEl.dataset.hqHz = String(hqPeakHz());
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Seamless loop: no gap at all between B and A.
+  // Jumping the video back always leaves a short silence. Instead the loop's
+  // audio is decoded at full quality and plays from memory, looping sample-
+  // exact; the video plays along silently, kept in step (lyrics, playhead).
+  // Slower speeds go through the same pitch engine. Falls back to the normal
+  // loop whenever it can't (not loaded yet, breath pause on, an ad...).
+  // ---------------------------------------------------------------------------
+
+  function slRegion() {
+    if (!settings.seamless || !loopActive() || settings.gap > 0) return null;
+    const r = loopRegion();
+    const b = effEnd();
+    if (!r || b - r.a < 0.25 || b - r.a > 180) return null;
+    return { a: r.a, b };
+  }
+
+  function slUsable(v) {
+    if (!HQ.ctx || HQ.ctx.state !== 'running' || S.scan || isAd()) return false;
+    if (!/^blob:/.test(v.currentSrc || v.src || '')) return false;
+    // Slowed down with the key kept needs the pitch engine.
+    return Math.abs(S.rate - 1) < 0.001 || !settings.keepPitch || !!HQ.node;
+  }
+
+  function slTick() {
+    const v = S.video;
+    const r = v ? slRegion() : null;
+    if (!v || !r || !slUsable(v)) return slStop();
+    const key = `${S.vid}|${r.a.toFixed(3)}|${r.b.toFixed(3)}`;
+    if (SL.bufKey !== key) {
+      slStop();
+      // Wait until the loop holds still (not while a flag is being dragged).
+      if (SL.wantKey !== key) {
+        SL.wantKey = key;
+        SL.wantSince = now();
+        return;
+      }
+      const retry = SL.failKey !== key || now() - SL.failAt > 3000;
+      if (now() - SL.wantSince > 150 && SL.reqKey !== key && retry) {
+        SL.reqKey = key;
+        SL.reqAt = now();
+        SL.reqId++;
+        postToPage({ type: 'loopAudio', id: SL.reqId, vid: S.vid, a: r.a, b: r.b, sr: HQ.ctx.sampleRate });
+      } else if (SL.reqKey === key && now() - SL.reqAt > 5000) SL.reqKey = ''; // no answer: ask again
+      return;
+    }
+    if (v.paused) return slStop();
+    if (!SL.active) {
+      const t = v.currentTime;
+      if (t >= r.a - 0.02 && t < r.b - 0.02) slStart(Math.max(0, t - r.a), r);
+      return;
+    }
+    slFollow(v, r);
+  }
+
+  function slOnAudio(m) {
+    if (m.id !== SL.reqId || m.vid !== S.vid || !HQ.ctx) return;
+    const key = SL.reqKey;
+    SL.reqKey = '';
+    if (!m.ok || !(m.ch0 instanceof Float32Array)) {
+      SL.failKey = key;
+      SL.failAt = now();
+      return;
+    }
+    try {
+      const buf = HQ.ctx.createBuffer(2, m.ch0.length, m.sr);
+      buf.copyToChannel(m.ch0, 0);
+      buf.copyToChannel(m.ch1 instanceof Float32Array ? m.ch1 : m.ch0, 1);
+      SL.buf = buf;
+      SL.bufKey = key;
+    } catch (e) {
+      SL.failKey = key;
+      SL.failAt = now();
+    }
+  }
+
+  function slWire() {
+    // The loop's sound: through the pitch engine when slowed with the key kept.
+    const useStretch = settings.keepPitch && Math.abs(SL.rate - 1) > 0.001 && !!HQ.node;
+    if (useStretch === SL.useStretch && SL.wired) return;
+    try {
+      SL.gain.disconnect();
+    } catch (e) {
+      /* not connected */
+    }
+    SL.gain.connect(useStretch ? HQ.node : HQ.ctx.destination);
+    if (SL.analyser) SL.gain.connect(SL.analyser);
+    SL.useStretch = useStretch;
+    SL.wired = true;
+  }
+
+  function slStart(offset, r) {
+    const v = S.video;
+    if (!hqRoute(v)) return;
+    const ctx = HQ.ctx;
+    if (!SL.gain) SL.gain = ctx.createGain();
+    if (document.documentElement.dataset.ytlDebug === '1' && !SL.analyser) slMonitor();
+    const src = ctx.createBufferSource();
+    src.buffer = SL.buf;
+    src.loop = true;
+    src.loopStart = 0;
+    src.loopEnd = SL.buf.duration;
+    SL.rate = v.playbackRate || 1;
+    src.playbackRate.value = SL.rate;
+    src.connect(SL.gain);
+    SL.wired = false;
+    slWire();
+    SL.gain.gain.value = v.muted ? 0 : v.volume;
+    const when = ctx.currentTime + 0.005;
+    src.start(when, Math.min(offset, SL.buf.duration - 0.001));
+    clearTimeout(S.wrapTimer);
+    S.wrapTimer = 0;
+    Object.assign(SL, { src, active: true, a: r.a, len: SL.buf.duration, pos0: offset, ctx0: when, loops: 0 });
+    updateHQ(); // the video's own sound goes quiet
+  }
+
+  function slStop() {
+    if (!SL.active && !SL.src) return;
+    if (SL.src) {
+      try {
+        SL.src.stop();
+      } catch (e) {
+        /* already stopped */
+      }
+      try {
+        SL.src.disconnect();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    SL.src = null;
+    SL.active = false;
+    updateHQ(); // the video's own sound again
+  }
+
+  // Song position of the loop's sound (without wrapping).
+  function slPos() {
+    return SL.pos0 + Math.max(0, HQ.ctx.currentTime - SL.ctx0) * SL.rate;
+  }
+
+  function slFollow(v, r) {
+    if (Math.abs(r.a - SL.a) > 0.001) return slStop();
+    // Speed changed (trainer, a speed button): change it at this very moment.
+    const rate = S.rate;
+    if (Math.abs(rate - SL.rate) > 0.0005) {
+      const t = HQ.ctx.currentTime;
+      SL.pos0 = slPos();
+      SL.ctx0 = t;
+      SL.rate = rate;
+      SL.src.playbackRate.setValueAtTime(rate, t);
+      slWire();
+      updateHQ();
+    }
+    SL.gain.gain.value = v.muted ? 0 : v.volume;
+    const p = slPos();
+    const loops = Math.floor(p / SL.len);
+    const want = SL.a + (p - loops * SL.len);
+    if (loops > SL.loops) {
+      // The sound went from B to A by itself; count the play and bring the video along.
+      SL.loops = loops;
+      SL.ourSeekAt = now();
+      try {
+        v.currentTime = want;
+      } catch (e) {
+        /* ignore */
+      }
+      loopCount();
+      renderUI();
+      return;
+    }
+    const off = v.currentTime - want;
+    if (Math.abs(off) > 0.15) {
+      if (now() - SL.ourSeekAt < 600 || v.seeking) return; // still catching up with our own jump
+      // You jumped somewhere yourself: the loop's sound follows.
+      const t = v.currentTime;
+      slStop();
+      if (t >= r.a - 0.02 && t < r.b - 0.02) slStart(t - r.a, r);
+    } else if (Math.abs(off) > 0.06 && now() - SL.ourSeekAt > 1000) {
+      SL.ourSeekAt = now(); // gently keep the picture in step
+      try {
+        v.currentTime = want;
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  // Debug/test: the quietest moment of the loop's sound (it must never drop out).
+  function slMonitor() {
+    SL.analyser = HQ.ctx.createAnalyser();
+    SL.analyser.fftSize = 256;
+    const data = new Float32Array(SL.analyser.fftSize);
+    SL.minRms = 1;
+    SL.rmsTimer = setInterval(() => {
+      if (!SL.active || HQ.ctx.currentTime < SL.ctx0 + 0.08) return; // the sound has not started yet
+      SL.analyser.getFloatTimeDomainData(data);
+      let sum = 0;
+      for (const x of data) sum += x * x;
+      const rms = Math.sqrt(sum / data.length);
+      if (rms < SL.minRms) {
+        SL.minRms = rms;
+        SL.minAt = ((slPos() % SL.len) + SL.len) % SL.len; // where in the loop
+      }
+    }, 4);
   }
 
   // Test/debug helper: the loudest frequency coming out of the engine.
@@ -3735,7 +4067,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function engineTick() {
-    if (!loopActive() || S.wrapping) return;
+    if (!loopActive() || S.wrapping || SL.active) return;
     const v = S.video;
     if (v.paused || v.seeking) return;
     const t = v.currentTime;
@@ -3760,35 +4092,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     S.wrapTimer = 0;
     if (now() - S.lastWrapAt < 60) return; // already wrapping this pass
     S.lastWrapAt = now();
-    S.reps++;
-    if (S.lineLoop) {
-      const ll = S.lineLoop;
-      if (ll.rep >= ll.ramp + ll.full) {
-        finishLinePractice();
-        return;
-      }
-      ll.rep++;
-      S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
-      applyRate();
-    }
-    if (S.trainer.running && !S.lineLoop) {
-      const tr = S.trainer;
-      // Plays 1..reps speed up (the last one is at the goal speed), then
-      // `after` more plays at the goal speed, then it stops at the loop start.
-      if (tr.after > 0 && tr.rep >= tr.reps + tr.after) {
-        finishTrainer();
-        return;
-      }
-      tr.rep++;
-      if (tr.rep > tr.reps && !tr.done) {
-        tr.done = true;
-        flash(tr.after > 0
-          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
-          : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
-      }
-      S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
-      applyRate();
-    }
+    if (!loopCount()) return;
     const gap = settings.gap;
     if (gap > 0) {
       S.wrapping = true;
@@ -3809,9 +4113,44 @@ if (typeof exports === 'object' && typeof module === 'object') {
     renderUI();
   }
 
+  // One more play of the loop: counts it, moves line practice / the trainer
+  // on (their speed for the next play). False when practice just finished.
+  function loopCount() {
+    S.reps++;
+    if (S.lineLoop) {
+      const ll = S.lineLoop;
+      if (ll.rep >= ll.ramp + ll.full) {
+        finishLinePractice();
+        return false;
+      }
+      ll.rep++;
+      S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
+      applyRate();
+    }
+    if (S.trainer.running && !S.lineLoop) {
+      const tr = S.trainer;
+      // Plays 1..reps speed up (the last one is at the goal speed), then
+      // `after` more plays at the goal speed, then it stops at the loop start.
+      if (tr.after > 0 && tr.rep >= tr.reps + tr.after) {
+        finishTrainer();
+        return false;
+      }
+      tr.rep++;
+      if (tr.rep > tr.reps && !tr.done) {
+        tr.done = true;
+        flash(tr.after > 0
+          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
+          : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
+      }
+      S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
+      applyRate();
+    }
+    return true;
+  }
+
   function onEnded() {
     // Backup: the loop ran to the very end (should be rare thanks to END_GUARD).
-    if (loopActive()) {
+    if (loopActive() && !SL.active) {
       wrap();
       if (!settings.gap) play();
     }
@@ -5769,6 +6108,15 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
+    ui.seamChk = h('input', { type: 'checkbox' });
+    ui.seamChk.checked = settings.seamless;
+    ui.seamChk.addEventListener('change', () => {
+      settings.seamless = ui.seamChk.checked;
+      saveSettings();
+      ui.seamChk.blur();
+      if (settings.seamless) hqGesture();
+      else slStop();
+    });
     ui.djMouseChk = h('input', { type: 'checkbox' });
     ui.djMouseChk.checked = settings.mouseDJ;
     ui.djMouseChk.addEventListener('change', () => {
@@ -5788,6 +6136,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
         IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
       TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
+      h('label', { class: 'check', title: 'Loops play from memory, so B runs straight into A with no gap at all (the video plays along silently).' }, ui.seamChk, 'Seamless loop (no gap)'),
       TOUCH ? null : h('label', { class: 'check', title: 'On: drag the wave like a record, click = play / pause, double-click = A then B (Shift+drag draws a loop). Off: click the start, then the end.' }, ui.djMouseChk, 'DJ mouse (drag the wave)'),
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
@@ -6291,6 +6640,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.quant = settings.quantize ? 'on' : '';
+    d.seamless = SL.active ? 'on' : SL.bufKey ? 'ready' : SL.reqKey ? 'loading' : '';
+    if (document.documentElement.dataset.ytlDebug === '1') d.slMinRms = SL.analyser ? `${SL.minRms.toFixed(3)}@${(SL.minAt || 0).toFixed(3)}` : '';
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
@@ -7389,6 +7740,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   let lastUIRefresh = 0;
   function frame() {
     try {
+      slTick();
       engineTick();
       liveTick();
       maybeComputeGrid();

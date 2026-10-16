@@ -275,6 +275,32 @@ await step('loop end is tight (overshoot under 80 ms)', async () => {
   assert(maxT - b < 0.08, `max time ${maxT.toFixed(3)} vs B ${b.toFixed(3)}`);
 });
 
+await step('seamless loop: B runs straight into A, the sound never drops out (measured every 4 ms)', async () => {
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  // A loop inside the loud part of the test tone (0 - 2 s is a steady loud tone).
+  await clickWaveAt(0.4);
+  await clickWaveAt(1.6);
+  let h = await host();
+  assert(Math.abs(Number(h.a) - 0.4) < 0.1 && Math.abs(Number(h.b) - 1.6) < 0.1, `loop ${h.a}-${h.b}`);
+  await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); });
+  await waitFor(async () => (await host()).seamless === 'on', 10000, 'seamless loop playing');
+  const r0 = Number((await host()).reps);
+  await waitFor(async () => Number((await host()).reps) >= r0 + 3, 10000, 'three jumps from B to A');
+  h = await host();
+  assert(parseFloat(h.slMinRms) > 0.2, `no gap: the quietest 5 ms of sound was ${h.slMinRms} RMS@position in the loop (the tone is about 0.5)`);
+  const v = await vstate();
+  assert(!v.paused && v.t >= Number(h.a) - 0.1 && v.t <= Number(h.b) + 0.15, `the video plays along inside the loop (t=${v.t.toFixed(2)})`);
+  // Speed changes go straight to the looping sound.
+  await shadowClick('button.speed', '75%');
+  await sleep(1500);
+  assert((await host()).seamless === 'on' && Math.abs((await vstate()).rate - 0.75) < 0.001, 'still seamless at 75%');
+  await shadowClick('button.speed', '100%');
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await waitFor(async () => (await host()).seamless !== 'on', 2000, 'pausing stops the loop sound');
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
+});
+
 await step('speed buttons 30% / 50% / 75% / 100% and keep-pitch', async () => {
   await shadowClick('button.speed', '30%');
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');

@@ -818,6 +818,7 @@
       if (!buf) buf = await decode(concat([job.init, job.media]));
     }
     if (!buf || !buf.length) return;
+    keepChunk(job, Math.max(0, buf.duration - skip));
     const chans = [];
     const from = Math.max(0, Math.min(buf.length, Math.round(skip * buf.sampleRate)));
     for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).subarray(from));
@@ -833,6 +834,95 @@
       mid: res.mid,
       high: res.high,
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Seamless loops: the audio of the loop, decoded at full quality, so the
+  // looper can play it from memory with no gap at all between B and A.
+  // The audio chunks of the current video are kept (a few MB per song).
+  // ---------------------------------------------------------------------------
+  const kept = new Map(); // vid -> [{ start, end, media, init, container, mp4 }]
+  let keptBytes = 0;
+  const KEEP_MAX = 96 * 1024 * 1024;
+
+  function keepChunk(job, durSec) {
+    if (!job.vid || !durSec) return;
+    let list = kept.get(job.vid);
+    if (!list) {
+      // Only the newest video's audio is kept.
+      for (const [v, l] of kept) {
+        for (const c of l) keptBytes -= c.media.length;
+        kept.delete(v);
+      }
+      list = [];
+      kept.set(job.vid, list);
+    }
+    const end = job.start + durSec;
+    // The same chunk decoded again (it grew): keep the bigger one.
+    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02);
+    if (i >= 0) {
+      if (list[i].media.length >= job.media.length) return;
+      keptBytes -= list[i].media.length;
+      list.splice(i, 1);
+    }
+    if (keptBytes + job.media.length > KEEP_MAX) return;
+    list.push({ start: job.start, end, media: job.media, init: job.init, container: job.container, mp4: job.mp4 });
+    keptBytes += job.media.length;
+    list.sort((a, b) => a.start - b.start);
+  }
+
+  // Contiguous chunks covering [a, b] (plus one before it as an Opus run-up).
+  function chunksFor(vid, a, b) {
+    const list = kept.get(vid) || [];
+    let i = list.findIndex((c) => c.end > a + 0.001);
+    if (i < 0 || list[i].start > a + 0.001) return null;
+    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1) i--; // run-up
+    const out = [list[i]];
+    while (out[out.length - 1].end < b - 0.001) {
+      const prev = out[out.length - 1];
+      const next = list.find((c) => c.start > prev.start + 0.01 && Math.abs(c.start - prev.end) < 0.1);
+      if (!next) return null;
+      out.push(next);
+    }
+    if (out.some((c) => c.init !== out[0].init || c.container !== out[0].container)) return null;
+    return out;
+  }
+
+  let fullCtx = null;
+  async function loopAudio(req) {
+    const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, ...extra });
+    try {
+      const sr = req.sr > 0 ? req.sr : 48000;
+      const list = chunksFor(req.vid, req.a, req.b);
+      if (!list) return reply({ ok: false, why: 'not loaded' });
+      const media = concat(list.map((c) => c.media));
+      if (!fullCtx || fullCtx.sampleRate !== sr) {
+        const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
+        fullCtx = new Ctor(2, 1, sr);
+      }
+      const dec = (bytes) => new Promise((resolve, reject) => {
+        const p = fullCtx.decodeAudioData(bytes.buffer, resolve, reject);
+        if (p && p.catch) p.catch(reject);
+      });
+      let buf = null;
+      if (list[0].container === 'mp4' && list[0].mp4 && list[0].mp4.asc) {
+        try {
+          const frags = mp4Fragments(media, list[0].mp4.timescale);
+          if (frags) buf = await dec(toAdts(frags.samples, list[0].mp4.asc));
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) buf = await dec(concat([list[0].init, media]));
+      const from = Math.round((req.a - list[0].start) * buf.sampleRate);
+      const to = Math.round((req.b - list[0].start) * buf.sampleRate);
+      if (from < 0 || to > buf.length || to - from < buf.sampleRate * 0.2) return reply({ ok: false, why: 'short' });
+      const ch0 = buf.getChannelData(0).slice(from, to);
+      const ch1 = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(from, to);
+      reply({ ok: true, sr: buf.sampleRate, a: req.a, b: req.b, ch0, ch1 });
+    } catch (e) {
+      reply({ ok: false, why: String((e && e.message) || e) });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -864,6 +954,7 @@
   G.addEventListener('message', (e) => {
     if (e.source !== G || !e.data || e.data[TAG] !== 'cs') return;
     if (e.data.type === 'hello') postVideoInfo(true);
+    else if (e.data.type === 'loopAudio') loopAudio(e.data);
   });
   document.addEventListener('yt-navigate-finish', () => postVideoInfo(false), true);
   setInterval(() => postVideoInfo(false), 700);
