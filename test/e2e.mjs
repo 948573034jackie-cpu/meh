@@ -810,6 +810,72 @@ await step('switching videos resets, coming back restores loop and cached wave',
   await waitFor(async () => Number((await host()).cov) > 0.95, 3000, 'cached waveform shown right away');
 });
 
+// The drum groove: 96 BPM (a beat every 0.625 s), the first "1" at 0.8 s.
+const BEAT = 0.625;
+const beatAt = (k) => 0.8 + k * BEAT;
+await step('beats: a 96 BPM drum groove gives the tempo, every beat and the bar "1"; kick / snare / hi-hat hits found', async () => {
+  await page.evaluate(() => window.__navigate('DRUM0001'));
+  await waitFor(async () => (await host()).vid === 'DRUM0001', 5000, 'drum video');
+  const h = await waitFor(async () => { const x = await host(); return x.bpm ? x : null; }, 60000, 'beats found');
+  assert(Math.abs(Number(h.bpm) - 96) <= 0.3, `tempo ${h.bpm} BPM (want 96)`);
+  const bars = (Number(h.bar1) - 0.8) / (4 * BEAT);
+  assert(Math.abs(bars - Math.round(bars)) < 0.02, `bar "1" on a real downbeat (${h.bar1} s)`);
+  assert(Math.abs(Number(h.beats) - 47) <= 2, `beats ${h.beats} (want about 47)`);
+  const [k, sn, hh] = h.hits.split(',').map(Number);
+  assert(k >= 20 && k <= 26 && sn >= 18 && sn <= 26 && hh >= 60, `drum hits kick ${k}, snare ${sn}, hat ${hh}`);
+  assert(h.waveStyle === 'drums', 'drum view by default on a computer');
+  await page.screenshot({ path: path.join(SHOTS, '10-drums.png') });
+});
+
+await step('quantize (Q): a click-click loop lands exactly on beats; ‹ › move by one beat', async () => {
+  if ((await host()).zoom) await shadowClick('button', 'Show the whole song');
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  await shadowClick('button.q-btn');
+  assert((await host()).quant === 'on', 'Q on');
+  await clickWaveAt(5.3);
+  await clickWaveAt(9.1);
+  let h = await host();
+  assert(Math.abs(Number(h.a) - beatAt(7)) < 0.03 && Math.abs(Number(h.b) - beatAt(13)) < 0.03, `loop on beats ${beatAt(7)}-${beatAt(13)} (got ${h.a}-${h.b})`);
+  await shadowClick('button', 'Move end later (Shift = fine, Alt = big)');
+  h = await host();
+  assert(Math.abs(Number(h.b) - beatAt(14)) < 0.03, `› moved B one beat (${h.b})`);
+  await shadowClick('button.q-btn');
+  assert((await host()).quant === '', 'Q off');
+  await shadowClick('button', 'Clear the loop');
+});
+
+await step('beat loops: 4 beats from the beat you are on, then 8 keeps the start; it loops on the grid', async () => {
+  await page.evaluate((t) => { const v = document.querySelector('#movie_player video'); v.currentTime = t; v.play().catch(() => {}); }, beatAt(14) + 0.3);
+  await sleep(150);
+  await shadowClick('button', 'Loop 4 beats from the beat you are on');
+  let h = await host();
+  assert(Math.abs(Number(h.a) - beatAt(14)) < 0.03 && Math.abs(Number(h.b) - beatAt(18)) < 0.03, `4 beats ${beatAt(14)}-${beatAt(18)} (got ${h.a}-${h.b})`);
+  await shadowClick('button', 'Loop 8 beats from the beat you are on');
+  h = await host();
+  assert(Math.abs(Number(h.a) - beatAt(14)) < 0.03 && Math.abs(Number(h.b) - beatAt(22)) < 0.03, `8 beats, same start (got ${h.a}-${h.b})`);
+  const on = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.beat-btn.on')].map((b) => b.textContent));
+  assert(JSON.stringify(on) === '["8"]', `8 lit (${on})`);
+  await waitFor(async () => Number((await host()).reps) >= 1, 9000, 'loops');
+  const t = (await vstate()).t;
+  assert(t >= beatAt(14) - 0.05 && t < beatAt(22) + 0.1, `inside the beat loop (t=${t.toFixed(2)})`);
+  await shadowClick('button', 'Clear the loop');
+});
+
+await step('grid tools: ½ and 2× tempo, move the "1"', async () => {
+  await shadowClick('button', 'Half the tempo (the grid has twice too many beats)');
+  assert(Number((await host()).bpm) === 48, `half: ${(await host()).bpm}`);
+  await shadowClick('button', 'Double the tempo (the grid has half the beats)');
+  assert(Number((await host()).bpm) === 96, 'back to 96');
+  const b0 = Number((await host()).bar1);
+  await shadowClick('button', 'Move the "1" (start of the bar) one beat later');
+  const b1 = Number((await host()).bar1);
+  assert(Math.abs(b1 - b0 - BEAT) < 0.03, `the 1 moved one beat (${b0} -> ${b1})`);
+  for (let i = 0; i < 3; i++) await shadowClick('button', 'Move the "1" (start of the bar) one beat later');
+  assert(Math.abs(Number((await host()).bar1) - b0) < 0.03, 'four moves: back where it was');
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
+});
+
 await step('a cappella video: lyrics line up with where the singing starts, by themselves', async () => {
   await page.evaluate(() => window.__navigate('ACAPELLA'));
   await waitFor(async () => (await lyr()).meta.startsWith('Song — Test Artist'), 6000, 'lyrics found without the word "acapella"');

@@ -321,3 +321,61 @@ test('a cappella timing: lyric lines land on where the singing starts', () => {
   const fine = C.snapToOnsets(lines, on, a.offset);
   lines.forEach((t, i) => assert.ok(Math.abs(t + a.offset + fine[i] - truth[i]) < 0.03, `line ${i}`));
 });
+
+// A drum pattern as the waveform bands would show it: kick on 1 and 3 (low),
+// snare on 2 and 4 (mid + high), hi-hats on eighths (high).
+function drumStore(beatTimes, dur, hats = true) {
+  const P = new C.PeakStore(50);
+  const n = Math.ceil(dur * 50);
+  const peak = new Uint8Array(n), low = new Uint8Array(n), mid = new Uint8Array(n), high = new Uint8Array(n);
+  const add = (arr, t, amp, decay) => { const b0 = Math.round(t * 50); for (let i = b0; i < Math.min(n, b0 + 15); i++) { const v = amp * Math.exp(-(i - b0) / decay); if (v > arr[i]) arr[i] = Math.round(v); } };
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  beatTimes.forEach((t, i) => {
+    const pos = i % 4;
+    if (pos === 0 || pos === 2) add(low, t, pos === 0 ? 220 : 200, 3);
+    if (pos === 1 || pos === 3) { add(mid, t, 170, 2.5); add(high, t, 180, 2.5); }
+    if (hats) { add(high, t, 90, 1.2); const next = beatTimes[i + 1]; if (next) add(high, (t + next) / 2, 80, 1.2); }
+  });
+  for (let i = 0; i < n; i++) { low[i] = Math.max(low[i], 20 + rnd() * 10); mid[i] = Math.max(mid[i], 30 + rnd() * 10); high[i] = Math.max(high[i], 10 + rnd() * 8); peak[i] = Math.max(low[i], mid[i], high[i]); }
+  for (let i = 0; i < Math.round((beatTimes[0] - 0.05) * 50); i++) peak[i] = low[i] = mid[i] = high[i] = 1;
+  P.add(0, peak, low, mid, high);
+  P.setDuration(dur);
+  return P;
+}
+
+test('beat grid: tempo, every beat within 15 ms, bar "1" right, also when the drummer speeds up', () => {
+  const cases = [];
+  const steady = []; for (let t = 0.8; t < 30; t += 0.625) steady.push(t);
+  cases.push(['96', steady, 30, 96]);
+  const drift = []; { let t = 1, bpm = 92; while (t < 60) { drift.push(t); t += 60 / bpm; bpm += 0.08; } }
+  cases.push(['92 to 100', drift, 60, null]);
+  const fast = []; for (let t = 0.5; t < 40; t += 60 / 140) fast.push(t);
+  cases.push(['140', fast, 40, 140]);
+  for (const [name, truth, dur, bpm] of cases) {
+    const g = C.beatGrid(drumStore(truth, dur), dur);
+    assert.ok(g, name);
+    if (bpm) assert.ok(Math.abs(g.bpm - bpm) <= 0.2, `${name}: bpm ${g.bpm}`);
+    for (const t of truth) {
+      const k = C.nearestBeatIndex(g.beats, t);
+      assert.ok(Math.abs(g.beats[k] - t) < 0.015, `${name}: beat at ${t.toFixed(3)} found at ${g.beats[k].toFixed(3)}`);
+    }
+    const i0 = C.nearestBeatIndex(g.beats, truth[0]);
+    assert.equal((((i0 - g.first) % 4) + 4) % 4, 0, `${name}: the first beat is a "1"`);
+  }
+});
+
+test('no beat grid without a steady beat; drum hits sorted into kick / snare / hat', () => {
+  const P = new C.PeakStore(50);
+  const pk = Uint8Array.from({ length: 1500 }, (_, i) => 80 + 40 * Math.sin(i / 37));
+  P.add(0, pk, pk.map(() => 10), pk, pk.map(() => 20));
+  assert.equal(C.beatGrid(P, 30), null);
+  const steady = []; for (let t = 0.8; t < 30; t += 0.625) steady.push(t);
+  const hits = C.drumHits(drumStore(steady, 30), 30);
+  const count = (k) => hits.filter((h) => h.kind === k).length;
+  assert.ok(Math.abs(count('kick') - 24) <= 1, `kicks ${count('kick')}`);
+  assert.ok(Math.abs(count('snare') - 23) <= 2, `snares ${count('snare')}`);
+  assert.ok(Math.abs(count('hat') - 94) <= 3, `hats ${count('hat')}`);
+  assert.equal(C.beatTime([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 12), 13, 'beats go on past the end at the same tempo');
+  assert.equal(C.nearestBeatIndex([1, 2, 3], 2.4), 1);
+});

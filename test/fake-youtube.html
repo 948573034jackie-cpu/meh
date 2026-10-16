@@ -53,7 +53,9 @@
     video.src = URL.createObjectURL(ms);
     await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
     ms.duration = M.duration;
-    const tracks = [M.audio, M.video].map((t) => ({ t, sb: ms.addSourceBuffer(t.mime), busy: false, inited: false }));
+    // Videos whose id starts with DRUM play the 96 BPM drum groove.
+    const audioTrack = /^DRUM/.test(currentVid || '') && M.drums ? M.drums : M.audio;
+    const tracks = [audioTrack, M.video].map((t) => ({ t, sb: ms.addSourceBuffer(t.mime), busy: false, inited: false }));
     const get = async (u) => new Uint8Array(await (await fetch('/__fx/' + u)).arrayBuffer());
     const append = (tr, bytes) => new Promise((res) => {
       tr.sb.addEventListener('updateend', res, { once: true });
@@ -80,7 +82,7 @@
           } else {
             await append(tr, bytes);
           }
-          if (tr.t === M.audio) window.__fake.appended.push(seg.url);
+          if (tr.t === audioTrack) window.__fake.appended.push(seg.url);
         } else if (tr.t.segs.every((s) => have(s) || s.end <= t) && ms.readyState === 'open' && t > M.duration - 5) {
           if (tracks.every((x) => !x.sb.updating)) { try { ms.endOfStream(); } catch (e) {} }
         }

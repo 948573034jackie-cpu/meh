@@ -1889,6 +1889,233 @@ globalThis.YTL_STORAGE = (() => {
     return out;
   }
 
+  // ---------------------------------------------------------------------------
+  // Beats: tempo, every beat (following small tempo changes), bar "1"s, and
+  // the drum hits (kick / snare / hi-hat) from the low / mid / high bands.
+  // ---------------------------------------------------------------------------
+
+  /** Onset strength per bin: how much each band jumps up (drum hits). */
+  function drumFlux(P, n) {
+    const len = Math.min(n, P.n);
+    const kick = new Float32Array(len);
+    const snare = new Float32Array(len);
+    const hat = new Float32Array(len);
+    const env = new Float32Array(len);
+    for (let i = 1; i < len; i++) {
+      if (!P.cov[i] || !P.cov[i - 1]) continue;
+      const dl = Math.max(0, P.low[i] - P.low[i - 1]);
+      const dm = Math.max(0, P.mid[i] - P.mid[i - 1]);
+      const dh = Math.max(0, P.high[i] - P.high[i - 1]);
+      kick[i] = dl;
+      snare[i] = Math.min(dm, dh * 1.5) + 0.25 * dm; // noise burst across mids and highs
+      hat[i] = dh;
+      env[i] = dl + 0.6 * dm + 0.8 * dh;
+    }
+    return { kick, snare, hat, env };
+  }
+
+  function normalize(a) {
+    let s = 0;
+    let s2 = 0;
+    for (const v of a) {
+      s += v;
+      s2 += v * v;
+    }
+    const mean = s / (a.length || 1);
+    const sd = Math.sqrt(Math.max(1e-9, s2 / (a.length || 1) - mean * mean));
+    return Float32Array.from(a, (v) => (v - mean) / sd);
+  }
+
+  /** Tempo from the onset envelope: { period (bins), bpm, confidence 0..1 }. */
+  function estimateTempo(env, binRate, minBpm = 60, maxBpm = 200) {
+    const e = normalize(env);
+    const n = e.length;
+    const lo = Math.floor((60 * binRate) / maxBpm);
+    const hi = Math.ceil((60 * binRate) / minBpm);
+    const ac = new Float32Array(hi + 2);
+    for (let L = lo - 1; L <= hi + 1; L++) {
+      let s = 0;
+      for (let i = L; i < n; i++) s += e[i] * e[i - L];
+      ac[L] = s / (n - L);
+    }
+    // Prefer common tempos (around 120 BPM), as people tap along.
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let L = lo; L <= hi; L++) {
+      const bpm = (60 * binRate) / L;
+      const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
+      const sc = ac[L] * w;
+      if (sc > bestScore && ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1]) {
+        bestScore = sc;
+        best = L;
+      }
+    }
+    if (best < 0) return { period: 0, bpm: 0, confidence: 0 };
+    // Sub-bin period: parabola through the peak.
+    const y0 = ac[best - 1];
+    const y1 = ac[best];
+    const y2 = ac[best + 1];
+    const den = y0 - 2 * y1 + y2;
+    const p = best + (den < 0 ? (0.5 * (y0 - y2)) / den : 0);
+    return { period: p, bpm: (60 * binRate) / p, confidence: Math.max(0, Math.min(1, y1)) };
+  }
+
+  /**
+   * Beat tracking by dynamic programming (Ellis 2007): every beat lands on a
+   * strong onset while the gaps stay close to the tempo, so it follows a
+   * drummer who speeds up or slows down a little. Returns beat times in bins
+   * (fractional).
+   */
+  function trackBeatBins(env, period, tightness = 300) {
+    const n = env.length;
+    const e = normalize(env);
+    const score = new Float32Array(n);
+    const back = new Int32Array(n).fill(-1);
+    const pMin = Math.round(period / 2);
+    const pMax = Math.round(period * 2);
+    for (let t = 0; t < n; t++) {
+      let best = -Infinity;
+      let arg = -1;
+      for (let tau = t - pMax; tau <= t - pMin; tau++) {
+        if (tau < 0) continue;
+        const d = Math.log((t - tau) / period);
+        const v = score[tau] - tightness * d * d;
+        if (v > best) {
+          best = v;
+          arg = tau;
+        }
+      }
+      score[t] = e[t] + (arg >= 0 ? Math.max(0, best) : 0);
+      back[t] = arg >= 0 && best > 0 ? arg : -1;
+    }
+    // Best end point in the last period, then follow the links back.
+    let t = n - 1;
+    let bestEnd = -Infinity;
+    for (let k = Math.max(0, n - Math.round(period)); k < n; k++) {
+      if (score[k] > bestEnd) {
+        bestEnd = score[k];
+        t = k;
+      }
+    }
+    const beats = [];
+    while (t >= 0) {
+      beats.push(t);
+      t = back[t];
+    }
+    beats.reverse();
+    // Sub-bin position: parabola through the local onset peak.
+    return beats.map((b) => {
+      let k = b;
+      for (let j = Math.max(1, b - 2); j <= Math.min(n - 2, b + 2); j++) if (env[j] > env[k]) k = j;
+      const y0 = env[k - 1] || 0;
+      const y1 = env[k] || 0;
+      const y2 = env[k + 1] || 0;
+      const den = y0 - 2 * y1 + y2;
+      return k + (den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / den)) : 0);
+    });
+  }
+
+  /**
+   * The whole beat grid for a song: { bpm, beats: [seconds], first: index of
+   * the first bar's "1", confidence } or null when there is no steady beat
+   * (e.g. a cappella).
+   */
+  function beatGrid(P, durationSec) {
+    const br = P.binRate;
+    const n = Math.min(P.n, Math.ceil(durationSec * br));
+    if (n < br * 4) return null;
+    const f = drumFlux(P, n);
+    // Light smoothing so a hit spread over two bins counts once.
+    const env = new Float32Array(n);
+    for (let i = 0; i < n; i++) env[i] = f.env[i] + 0.5 * ((f.env[i - 1] || 0) + (f.env[i + 1] || 0));
+    const tempo = estimateTempo(env, br);
+    if (!tempo.period || tempo.confidence < 0.08) return null;
+    let bins = trackBeatBins(env, tempo.period);
+    // No beats in the silence before the music starts or after it ends.
+    let firstSound = 0;
+    while (firstSound < n && !(P.cov[firstSound] && P.peak[firstSound] > P.maxPeak * 0.08)) firstSound++;
+    let lastSound = n - 1;
+    while (lastSound > 0 && !(P.cov[lastSound] && P.peak[lastSound] > P.maxPeak * 0.08)) lastSound--;
+    bins = bins.filter((b) => b >= firstSound - tempo.period * 0.25 && b <= lastSound + tempo.period * 0.25);
+    if (bins.length < 8) return null;
+    // Bar "1": kick on 1 and 3, snare on 2 and 4 (4/4); ties go to the first
+    // beat of the music being a "1".
+    const near = (a, b) => {
+      let m = 0;
+      const k = Math.round(b);
+      for (let j = Math.max(0, k - 1); j <= Math.min(a.length - 1, k + 1); j++) if (a[j] > m) m = a[j];
+      return m;
+    };
+    const K = bins.map((b) => near(f.kick, b));
+    const S = bins.map((b) => near(f.snare, b));
+    const meanK = K.reduce((s, v) => s + v, 0) / K.length || 1;
+    let first = 0;
+    let bestSc = -Infinity;
+    for (let ph = 0; ph < 4; ph++) {
+      let sc = 0;
+      bins.forEach((_, i) => {
+        const pos = (((i - ph) % 4) + 4) % 4;
+        if (pos === 0) sc += K[i] * 1.15;
+        else if (pos === 2) sc += K[i];
+        else sc += S[i] * 0.9;
+      });
+      if (ph === 0) sc += meanK * 2; // the music usually starts on a "1"
+      if (sc > bestSc) {
+        bestSc = sc;
+        first = ph;
+      }
+    }
+    const beats = bins.map((b) => b / br);
+    // Average tempo over the whole song (a single gap is only 20 ms exact).
+    const avg = (beats[beats.length - 1] - beats[0]) / (beats.length - 1);
+    return { bpm: Math.round(600 / avg) / 10, beats, first, confidence: tempo.confidence };
+  }
+
+  /** Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}] */
+  function drumHits(P, durationSec) {
+    const br = P.binRate;
+    const n = Math.min(P.n, Math.ceil(durationSec * br));
+    const f = drumFlux(P, n);
+    const pick = (a, kind, pct) => {
+      const vals = Array.from(a).filter((v) => v > 0).sort((x, y) => x - y);
+      if (vals.length < 10) return [];
+      // Above the background (noise makes many small jumps), relative to the loudest hits.
+      const thr = Math.max(6, vals[Math.floor(vals.length * pct)], vals[Math.floor(vals.length * 0.995)] * 0.35);
+      const out = [];
+      for (let i = 1; i < a.length - 1; i++) {
+        if (a[i] > thr && a[i] >= a[i - 1] && a[i] > a[i + 1]) {
+          if (out.length && i / br - out[out.length - 1].t < 0.06) continue; // one hit, not two
+          out.push({ t: i / br, kind, v: Math.min(1, a[i] / (thr * 3)) });
+        }
+      }
+      return out;
+    };
+    return [...pick(f.kick, 'kick', 0.8), ...pick(f.snare, 'snare', 0.85), ...pick(f.hat, 'hat', 0.8)].sort((x, y) => x.t - y.t);
+  }
+
+  /** Index of the beat nearest to t (beats sorted). */
+  function nearestBeatIndex(beats, t) {
+    let lo = 0;
+    let hi = beats.length - 1;
+    if (hi < 0) return -1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (beats[mid] < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo > 0 && Math.abs(beats[lo - 1] - t) <= Math.abs(beats[lo] - t) ? lo - 1 : lo;
+  }
+
+  /** Time of beat i, also before the first / after the last beat (same tempo). */
+  function beatTime(beats, i) {
+    if (!beats.length) return 0;
+    if (i >= 0 && i < beats.length) return beats[i];
+    const k = Math.min(8, beats.length - 1);
+    if (i < 0) return beats[0] + i * ((beats[k] - beats[0]) / k);
+    const L = beats.length - 1;
+    return beats[L] + (i - L) * ((beats[L] - beats[L - k]) / k);
+  }
+
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
@@ -1896,6 +2123,7 @@ globalThis.YTL_STORAGE = (() => {
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
     isChord, chordLine, parseChordSheet, alignChordSheet, mapChordsToText, lineSim, transposeChord, prefersFlats,
     detectSections, findOnsets, alignToOnsets, snapToOnsets,
+    drumFlux, estimateTempo, trackBeatBins, beatGrid, drumHits, nearestBeatIndex, beatTime,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -2224,6 +2452,17 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .rate { min-width: 38px; font-size: 12.5px; }
 }
 
+
+/* Beats: Q, beat loops, tempo, drum view */
+.group.beats { gap: 4px; }
+.beat-loops { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: #121722; border: 1px solid var(--line); }
+button.beat-btn { min-width: 30px; padding: 0 6px; font-weight: 700; font-variant-numeric: tabular-nums; border-color: transparent; background: transparent; }
+button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
+button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
+button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
+button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
+button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3; }
+.bpm { min-width: 74px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: #ffb74d; }
 `;
 
 /*
@@ -2791,6 +3030,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     hqV: 1,
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     lineRest: 0, // Practice: seconds of rest between parts
+    quantize: false, // Q: A and B snap to the beat
+    waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
   };
@@ -2802,6 +3043,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // State
   // ---------------------------------------------------------------------------
   const S = {
+    gridBase: null, // beats found in this video's wave: { vid, g, hits }
+    grid: null, // the beat grid in use (after ½ / 2× / move-the-1)
+    gridAdj: { scale: 1, shift: 0 },
+    gridTried: 0,
     vid: null,
     mainVid: null,
     video: null,
@@ -3007,6 +3252,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     S.orphan = null;
     resetLyrics();
+    S.gridBase = null;
+    S.grid = null;
+    S.gridAdj = { scale: 1, shift: 0 };
+    S.gridTried = 0;
     S.dirty = true;
     renderUI();
     if (vid) loadVideoData(vid);
@@ -3027,6 +3276,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const st = r['ytl:v:' + vid];
     if (st) {
       const num = Number.isFinite;
+      if (st.gridAdj && [0.5, 1, 2].includes(st.gridAdj.scale)) {
+        S.gridAdj = { scale: st.gridAdj.scale, shift: ((st.gridAdj.shift | 0) % 4 + 4) % 4 };
+        applyGridAdj();
+      }
       if (Array.isArray(st.saved)) S.saved = st.saved.filter((x) => x && num(x.a) && num(x.b) && x.b > x.a).slice(0, 30);
       if (num(st.a) && num(st.b) && st.b > st.a) {
         S.a = st.a;
@@ -3054,7 +3307,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     clearTimeout(videoStateTimer);
     if (!S.vid) return;
     const hasLoop = S.a != null && S.b != null;
-    if (!hasLoop && !S.saved.length && !S.rateOwned) {
+    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift) {
       storage.remove('ytl:v:' + S.vid);
       return;
     }
@@ -3066,6 +3319,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         rate: S.rate,
         rateOwned: S.rateOwned,
         saved: S.saved,
+        gridAdj: S.gridAdj.scale !== 1 || S.gridAdj.shift ? S.gridAdj : undefined,
         t: Date.now(),
       },
     });
@@ -3634,7 +3888,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function markA() {
-    const t = nowTime();
+    const t = qT(nowTime());
     if (TOUCH) {
       // Touch, like a DJ app's loop in / loop out: A marks the start where the
       // playhead is, B marks the end. Stop, drag the wave to the spot, tap A;
@@ -3658,7 +3912,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function markB() {
-    const t = nowTime();
+    const t = qT(nowTime());
     if (TOUCH) {
       const a = S.pendingA != null ? S.pendingA : S.a;
       if (a == null) return flash('Tap A first, where the loop should start.');
@@ -3671,8 +3925,167 @@ if (typeof exports === 'object' && typeof module === 'object') {
     setLoop(a, t, { fresh: S.pendingA != null });
   }
 
+  // ---------------------------------------------------------------------------
+  // Beats: the grid (1 2 3 4), quantize, DJ beat loops
+  // ---------------------------------------------------------------------------
+  const BEAT_LOOPS = [1, 2, 4, 8, 16];
+
+  // Works out the beats once the whole wave has been read.
+  function maybeComputeGrid() {
+    const d = dur();
+    if (!S.vid || !d || (S.gridBase && S.gridBase.vid === S.vid) || S.scan) return;
+    if (S.peaks.coverage(d) < 0.9 || now() - S.gridTried < 3000) return;
+    S.gridTried = now();
+    let g = null;
+    let hits = [];
+    try {
+      g = C.beatGrid(S.peaks, d);
+      hits = C.drumHits(S.peaks, d);
+    } catch (e) {
+      g = null;
+    }
+    S.gridBase = { vid: S.vid, g, hits };
+    applyGridAdj();
+    if (settings.quantize && hasLoop() && S.pendingA == null && S.grid) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
+    layers.key = '';
+    S.dirty = true;
+    renderUI();
+  }
+
+  // ½ / 2× tempo and "move the 1" on top of what was found.
+  function applyGridAdj() {
+    const base = S.gridBase && S.gridBase.g;
+    if (!base) {
+      S.grid = null;
+      return;
+    }
+    let beats = base.beats.slice();
+    let first = base.first;
+    const sc = S.gridAdj.scale;
+    if (sc === 2) {
+      const out = [];
+      beats.forEach((b, i) => {
+        out.push(b);
+        if (i + 1 < beats.length) out.push((b + beats[i + 1]) / 2);
+      });
+      beats = out;
+      first *= 2;
+    } else if (sc === 0.5) {
+      const start = first % 2;
+      beats = beats.filter((_, i) => i % 2 === start);
+      first = (first - start) / 2;
+    }
+    first = (first + S.gridAdj.shift) % 4;
+    S.grid = { bpm: Math.round(base.bpm * sc * 10) / 10, beats, first };
+  }
+
+  function adjustGrid(kind) {
+    if (!S.gridBase || !S.gridBase.g) return flash(gridMissingText());
+    const a = S.gridAdj;
+    if (kind === 'half') a.scale = a.scale === 2 ? 1 : 0.5;
+    else if (kind === 'double') a.scale = a.scale === 0.5 ? 1 : 2;
+    else if (kind === 'shift') a.shift = (a.shift + 1) % 4;
+    applyGridAdj();
+    if (settings.quantize && hasLoop() && S.pendingA == null) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
+    S.dirty = true;
+    renderUI();
+    saveVideoStateSoon();
+    if (kind === 'shift') flash('The "1" moved one beat later.', 2500);
+    else flash(`Tempo: ${S.grid.bpm} BPM.`, 2500);
+  }
+
+  function gridMissingText() {
+    if (!dur() || S.peaks.coverage(dur()) < 0.9) return 'Reading the beats… (the whole song needs to be read first)';
+    return 'No steady beat found in this song.';
+  }
+
+  // Quantize: a time moved onto the nearest beat (when Q is on).
+  function qT(t) {
+    if (!settings.quantize || !S.grid || t == null) return t;
+    const B = S.grid.beats;
+    const k = C.nearestBeatIndex(B, t);
+    // Before the first / after the last beat the grid goes on at the same tempo.
+    const per = 60 / S.grid.bpm;
+    if (t < B[0] - per / 2) return Math.max(0, C.beatTime(B, Math.round((t - B[0]) / per)));
+    if (t > B[B.length - 1] + per / 2) return Math.min(dur(), C.beatTime(B, B.length - 1 + Math.round((t - B[B.length - 1]) / per)));
+    return B[k];
+  }
+
+  function toggleQuantize() {
+    settings.quantize = !settings.quantize;
+    saveSettings();
+    if (settings.quantize && !S.grid) flash(gridMissingText(), 4000);
+    else if (settings.quantize && hasLoop() && S.pendingA == null) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
+    else if (settings.quantize && S.pendingA != null) S.pendingA = qT(S.pendingA);
+    S.dirty = true;
+    renderUI();
+  }
+
+  // DJ beat loop: n beats from the beat you are on. With a loop already
+  // running on the grid, it keeps the start and changes the length.
+  function beatLoop(n) {
+    const G = S.grid;
+    const v = S.video;
+    if (!G || !v) return flash(gridMissingText());
+    const B = G.beats;
+    let ia;
+    const onGrid = (x) => Math.abs(B[C.nearestBeatIndex(B, x)] - x) < 0.03;
+    const keep = hasLoop() && S.loopOn && S.pendingA == null && onGrid(S.a);
+    if (keep) ia = C.nearestBeatIndex(B, S.a);
+    else {
+      const t = v.currentTime;
+      ia = C.nearestBeatIndex(B, t);
+      if (B[ia] > t + 0.05) ia--; // the beat you are on, not the next one
+      ia = Math.max(0, ia);
+    }
+    const a = C.beatTime(B, ia);
+    const b = Math.min(dur(), C.beatTime(B, ia + n));
+    if (stopLineIfAny()) {
+      /* line practice gives way to the beat loop */
+    }
+    if (setLoop(a, b, { play: true, fresh: !keep })) flash(`Loop: ${n} beat${n > 1 ? 's' : ''}.`, 1500);
+  }
+
+  function stopLineIfAny() {
+    if (S.lineLoop || PR.on) {
+      stopLineLoop(true);
+      return true;
+    }
+    return false;
+  }
+
+  // Beats in the current loop (when it sits on the grid), for the buttons.
+  function loopBeats() {
+    const G = S.grid;
+    if (!G || !hasLoop() || S.pendingA != null) return 0;
+    const B = G.beats;
+    const ia = C.nearestBeatIndex(B, S.a);
+    const ib = C.nearestBeatIndex(B, S.b);
+    const ok = (x, i) => Math.abs(C.beatTime(B, i) - x) < 0.03;
+    if (ok(S.a, ia) && ok(S.b, ib)) return ib - ia;
+    // B past the last beat: count on at the same tempo.
+    const per = 60 / G.bpm;
+    const n = Math.round((S.b - S.a) / per);
+    return ok(S.a, ia) && Math.abs(C.beatTime(B, ia + n) - S.b) < 0.03 ? n : 0;
+  }
+
+  function toggleDrumView() {
+    settings.waveStyle = settings.waveStyle === 'drums' ? 'color' : 'drums';
+    saveSettings();
+    layers.key = '';
+    S.dirty = true;
+    renderUI();
+  }
+
   function nudge(which, delta) {
     if (!hasLoop()) return;
+    if (settings.quantize && S.grid) {
+      // With Q on, ‹ › move by one beat.
+      const B = S.grid.beats;
+      const cur = which === 'a' ? S.a : S.b;
+      const i = C.nearestBeatIndex(B, cur) + (delta > 0 ? 1 : -1);
+      delta = C.beatTime(B, i) - cur;
+    }
     const a = which === 'a' ? S.a + delta : S.a;
     const b = which === 'b' ? S.b + delta : S.b;
     if (b - a < C.MIN_LOOP) return flash(`Can't move it that far: A would pass B. Move the other point first.`);
@@ -5072,6 +5485,40 @@ if (typeof exports === 'object' && typeof module === 'object') {
   let shadow = null;
   const ui = {};
 
+  // Beats: Q (quantize), DJ beat loops, tempo and the drum view.
+  function buildBeatGroup() {
+    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on a beat (1 2 3 4). ‹ › move by one beat.', toggleQuantize, 'q-btn');
+    ui.beatBtns = BEAT_LOOPS.map((n) => {
+      const b = btn(String(n), `Loop ${n} beat${n > 1 ? 's' : ''} from the beat you are on`, () => beatLoop(n), 'beat-btn');
+      b.dataset.n = String(n);
+      return b;
+    });
+    ui.bpm = h('span', { class: 'bpm', title: 'Tempo found in the song (beats per minute)', text: '— BPM' });
+    ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
+    return h('div', { class: 'group beats hide-phone' },
+      ui.qBtn,
+      h('span', { class: 'beat-loops' }, ...ui.beatBtns),
+      ui.bpm,
+      btn('½', 'Half the tempo (the grid has twice too many beats)', () => adjustGrid('half'), 'grid-btn'),
+      btn('2×', 'Double the tempo (the grid has half the beats)', () => adjustGrid('double'), 'grid-btn'),
+      btn('1▸', 'Move the "1" (start of the bar) one beat later', () => adjustGrid('shift'), 'grid-btn'),
+      ui.drumBtn);
+  }
+
+  function renderBeats() {
+    if (!ui.qBtn) return;
+    const G = S.grid;
+    ui.qBtn.classList.toggle('on', !!settings.quantize);
+    ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
+    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : '— BPM';
+    ui.bpm.title = G ? 'Tempo found in the song (beats per minute)' : gridMissingText();
+    const n = loopBeats();
+    for (const b of ui.beatBtns) {
+      b.classList.toggle('on', !!n && S.loopOn && Number(b.dataset.n) === n);
+      b.disabled = !G;
+    }
+  }
+
   function buildPanel() {
     hostEl = document.createElement('div');
     hostEl.id = 'ytl-wave-looper';
@@ -5226,7 +5673,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const transport = h('div', { class: 'row bar transport' },
       h('div', { class: 'group' }, ui.backBtn, ui.playBtn, ui.fwdBtn),
       h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn),
-      h('div', { class: 'group' }, ui.aMark, ui.bMark));
+      h('div', { class: 'group' }, ui.aMark, ui.bMark),
+      buildBeatGroup());
     ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
@@ -5686,6 +6134,13 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
     markLyricsAB();
     d.abStart = L.abStart == null ? '' : String(L.abStart);
+    renderBeats();
+    d.bpm = S.grid ? String(S.grid.bpm) : '';
+    d.beats = S.grid ? String(S.grid.beats.length) : '';
+    d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
+    d.quant = settings.quantize ? 'on' : '';
+    d.waveStyle = settings.waveStyle;
+    d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
     d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
     d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
     d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
@@ -5869,7 +6324,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const W = Math.max(1, Math.round(g.w * dpr));
     const H = Math.max(1, Math.round(g.waveH * dpr));
     const { s, e } = viewRange();
-    const key = [W, H, s.toFixed(4), e.toFixed(4), S.peaks.version, S.peaks.n, g.miniH].join('|');
+    const key = [W, H, s.toFixed(4), e.toFixed(4), S.peaks.version, S.peaks.n, g.miniH, settings.waveStyle].join('|');
     if (key === layers.key) return;
     layers.key = key;
     for (const k of ['bright', 'dim']) {
@@ -5938,7 +6393,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
       col[x] = C.bandColor(lo / c, mi / c, hi / c);
     }
     const shape = (v) => Math.max(dpr * 0.75, Math.pow(v * norm, 0.8) * amp);
-    for (let x = 0; x < W; x++) {
+    if (settings.waveStyle === 'drums') drawDrumColumns(bctx, dctx, W, H, s, span, dpr);
+    else for (let x = 0; x < W; x++) {
       const cc = col[x];
       if (!cc) {
         bctx.fillStyle = 'rgba(140,150,170,0.16)';
@@ -6001,6 +6457,135 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
   }
 
+  // Drum view: the three bands drawn on top of each other, like a DJ deck's
+  // 3-band wave. Kick and bass (low) in red, the middle in amber, snare and
+  // hi-hats (high) in ice white, each scaled to its own loudest moment, so a
+  // quiet hi-hat still shows next to a loud kick.
+  function drawDrumColumns(bctx, dctx, W, H, s, span, dpr) {
+    const P = S.peaks;
+    const br = P.binRate;
+    if (layers.bandMaxVer !== P.version) {
+      let ml = 1;
+      let mm = 1;
+      let mh = 1;
+      for (let i = 0; i < P.n; i++) {
+        if (!P.cov[i]) continue;
+        if (P.low[i] > ml) ml = P.low[i];
+        if (P.mid[i] > mm) mm = P.mid[i];
+        if (P.high[i] > mh) mh = P.high[i];
+      }
+      layers.bandMax = [ml, mm, mh];
+      layers.bandMaxVer = P.version;
+    }
+    const [ml, mm, mh] = layers.bandMax;
+    const mid = H / 2;
+    const amp = mid - 2 * dpr;
+    // Below the quiet floor of each band nothing is drawn, so hits stand out.
+    const lift = (v, m) => Math.max(0, (v / m - 0.12) / 0.88);
+    const bands = [
+      { arr: P.low, m: ml, col: [255, 84, 54], a: 0.95, k: 1.0 },
+      { arr: P.mid, m: mm, col: [255, 183, 77], a: 0.6, k: 0.78 },
+      { arr: P.high, m: mh, col: [205, 240, 255], a: 0.95, k: 0.62 },
+    ];
+    for (let x = 0; x < W; x++) {
+      const t0 = s + (x / W) * span;
+      const t1 = s + ((x + 1) / W) * span;
+      const b0 = Math.floor(t0 * br);
+      const b1 = Math.min(P.n, Math.max(b0 + 1, Math.floor(t1 * br)));
+      let covered = false;
+      const vals = [0, 0, 0];
+      for (let b = b0; b < b1; b++) {
+        if (!P.cov[b]) continue;
+        covered = true;
+        if (P.low[b] > vals[0]) vals[0] = P.low[b];
+        if (P.mid[b] > vals[1]) vals[1] = P.mid[b];
+        if (P.high[b] > vals[2]) vals[2] = P.high[b];
+      }
+      if (!covered) {
+        bctx.fillStyle = 'rgba(140,150,170,0.16)';
+        bctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
+        continue;
+      }
+      bands.forEach((bd, j) => {
+        const h = Math.pow(lift(vals[j], bd.m), 1.35) * amp * bd.k;
+        if (h < dpr * 0.5) return;
+        const [r, g2, b2] = bd.col;
+        bctx.fillStyle = `rgba(${r},${g2},${b2},${bd.a})`;
+        bctx.fillRect(x, mid - h, 1, h * 2);
+        const gr = Math.round((r + g2 + b2) / 3);
+        dctx.fillStyle = `rgba(${Math.round(r * 0.4 + gr * 0.6)},${Math.round(g2 * 0.4 + gr * 0.6)},${Math.round(b2 * 0.4 + gr * 0.6)},${bd.a * 0.45})`;
+        dctx.fillRect(x, mid - h, 1, h * 2);
+      });
+    }
+  }
+
+  // Beat grid: bar lines with the bar number, beat lines, and 1 2 3 4 when
+  // zoomed in far enough to read them.
+  function drawGrid(ctx, g, top, wh) {
+    const G = S.grid;
+    if (!G) return;
+    const { s, e } = viewRange();
+    const pxBeat = ((60 / G.bpm) / (e - s)) * g.w;
+    if (pxBeat < 2.5) return;
+    const B = G.beats;
+    ctx.font = '600 10.5px Roboto, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    for (let i = Math.max(0, C.nearestBeatIndex(B, s) - 1); i < B.length && B[i] <= e + 0.01; i++) {
+      const x = Math.round(xAt(B[i], g));
+      if (x < -1 || x > g.w + 1) continue;
+      const pos = (((i - G.first) % 4) + 4) % 4;
+      const bar = Math.floor((i - G.first) / 4) + 1;
+      if (pos === 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.34)';
+        ctx.fillRect(x, top, 1, wh);
+        if (pxBeat * 4 >= 22 && bar >= 1) {
+          ctx.fillStyle = 'rgba(255,255,255,0.7)';
+          ctx.fillText(pxBeat >= 26 ? `${bar}.1` : String(bar), x + 3, top + 3);
+        }
+      } else if (pxBeat >= 6) {
+        ctx.fillStyle = 'rgba(255,255,255,0.11)';
+        ctx.fillRect(x, top, 1, wh);
+        if (pxBeat >= 26) {
+          ctx.fillStyle = 'rgba(255,255,255,0.38)';
+          ctx.fillText(String(pos + 1), x + 3, top + 3);
+        }
+      }
+    }
+  }
+
+  // Drum lanes under the wave: kick, snare and hi-hat hits, like a drum chart.
+  function drawLanes(ctx, g, top, wh) {
+    const hits = S.gridBase && S.gridBase.vid === S.vid ? S.gridBase.hits : null;
+    if (!hits || !hits.length || settings.waveStyle !== 'drums') return;
+    const { s, e } = viewRange();
+    const laneH = 7;
+    const y0 = top + wh - laneH * 3 - 4;
+    ctx.fillStyle = 'rgba(5,7,11,0.55)';
+    ctx.fillRect(0, y0 - 2, g.w, laneH * 3 + 6);
+    const rows = { hat: 0, snare: 1, kick: 2 };
+    const cols = { kick: '#ff5436', snare: '#ffb74d', hat: '#cdf0ff' };
+    const wpx = Math.max(2, Math.min(5, (0.04 / (e - s)) * g.w));
+    let i = 0;
+    while (i < hits.length && hits[i].t < s) i++;
+    for (; i < hits.length && hits[i].t <= e; i++) {
+      const h = hits[i];
+      ctx.globalAlpha = 0.45 + 0.55 * h.v;
+      ctx.fillStyle = cols[h.kind];
+      ctx.fillRect(xAt(h.t, g) - wpx / 2, y0 + rows[h.kind] * laneH, wpx, laneH - 2);
+    }
+    ctx.globalAlpha = 1;
+    if (g.w > 300) {
+      ctx.font = '600 8.5px Roboto, system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.fillText('HH', 3, y0 - 1);
+      ctx.fillText('SN', 3, y0 + laneH - 1);
+      ctx.fillText('KK', 3, y0 + laneH * 2 - 1);
+    }
+  }
+
   function draw() {
     const g = geom();
     if (g.w < 2 || g.h < 2) return;
@@ -6046,6 +6631,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ctx.drawImage(layers.dim, 0, top, g.w, wh);
       ctx.restore();
     }
+
+    drawGrid(ctx, g, top, wh);
+    drawLanes(ctx, g, top, wh);
 
     // Loop region
     const showA = S.pendingA != null ? S.pendingA : S.a;
@@ -6305,7 +6893,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         endScrub(d, x, g);
       } else if (d.mode === 'select') {
         if (d.moved) {
-          setLoop(d.t0, timeAt(x, g), { play: true, fresh: true });
+          setLoop(qT(d.t0), qT(timeAt(x, g)), { play: true, fresh: true });
         } else {
           waveClick(d.t0);
         }
@@ -6407,14 +6995,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
       }
     } else if (drag.mode === 'pending') {
       if (S.pendingA != null) {
-        S.pendingA = C.clamp(t, 0, Math.max(0, dur() - C.MIN_LOOP));
+        S.pendingA = qT(C.clamp(t, 0, Math.max(0, dur() - C.MIN_LOOP)));
         renderUI();
       }
     } else if (drag.mode === 'handle') {
       let a = S.a;
       let b = S.b;
-      if (drag.which === 'a') a = t;
-      else b = t;
+      if (drag.which === 'a') a = qT(t);
+      else b = qT(t);
       if (a > b) {
         [a, b] = [b, a];
         drag.which = drag.which === 'a' ? 'b' : 'a';
@@ -6539,6 +7127,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function waveClick(t) {
+    t = qT(t);
     if (S.pendingA == null) {
       pushHistory();
       S.pendingA = t;
@@ -6594,6 +7183,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       if (e.key === '[') markA();
       else if (e.key === ']') markB();
       else if (e.key === '\\') toggleLoop();
+      else if (e.key === 'q' || e.key === 'Q') toggleQuantize();
       else if (e.key === 'Escape' && (S.pendingA != null || !ui.help.hidden)) {
         if (!ui.help.hidden) toggleHelp(false);
         else {
@@ -6621,6 +7211,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     try {
       engineTick();
       liveTick();
+      maybeComputeGrid();
       if (hostEl && hostEl.style.display !== 'none') {
         followPlayhead();
         lyricsTick();

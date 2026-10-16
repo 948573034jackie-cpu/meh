@@ -999,6 +999,233 @@
     return out;
   }
 
+  // ---------------------------------------------------------------------------
+  // Beats: tempo, every beat (following small tempo changes), bar "1"s, and
+  // the drum hits (kick / snare / hi-hat) from the low / mid / high bands.
+  // ---------------------------------------------------------------------------
+
+  /** Onset strength per bin: how much each band jumps up (drum hits). */
+  function drumFlux(P, n) {
+    const len = Math.min(n, P.n);
+    const kick = new Float32Array(len);
+    const snare = new Float32Array(len);
+    const hat = new Float32Array(len);
+    const env = new Float32Array(len);
+    for (let i = 1; i < len; i++) {
+      if (!P.cov[i] || !P.cov[i - 1]) continue;
+      const dl = Math.max(0, P.low[i] - P.low[i - 1]);
+      const dm = Math.max(0, P.mid[i] - P.mid[i - 1]);
+      const dh = Math.max(0, P.high[i] - P.high[i - 1]);
+      kick[i] = dl;
+      snare[i] = Math.min(dm, dh * 1.5) + 0.25 * dm; // noise burst across mids and highs
+      hat[i] = dh;
+      env[i] = dl + 0.6 * dm + 0.8 * dh;
+    }
+    return { kick, snare, hat, env };
+  }
+
+  function normalize(a) {
+    let s = 0;
+    let s2 = 0;
+    for (const v of a) {
+      s += v;
+      s2 += v * v;
+    }
+    const mean = s / (a.length || 1);
+    const sd = Math.sqrt(Math.max(1e-9, s2 / (a.length || 1) - mean * mean));
+    return Float32Array.from(a, (v) => (v - mean) / sd);
+  }
+
+  /** Tempo from the onset envelope: { period (bins), bpm, confidence 0..1 }. */
+  function estimateTempo(env, binRate, minBpm = 60, maxBpm = 200) {
+    const e = normalize(env);
+    const n = e.length;
+    const lo = Math.floor((60 * binRate) / maxBpm);
+    const hi = Math.ceil((60 * binRate) / minBpm);
+    const ac = new Float32Array(hi + 2);
+    for (let L = lo - 1; L <= hi + 1; L++) {
+      let s = 0;
+      for (let i = L; i < n; i++) s += e[i] * e[i - L];
+      ac[L] = s / (n - L);
+    }
+    // Prefer common tempos (around 120 BPM), as people tap along.
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let L = lo; L <= hi; L++) {
+      const bpm = (60 * binRate) / L;
+      const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
+      const sc = ac[L] * w;
+      if (sc > bestScore && ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1]) {
+        bestScore = sc;
+        best = L;
+      }
+    }
+    if (best < 0) return { period: 0, bpm: 0, confidence: 0 };
+    // Sub-bin period: parabola through the peak.
+    const y0 = ac[best - 1];
+    const y1 = ac[best];
+    const y2 = ac[best + 1];
+    const den = y0 - 2 * y1 + y2;
+    const p = best + (den < 0 ? (0.5 * (y0 - y2)) / den : 0);
+    return { period: p, bpm: (60 * binRate) / p, confidence: Math.max(0, Math.min(1, y1)) };
+  }
+
+  /**
+   * Beat tracking by dynamic programming (Ellis 2007): every beat lands on a
+   * strong onset while the gaps stay close to the tempo, so it follows a
+   * drummer who speeds up or slows down a little. Returns beat times in bins
+   * (fractional).
+   */
+  function trackBeatBins(env, period, tightness = 300) {
+    const n = env.length;
+    const e = normalize(env);
+    const score = new Float32Array(n);
+    const back = new Int32Array(n).fill(-1);
+    const pMin = Math.round(period / 2);
+    const pMax = Math.round(period * 2);
+    for (let t = 0; t < n; t++) {
+      let best = -Infinity;
+      let arg = -1;
+      for (let tau = t - pMax; tau <= t - pMin; tau++) {
+        if (tau < 0) continue;
+        const d = Math.log((t - tau) / period);
+        const v = score[tau] - tightness * d * d;
+        if (v > best) {
+          best = v;
+          arg = tau;
+        }
+      }
+      score[t] = e[t] + (arg >= 0 ? Math.max(0, best) : 0);
+      back[t] = arg >= 0 && best > 0 ? arg : -1;
+    }
+    // Best end point in the last period, then follow the links back.
+    let t = n - 1;
+    let bestEnd = -Infinity;
+    for (let k = Math.max(0, n - Math.round(period)); k < n; k++) {
+      if (score[k] > bestEnd) {
+        bestEnd = score[k];
+        t = k;
+      }
+    }
+    const beats = [];
+    while (t >= 0) {
+      beats.push(t);
+      t = back[t];
+    }
+    beats.reverse();
+    // Sub-bin position: parabola through the local onset peak.
+    return beats.map((b) => {
+      let k = b;
+      for (let j = Math.max(1, b - 2); j <= Math.min(n - 2, b + 2); j++) if (env[j] > env[k]) k = j;
+      const y0 = env[k - 1] || 0;
+      const y1 = env[k] || 0;
+      const y2 = env[k + 1] || 0;
+      const den = y0 - 2 * y1 + y2;
+      return k + (den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / den)) : 0);
+    });
+  }
+
+  /**
+   * The whole beat grid for a song: { bpm, beats: [seconds], first: index of
+   * the first bar's "1", confidence } or null when there is no steady beat
+   * (e.g. a cappella).
+   */
+  function beatGrid(P, durationSec) {
+    const br = P.binRate;
+    const n = Math.min(P.n, Math.ceil(durationSec * br));
+    if (n < br * 4) return null;
+    const f = drumFlux(P, n);
+    // Light smoothing so a hit spread over two bins counts once.
+    const env = new Float32Array(n);
+    for (let i = 0; i < n; i++) env[i] = f.env[i] + 0.5 * ((f.env[i - 1] || 0) + (f.env[i + 1] || 0));
+    const tempo = estimateTempo(env, br);
+    if (!tempo.period || tempo.confidence < 0.08) return null;
+    let bins = trackBeatBins(env, tempo.period);
+    // No beats in the silence before the music starts or after it ends.
+    let firstSound = 0;
+    while (firstSound < n && !(P.cov[firstSound] && P.peak[firstSound] > P.maxPeak * 0.08)) firstSound++;
+    let lastSound = n - 1;
+    while (lastSound > 0 && !(P.cov[lastSound] && P.peak[lastSound] > P.maxPeak * 0.08)) lastSound--;
+    bins = bins.filter((b) => b >= firstSound - tempo.period * 0.25 && b <= lastSound + tempo.period * 0.25);
+    if (bins.length < 8) return null;
+    // Bar "1": kick on 1 and 3, snare on 2 and 4 (4/4); ties go to the first
+    // beat of the music being a "1".
+    const near = (a, b) => {
+      let m = 0;
+      const k = Math.round(b);
+      for (let j = Math.max(0, k - 1); j <= Math.min(a.length - 1, k + 1); j++) if (a[j] > m) m = a[j];
+      return m;
+    };
+    const K = bins.map((b) => near(f.kick, b));
+    const S = bins.map((b) => near(f.snare, b));
+    const meanK = K.reduce((s, v) => s + v, 0) / K.length || 1;
+    let first = 0;
+    let bestSc = -Infinity;
+    for (let ph = 0; ph < 4; ph++) {
+      let sc = 0;
+      bins.forEach((_, i) => {
+        const pos = (((i - ph) % 4) + 4) % 4;
+        if (pos === 0) sc += K[i] * 1.15;
+        else if (pos === 2) sc += K[i];
+        else sc += S[i] * 0.9;
+      });
+      if (ph === 0) sc += meanK * 2; // the music usually starts on a "1"
+      if (sc > bestSc) {
+        bestSc = sc;
+        first = ph;
+      }
+    }
+    const beats = bins.map((b) => b / br);
+    // Average tempo over the whole song (a single gap is only 20 ms exact).
+    const avg = (beats[beats.length - 1] - beats[0]) / (beats.length - 1);
+    return { bpm: Math.round(600 / avg) / 10, beats, first, confidence: tempo.confidence };
+  }
+
+  /** Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}] */
+  function drumHits(P, durationSec) {
+    const br = P.binRate;
+    const n = Math.min(P.n, Math.ceil(durationSec * br));
+    const f = drumFlux(P, n);
+    const pick = (a, kind, pct) => {
+      const vals = Array.from(a).filter((v) => v > 0).sort((x, y) => x - y);
+      if (vals.length < 10) return [];
+      // Above the background (noise makes many small jumps), relative to the loudest hits.
+      const thr = Math.max(6, vals[Math.floor(vals.length * pct)], vals[Math.floor(vals.length * 0.995)] * 0.35);
+      const out = [];
+      for (let i = 1; i < a.length - 1; i++) {
+        if (a[i] > thr && a[i] >= a[i - 1] && a[i] > a[i + 1]) {
+          if (out.length && i / br - out[out.length - 1].t < 0.06) continue; // one hit, not two
+          out.push({ t: i / br, kind, v: Math.min(1, a[i] / (thr * 3)) });
+        }
+      }
+      return out;
+    };
+    return [...pick(f.kick, 'kick', 0.8), ...pick(f.snare, 'snare', 0.85), ...pick(f.hat, 'hat', 0.8)].sort((x, y) => x.t - y.t);
+  }
+
+  /** Index of the beat nearest to t (beats sorted). */
+  function nearestBeatIndex(beats, t) {
+    let lo = 0;
+    let hi = beats.length - 1;
+    if (hi < 0) return -1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (beats[mid] < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo > 0 && Math.abs(beats[lo - 1] - t) <= Math.abs(beats[lo] - t) ? lo - 1 : lo;
+  }
+
+  /** Time of beat i, also before the first / after the last beat (same tempo). */
+  function beatTime(beats, i) {
+    if (!beats.length) return 0;
+    if (i >= 0 && i < beats.length) return beats[i];
+    const k = Math.min(8, beats.length - 1);
+    if (i < 0) return beats[0] + i * ((beats[k] - beats[0]) / k);
+    const L = beats.length - 1;
+    return beats[L] + (i - L) * ((beats[L] - beats[L - k]) / k);
+  }
+
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
@@ -1006,6 +1233,7 @@
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
     isChord, chordLine, parseChordSheet, alignChordSheet, mapChordsToText, lineSim, transposeChord, prefersFlats,
     detectSections, findOnsets, alignToOnsets, snapToOnsets,
+    drumFlux, estimateTempo, trackBeatBins, beatGrid, drumHits, nearestBeatIndex, beatTime,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

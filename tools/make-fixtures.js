@@ -58,8 +58,16 @@ const DEMO_SIGNAL = `aevalsrc='(0.55+0.45*between(mod(t\\,16)\\,0\\,11.9))*(` +
   `+0.18*(random(0)*2-1)*exp(-40*mod(t+0.25\\,0.5))*gte(t\\,4)` +
   `+0.25*sin(2*PI*(55*pow(2\\,floor(mod(t\\,8)/2)/12*3))*t)` +
   `+0.22*sin(2*PI*(440*pow(2\\,floor(mod(t*2\\,7))/12*2))*t)*gte(mod(t\\,8)\\,2))':s=48000:d=${DUR}`;
+// A drum groove at 96 BPM (a beat every 0.625 s), the first bar's "1" at
+// 0.8 s: kick on 1 and 3, snare on 2 and 4, hi-hats on eighths. For the beat
+// grid, quantize and drum view tests.
+const DRUM_SIGNAL = `aevalsrc='gte(t\\,0.8)*(` +
+  `0.9*sin(2*PI*(50+90*exp(-25*mod(t-0.8\\,1.25)))*mod(t-0.8\\,1.25))*exp(-9*mod(t-0.8\\,1.25))` +
+  `+gte(t\\,1.425)*((random(0)*2-1)*0.45*exp(-30*mod(t-1.425\\,1.25))+0.3*sin(2*PI*190*mod(t-1.425\\,1.25))*exp(-25*mod(t-1.425\\,1.25)))` +
+  `+(random(1)*2-1)*0.15*exp(-90*mod(t-0.8\\,0.3125)))':s=48000:d=${DUR}`;
 const audioIn = ['-f', 'lavfi', '-i', process.env.DEMO ? DEMO_SIGNAL : TEST_SIGNAL];
 const audio = build('audio', audioIn, ['-c:a', 'libopus', '-b:a', '96k'], 'webm', 'webm', 'audio/webm; codecs="opus"', 2);
+const drums = build('drums', ['-f', 'lavfi', '-i', DRUM_SIGNAL], ['-c:a', 'libopus', '-b:a', '96k'], 'webm', 'webm', 'audio/webm; codecs="opus"', 2);
 const video = build('video', ['-f', 'lavfi', '-i', `testsrc=size=160x90:rate=24:duration=${DUR}`],
   ['-c:v', 'libvpx-vp9', '-b:v', '120k', '-deadline', 'realtime', '-cpu-used', '8', '-g', '24', '-keyint_min', '24'],
   'webm', 'webm', 'video/webm; codecs="vp9"', 2);
@@ -69,5 +77,5 @@ const mp4 = build('mp4audio', audioIn, ['-c:a', 'aac', '-b:a', '128k'], 'mp4', '
 fs.renameSync(path.join(out, 'mp4audio', 'init.m4s'), path.join(out, 'mp4audio', 'init.mp4'));
 mp4.init = 'mp4audio/init.mp4';
 
-fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4 }, null, 2));
+fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4, drums, drumBpm: 96, drumFirstBeat: 0.8 }, null, 2));
 console.log('fixtures written to', out, `audio segs=${audio.segs.length} video segs=${video.segs.length}`);

@@ -321,4 +321,15 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .rate { min-width: 38px; font-size: 12.5px; }
 }
 
+
+/* Beats: Q, beat loops, tempo, drum view */
+.group.beats { gap: 4px; }
+.beat-loops { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: #121722; border: 1px solid var(--line); }
+button.beat-btn { min-width: 30px; padding: 0 6px; font-weight: 700; font-variant-numeric: tabular-nums; border-color: transparent; background: transparent; }
+button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
+button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
+button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
+button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
+button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3; }
+.bpm { min-width: 74px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; color: #ffb74d; }
 `;
