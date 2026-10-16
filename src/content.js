@@ -3257,6 +3257,11 @@
     d.abStart = L.abStart == null ? '' : String(L.abStart);
     renderBeats();
     d.bpm = S.grid ? String(S.grid.bpm) : '';
+    // Debug only: the wave's band data, to tune the drum analysis.
+    if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
+      const P = S.peaks;
+      document.documentElement.dataset.ytlPeaks = JSON.stringify({ n: P.n, peak: Array.from(P.peak.subarray(0, P.n)), low: Array.from(P.low.subarray(0, P.n)), mid: Array.from(P.mid.subarray(0, P.n)), high: Array.from(P.high.subarray(0, P.n)), cov: Array.from(P.cov.subarray(0, P.n)) });
+    }
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.quant = settings.quantize ? 'on' : '';

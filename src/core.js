@@ -1193,11 +1193,13 @@
     const dl = new Float32Array(n);
     const dm = new Float32Array(n);
     const dh = new Float32Array(n);
-    for (let i = 1; i < n; i++) {
-      if (!P.cov[i] || !P.cov[i - 1]) continue;
-      dl[i] = Math.max(0, P.low[i] - P.low[i - 1]);
-      dm[i] = Math.max(0, P.mid[i] - P.mid[i - 1]);
-      dh[i] = Math.max(0, P.high[i] - P.high[i - 1]);
+    // Rise over the last two bins: a hit that falls on the edge between two
+    // 20 ms bins is split in two, and still counts in full.
+    for (let i = 2; i < n; i++) {
+      if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
+      dl[i] = Math.max(0, P.low[i] - Math.min(P.low[i - 1], P.low[i - 2]));
+      dm[i] = Math.max(0, P.mid[i] - Math.min(P.mid[i - 1], P.mid[i - 2]));
+      dh[i] = Math.max(0, P.high[i] - Math.min(P.high[i - 1], P.high[i - 2]));
     }
     const peaksOf = (a) => {
       const out = [];
@@ -1248,7 +1250,7 @@
       if (kick) push('kick', i, L, thrK);
       if (snare) push('snare', i, M, thrS);
       // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
-      if (!snare && H >= (kick ? thrH * 1.5 : thrH)) push('hat', i, H, thrH);
+      if (!snare && H >= (kick ? thrH * 1.2 : thrH)) push('hat', i, H, thrH);
     }
     return out.sort((x, y) => x.t - y.t);
   }

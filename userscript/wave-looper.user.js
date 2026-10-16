@@ -142,6 +142,22 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     return -1;
   }
 
+  /** Offset of the last Cluster in a chunk that starts with Clusters. -1 if none. */
+  function webmLastCluster(u8) {
+    let pos = 0;
+    let last = -1;
+    let guard = 0;
+    while (pos < u8.length && guard++ < 10000) {
+      const id = readId(u8, pos);
+      if (!id || id.id !== CLUSTER_ID) break;
+      last = pos;
+      const size = readSize(u8, pos + id.len);
+      if (!size || size.unknown) break;
+      pos += id.len + size.len + size.value;
+    }
+    return last;
+  }
+
   /** TimecodeScale (ns per tick) from an init segment. Default 1 ms. */
   function webmTimecodeScale(u8) {
     let pos = 0;
@@ -737,6 +753,7 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       media,
       start: st.pendingStart,
       vid: st.pendingVid,
+      st,
     });
   }
 
@@ -779,8 +796,33 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
 
   async function runJob(job) {
     let buf = null;
+    let skip = 0; // seconds of run-up at the start of the decoded audio
     if (job.container === 'webm') {
-      buf = await decode(concat([job.init, job.media]));
+      // Opus needs a run-up: a chunk decoded on its own comes out wrong (too
+      // loud) for its first moments. When this chunk follows the last one,
+      // decode the end of the last one in front of it and drop that part.
+      const st = job.st;
+      const pre = st && st.tail && st.tail.vid === job.vid && Math.abs(st.tail.end - job.start) < 0.1 && job.start > st.tail.start ? st.tail : null;
+      if (pre) {
+        try {
+          buf = await decode(concat([job.init, pre.bytes, job.media]));
+          skip = job.start - pre.start;
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) {
+        skip = 0;
+        buf = await decode(concat([job.init, job.media]));
+      }
+      if (st && buf) {
+        const last = webmLastCluster(job.media);
+        const first = webmClusterTime(job.media, st.tcScale);
+        const lastT = last >= 0 ? webmClusterTime(job.media.subarray(last), st.tcScale) : null;
+        if (last >= 0 && first !== null && lastT !== null) {
+          st.tail = { vid: job.vid, bytes: job.media.subarray(last), start: job.start + (lastT - first), end: job.start + Math.max(0, buf.duration - skip) };
+        }
+      }
     } else {
       const frags = job.mp4 ? mp4Fragments(job.media, job.mp4.timescale) : null;
       const adts = frags && job.mp4.asc ? toAdts(frags.samples, job.mp4.asc) : null;
@@ -795,7 +837,8 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     }
     if (!buf || !buf.length) return;
     const chans = [];
-    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c));
+    const from = Math.max(0, Math.min(buf.length, Math.round(skip * buf.sampleRate)));
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).subarray(from));
     const res = computePeaks(chans, buf.sampleRate, job.start);
     if (!res) return;
     post({
@@ -2083,11 +2126,13 @@ globalThis.YTL_STORAGE = (() => {
     const dl = new Float32Array(n);
     const dm = new Float32Array(n);
     const dh = new Float32Array(n);
-    for (let i = 1; i < n; i++) {
-      if (!P.cov[i] || !P.cov[i - 1]) continue;
-      dl[i] = Math.max(0, P.low[i] - P.low[i - 1]);
-      dm[i] = Math.max(0, P.mid[i] - P.mid[i - 1]);
-      dh[i] = Math.max(0, P.high[i] - P.high[i - 1]);
+    // Rise over the last two bins: a hit that falls on the edge between two
+    // 20 ms bins is split in two, and still counts in full.
+    for (let i = 2; i < n; i++) {
+      if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
+      dl[i] = Math.max(0, P.low[i] - Math.min(P.low[i - 1], P.low[i - 2]));
+      dm[i] = Math.max(0, P.mid[i] - Math.min(P.mid[i - 1], P.mid[i - 2]));
+      dh[i] = Math.max(0, P.high[i] - Math.min(P.high[i - 1], P.high[i - 2]));
     }
     const peaksOf = (a) => {
       const out = [];
@@ -2138,7 +2183,7 @@ globalThis.YTL_STORAGE = (() => {
       if (kick) push('kick', i, L, thrK);
       if (snare) push('snare', i, M, thrS);
       // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
-      if (!snare && H >= (kick ? thrH * 1.5 : thrH)) push('hat', i, H, thrH);
+      if (!snare && H >= (kick ? thrH * 1.2 : thrH)) push('hat', i, H, thrH);
     }
     return out.sort((x, y) => x.t - y.t);
   }
@@ -6238,6 +6283,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.abStart = L.abStart == null ? '' : String(L.abStart);
     renderBeats();
     d.bpm = S.grid ? String(S.grid.bpm) : '';
+    // Debug only: the wave's band data, to tune the drum analysis.
+    if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
+      const P = S.peaks;
+      document.documentElement.dataset.ytlPeaks = JSON.stringify({ n: P.n, peak: Array.from(P.peak.subarray(0, P.n)), low: Array.from(P.low.subarray(0, P.n)), mid: Array.from(P.mid.subarray(0, P.n)), high: Array.from(P.high.subarray(0, P.n)), cov: Array.from(P.cov.subarray(0, P.n)) });
+    }
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.quant = settings.quantize ? 'on' : '';

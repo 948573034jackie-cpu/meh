@@ -124,6 +124,22 @@
     return -1;
   }
 
+  /** Offset of the last Cluster in a chunk that starts with Clusters. -1 if none. */
+  function webmLastCluster(u8) {
+    let pos = 0;
+    let last = -1;
+    let guard = 0;
+    while (pos < u8.length && guard++ < 10000) {
+      const id = readId(u8, pos);
+      if (!id || id.id !== CLUSTER_ID) break;
+      last = pos;
+      const size = readSize(u8, pos + id.len);
+      if (!size || size.unknown) break;
+      pos += id.len + size.len + size.value;
+    }
+    return last;
+  }
+
   /** TimecodeScale (ns per tick) from an init segment. Default 1 ms. */
   function webmTimecodeScale(u8) {
     let pos = 0;
@@ -719,6 +735,7 @@
       media,
       start: st.pendingStart,
       vid: st.pendingVid,
+      st,
     });
   }
 
@@ -761,8 +778,33 @@
 
   async function runJob(job) {
     let buf = null;
+    let skip = 0; // seconds of run-up at the start of the decoded audio
     if (job.container === 'webm') {
-      buf = await decode(concat([job.init, job.media]));
+      // Opus needs a run-up: a chunk decoded on its own comes out wrong (too
+      // loud) for its first moments. When this chunk follows the last one,
+      // decode the end of the last one in front of it and drop that part.
+      const st = job.st;
+      const pre = st && st.tail && st.tail.vid === job.vid && Math.abs(st.tail.end - job.start) < 0.1 && job.start > st.tail.start ? st.tail : null;
+      if (pre) {
+        try {
+          buf = await decode(concat([job.init, pre.bytes, job.media]));
+          skip = job.start - pre.start;
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) {
+        skip = 0;
+        buf = await decode(concat([job.init, job.media]));
+      }
+      if (st && buf) {
+        const last = webmLastCluster(job.media);
+        const first = webmClusterTime(job.media, st.tcScale);
+        const lastT = last >= 0 ? webmClusterTime(job.media.subarray(last), st.tcScale) : null;
+        if (last >= 0 && first !== null && lastT !== null) {
+          st.tail = { vid: job.vid, bytes: job.media.subarray(last), start: job.start + (lastT - first), end: job.start + Math.max(0, buf.duration - skip) };
+        }
+      }
     } else {
       const frags = job.mp4 ? mp4Fragments(job.media, job.mp4.timescale) : null;
       const adts = frags && job.mp4.asc ? toAdts(frags.samples, job.mp4.asc) : null;
@@ -777,7 +819,8 @@
     }
     if (!buf || !buf.length) return;
     const chans = [];
-    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c));
+    const from = Math.max(0, Math.min(buf.length, Math.round(skip * buf.sampleRate)));
+    for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) chans.push(buf.getChannelData(c).subarray(from));
     const res = computePeaks(chans, buf.sampleRate, job.start);
     if (!res) return;
     post({

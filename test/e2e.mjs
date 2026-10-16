@@ -26,6 +26,7 @@ const DUR = manifest.duration;
 let failures = 0;
 const results = [];
 async function step(name, fn) {
+  if (process.env.ONLY && !new RegExp(process.env.ONLY).test(name)) return; // run only some steps while debugging
   const t0 = Date.now();
   try {
     // A step that hangs fails after 10 minutes instead of stalling the run.
@@ -828,6 +829,7 @@ await step('switching videos resets, coming back restores loop and cached wave',
 const BEAT = 0.625;
 const beatAt = (k) => 0.8 + k * BEAT;
 await step('beats: a 96 BPM drum groove gives the tempo, every beat and the bar "1"; kick / snare / hi-hat hits found', async () => {
+  if (process.env.DEBUG) await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
   await page.evaluate(() => window.__navigate('DRUM0001'));
   await waitFor(async () => (await host()).vid === 'DRUM0001', 5000, 'drum video');
   const h = await waitFor(async () => { const x = await host(); return x.bpm ? x : null; }, 60000, 'beats found');
@@ -835,8 +837,12 @@ await step('beats: a 96 BPM drum groove gives the tempo, every beat and the bar 
   const bars = (Number(h.bar1) - 0.8) / (4 * BEAT);
   assert(Math.abs(bars - Math.round(bars)) < 0.02, `bar "1" on a real downbeat (${h.bar1} s)`);
   assert(Math.abs(Number(h.beats) - 47) <= 2, `beats ${h.beats} (want about 47)`);
+  if (process.env.DEBUG) {
+    const dump = await waitFor(() => page.evaluate(() => document.documentElement.dataset.ytlPeaks || null), 5000, 'peaks dump');
+    fs.writeFileSync(path.join(SHOTS, 'drum-peaks.json'), dump);
+  }
   const [k, sn, hh] = h.hits.split(',').map(Number);
-  assert(k >= 20 && k <= 26 && sn >= 18 && sn <= 26 && hh >= 60, `drum hits kick ${k}, snare ${sn}, hat ${hh}`);
+  assert(Math.abs(k - 24) <= 1 && Math.abs(sn - 23) <= 2 && Math.abs(hh - 71) <= 6, `drum hits kick ${k} (24), snare ${sn} (23), hat ${hh} (71)`);
   assert(h.waveStyle === 'drums', 'drum view by default on a computer');
   await page.screenshot({ path: path.join(SHOTS, '10-drums.png') });
 });
@@ -933,6 +939,13 @@ await step('DJ mouse: drag the wave like a record, click = stop / play, double-c
   assert(Math.abs(v.t - c1) < 0.1 && !v.paused, `jumped to cue 1 and plays (t=${v.t.toFixed(2)})`);
   await shadowClick('button.q-btn');
   await page.screenshot({ path: path.join(SHOTS, '11-dj-mouse.png') });
+  // The tests after this one use the classic mouse and the whole-song view.
+  await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    [...root.querySelectorAll('label.check')].find((l) => l.textContent.includes('DJ mouse')).querySelector('input').click();
+  });
+  if ((await host()).zoom) await shadowClick('button', 'Show the whole song');
+  assert((await host()).mouse === 'classic', 'classic mouse again');
 });
 
 await step('grid tools: ½ and 2× tempo, move the "1"', async () => {
