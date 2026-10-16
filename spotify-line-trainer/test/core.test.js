@@ -43,7 +43,7 @@ test('parseLyrics: works without known duration (last line capped)', () => {
 
 test('normalizeSettings sanitises bad values', () => {
   const s = core.normalizeSettings({ mode: 'x', reps: 4, speed: 2, trainingSpeeds: [1, 0.3, 'bad', 0.3], trainingReps: '7' });
-  assert.deepStrictEqual(s, { mode: 'repeat', reps: 5, speed: 1, trainingReps: 7, trainingSpeeds: [0.3, 1], startFrom: 'first', autoNext: false });
+  assert.deepStrictEqual(s, { mode: 'repeat', reps: 5, speed: 1, trainingReps: 7, trainingSpeeds: [0.3, 1], startFrom: 'first', autoNext: false, playFullAfter: true });
   assert.deepStrictEqual(core.normalizeSettings({ trainingSpeeds: [] }).trainingSpeeds, [0.3, 0.5, 0.75, 1]);
 });
 

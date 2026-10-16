@@ -63,7 +63,8 @@
         ? [...new Set(s.trainingSpeeds.map(Number).filter(v => SPEEDS.includes(v)))].sort((a, b) => a - b)
         : SPEEDS.slice(),
       startFrom: s.startFrom === 'current' ? 'current' : 'first',
-      autoNext: !!s.autoNext
+      autoNext: !!s.autoNext,
+      playFullAfter: s.playFullAfter !== false
     };
     if (!out.trainingSpeeds.length) out.trainingSpeeds = SPEEDS.slice();
     return out;

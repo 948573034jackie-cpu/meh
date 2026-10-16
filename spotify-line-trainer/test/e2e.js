@@ -26,6 +26,16 @@ const LYRICS = {
   TRACKUNSYNCEDAAAAAAAAA: { lyrics: { syncType: 'UNSYNCED', lines: [L(0, 'x'), L(0, 'y')] } }
 };
 
+// serve audio with HTTP Range support so the media element is seekable (like Spotify's streams)
+function fulfillRange(route, buf) {
+  const range = route.request().headers()['range'];
+  const m = range && range.match(/bytes=(\d+)-(\d*)/);
+  if (!m) return route.fulfill({ status: 200, contentType: 'audio/wav', headers: { 'accept-ranges': 'bytes' }, body: buf });
+  const start = +m[1], end = m[2] ? Math.min(+m[2], buf.length - 1) : buf.length - 1;
+  return route.fulfill({ status: 206, contentType: 'audio/wav', body: buf.subarray(start, end + 1),
+    headers: { 'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${buf.length}` } });
+}
+
 let lyricsRequests = [];
 async function launch() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slt-'));
@@ -35,7 +45,7 @@ async function launch() {
   });
   await ctx.route('https://open.spotify.com/**', route => {
     const url = route.request().url();
-    if (url.includes('/audio/')) return route.fulfill({ status: 200, contentType: 'audio/wav', body: AUDIO });
+    if (url.includes('/audio/')) return fulfillRange(route, AUDIO);
     return route.fulfill({ status: 200, contentType: 'text/html', body: MOCK });
   });
   await ctx.route('https://spclient.wg.spotify.com/**', route => {
@@ -130,7 +140,7 @@ async function run(name, fn) {
     const settings = { mode: 'repeat', reps: 3, speed: 0.5 };
     // only the first two lines, then stop to keep this fast
     const r = await record(page, 'S.line === 2', 20000);
-    checkSteps(r.steps, lines.slice(0, 2), settings, 'repeat');
+    checkSteps(r.steps.filter(s => s.line < 2), lines.slice(0, 2), settings, 'repeat');
     assert.match(await ui(page, 'slt-meta').innerText(), /Line 3\/4 · 50% · play 1\/3/);
     assert.strictEqual(await ui(page, 'slt-lyric').innerText(), 'Third line');
     await ui(page, 'slt-toggle').click(); // stop
@@ -148,13 +158,40 @@ async function run(name, fn) {
     // Use a 2-line song to keep runtime short
     await page.evaluate(() => window.__changeTrack('TRACKBBBBBBBBBBBBBBBBB'));
     await ui(page, 'slt-toggle').click();
-    const r = await record(page, '!S.active && S.finished', 90000);
+    const r = await record(page, 'S.fullPlay', 90000);
     const linesB = core.parseLyrics(LYRICS.TRACKBBBBBBBBBBBBBBBBB, 30).lines;
     checkSteps(r.steps, linesB, { mode: 'training', trainingReps: 3 }, 'training');
-    assert.strictEqual(r.rate, 1, 'speed back to 100% after finishing');
-    assert.strictEqual(r.paused, false, 'song keeps playing after training');
-    await page.waitForSelector('#slt-root >>> [data-testid="slt-msg"]');
+    // after the ladder: the whole song plays again from the very beginning at 100%
+    assert.ok(r.t < 0.3, 'whole song restarts from 0:00, t=' + r.t);
+    assert.strictEqual(r.rate, 1, 'whole-song replay at 100%');
+    assert.strictEqual(r.paused, false, 'whole song is playing');
+    assert.match(await ui(page, 'slt-msg').innerText(), /whole song/i);
+    assert.strictEqual(await ui(page, 'slt-toggle').innerText(), '■ Stop');
+    await page.waitForTimeout(2000);
+    let s = await page.evaluate(() => ({ t: window.__player.currentTime, rate: window.__player.playbackRate, fp: window.__SLT_DEBUG__.state.fullPlay }));
+    assert.ok(s.fp && s.t > 1.7 && s.t < 2.6 && s.rate === 1, 'plays straight through without looping: ' + JSON.stringify(s));
+    // jump near the end of the song and let it finish
+    await page.evaluate(() => { window.__player.currentTime = window.__player.duration - 1; });
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.finished && !window.__SLT_DEBUG__.state.fullPlay, null, { timeout: 5000 });
     assert.match(await ui(page, 'slt-msg').innerText(), /finished/i);
+    assert.strictEqual(await ui(page, 'slt-toggle').innerText(), '▶ Start');
+    await page.close();
+  });
+
+  await T('training without whole-song replay (option off) just finishes', async () => {
+    const page = await openPage(ctx);
+    await chip(page, '🏋️ Training').click();
+    await chip(page, '3×').click();
+    await chip(page, '30%').click(); await chip(page, '50%').click(); await chip(page, '75%').click(); // ladder = 100% only
+    await ui(page, 'slt-fullsong').uncheck();
+    await page.evaluate(() => window.__changeTrack('TRACKBBBBBBBBBBBBBBBBB'));
+    await ui(page, 'slt-toggle').click();
+    const r = await record(page, '!S.active && S.finished', 30000);
+    checkSteps(r.steps, core.parseLyrics(LYRICS.TRACKBBBBBBBBBBBBBBBBB, 30).lines, { mode: 'training', trainingReps: 3, trainingSpeeds: [1] }, 'training-100');
+    assert.ok(r.t > 2.5, 'no jump back to the start');
+    assert.strictEqual(r.final.fullPlay, false);
+    await ui(page, 'slt-fullsong').check();
+    for (const c of ['30%', '50%', '75%']) await chip(page, c).click();
     await page.close();
   });
 
@@ -257,6 +294,11 @@ async function run(name, fn) {
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.active && window.__SLT_DEBUG__.state.trackId === 'TRACKBBBBBBBBBBBBBBBBB');
     await page.evaluate(() => window.__changeTrack('TRACKAAAAAAAAAAAAAAAAA'));
     await page.waitForFunction(() => window.__SLT_DEBUG__.state.active && window.__SLT_DEBUG__.state.trackId === 'TRACKAAAAAAAAAAAAAAAAA' && window.__SLT_DEBUG__.state.line === 0);
+    // whole-song replay, then Spotify moves to the next song -> training continues on it
+    await page.evaluate(() => { const S = window.__SLT_DEBUG__.state; S.settings.mode = 'training'; });
+    await page.evaluate(() => { const S = window.__SLT_DEBUG__.state; S.active = false; S.fullPlay = true; });
+    await page.evaluate(() => window.__changeTrack('TRACKBBBBBBBBBBBBBBBBB'));
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.active && window.__SLT_DEBUG__.state.trackId === 'TRACKBBBBBBBBBBBBBBBBB' && !window.__SLT_DEBUG__.state.fullPlay);
     await ui(page, 'slt-autonext').uncheck();
     await ui(page, 'slt-toggle').click();
     await page.close();
@@ -266,10 +308,10 @@ async function run(name, fn) {
     const page = await openPage(ctx);
     await page.evaluate(() => window.__changeTrack('TRACKNOLYRICSAAAAAAAAA'));
     await ui(page, 'slt-toggle').click();
-    await page.waitForSelector('#slt-root >>> [data-testid="slt-msg"]:has-text("no lyrics")');
+    await ui(page, 'slt-msg').filter({ hasText: 'no lyrics' }).waitFor();
     await page.evaluate(() => window.__changeTrack('TRACKUNSYNCEDAAAAAAAAA'));
     await ui(page, 'slt-toggle').click();
-    await page.waitForSelector('#slt-root >>> [data-testid="slt-msg"]:has-text("not time-synced")');
+    await ui(page, 'slt-msg').filter({ hasText: 'not time-synced' }).waitFor();
     assert.strictEqual(await ui(page, 'slt-toggle').innerText(), '▶ Start');
     await page.close();
   });
@@ -291,12 +333,24 @@ async function run(name, fn) {
     await chip(page, '50%').click(); // remove 50% from ladder
     await page.reload();
     await page.locator('#slt-root').waitFor({ state: 'attached' });
-    await page.waitForSelector('#slt-root >>> .chip.sel');
+    await page.locator('#slt-root .chip.sel').first().waitFor();
     const sel = await page.locator('#slt-root .chip.sel').allInnerTexts();
     assert.deepStrictEqual(sel, ['🏋️ Training', '7×', '30%', '75%', '100%', 'First line']);
+    assert.strictEqual(await ui(page, 'slt-fullsong').isChecked(), true);
     await page.locator('#slt-root .icon').click();
     await ui(page, 'slt-fab').click();
     await ui(page, 'slt-panel').waitFor();
+    await page.close();
+  });
+
+  if (only === 'screenshot') await run('screenshot', async () => {
+    const page = await openPage(ctx);
+    await page.setViewportSize({ width: 420, height: 760 });
+    await chip(page, '🏋️ Training').click();
+    await chip(page, '5×').click();
+    await ui(page, 'slt-toggle').click();
+    await page.waitForFunction(() => window.__SLT_DEBUG__.state.rep === 1);
+    await page.locator('#slt-root .panel').screenshot({ path: path.join(__dirname, '..', 'screenshot.png') });
     await page.close();
   });
 

@@ -6,7 +6,7 @@
 
   const SPEEDS = [0.3, 0.5, 0.75, 1];
   const REPS = [3, 5, 7, 10];
-  const DEFAULTS = { mode: 'repeat', reps: 5, speed: 1, trainingReps: 5, trainingSpeeds: [0.3, 0.5, 0.75, 1], startFrom: 'first', autoNext: false, minimized: false };
+  const DEFAULTS = { mode: 'repeat', reps: 5, speed: 1, trainingReps: 5, trainingSpeeds: [0.3, 0.5, 0.75, 1], startFrom: 'first', autoNext: false, playFullAfter: true, minimized: false };
   let settings = Object.assign({}, DEFAULTS);
   let state = { active: false };
 
@@ -100,7 +100,7 @@
       return;
     }
     const training = settings.mode === 'training';
-    const busy = state.active || state.loading || state.waitingNext;
+    const busy = state.active || state.loading || state.waitingNext || state.fullPlay;
 
     const panel = h('div', { class: 'panel', 'data-testid': 'slt-panel' },
       h('div', { class: 'head' },
@@ -121,7 +121,10 @@
               if (!list.length) list = [v];
               change({ trainingSpeeds: list.sort((a, b) => a - b) });
             }, pct),
-            h('div', { class: 'hint' }, `Each line: ${settings.trainingSpeeds.map(pct).join(' → ')}, ${settings.trainingReps}× each = ${settings.trainingSpeeds.length * settings.trainingReps} plays, then the next line.`))
+            h('div', { class: 'hint' }, `Each line: ${settings.trainingSpeeds.map(pct).join(' → ')}, ${settings.trainingReps}× each = ${settings.trainingSpeeds.length * settings.trainingReps} plays, then the next line.`)),
+          h('label', { class: 'row check' },
+            (() => { const c = h('input', { type: 'checkbox', 'data-testid': 'slt-fullsong', onchange: e => change({ playFullAfter: e.target.checked }) }); c.checked = settings.playFullAfter; return c; })(),
+            'At the end, play the whole song once at 100%')
         ]
         : [
           h('div', { class: 'row' }, h('div', { class: 'label' }, 'Repeat each line'),
@@ -175,7 +178,7 @@
   let lastKey = '';
   document.addEventListener('slt-state', ev => {
     try { state = JSON.parse(ev.detail); } catch (e) { return; }
-    const key = [state.active, state.loading, state.waitingNext, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
+    const key = [state.active, state.loading, state.waitingNext, state.fullPlay, state.line, state.stage, state.rep, state.rate, state.message, state.text].join('|');
     if (key !== lastKey) { lastKey = key; render(); }
   });
 

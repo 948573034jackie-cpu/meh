@@ -135,14 +135,15 @@
     active: false, waitingNext: false, loading: false,
     settings: core.normalizeSettings({}), plan: core.plan({}),
     lines: [], trackId: null, line: 0, stage: 0, rep: 0,
-    rate: 1, lastSeekAt: 0, timer: null, message: '', finished: false
+    rate: 1, lastSeekAt: 0, timer: null, message: '', finished: false,
+    fullPlay: false // training done, now playing the whole song once at 100%
   };
 
   function emit() {
     const ln = S.lines[S.line];
     const el = getMedia();
     const state = {
-      active: S.active, loading: S.loading, waitingNext: S.waitingNext, finished: S.finished,
+      active: S.active, loading: S.loading, waitingNext: S.waitingNext, finished: S.finished, fullPlay: S.fullPlay,
       mode: S.settings.mode, message: S.message,
       line: S.line, lineCount: S.lines.length,
       stage: S.stage, stageCount: S.plan.stages.length,
@@ -175,7 +176,7 @@
     S.lastSeekAt = performance.now();
     try { el.currentTime = t; } catch (e) { /* ignore */ }
     setTimeout(() => {
-      if (S.active && Math.abs(el.currentTime - t) > 1.5 && el.currentTime < t) seekViaProgressBar(t, el);
+      if ((S.active || S.fullPlay) && Math.abs(el.currentTime - t) > 1.5) seekViaProgressBar(t, el);
     }, 400);
   }
 
@@ -202,7 +203,7 @@
 
   function stop(message) {
     stopTimer();
-    S.active = false; S.waitingNext = false; S.loading = false;
+    S.active = false; S.waitingNext = false; S.loading = false; S.fullPlay = false;
     S.rate = 1;
     applyRate(getMedia(), 1);
     S.message = message || '';
@@ -211,7 +212,22 @@
 
   function finish() {
     S.rate = 1;
-    applyRate(getMedia(), 1);
+    const el = getMedia();
+    applyRate(el, 1);
+    if (S.settings.mode === 'training' && S.settings.playFullAfter && el) {
+      // Training finished: listen to the whole song once, start to end, at normal speed.
+      S.active = false; S.fullPlay = true;
+      S.message = 'Training done! Now playing the whole song at 100% 🎶';
+      seek(el, 0);
+      ensurePlaying();
+      emit();
+      return;
+    }
+    songDone();
+  }
+
+  function songDone() {
+    S.fullPlay = false;
     S.finished = true;
     if (S.settings.autoNext) {
       S.active = false; S.waitingNext = true;
@@ -231,7 +247,7 @@
     stopTimer();
     S.settings = core.normalizeSettings(settings || S.settings);
     S.plan = core.plan(S.settings);
-    S.active = false; S.waitingNext = false; S.finished = false;
+    S.active = false; S.waitingNext = false; S.finished = false; S.fullPlay = false;
     S.loading = true; S.message = 'Loading lyrics…';
     emit();
 
@@ -262,6 +278,19 @@
     const id = currentTrackId();
     if (S.waitingNext) {
       if (id && id !== S.trackId) start(S.settings, { fromStart: true });
+      return;
+    }
+    if (S.fullPlay) {
+      const el = getMedia();
+      if (id && S.trackId && id !== S.trackId) {
+        // Spotify moved on to the next song when this one ended
+        if (S.settings.autoNext) start(S.settings, { fromStart: true });
+        else { stop('Training complete! 🎉'); S.finished = true; emit(); }
+        return;
+      }
+      if (!el) return;
+      applyRate(el, 1);
+      if (el.ended || (el.duration && el.currentTime >= el.duration - 0.25)) songDone();
       return;
     }
     if (!S.active) return;
