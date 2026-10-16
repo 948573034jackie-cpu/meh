@@ -66,7 +66,9 @@
       try {
         if (!tr.inited) { await append(tr, await get(tr.t.init)); tr.inited = true; }
         const t = video.currentTime;
-        const seg = tr.t.segs.find((s) => s.end > t && s.start < t + 10 && !buffered(tr.sb, (s.start + s.end) / 2));
+        // A segment counts as loaded only if both its ends are (eviction can cut one in half).
+        const have = (s) => buffered(tr.sb, s.start + 0.05) && buffered(tr.sb, s.end - 0.05);
+        const seg = tr.t.segs.find((s) => s.end > t && s.start < t + 10 && !have(s));
         if (seg) {
           const bytes = await get(seg.url);
           if (my !== session) return;
@@ -79,7 +81,7 @@
             await append(tr, bytes);
           }
           if (tr.t === M.audio) window.__fake.appended.push(seg.url);
-        } else if (tr.t.segs.every((s) => buffered(tr.sb, (s.start + s.end) / 2) || s.end <= t) && ms.readyState === 'open' && t > M.duration - 5) {
+        } else if (tr.t.segs.every((s) => have(s) || s.end <= t) && ms.readyState === 'open' && t > M.duration - 5) {
           if (tracks.every((x) => !x.sb.updating)) { try { ms.endOfStream(); } catch (e) {} }
         }
         // Evict old data like a real player does.

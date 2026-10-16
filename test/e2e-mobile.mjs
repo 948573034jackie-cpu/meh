@@ -506,13 +506,21 @@ await step('lyrics: A / B buttons at the right of the lines loop from one line t
   const inAB = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].map((p, i) => (p.classList.contains('in-ab') ? i : -1)).filter((i) => i >= 0));
   assert(JSON.stringify(inAB) === '[2,3,4]', `lines 3-5 marked (${inAB})`);
   await waitFor(async () => { const v = await vstate(); return !v.paused && v.t >= 4 && v.t < 10.2; }, 3000, 'playing inside the loop');
-  await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops back');
+  try {
+    await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops back');
+  } catch (e) {
+    const d = await page.evaluate(() => {
+      const v = document.querySelector('#movie_player video');
+      const r = (b) => Array.from({ length: b.length }, (_, i) => `${b.start(i).toFixed(2)}-${b.end(i).toFixed(2)}`).join(' ');
+      return { t: v.currentTime, paused: v.paused, rs: v.readyState, ns: v.networkState, seeking: v.seeking, buf: r(v.buffered), rate: v.playbackRate, err: v.error && v.error.code };
+    });
+    throw new Error(`${e.message} ${JSON.stringify(d)}`);
+  }
   // One line: A and B on the same line.
   await tapRight(6);
   await tapRight(6);
   h = await host();
   assert(h.a === '12.000' && h.b === '14.000', `just line 7 (${h.a}-${h.b})`);
-  await tap('button', 'Clear the loop');
 });
 
 await step('play / pause: one button, a little bigger than the others', async () => {
