@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Mock Spotify</title></head>
+<body style="background:#121212;color:#fff">
+<footer>
+  <div data-testid="now-playing-widget"><a id="np" href="/album/AAAAAAAAAAAAAAAAAAAAAA?highlight=spotify:track:TRACKAAAAAAAAAAAAAAAAA">Song A</a></div>
+  <button data-testid="control-button-playpause" id="pp">play</button>
+  <button data-testid="lyrics-button" id="ly">lyrics</button>
+  <div data-testid="playback-progressbar"><input type="range" min="0" max="1000"></div>
+</footer>
+<script>
+  // like Spotify: media element created by script, never attached to the DOM
+  const v = document.createElement('video');
+  window.__player = v;
+  v.src = '/audio/song.wav';
+  v.preload = 'auto';
+  document.getElementById('pp').onclick = () => (v.paused ? v.play() : v.pause());
+  // Spotify sends authenticated requests on load; mimic one so the extension can learn the token
+  if (!location.search.includes('noauth')) {
+    fetch('https://spclient.wg.spotify.com/melody/v1/ping', { headers: { authorization: 'Bearer TESTTOKEN', 'client-token': 'CT' } });
+  }
+  document.getElementById('ly').onclick = () => {
+    const id = document.getElementById('np').getAttribute('href').match(/track:(\w{22})/)[1];
+    fetch('https://spclient.wg.spotify.com/color-lyrics/v2/track/' + id + '/image/x?format=json', { headers: { authorization: 'Bearer TESTTOKEN' } });
+  };
+  window.__changeTrack = (id) => { document.getElementById('np').setAttribute('href', '/album/X?highlight=spotify:track:' + id); v.currentTime = 0; };
+</script>
+</body></html>

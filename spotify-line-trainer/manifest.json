@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Spotify Line Trainer",
+  "version": "1.0.0",
+  "description": "Loop every lyric line of a Spotify song N times at the speed you choose, or run a full slow-to-fast training ladder.",
+  "permissions": ["storage"],
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["src/core.js", "src/page.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["src/ui.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}
