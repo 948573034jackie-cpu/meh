@@ -8,6 +8,9 @@ const core = require('../src/core.js');
 
 const EXT = path.resolve(__dirname, '..');
 const MOCK = fs.readFileSync(path.join(__dirname, 'mock-spotify.html'));
+// MODE=extension (default) | userscript (injected at document-start) | late (userscript injected after the page loaded)
+const MODE = process.env.MODE || 'extension';
+const USERSCRIPT = MODE === 'extension' ? null : fs.readFileSync(path.join(__dirname, '..', 'dist', 'spotify-line-trainer.user.js'), 'utf8');
 
 function wav(seconds) {
   const rate = 8000, n = rate * seconds, buf = Buffer.alloc(44 + n * 2);
@@ -41,8 +44,9 @@ async function launch() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slt-'));
   const ctx = await chromium.launchPersistentContext(dir, {
     headless: true, channel: 'chromium',
-    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, '--autoplay-policy=no-user-gesture-required']
+    args: [...(MODE === 'extension' ? [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`] : []), '--autoplay-policy=no-user-gesture-required']
   });
+  if (MODE === 'userscript') await ctx.addInitScript({ content: USERSCRIPT });
   await ctx.route('https://open.spotify.com/**', route => {
     const url = route.request().url();
     if (url.includes('/audio/')) return fulfillRange(route, AUDIO);
@@ -67,9 +71,13 @@ async function openPage(ctx, query = '') {
   const page = await ctx.newPage();
   page.on('pageerror', e => { console.error('PAGE ERROR', e); process.exitCode = 1; });
   await page.goto('https://open.spotify.com/' + query);
-  await page.waitForFunction(() => window.__player && window.__player.readyState >= 1);
-  await page.locator('#slt-root').waitFor({ state: 'attached' });
+  await afterLoad(page);
   return page;
+}
+async function afterLoad(page) {
+  await page.waitForFunction(() => window.__player && window.__player.readyState >= 1);
+  if (MODE === 'late') await page.evaluate(USERSCRIPT);
+  await page.locator('#slt-root').waitFor({ state: 'attached' });
 }
 const ui = (page, testid) => page.locator(`#slt-root [data-testid="${testid}"]`);
 const chip = (page, text) => page.locator('#slt-root .chip', { hasText: new RegExp('^' + text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') });
@@ -332,7 +340,7 @@ async function run(name, fn) {
     await chip(page, '7×').click();
     await chip(page, '50%').click(); // remove 50% from ladder
     await page.reload();
-    await page.locator('#slt-root').waitFor({ state: 'attached' });
+    await afterLoad(page);
     await page.locator('#slt-root .chip.sel').first().waitFor();
     const sel = await page.locator('#slt-root .chip.sel').allInnerTexts();
     assert.deepStrictEqual(sel, ['🏋️ Training', '7×', '30%', '75%', '100%', 'First line']);
@@ -355,5 +363,5 @@ async function run(name, fn) {
   });
 
   await ctx.close();
-  console.log(`\n${results.filter(r => r[0] === 'PASS').length}/${results.length} e2e tests passed`);
+  console.log(`\n[${MODE}] ${results.filter(r => r[0] === 'PASS').length}/${results.length} e2e tests passed`);
 })().catch(e => { console.error(e); process.exit(1); });

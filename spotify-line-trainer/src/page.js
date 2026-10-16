@@ -15,6 +15,8 @@
     if (typeof tag === 'string' && /^(audio|video)$/i.test(tag)) mediaEls.add(el);
     return el;
   };
+  // In case we were injected after Spotify made its player: an existing element is
+  // picked up the next time Spotify calls play() on it.
   const origPlay = HTMLMediaElement.prototype.play;
   HTMLMediaElement.prototype.play = function () {
     mediaEls.add(this);
@@ -253,6 +255,15 @@
 
     let el = getMedia();
     for (let i = 0; i < 20 && !el; i++) { await sleep(150); el = getMedia(); }
+    if (!el) {
+      // Injected late (e.g. Safari userscript): toggle Spotify's play/pause so it calls play() and we catch its player.
+      const btn = document.querySelector('[data-testid="control-button-playpause"]');
+      for (let i = 0; i < 2 && !el && btn; i++) {
+        btn.click();
+        for (let j = 0; j < 10 && !el; j++) { await sleep(100); el = getMedia(); }
+      }
+      if (el && el.paused) ensurePlaying();
+    }
     if (token !== startToken) return;
     if (!el) return stop('Start playing a song in Spotify first.');
     const id = currentTrackId() || lastLyricsTrack;

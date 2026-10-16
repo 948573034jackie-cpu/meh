@@ -59,6 +59,13 @@
   .msg { color: #f3c969; font-size: 12px; margin-top: 8px; }
   .bar { height: 4px; background: #3e3e3e; border-radius: 2px; margin-top: 8px; overflow: hidden; }
   .bar > i { display: block; height: 100%; background: #1ed760; width: 0; }
+  @media (pointer: coarse) { /* iPad / touch: bigger tap targets */
+    .chip { padding: 11px 0; font-size: 15px; }
+    .nav { width: 48px; font-size: 17px; }
+    .big { padding: 13px; font-size: 16px; }
+    .panel { width: 360px; font-size: 14px; }
+    .fab { width: 60px; height: 60px; }
+  }
   .ladder { display: flex; gap: 4px; margin-top: 6px; }
   .ladder span { flex: 1; text-align: center; font-size: 11px; padding: 3px 0; border-radius: 4px; background: #333; color: #aaa; }
   .ladder span.done { background: #1d5e35; color: #fff; }
@@ -82,8 +89,21 @@
       h('button', { class: 'chip' + (isSel(v) ? ' sel' : ''), 'data-v': String(v), onclick: () => onPick(v) }, fmt(v))));
   }
 
+  // chrome.storage in the Chrome extension; localStorage in the iPad/Safari userscript
+  const hasExtStorage = () => { try { return !!(chrome && chrome.storage && chrome.storage.local); } catch (e) { return false; } };
   function save() {
-    try { chrome.storage.local.set({ sltSettings: settings }); } catch (e) { /* ignore */ }
+    try {
+      if (hasExtStorage()) chrome.storage.local.set({ sltSettings: settings });
+      else localStorage.setItem('sltSettings', JSON.stringify(settings));
+    } catch (e) { /* ignore */ }
+  }
+  function load(cb) {
+    try {
+      if (hasExtStorage()) return chrome.storage.local.get('sltSettings', r => cb(r && r.sltSettings));
+    } catch (e) { /* fall through */ }
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem('sltSettings') || 'null'); } catch (e) { /* ignore */ }
+    cb(v);
   }
   function change(patch) {
     Object.assign(settings, patch);
@@ -189,10 +209,8 @@
     send('ping');
   }
 
-  try {
-    chrome.storage.local.get('sltSettings', r => {
-      if (r && r.sltSettings) settings = Object.assign({}, DEFAULTS, r.sltSettings);
-      mount();
-    });
-  } catch (e) { mount(); }
+  load(saved => {
+    if (saved) settings = Object.assign({}, DEFAULTS, saved);
+    mount();
+  });
 })();
