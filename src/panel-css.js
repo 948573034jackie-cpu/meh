@@ -108,10 +108,11 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .wave-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
 .lyrics {
   flex: 0 0 34%; min-width: 240px; max-width: 480px; display: flex; flex-direction: column;
-  border-left: 1px solid var(--line); background: #0d1119;
+  border-left: 1px solid var(--line); background: #101216;
   min-height: 0; overflow: hidden; /* a long song must scroll inside, never grow the panel */
 }
-.lyr-head { display: flex; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.lyr-head { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+@media (max-width: 600px) { .lyr-head input { flex-basis: 100%; } }
 .lyr-head input {
   flex: 1 1 auto; min-width: 0; height: 28px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg3); color: var(--text); padding: 0 8px; font: inherit; outline: none;
@@ -119,7 +120,11 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .lyr-head input:focus { border-color: var(--accent); }
 .lyr-meta { padding: 3px 8px; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 18px; }
 .lyr-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 60px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
-.lyr-body p { margin: 0; padding: .2em .4em; border-radius: 6px; color: #b4bccc; font-size: var(--lyr-font, 15px); line-height: 1.35; transition: color .15s, background .15s; }
+.lyr-body p {
+  margin: 0; padding: .14em .35em; border-radius: 10px; color: var(--lyr-ink, #aaa59b); font-size: var(--lyr-font, 15px); line-height: 1.4;
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", system-ui, "PingFang SC", "Hiragino Sans", sans-serif;
+  font-weight: 500; letter-spacing: .005em; transition: color .2s, background .2s;
+}
 button.lyr-size { font-weight: 800; font-size: 13px; }
 .lyr-resize { display: none; }
 /* Lyrics on top of the screen (default on iPad/iPhone): big, karaoke style. */
@@ -127,7 +132,7 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   position: fixed; left: 0; right: 0; top: 0; z-index: 4;
   flex: none; width: auto; min-width: 0; max-width: none;
   border-left: 0; border-bottom: 1px solid #33405a;
-  background: rgba(8, 11, 17, .97); box-shadow: 0 10px 30px rgba(0,0,0,.55);
+  background: rgba(14, 15, 19, .985); box-shadow: 0 10px 30px rgba(0,0,0,.55);
   padding-top: env(safe-area-inset-top, 0px);
 }
 .lyrics.top .lyr-meta { text-align: center; }
@@ -141,36 +146,77 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
 }
 .lyrics.top .lyr-resize:hover::after { background: var(--accent); }
-.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: calc(2.1em + 18px); }
+.lyr-body.synced .lrow { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: calc(2.1em + 18px); }
 .lyr-loop {
   position: absolute; left: .25em; top: 50%; transform: translateY(-50%);
   width: 1.5em; height: 1.5em; min-width: 26px; min-height: 26px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  color: #5d6780; border: 1px solid #2a3348; background: rgba(255,255,255,.03);
+  color: #4f545e; border: 1px solid #262a32; background: rgba(255,255,255,.02);
 }
 .lyr-loop svg { width: 62%; height: 62%; fill: currentColor; }
-.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #4b3f78; }
-.lyr-body p.looping { background: rgba(190,120,255,.22); color: #fff; font-weight: 700; }
+.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #463c6c; }
+.lyr-body p.looping { background: rgba(192,132,252,.13); color: #eee8ff; }
 .lyr-body p.looping .lyr-loop { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
-.lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
+.lyr-body.synced p:hover { background: rgba(255,255,255,.035); }
 .lyr-ab {
   position: absolute; right: .25em; top: 50%; transform: translateY(-50%);
   min-width: 1.6em; height: 1.5em; min-height: 26px; padding: 0 .3em; border-radius: 8px; box-sizing: border-box;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: .62em; font-weight: 800; color: #4ade80; border: 1px solid #23503a; background: rgba(34,197,94,.08);
+  font-size: .62em; font-weight: 800; color: #5fbf86; border: 1px solid #234434; background: rgba(34,197,94,.06);
 }
-@media (any-pointer: coarse) { .lyr-ab { min-width: 42px; min-height: 34px; font-size: 15px; } .lyr-body.synced p { padding-right: calc(2.1em + 30px); } }
+@media (any-pointer: coarse) { .lyr-ab { min-width: 42px; min-height: 34px; font-size: 15px; } .lyr-body.synced .lrow { padding-right: calc(2.1em + 30px); } }
 .lyr-body p.ab-start .lyr-ab { color: #062012; background: #4ade80; border-color: #4ade80; }
-.lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #f87171; border-color: #5a2a2a; background: rgba(248,113,113,.08); }
-.lyr-body p.in-ab { box-shadow: inset 3px 0 0 #4ade80, inset -3px 0 0 #f87171; }
-.lyr-body p.past { color: #6f788b; }
-.lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
+.lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #ef8b84; border-color: #4f2a2a; background: rgba(248,113,113,.06); }
+.lyr-body p.in-ab { box-shadow: inset 3px 0 0 #3fae6c, inset -3px 0 0 #d9645c; }
+.lyr-body p.past { color: #5c5f66; }
+.lyr-body p.now { color: #f1ebdf; background: rgba(255,232,190,.06); font-weight: 600; }
+/* Chords sit over the syllable they start on (amber, easy on the eyes). */
+.lyr-text.has-ch { line-height: 2.5; }
+.seg { position: relative; }
+.seg > .ch {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: -.12em; white-space: nowrap; pointer-events: none;
+  font-size: .62em; line-height: 1; font-weight: 700; letter-spacing: .02em; color: #d9ad62;
+}
+.lyr-body p.past .seg > .ch { color: #8a7346; }
+.lyr-body p.now .seg > .ch { color: #f0c274; }
+.ch-row { display: flex; flex-wrap: wrap; gap: .25em 1.1em; padding: .25em 2.1em .1em; font-size: .62em; font-weight: 700; color: #d9ad62; letter-spacing: .02em; }
+.lyrics.top .ch-row { justify-content: center; }
+/* Song parts: VERSE 1, CHORUS… small, quiet, easy to find. */
+.sec-tag {
+  display: block; margin: .9em 0 .15em; padding-left: 2.1em; font-size: max(10px, .36em); font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase; color: #6f8f88;
+}
+.lyrics.top .sec-tag { padding-left: 0; }
+.lyr-body p:first-child .sec-tag:first-child { margin-top: .2em; }
+/* Chords panel */
+.lyrics { position: relative; }
+.lyrics.top { position: fixed; }
+/* The chords panel covers the lyrics area, so all of it is always in reach. */
+.chord-panel {
+  position: absolute; inset: 0; z-index: 7; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px)); overflow-y: auto; background: #0f1116;
+}
+.chord-title { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #e5b567; font-size: 15px; }
+.chord-title button { margin-left: auto; }
+.chord-steps { color: var(--muted); font-size: 12px; text-align: center; }
+.chord-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+textarea.chord-text {
+  flex: 1 1 auto; width: 100%; min-height: 120px; resize: none; border-radius: 10px; border: 1px solid var(--line);
+  background: #15181f; color: #d6d1c7; padding: 8px; font: 12px/1.35 ui-monospace, "SF Mono", Menlo, monospace; outline: none;
+  user-select: text; -webkit-user-select: text;
+}
+textarea.chord-text:focus { border-color: #6b5426; }
+button.chord-btn { font-weight: 700; }
+button.chord-btn.has { color: #e5b567; border-color: #6b5426; }
+button.practice-btn { margin-left: auto; font-weight: 700; color: #e7defc; border-color: #4b3f78; background: linear-gradient(#2a2346, #211b37); }
+button.practice-btn.on { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
+.key-box { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
+.key-label { min-width: 52px; }
 .lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
-.lyr-sync { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 6px 4px; }
+.lyr-sync { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 6px; padding: 2px 6px 4px; }
 .lyr-sync button { height: 24px; padding: 0 8px; font-size: 12px; border-radius: 12px; }
 .lyr-sync select { height: 24px; font-size: 12px; border-radius: 12px; }
-.lyr-train { padding-top: 0; }
-.lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
+.lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .overlay {
   position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);

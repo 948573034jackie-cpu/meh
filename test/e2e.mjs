@@ -291,24 +291,24 @@ await step('speed survives YouTube resetting it, but follows YouTube menu choice
   await shadowClick('button.speed', '100%');
 });
 
-await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops it at normal speed', async () => {
+await step('Trainer: one tap starts it at 30% over 10 loops, another tap stops it at normal speed', async () => {
   await shadowClick('button', 'Trainer');
   await sleep(200);
   let h = await host();
-  assert(h.trainer.startsWith('1/50'), `running from loop 1 of 50 (got "${h.trainer}")`);
+  assert(h.trainer.startsWith('1/10'), `running from loop 1 of 10 (got "${h.trainer}")`);
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, `starts at 30% (got ${(await vstate()).rate})`);
   const opts = await page.evaluate(() => Object.fromEntries([...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')]
     .filter((e) => e.title === 'Starting speed' || e.title === 'How many loops to reach 100%')
     .map((e) => [e.title, [...e.options].map((o) => o.value)])));
   assert(JSON.stringify(opts['Starting speed']) === '["30","50","75"]', `start choices ${opts['Starting speed']}`);
-  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["25","50","75"]', `loop choices ${opts['How many loops to reach 100%']}`);
+  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["10","30","50"]', `loop choices ${opts['How many loops to reach 100%']}`);
   await shadowClick('button', 'Trainer');
   h = await host();
   assert(h.trainer === '', 'stopped');
   assert(Math.abs((await vstate()).rate - 1) < 0.001, 'back to normal speed');
 });
 
-await step('speed trainer: 50% to 100% over 25 loops', async () => {
+await step('speed trainer: 50% to 100% over 10 loops', async () => {
   // A short 1 s loop keeps the test quick. (Not at 5 s: clicking right on the
   // existing A flag would grab the flag instead of starting a new loop.)
   await clickWaveAt(3);
@@ -317,34 +317,34 @@ await step('speed trainer: 50% to 100% over 25 loops', async () => {
   assert(Math.abs(Number(h0.a) - 3) < 0.2 && Math.abs(Number(h0.b) - 4) < 0.2, `loop 3-4 (got ${h0.a}-${h0.b})`);
   await shadowClick('button', 'Trainer');
   await shadowSelect('Starting speed', 50); // changing a choice restarts the training with it
-  await shadowSelect('How many loops to reach 100%', 25);
+  await shadowSelect('How many loops to reach 100%', 10);
   const seen = [];
   await waitFor(async () => {
     const r = (await vstate()).rate;
     if (!seen.length || seen[seen.length - 1] !== r) seen.push(r);
     const h = await host();
-    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 26;
+    return h.trainer === '' || Number(h.trainer.split('/')[0]) >= 11;
   }, 60000, 'trainer reaches 100%');
   await page.screenshot({ path: path.join(SHOTS, '4-trainer.png') });
-  const want = [...new Set(Array.from({ length: 25 }, (_, i) => Core.trainerRate(0.5, 1, 25, i + 1)))];
+  const want = [...new Set(Array.from({ length: 10 }, (_, i) => Core.trainerRate(0.5, 1, 10, i + 1)))];
   assert(JSON.stringify(seen.slice(0, want.length)) === JSON.stringify(want), `rates ${JSON.stringify(seen)} want ${JSON.stringify(want)}`);
   const h = await host();
   assert(h.loop === 'true', 'loop still set');
 });
 
-await step('speed trainer: after 100%, plays 10 times at full speed and then stops', async () => {
+await step('speed trainer: 10 up to 100%, then 5 more at full speed, then stops', async () => {
   if ((await host()).trainer) await shadowClick('button', 'Trainer'); // stop
-  await shadowClick('button', 'Trainer'); // start again: always 30% over 50 loops...
+  await shadowSelect('How many loops to reach 100%', 30);
+  await shadowClick('button', 'Trainer'); // start again: always 30% over 10 loops...
   let h0 = await host();
-  assert(h0.trainer.startsWith('1/50') && Math.abs((await vstate()).rate - 0.3) < 0.001, 'every start is 30% over 50 loops');
-  await shadowSelect('Starting speed', 75); // ...shorter for the test: 75% over 25 loops
-  await shadowSelect('How many loops to reach 100%', 25);
+  assert(h0.trainer.startsWith('1/10') && Math.abs((await vstate()).rate - 0.3) < 0.001, 'every start is 30% over 10 loops');
+  await shadowSelect('Starting speed', 75); // ...quicker for the test: 75% over 10 loops
   const start = Number((await host()).reps);
   await waitFor(async () => (await host()).trainer === '', 90000, 'trainer finishes by itself');
   const h = await host();
   const v = await vstate();
-  // 24 ramp loops + 10 full-speed loops = 34 plays, then it stops at A.
-  assert(Number(h.reps) - start === 34, `plays ${Number(h.reps) - start}`);
+  // 10 plays speeding up to 100% + 5 more at 100% = 15 plays, then it stops at A.
+  assert(Number(h.reps) - start === 15, `plays ${Number(h.reps) - start}`);
   assert(v.paused, 'stopped (paused)');
   assert(Math.abs(v.t - Number(h.a)) < 0.15, `waiting at the loop start (t=${v.t.toFixed(2)}, A=${h.a})`);
   assert(Math.abs(v.rate - 1) < 0.001, 'at full speed');
@@ -564,7 +564,8 @@ await step('lyrics: tap a line to jump there; next match; search by hand', async
   assert(L.meta.includes('(Live)') && L.meta.includes('match 2 of'), `next match "${L.meta}"`);
   await shadowClick('button', 'Lyrics are early: show them later');
   const off = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-off').textContent);
-  assert(off === 'timing +0.2s', `timing nudged by 0.2 s (${off})`);
+  assert(off === 'timing +0.1s', `timing nudged by 0.1 s (${off})`);
+  await shadowClick('button', 'Lyrics are early: show them later');
   await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[5].click());
   assert(Math.abs((await vstate()).t - 10.2) < 0.15, `tapping a line uses the nudged timing (t=${(await vstate()).t.toFixed(2)})`);
   await page.evaluate(() => {
@@ -600,7 +601,7 @@ await step('↺ 5s plays the last 5 seconds again; 5s ↻ skips ahead', async ()
   await page.evaluate(() => { document.querySelector('#movie_player video').play().catch(() => {}); }); // don't wait on the play promise
 });
 
-await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, then 10 at 100%), then stops and puts the speed back', async () => {
+await step('line practice: ⟳ plays one line 15 times (30% → 100% over 10, then 5 at 100%), then stops and puts the speed back', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
   await shadowClick('button.speed', '75%'); // the speed from before, to be restored
   const abBefore = await host();
@@ -624,7 +625,7 @@ await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, th
   const want = [...new Set(Array.from({ length: 10 }, (_, i) => Core.trainerRate(0.3, 1, 10, i + 1))), 0.75];
   assert(JSON.stringify(rates) === JSON.stringify(want), `speeds ${JSON.stringify(rates)} want ${JSON.stringify(want)}`);
   assert(outside === 0, `stayed on the line (${outside})`);
-  assert(Number(h.reps) - r0 === 20, `20 plays (${Number(h.reps) - r0})`);
+  assert(Number(h.reps) - r0 === 15, `15 plays (${Number(h.reps) - r0})`);
   assert(v.paused && Math.abs(v.t - 8) < 0.15, `stopped at the start of the line (paused=${v.paused}, t=${v.t.toFixed(2)})`);
   assert(Math.abs(v.rate - 0.75) < 0.001, 'speed back to 75%');
   assert(h.a === abBefore.a && h.b === abBefore.b, 'A-B loop untouched');
@@ -659,19 +660,43 @@ await step('line practice: tap ⟳ again to stop early; speed comes back and it 
   await shadowClick('button.speed', '100%');
 });
 
-await step('line trainer: every line in turn (speeds up, 10 at 100%), a rest, ▶ skips the rest, then the next line; done at the end', async () => {
+const SHEET = [
+  'Hello chords by Test Artist  ·  Ultimate Guitar', // page junk
+  '[Verse 1]', 'C    G', 'Line 13 (0:24)',
+  '[Chorus]', 'Am   F', 'Line 14 (0:26)',
+  '[Outro]', 'Fmaj7    Bb13/D', 'Line 15 (0:28)', 'Related tabs',
+].join('\n');
+
+await step('chords: a pasted Ultimate Guitar sheet sits over the right words, with the song parts; transpose', async () => {
+  await shadowClick('button', 'Chords over the lyrics (from Ultimate Guitar or any chord site)');
+  await page.evaluate((t) => { document.getElementById('ytl-wave-looper').shadowRoot.querySelector('textarea.chord-text').value = t; }, SHEET);
+  await shadowClick('button', 'Put these chords on the lyrics');
+  const read = () => page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].slice(12)
+    .map((p) => ({ sec: [...p.querySelectorAll('.sec-tag')].map((e) => e.textContent).join(','), ch: [...p.querySelectorAll('.seg')].map((e) => `${e.firstChild.textContent}>${e.textContent.slice(e.firstChild.textContent.length).trim()}`) })));
+  let r = await read();
+  assert(r[0].sec === 'Verse 1' && r[0].ch[0].startsWith('C>Line') && r[0].ch[1].startsWith('G>13'), `line 13: ${JSON.stringify(r[0])}`);
+  assert(r[1].sec === 'Chorus' && r[1].ch[0].startsWith('Am>Line') && r[1].ch[1].startsWith('F>14'), `line 14: ${JSON.stringify(r[1])}`);
+  assert(r[2].sec === 'Outro' && r[2].ch[0].startsWith('Fmaj7>') && r[2].ch[1].startsWith('Bb13/D>'), `line 15: ${JSON.stringify(r[2])}`);
+  assert((await host()).chords === '3', 'three lines with chords');
+  await shadowClick('button', 'Transpose the chords up a semitone');
+  r = await read();
+  assert(r[0].ch[0].startsWith('C#>') && r[2].ch[1].startsWith('B13/D#>'), `up a semitone: ${JSON.stringify(r)}`);
+  await shadowClick('button', 'Transpose the chords down a semitone');
+  r = await read();
+  assert(r[0].ch[0].startsWith('C>'), 'back');
+  await page.screenshot({ path: path.join(SHOTS, '9b-chords.png') });
+});
+
+await step('Practice: part by part (30% up to 100%, then 5 at 100%), ▶ skips a rest, then the whole song once and it stops', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
-  await page.evaluate(() => {
-    const root = document.getElementById('ytl-wave-looper').shadowRoot;
-    const set = (title, v) => { const el = [...root.querySelectorAll('select')].find((e) => e.title === title); el.value = v; el.dispatchEvent(new Event('change')); };
-    set('Plays to speed up from 30% to 100% on each line', '5');
-    set('Rest before the next line', '20');
-    const v = document.querySelector('#movie_player video'); v.currentTime = 26.5; v.play().catch(() => {});
-  });
+  await shadowSelect('Practice: rest between the parts of the song', 10);
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 26.5; v.play().catch(() => {}); });
   await sleep(300);
-  await shadowClick('button', 'Line trainer');
+  await shadowClick('button.practice-btn');
   let h = await host();
-  assert(h.lineRun === 'line:13' && h.lineLoop === '26.00,28.00', `starts on the line playing now (${h.lineRun} ${h.lineLoop})`);
+  const parts = h.sections.split('|');
+  const chorus = parts.findIndex((x) => x.startsWith('Chorus@'));
+  assert(h.practice === `part:${chorus}` && h.lineLoop === '26.00,28.00', `starts with the part playing now: the chorus (${h.practice} ${h.lineLoop} ${h.sections})`);
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, 'from 30%');
   const r0 = Number(h.reps);
   let outside = 0;
@@ -679,30 +704,23 @@ await step('line trainer: every line in turn (speeds up, 10 at 100%), a rest, �
     const x = await host();
     const v = await vstate();
     if (x.lineLoop && (v.t < 25.95 || v.t > 28.15)) outside++;
-    return x.lineRun.startsWith('rest:') ? x : null;
-  }, 120000, 'rest after the line');
+    return x.practice.startsWith('rest:') ? x : null;
+  }, 120000, 'rest after the part');
   h = await host();
   let v = await vstate();
-  assert(Number(h.reps) - r0 === 15, `5 + 10 plays (${Number(h.reps) - r0})`);
-  assert(outside === 0, `stayed on the line (${outside})`);
-  assert(h.lineRun === 'rest:14' && v.paused && Math.abs(v.t - 28) < 0.15, `resting at the next line (${h.lineRun}, t=${v.t.toFixed(2)}, paused ${v.paused})`);
-  assert(/rest \d+ s/.test(await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.status').textContent)), 'shows the rest countdown');
-  await sleep(1500);
-  assert((await vstate()).paused, 'still resting');
+  assert(Number(h.reps) - r0 === 15, `10 + 5 plays (${Number(h.reps) - r0})`);
+  assert(outside === 0, `stayed on the part (${outside})`);
+  assert(h.practice === `rest:${chorus + 1}` && v.paused && Math.abs(v.t - 28) < 0.15, `resting before the outro (${h.practice}, t=${v.t.toFixed(2)})`);
   await shadowClick('button.play-btn');
-  await waitFor(async () => (await host()).lineRun === 'line:14', 2000, '▶ ends the rest');
-  h = await host();
-  assert(h.lineRun === 'line:14' && Math.abs((await vstate()).rate - 0.3) < 0.001, `▶ starts the next line now (${h.lineRun})`);
-  await waitFor(async () => (await host()).lineRun === '', 120000, 'done after the last line');
+  await waitFor(async () => (await host()).practice === `part:${chorus + 1}`, 2000, '▶ ends the rest');
+  await waitFor(async () => (await host()).practice === 'final', 120000, 'whole song once at the end');
   v = await vstate();
-  h = await host();
-  assert(h.lineLoop === '' && v.paused && Math.abs(v.rate - 1) < 0.001, `stopped, speed back (${v.rate})`);
-  await page.evaluate(() => {
-    const root = document.getElementById('ytl-wave-looper').shadowRoot;
-    const set = (title, v) => { const el = [...root.querySelectorAll('select')].find((e) => e.title === title); el.value = v; el.dispatchEvent(new Event('change')); };
-    set('Plays to speed up from 30% to 100% on each line', '10');
-    set('Rest before the next line', '30');
-  });
+  assert(v.t < 3 && Math.abs(v.rate - 1) < 0.001, `from the start at 100% (t=${v.t.toFixed(2)})`);
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 27; });
+  await waitFor(async () => (await host()).practice === '', 10000, 'stops at the end');
+  v = await vstate();
+  assert(v.paused && v.t > 29, `stopped at the end (t=${v.t.toFixed(2)})`);
+  await shadowSelect('Practice: rest between the parts of the song', 0);
 });
 
 await step('studio-quality slow-down: at 50% the pitch stays right (440 Hz, not 220 Hz); at 100% the sound is untouched', async () => {
@@ -745,7 +763,8 @@ await step('play / pause button is a little bigger than the other buttons', asyn
 
 await step('Trainer: a slower speed steps the trainer back (more loops); 30% starts the climb again', async () => {
   if ((await host()).trainer) await shadowClick('button', 'Trainer');
-  await shadowClick('button', 'Trainer'); // 30% over 50 loops
+  await shadowClick('button', 'Trainer'); // 30% over 10 loops
+  await shadowSelect('How many loops to reach 100%', 50); // the most loops: 30% → 100% over 50
   const check = async (pct, rep, start = 0.3) => {
     const h = await host();
     const v = await vstate();

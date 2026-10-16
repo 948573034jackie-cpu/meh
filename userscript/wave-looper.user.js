@@ -1304,11 +1304,588 @@ globalThis.YTL_STORAGE = (() => {
       .map((x) => x.r);
   }
 
+  // ---------------------------------------------------------------------------
+  // Chords (Ultimate Guitar style "chords over lyrics", or ChordPro [Am]words)
+  // ---------------------------------------------------------------------------
+  const NOTES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const NOTES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+  const NOTE_INDEX = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const CHORD_RE = /^[A-G](?:#|b|♯|♭)?(?:maj|min|mi|ma|m|M|dim|aug|sus|add|alt|°|ø|\+|-|Δ|\d{1,2}|b\d{1,2}|#\d{1,2}|♭\d{1,2}|♯\d{1,2}|no\d|omit\d|\((?:[^()]{1,12})\))*(?:\/[A-G](?:#|b|♯|♭)?)?$/;
+  const BAR_TOKEN = /^(?:\|+|\/+|-+|%|\*+|\.+|:?\|\|?:?|x\d+|\d+x|\(x\d+\)|\(\d+x\)|N\.?C\.?|n\.?c\.?|\(|\))$/;
+  const SECTION_WORDS = 'intro|verse|pre[- ]?chorus|chorus|post[- ]?chorus|bridge|outro|hook|pre[- ]?hook|refrain|interlude|instrumental|solo|break|breakdown|tag|coda|ending|drop';
+  const SECTION_LINE = new RegExp(`^\\s*(?:\\[\\s*)?((?:${SECTION_WORDS})(?:\\s*\\d+)?(?:\\s*[:\\-–]?\\s*(?:x\\s*\\d+|\\d+\\s*x))?)\\s*(?:\\]\\s*)?:?\\s*$`, 'i');
+
+  function unwrap(tok) {
+    const t = String(tok || '');
+    return /^\(.*\)$/.test(t) && !/^\([^()]*\)[^()]/.test(t) ? t.slice(1, -1) : t; // "(Am)" -> "Am", but keep "E7(#9)"
+  }
+
+  function isChord(tok) {
+    const t = unwrap(tok);
+    return !!t && CHORD_RE.test(t);
+  }
+
+  /** A line made only of chords (and bar marks like | or x2). Returns [{col, c}] or null. */
+  function chordLine(line) {
+    const out = [];
+    const re = /\S+/g;
+    let m;
+    let any = false;
+    while ((m = re.exec(line))) {
+      const tok = m[0];
+      if (isChord(tok)) {
+        out.push({ col: m.index, c: unwrap(tok) });
+        any = true;
+      } else if (!BAR_TOKEN.test(tok)) return null;
+    }
+    return any ? out : null;
+  }
+
+  function sectionName(line) {
+    const m = String(line).match(SECTION_LINE);
+    if (!m) return null;
+    return m[1].replace(/\s+/g, ' ').replace(/\s*[:\-–]?\s*(x\s*\d+|\d+\s*x)$/i, '').trim()
+      .replace(/^./, (c) => c.toUpperCase());
+  }
+
+  /**
+   * Reads a chord sheet (pasted from Ultimate Guitar or similar, or ChordPro)
+   * into items: {type:'sec', name} | {type:'line', text, chords:[{at, c}]} |
+   * {type:'chords', chords:[c...]}. Page junk comes through as plain lines;
+   * matching against the synced lyrics drops it later.
+   */
+  function parseChordSheet(text) {
+    let src = String(text || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ');
+    src = src.replace(/\[\/?(?:ch|tab)\]/g, ''); // Ultimate Guitar's raw markup
+    const raw = src.split('\n');
+    const items = [];
+    let pending = null; // chord line waiting for its lyric line
+    const flush = () => {
+      if (pending) items.push({ type: 'chords', chords: pending.map((x) => x.c) });
+      pending = null;
+    };
+    for (const lineRaw of raw) {
+      const line = lineRaw.replace(/\s+$/, '');
+      if (!line.trim()) {
+        flush();
+        continue;
+      }
+      // ChordPro directives {start_of_chorus} {c: Verse 2} {title: ...}
+      const dir = line.match(/^\s*\{\s*([a-z_]+)\s*(?::\s*([^}]*))?\}\s*$/i);
+      if (dir) {
+        flush();
+        const k = dir[1].toLowerCase();
+        const v = (dir[2] || '').trim();
+        if (k === 'soc' || k === 'start_of_chorus') items.push({ type: 'sec', name: v || 'Chorus' });
+        else if (k === 'sov' || k === 'start_of_verse') items.push({ type: 'sec', name: v || 'Verse' });
+        else if (k === 'sob' || k === 'start_of_bridge') items.push({ type: 'sec', name: v || 'Bridge' });
+        else if ((k === 'c' || k === 'comment' || k === 'ci') && sectionName(v)) items.push({ type: 'sec', name: sectionName(v) });
+        continue;
+      }
+      const sec = sectionName(line);
+      if (sec) {
+        flush();
+        items.push({ type: 'sec', name: sec });
+        continue;
+      }
+      const cl = chordLine(line);
+      if (cl) {
+        flush();
+        pending = cl;
+        continue;
+      }
+      // Tab lines (e|---3---|) are not lyrics.
+      if (/^[eBGDAE]\|[-\d|hpbr/\\~x ]+$/.test(line.trim())) {
+        flush();
+        continue;
+      }
+      // ChordPro inline chords: [Am]Hello [F]world
+      if (/\[[A-G][^\]\s]{0,10}\]/.test(line)) {
+        const chords = [];
+        let textOut = '';
+        let last = 0;
+        const re = /\[([^\]\s]{1,12})\]/g;
+        let m;
+        let ok = false;
+        while ((m = re.exec(line))) {
+          textOut += line.slice(last, m.index);
+          last = m.index + m[0].length;
+          if (isChord(m[1])) {
+            chords.push({ at: textOut.length, c: m[1] });
+            ok = true;
+          } else textOut += m[0];
+        }
+        textOut += line.slice(last);
+        if (ok) {
+          flush();
+          const t = textOut.replace(/\s+$/, '');
+          const lead = t.length - t.trimStart().length;
+          if (t.trim()) items.push({ type: 'line', text: t.trim(), chords: chords.map((x) => ({ at: Math.max(0, x.at - lead), c: x.c })) });
+          else items.push({ type: 'chords', chords: chords.map((x) => x.c) });
+          continue;
+        }
+      }
+      // A lyric line, with the chord line above it (if any).
+      const lead = line.length - line.trimStart().length;
+      const t = line.trim();
+      const chords = pending ? pending.map((x) => ({ at: Math.max(0, x.col - lead), c: x.c })) : [];
+      pending = null;
+      items.push({ type: 'line', text: t, chords });
+    }
+    flush();
+    return items;
+  }
+
+  function normWords(x) {
+    return String(x || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .replace(/[’'`]/g, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  }
+
+  function lineSim(a, b) {
+    return lineMatch(a, b).sim;
+  }
+
+  // Word overlap of two lines: { sim (0..1), common, total }
+  function lineMatch(a, b) {
+    const A = normWords(a);
+    const B = normWords(b);
+    if (!A.length || !B.length) return { sim: 0, common: 0, total: A.length + B.length };
+    const bag = new Map();
+    for (const w of B) bag.set(w, (bag.get(w) || 0) + 1);
+    let common = 0;
+    for (const w of A) {
+      const n = bag.get(w);
+      if (n) {
+        common++;
+        bag.set(w, n - 1);
+      }
+    }
+    return { sim: (2 * common) / (A.length + B.length), common, total: A.length + B.length };
+  }
+
+  // Word positions in a line: [{w, start, end}]
+  function wordSpans(text) {
+    const out = [];
+    const re = /[\p{L}\p{N}’'`]+/gu;
+    let m;
+    while ((m = re.exec(text))) out.push({ w: m[0].toLowerCase().replace(/[’'`]/g, ''), start: m.index, end: m.index + m[0].length });
+    return out;
+  }
+
+  // Longest common subsequence of words: map from a-index to b-index.
+  function lcsMap(a, b) {
+    const n = a.length;
+    const m = b.length;
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const map = new Map();
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) {
+        map.set(i, j);
+        i++;
+        j++;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    return map;
+  }
+
+  /** Moves chord positions from the sheet's text onto the (slightly different) lyric text. */
+  function mapChordsToText(sheetText, chords, target) {
+    const A = wordSpans(sheetText);
+    const B = wordSpans(target);
+    if (!B.length) return chords.map((x) => ({ at: 0, c: x.c }));
+    const map = lcsMap(A.map((x) => x.w), B.map((x) => x.w));
+    const out = [];
+    for (const ch of chords) {
+      if (!A.length || ch.at <= A[0].start) {
+        out.push({ at: 0, c: ch.c });
+        continue;
+      }
+      if (ch.at >= A[A.length - 1].end) {
+        out.push({ at: target.length, c: ch.c, after: true });
+        continue;
+      }
+      let w = A.length - 1;
+      for (let k = 0; k < A.length; k++) {
+        if (ch.at < A[k].end) {
+          w = k;
+          break;
+        }
+      }
+      const inWord = Math.max(0, ch.at - A[w].start);
+      let wb = map.get(w);
+      if (wb == null) {
+        // Nearest matched word before (or after), shifted by the word distance.
+        let k = w - 1;
+        while (k >= 0 && map.get(k) == null) k--;
+        if (k >= 0) wb = map.get(k) + (w - k);
+        else {
+          k = w + 1;
+          while (k < A.length && map.get(k) == null) k++;
+          wb = k < A.length ? map.get(k) - (k - w) : Math.round((w / A.length) * B.length);
+        }
+        wb = Math.max(0, Math.min(B.length - 1, wb));
+      }
+      const tw = B[wb];
+      out.push({ at: tw.start + Math.min(inWord, Math.max(0, tw.end - tw.start - 1)), c: ch.c });
+    }
+    return out.sort((x, y) => x.at - y.at);
+  }
+
+  /**
+   * Puts a parsed chord sheet onto the synced lyric lines.
+   * Returns { lines: for each lyric line { chords:[{at,c}], sec, pre:[{sec, chords}] }, matched }.
+   * Lines are matched in order by their words, so page junk and small lyric
+   * differences don't matter. A sheet line may cover two lyric lines (or the
+   * other way round). Choruses written only once in the sheet get their
+   * chords copied to the repeats.
+   */
+  function alignChordSheet(items, lyricTexts) {
+    const SL = [];
+    let sec = null;
+    let pre = [];
+    for (const it of items) {
+      if (it.type === 'sec') sec = it.name;
+      else if (it.type === 'chords') {
+        pre.push({ sec, chords: it.chords });
+        sec = null; // the section's name goes with its chords (an intro of chords only)
+      } else if (it.type === 'line') {
+        SL.push({ text: it.text, chords: it.chords, sec, pre });
+        sec = null;
+        pre = [];
+      }
+    }
+    const n = SL.length;
+    const m = lyricTexts.length;
+    const out = lyricTexts.map(() => ({ chords: [], sec: null, pre: [] }));
+    if (!n || !m) return { lines: out, matched: 0 };
+    const MIN = 0.5;
+    const cache = new Map();
+    // Value of matching two texts: words in common, minus a little for words left over.
+    const S = (a, b) => {
+      const k = a + '\u0001' + b;
+      if (!cache.has(k)) {
+        const r = lineMatch(a, b);
+        cache.set(k, { sim: r.sim, v: 2 * r.common - 0.5 * (r.total - 2 * r.common) });
+      }
+      return cache.get(k);
+    };
+    // Candidate moves at (i, j): 1 sheet line : 1 lyric line, 1 : 2, 2 : 1.
+    const moves = (i, j) => {
+      const r = [];
+      if (i < n && j < m) r.push({ di: 1, dj: 1, s: S(SL[i].text, lyricTexts[j]) });
+      if (i < n && j + 1 < m) r.push({ di: 1, dj: 2, s: S(SL[i].text, lyricTexts[j] + ' ' + lyricTexts[j + 1]) });
+      if (i + 1 < n && j < m) r.push({ di: 2, dj: 1, s: S(SL[i].text + ' ' + SL[i + 1].text, lyricTexts[j]) });
+      return r.filter((x) => x.s.sim >= MIN && x.s.v > 0);
+    };
+    const dp = Array.from({ length: n + 2 }, () => new Float32Array(m + 2));
+    const how = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(null));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        let best = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        let mv = null;
+        for (const x of moves(i, j)) {
+          const v = x.s.v + dp[i + x.di][j + x.dj];
+          if (v > best + 1e-6) {
+            best = v;
+            mv = x;
+          }
+        }
+        dp[i][j] = best;
+        how[i][j] = mv;
+      }
+    }
+    let i = 0;
+    let j = 0;
+    let matched = 0;
+    const got = new Array(m).fill(false);
+    const put = (k, chords, from) => {
+      out[k].chords = chords;
+      if (from) {
+        out[k].sec = from.sec;
+        out[k].pre = from.pre;
+      }
+      got[k] = true;
+    };
+    while (i < n && j < m) {
+      const mv = how[i][j];
+      if (mv) {
+        if (mv.di === 1 && mv.dj === 1) put(j, mapChordsToText(SL[i].text, SL[i].chords, lyricTexts[j]), SL[i]);
+        else if (mv.dj === 2) {
+          const a = lyricTexts[j];
+          const all = mapChordsToText(SL[i].text, SL[i].chords, a + ' ' + lyricTexts[j + 1]);
+          put(j, all.filter((c) => c.at < a.length + 1 && !(c.at === a.length + 1)).map((c) => ({ ...c, at: Math.min(c.at, a.length) })), SL[i]);
+          put(j + 1, all.filter((c) => c.at >= a.length + 1).map((c) => ({ ...c, at: c.at - a.length - 1 })), null);
+        } else {
+          const a = SL[i].text;
+          const chords = SL[i].chords.concat(SL[i + 1].chords.map((c) => ({ ...c, at: c.at + a.length + 1 })));
+          put(j, mapChordsToText(a + ' ' + SL[i + 1].text, chords, lyricTexts[j]), SL[i]);
+        }
+        matched++;
+        i += mv.di;
+        j += mv.dj;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    // Repeats the sheet didn't write out again: same words, same chords.
+    const byText = new Map();
+    for (let k = 0; k < m; k++) if (got[k] && out[k].chords.length) byText.set(normWords(lyricTexts[k]).join(' '), out[k].chords);
+    for (let k = 0; k < m; k++) {
+      if (got[k]) continue;
+      const c = byText.get(normWords(lyricTexts[k]).join(' '));
+      if (c) out[k].chords = c.map((x) => ({ ...x }));
+    }
+    return { lines: out, matched, sheetLines: n };
+  }
+
+  function chordParts(c) {
+    const m = String(c).match(/^([A-G])(#|b|♯|♭)?(.*?)(?:\/([A-G])(#|b|♯|♭)?)?$/);
+    if (!m) return null;
+    const acc = (a) => (a === '#' || a === '♯' ? 1 : a === 'b' || a === '♭' ? -1 : 0);
+    return { root: (NOTE_INDEX[m[1]] + acc(m[2]) + 12) % 12, qual: m[3] || '', bass: m[4] ? (NOTE_INDEX[m[4]] + acc(m[5]) + 12) % 12 : null };
+  }
+
+  /** Transposes a chord by n semitones: transposeChord('F#m7/C#', 2) -> 'G#m7/D#'. */
+  function transposeChord(c, n, flats) {
+    const p = chordParts(c);
+    if (!p || !n) return c;
+    const names = flats ? NOTES_FLAT : NOTES_SHARP;
+    const r = names[(p.root + n + 120) % 12];
+    return r + p.qual + (p.bass != null ? '/' + names[(p.bass + n + 120) % 12] : '');
+  }
+
+  /** Should these chords be spelled with flats (Bb) rather than sharps (A#)? */
+  function prefersFlats(chords, n = 0) {
+    let flat = 0;
+    let sharp = 0;
+    for (const c of chords) {
+      if (/^[A-G](b|♭)/.test(c)) flat++;
+      else if (/^[A-G](#|♯)/.test(c)) sharp++;
+    }
+    if (flat !== sharp) return flat > sharp;
+    const first = chords.length ? chordParts(chords[0]) : null;
+    if (!first) return false;
+    return [5, 10, 3, 8, 1, 6].includes((first.root + n + 120) % 12); // F Bb Eb Ab Db Gb keys
+  }
+
+  // ---------------------------------------------------------------------------
+  // Song sections from the lyrics alone (no chord sheet): repeated blocks are
+  // the chorus, a repeated block right before every chorus is the pre-chorus,
+  // a one-off block late in the song is the bridge.
+  // ---------------------------------------------------------------------------
+  function detectSections(lines) {
+    const sung = (k) => !!lines[k] && !!String(lines[k].text || '').replace(/[♪♫\s]/g, '');
+    const idx = [];
+    for (let k = 0; k < lines.length; k++) if (sung(k)) idx.push(k);
+    const names = new Array(lines.length).fill(null);
+    if (idx.length < 2) return { names, sections: idx.length ? [{ name: 'Verse 1', i0: idx[0], i1: idx[0] }] : [] };
+    const gaps = [];
+    for (let a = 1; a < idx.length; a++) gaps.push(lines[idx[a]].t - lines[idx[a - 1]].t);
+    const sorted = gaps.slice().sort((x, y) => x - y);
+    const med = sorted[Math.floor(sorted.length / 2)] || 3;
+    const bigGap = Math.max(5.5, med * 2.2);
+    // 1) Blocks: split at instrumental breaks (empty lines or long gaps).
+    let blocks = [];
+    let cur = [idx[0]];
+    for (let a = 1; a < idx.length; a++) {
+      const k = idx[a];
+      const prev = idx[a - 1];
+      let breakHere = lines[k].t - lines[prev].t > bigGap;
+      for (let e = prev + 1; e < k; e++) if (!sung(e)) breakHere = true;
+      if (breakHere) {
+        blocks.push(cur);
+        cur = [];
+      }
+      cur.push(k);
+    }
+    blocks.push(cur);
+    // 2) Long blocks: also split where a run of lines that repeats elsewhere starts.
+    const key = (k) => normWords(lines[k].text).join(' ');
+    const count = new Map();
+    for (const k of idx) count.set(key(k), (count.get(key(k)) || 0) + 1);
+    // Where else (how many lines away) each line's words come back: lines of
+    // one section repeat together, at the same distances.
+    const pos = new Map(idx.map((k, a) => [k, a]));
+    const shifts = new Map();
+    for (const k of idx) {
+      const set = new Set();
+      for (const k2 of idx) if (k2 !== k && key(k2) === key(k)) set.add(pos.get(k2) - pos.get(k));
+      shifts.set(k, set);
+    }
+    const jac = (x, y) => {
+      let c = 0;
+      for (const v of x) if (y.has(v)) c++;
+      return c / (x.size + y.size - c || 1);
+    };
+    const refined = [];
+    for (const b of blocks) {
+      if (b.length < 5) {
+        refined.push(b);
+        continue;
+      }
+      let part = [b[0]];
+      for (let a = 1; a < b.length; a++) {
+        const A = shifts.get(b[a - 1]);
+        const B = shifts.get(b[a]);
+        const change = (A.size > 0) !== (B.size > 0) || (A.size > 0 && B.size > 0 && jac(A, B) < 0.3);
+        if (change && part.length >= 2 && b.length - a >= 2) {
+          refined.push(part);
+          part = [];
+        }
+        part.push(b[a]);
+      }
+      refined.push(part);
+    }
+    blocks = refined;
+    // 3) Group blocks that are (mostly) the same words.
+    const text = blocks.map((b) => b.map(key));
+    const blockSim = (x, y) => {
+      const A = text[x];
+      const B = text[y];
+      let s = 0;
+      for (const l of A) s += Math.max(...B.map((m) => (m === l ? 1 : lineSim(l, m))));
+      return s / Math.max(A.length, B.length);
+    };
+    const group = blocks.map((_, x) => x);
+    for (let x = 0; x < blocks.length; x++) {
+      for (let y = 0; y < x; y++) {
+        if (group[y] === y && blockSim(x, y) >= 0.6) {
+          group[x] = y;
+          break;
+        }
+      }
+    }
+    const members = new Map();
+    group.forEach((g, x) => members.set(g, [...(members.get(g) || []), x]));
+    // Chorus: the repeated group with the most sung lines in total.
+    let chorus = -1;
+    let best = 0;
+    for (const [g, xs] of members) {
+      if (xs.length < 2) continue;
+      const w = xs.reduce((s, x) => s + blocks[x].length, 0);
+      if (w > best) {
+        best = w;
+        chorus = g;
+      }
+    }
+    const label = new Array(blocks.length).fill(null);
+    if (chorus >= 0) for (const x of members.get(chorus)) label[x] = 'Chorus';
+    // Pre-chorus: another repeated group whose blocks sit right before choruses.
+    for (const [g, xs] of members) {
+      if (g === chorus || xs.length < 2) continue;
+      if (xs.every((x) => label[x + 1] === 'Chorus')) for (const x of xs) label[x] = 'Pre-Chorus';
+    }
+    const firstChorus = label.indexOf('Chorus');
+    const lastChorus = label.lastIndexOf('Chorus');
+    const chorusCount = label.filter((l) => l === 'Chorus').length;
+    let verse = 0;
+    const verseOf = new Map(); // repeated verse-like groups keep one number
+    for (let x = 0; x < blocks.length; x++) {
+      if (label[x]) continue;
+      const single = members.get(group[x]).length === 1;
+      const seenChoruses = label.slice(0, x).filter((l) => l === 'Chorus').length;
+      if (single && chorusCount >= 2 && x > firstChorus && seenChoruses >= 2 && x < lastChorus) label[x] = 'Bridge';
+      else if (single && chorusCount >= 1 && x > lastChorus && x === blocks.length - 1) label[x] = 'Outro';
+      else if (!single && verseOf.has(group[x])) label[x] = verseOf.get(group[x]);
+      else {
+        label[x] = `Verse ${++verse}`;
+        if (!single) verseOf.set(group[x], label[x]);
+      }
+    }
+    if (verse === 1) for (let x = 0; x < label.length; x++) if (label[x] === 'Verse 1') label[x] = 'Verse';
+    const sections = blocks.map((b, x) => ({ name: label[x], i0: b[0], i1: b[b.length - 1] }));
+    for (const s of sections) names[s.i0] = s.name;
+    return { names, sections };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timing: where singing (or any sound) starts after a quiet moment.
+  // For a cappella these are the line starts, so the lyrics can be lined up
+  // with them exactly.
+  // ---------------------------------------------------------------------------
+  function findOnsets(peak, binRate, n, opts = {}) {
+    const len = Math.min(n, peak.length);
+    if (!len) return [];
+    const hist = Array.from(peak.subarray ? peak.subarray(0, len) : peak.slice(0, len)).filter((x) => x > 0).sort((x, y) => x - y);
+    if (!hist.length) return [];
+    const p90 = hist[Math.floor(hist.length * 0.9)];
+    const thr = Math.max(2, p90 * (opts.frac || 0.18));
+    const quiet = Math.round((opts.quiet || 0.16) * binRate);
+    const out = [];
+    let below = quiet;
+    for (let i = 0; i < len; i++) {
+      if (peak[i] <= thr) below++;
+      else {
+        if (below >= quiet) out.push(i / binRate);
+        below = 0;
+      }
+    }
+    return out;
+  }
+
+  function nearest(sorted, x) {
+    let lo = 0;
+    let hi = sorted.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    const a = sorted[lo];
+    const b = lo > 0 ? sorted[lo - 1] : a;
+    return Math.abs(a - x) < Math.abs(b - x) ? a : b;
+  }
+
+  /**
+   * Best shift of the lyric line times onto the sound onsets, searched around
+   * a first guess: { offset, score } (score 0..1 = share of lines that land on
+   * a sound start).
+   */
+  function alignToOnsets(times, onsets, guess = 0, range = 1.5, step = 0.02, tol = 0.25) {
+    if (!times.length || !onsets.length) return { offset: guess, score: 0 };
+    let best = { offset: guess, score: -1 };
+    for (let o = guess - range; o <= guess + range + 1e-9; o += step) {
+      let s = 0;
+      for (const t of times) {
+        const nb = nearest(onsets, t + o);
+        const d = Math.abs(nb - (t + o));
+        if (d < tol) s += 1 - d / tol;
+      }
+      if (s > best.score + 1e-9 || (Math.abs(s - best.score) < 1e-9 && Math.abs(o - guess) < Math.abs(best.offset - guess))) best = { offset: o, score: s };
+    }
+    return { offset: Math.round(best.offset * 100) / 100, score: best.score / times.length };
+  }
+
+  /** Per-line fine-tune: each line start moves onto the sound start right next to it (within maxShift s). */
+  function snapToOnsets(times, onsets, offset, maxShift = 0.3) {
+    const out = times.map(() => 0);
+    let prev = -Infinity;
+    times.forEach((t, k) => {
+      const x = t + offset;
+      const nb = nearest(onsets, x);
+      if (nb != null && Math.abs(nb - x) <= maxShift && nb > prev + 0.1) {
+        out[k] = Math.round((nb - x) * 100) / 100;
+        prev = nb;
+      } else prev = x;
+    });
+    return out;
+  }
+
   const api = {
     SPEED_MIN, SPEED_MAX, END_GUARD, MIN_LOOP,
     clamp, roundRate, formatTime, trainerRate, trainerRepFor, loopEnd, normalizeLoop,
     PeakStore, bandColor, bytesToBase64, base64ToBytes,
     parseSongTitle, parseLrc, lineAt, similarity, rankLyrics, isVocalOnlyTitle,
+    isChord, chordLine, parseChordSheet, alignChordSheet, mapChordsToText, lineSim, transposeChord, prefersFlats,
+    detectSections, findOnsets, alignToOnsets, snapToOnsets,
   };
   root.YTLCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1424,10 +2001,11 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .wave-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
 .lyrics {
   flex: 0 0 34%; min-width: 240px; max-width: 480px; display: flex; flex-direction: column;
-  border-left: 1px solid var(--line); background: #0d1119;
+  border-left: 1px solid var(--line); background: #101216;
   min-height: 0; overflow: hidden; /* a long song must scroll inside, never grow the panel */
 }
-.lyr-head { display: flex; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.lyr-head { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+@media (max-width: 600px) { .lyr-head input { flex-basis: 100%; } }
 .lyr-head input {
   flex: 1 1 auto; min-width: 0; height: 28px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--bg3); color: var(--text); padding: 0 8px; font: inherit; outline: none;
@@ -1435,7 +2013,11 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .lyr-head input:focus { border-color: var(--accent); }
 .lyr-meta { padding: 3px 8px; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 18px; }
 .lyr-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 8px 60px; -webkit-overflow-scrolling: touch; user-select: text; -webkit-user-select: text; }
-.lyr-body p { margin: 0; padding: .2em .4em; border-radius: 6px; color: #b4bccc; font-size: var(--lyr-font, 15px); line-height: 1.35; transition: color .15s, background .15s; }
+.lyr-body p {
+  margin: 0; padding: .14em .35em; border-radius: 10px; color: var(--lyr-ink, #aaa59b); font-size: var(--lyr-font, 15px); line-height: 1.4;
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", system-ui, "PingFang SC", "Hiragino Sans", sans-serif;
+  font-weight: 500; letter-spacing: .005em; transition: color .2s, background .2s;
+}
 button.lyr-size { font-weight: 800; font-size: 13px; }
 .lyr-resize { display: none; }
 /* Lyrics on top of the screen (default on iPad/iPhone): big, karaoke style. */
@@ -1443,7 +2025,7 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   position: fixed; left: 0; right: 0; top: 0; z-index: 4;
   flex: none; width: auto; min-width: 0; max-width: none;
   border-left: 0; border-bottom: 1px solid #33405a;
-  background: rgba(8, 11, 17, .97); box-shadow: 0 10px 30px rgba(0,0,0,.55);
+  background: rgba(14, 15, 19, .985); box-shadow: 0 10px 30px rgba(0,0,0,.55);
   padding-top: env(safe-area-inset-top, 0px);
 }
 .lyrics.top .lyr-meta { text-align: center; }
@@ -1457,36 +2039,77 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
   content: ""; position: absolute; left: 50%; top: 9px; width: 90px; height: 7px; margin-left: -45px; border-radius: 4px; background: #4a5670;
 }
 .lyrics.top .lyr-resize:hover::after { background: var(--accent); }
-.lyr-body.synced p { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: calc(2.1em + 18px); }
+.lyr-body.synced .lrow { cursor: pointer; position: relative; padding-left: 2.1em; padding-right: calc(2.1em + 18px); }
 .lyr-loop {
   position: absolute; left: .25em; top: 50%; transform: translateY(-50%);
   width: 1.5em; height: 1.5em; min-width: 26px; min-height: 26px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  color: #5d6780; border: 1px solid #2a3348; background: rgba(255,255,255,.03);
+  color: #4f545e; border: 1px solid #262a32; background: rgba(255,255,255,.02);
 }
 .lyr-loop svg { width: 62%; height: 62%; fill: currentColor; }
-.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #4b3f78; }
-.lyr-body p.looping { background: rgba(190,120,255,.22); color: #fff; font-weight: 700; }
+.lyr-body p:hover .lyr-loop, .lyr-body p.now .lyr-loop { color: #b9a4ff; border-color: #463c6c; }
+.lyr-body p.looping { background: rgba(192,132,252,.13); color: #eee8ff; }
 .lyr-body p.looping .lyr-loop { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
-.lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
+.lyr-body.synced p:hover { background: rgba(255,255,255,.035); }
 .lyr-ab {
   position: absolute; right: .25em; top: 50%; transform: translateY(-50%);
   min-width: 1.6em; height: 1.5em; min-height: 26px; padding: 0 .3em; border-radius: 8px; box-sizing: border-box;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: .62em; font-weight: 800; color: #4ade80; border: 1px solid #23503a; background: rgba(34,197,94,.08);
+  font-size: .62em; font-weight: 800; color: #5fbf86; border: 1px solid #234434; background: rgba(34,197,94,.06);
 }
-@media (any-pointer: coarse) { .lyr-ab { min-width: 42px; min-height: 34px; font-size: 15px; } .lyr-body.synced p { padding-right: calc(2.1em + 30px); } }
+@media (any-pointer: coarse) { .lyr-ab { min-width: 42px; min-height: 34px; font-size: 15px; } .lyr-body.synced .lrow { padding-right: calc(2.1em + 30px); } }
 .lyr-body p.ab-start .lyr-ab { color: #062012; background: #4ade80; border-color: #4ade80; }
-.lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #f87171; border-color: #5a2a2a; background: rgba(248,113,113,.08); }
-.lyr-body p.in-ab { box-shadow: inset 3px 0 0 #4ade80, inset -3px 0 0 #f87171; }
-.lyr-body p.past { color: #6f788b; }
-.lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
+.lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #ef8b84; border-color: #4f2a2a; background: rgba(248,113,113,.06); }
+.lyr-body p.in-ab { box-shadow: inset 3px 0 0 #3fae6c, inset -3px 0 0 #d9645c; }
+.lyr-body p.past { color: #5c5f66; }
+.lyr-body p.now { color: #f1ebdf; background: rgba(255,232,190,.06); font-weight: 600; }
+/* Chords sit over the syllable they start on (amber, easy on the eyes). */
+.lyr-text.has-ch { line-height: 2.5; }
+.seg { position: relative; }
+.seg > .ch {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: -.12em; white-space: nowrap; pointer-events: none;
+  font-size: .62em; line-height: 1; font-weight: 700; letter-spacing: .02em; color: #d9ad62;
+}
+.lyr-body p.past .seg > .ch { color: #8a7346; }
+.lyr-body p.now .seg > .ch { color: #f0c274; }
+.ch-row { display: flex; flex-wrap: wrap; gap: .25em 1.1em; padding: .25em 2.1em .1em; font-size: .62em; font-weight: 700; color: #d9ad62; letter-spacing: .02em; }
+.lyrics.top .ch-row { justify-content: center; }
+/* Song parts: VERSE 1, CHORUS… small, quiet, easy to find. */
+.sec-tag {
+  display: block; margin: .9em 0 .15em; padding-left: 2.1em; font-size: max(10px, .36em); font-weight: 700;
+  letter-spacing: .16em; text-transform: uppercase; color: #6f8f88;
+}
+.lyrics.top .sec-tag { padding-left: 0; }
+.lyr-body p:first-child .sec-tag:first-child { margin-top: .2em; }
+/* Chords panel */
+.lyrics { position: relative; }
+.lyrics.top { position: fixed; }
+/* The chords panel covers the lyrics area, so all of it is always in reach. */
+.chord-panel {
+  position: absolute; inset: 0; z-index: 7; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  padding-top: calc(10px + env(safe-area-inset-top, 0px)); overflow-y: auto; background: #0f1116;
+}
+.chord-title { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #e5b567; font-size: 15px; }
+.chord-title button { margin-left: auto; }
+.chord-steps { color: var(--muted); font-size: 12px; text-align: center; }
+.chord-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+textarea.chord-text {
+  flex: 1 1 auto; width: 100%; min-height: 120px; resize: none; border-radius: 10px; border: 1px solid var(--line);
+  background: #15181f; color: #d6d1c7; padding: 8px; font: 12px/1.35 ui-monospace, "SF Mono", Menlo, monospace; outline: none;
+  user-select: text; -webkit-user-select: text;
+}
+textarea.chord-text:focus { border-color: #6b5426; }
+button.chord-btn { font-weight: 700; }
+button.chord-btn.has { color: #e5b567; border-color: #6b5426; }
+button.practice-btn { margin-left: auto; font-weight: 700; color: #e7defc; border-color: #4b3f78; background: linear-gradient(#2a2346, #211b37); }
+button.practice-btn.on { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
+.key-box { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
+.key-label { min-width: 52px; }
 .lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
-.lyr-sync { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 6px 4px; }
+.lyr-sync { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 6px; padding: 2px 6px 4px; }
 .lyr-sync button { height: 24px; padding: 0 8px; font-size: 12px; border-radius: 12px; }
 .lyr-sync select { height: 24px; font-size: 12px; border-radius: 12px; }
-.lyr-train { padding-top: 0; }
-.lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
+.lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; white-space: nowrap; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .overlay {
   position: absolute; left: 50%; top: 55%; transform: translate(-50%, -50%);
@@ -2086,14 +2709,15 @@ if (typeof exports === 'object' && typeof module === 'object') {
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
-  const TRAINER_REPS = [25, 50, 75];
+  const TRAINER_REPS = [10, 30, 50]; // plays from slow up to 100%...
   const TRAINER_DEFAULT_START = 30;
-  const TRAINER_DEFAULT_REPS = 50;
+  const TRAINER_DEFAULT_REPS = 10;
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
   const DOUBLE_TAP_PX = 40;
-  const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
+  // ...then this many more at 100% before it stops: 10 → 5, 30 → 10, 50 → 10.
+  const trainerAfter = (reps) => (reps <= 10 ? 5 : 10);
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
   const WAVE_CACHE_MAX = 80;
@@ -2146,7 +2770,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     gap: 0,
     trainerStart: 30,
     trainerReps: TRAINER_DEFAULT_REPS,
-    trainerV: 3,
+    trainerV: 4,
     lyrics: false,
     lyricsTop: null, // null = automatic: top of the screen on touch screens, beside the wave otherwise
     lyricsFont: 0, // 0 = automatic size
@@ -2156,8 +2780,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     hqAudio: !IS_IOS, // studio-quality slow-down (Signalsmith Stretch); off on iPhone/iPad, where Safari can freeze it
     hqV: 1,
     tapVideo: true, // touch screens: a tap on the video pauses / plays
-    lineRamp: 10, // line practice: plays to speed up from 30% to 100% on each line
-    lineRest: 30, // line trainer: seconds of rest before the next line
+    lineRest: 0, // Practice: seconds of rest between parts
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
   };
@@ -2783,17 +3406,17 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     if (S.trainer.running && !S.lineLoop) {
       const tr = S.trainer;
-      // Rep `reps` is the first play at the goal speed. After `after` plays at
-      // the goal speed, training is finished: stop at the loop start.
-      if (tr.after > 0 && tr.rep >= tr.reps + tr.after - 1) {
+      // Plays 1..reps speed up (the last one is at the goal speed), then
+      // `after` more plays at the goal speed, then it stops at the loop start.
+      if (tr.after > 0 && tr.rep >= tr.reps + tr.after) {
         finishTrainer();
         return;
       }
       tr.rep++;
-      if (tr.rep >= tr.reps && !tr.done) {
+      if (tr.rep > tr.reps && !tr.done) {
         tr.done = true;
         flash(tr.after > 0
-          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at this speed, then it stops.`
+          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
           : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
       }
       S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
@@ -2917,8 +3540,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function onPlay() {
-    if (LR.on && LR.restUntil && LR.next >= 0) {
-      startRunLine(LR.next); // pressed play during the rest: go now
+    if (PR.on && PR.restUntil) {
+      startPart(PR.pos); // pressed play during the rest: go now
       return;
     }
     if (S.wrapping) {
@@ -3071,7 +3694,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     tr.start = settings.trainerStart / 100;
     tr.goal = TRAINER_GOAL / 100;
     tr.reps = settings.trainerReps;
-    tr.after = TRAINER_AFTER;
+    tr.after = trainerAfter(tr.reps);
     tr.rep = 1;
     tr.done = false;
     tr.running = true;
@@ -3122,7 +3745,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } else {
       tr.rep = C.trainerRepFor(tr.start, tr.goal, tr.reps, r);
     }
-    tr.done = tr.rep >= tr.reps;
+    tr.done = tr.rep > tr.reps;
     S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
     S.rateOwned = true;
     applyRate();
@@ -3165,15 +3788,17 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // ---------------------------------------------------------------------------
   const LYRICS_API = 'https://lrclib.net/api/search';
   const LYRICS_PHONE_H = 170;
-  const LYRICS_NUDGE = 0.2; // seconds per tap on ◀ ▶ (lyrics timing)
-  // One-line practice (tap the left of a lyric line): speed up from 30% to
-  // 100% over 10 plays (5/10/15/20 to choose), then 10 plays at 100%, then stop.
+  const LYRICS_NUDGE = 0.1; // seconds per tap on ◀ ▶ (lyrics timing)
+  // One-line practice (tap the left of a lyric line) and Practice (every part
+  // of the song): speed up from 30% to 100% with the Trainer's counts
+  // (10 / 30 / 50 plays), then 5 or 10 plays at 100%.
   const LINE_START = 0.3;
-  const LINE_RAMPS = [5, 10, 15, 20]; // choice: plays from 30% up to 100%
-  const LINE_FULL = 10; // then this many at 100%
-  const LINE_RESTS = [0, 20, 30, 40]; // line trainer: rest between lines (s)
-  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
-    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '' };
+  const PART_RESTS = [0, 10, 20, 30, 40]; // Practice: rest between parts (s)
+  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, raw: null, fine: null, plain: null, synced: false, nowIdx: -2, userScrollAt: 0,
+    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '', secNames: [], sections: [] };
+  // Chords for the current video: the pasted sheet, how it sits on the lyric
+  // lines, and the transpose amount.
+  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -3203,21 +3828,40 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }, 'icon', 'search');
     ui.lyrMeta = h('div', { class: 'lyr-meta' });
     ui.lyrOffset = h('span', { class: 'lyr-off' });
+    ui.keyLabel = h('span', { class: 'lyr-off key-label' });
+    ui.keyBox = h('span', { class: 'key-box', hidden: true },
+      btn('♭', 'Transpose the chords down a semitone', () => transposeChords(-1), 'lyr-nudge'),
+      ui.keyLabel,
+      btn('♯', 'Transpose the chords up a semitone', () => transposeChords(1), 'lyr-nudge'));
     ui.lyrSync = h('div', { class: 'lyr-sync', hidden: true },
-      btn('◀ 0.2s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-LYRICS_NUDGE), 'lyr-nudge'),
+      btn('◀ 0.1s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-LYRICS_NUDGE), 'lyr-nudge'),
       ui.lyrOffset,
-      btn('0.2s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(LYRICS_NUDGE), 'lyr-nudge'),
+      btn('0.1s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(LYRICS_NUDGE), 'lyr-nudge'),
       btn('Auto', 'Line the lyrics up again automatically', () => {
         L.offsetSet = false;
         L.offset = 0;
+        resetFine();
         L.autoPending = true;
         saveLyricsChoice();
         renderLyricsSync();
-      }, 'lyr-nudge'));
-    ui.runBtn = btn('Line trainer', 'Practise every line in turn: speeds up from 30% to 100%, then 10 times at 100%, a rest, then the next line. Tap again to stop.', toggleLineRun, 'lyr-nudge run', 'bolt');
-    ui.runRamp = select(LINE_RAMPS, (v) => `${v}× up to 100%`, settings.lineRamp, (v) => { settings.lineRamp = v; saveSettings(); }, 'Plays to speed up from 30% to 100% on each line');
-    ui.runRest = select(LINE_RESTS, (v) => (v ? `rest ${v}s` : 'no rest'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Rest before the next line');
-    ui.lyrTrain = h('div', { class: 'lyr-sync lyr-train', hidden: true }, ui.runBtn, ui.runRamp, ui.runRest);
+      }, 'lyr-nudge'),
+      ui.keyBox);
+    // Chords: find them on Ultimate Guitar, copy, come back and paste.
+    ui.chordText = h('textarea', { class: 'chord-text', rows: '5', placeholder: 'Paste the chords here (copied from Ultimate Guitar or any chord site, or ChordPro like [Am]words)', 'aria-label': 'Chords' });
+    ui.chordPanel = h('div', { class: 'chord-panel', hidden: true },
+      h('div', { class: 'chord-title', text: 'Chords' }),
+      h('div', { class: 'chord-steps', text: '1. Find the song on Ultimate Guitar  2. Select all, Copy  3. Come back and tap Paste' }),
+      h('div', { class: 'chord-btns' },
+        btn('Find on Ultimate Guitar', 'Open the chords search for this song in a new tab', findChordsOnline, 'primary', 'search'),
+        btn('Paste', 'Paste the chords you copied', pasteChords, '', 'paste'),
+        btn('Use these', 'Put these chords on the lyrics', () => applyChords(ui.chordText.value, { save: true }), ''),
+        btn('Remove', 'Remove the chords from this song', removeChords, 'danger'),
+        // Close sits away from where the Chords button was, so the tap that
+        // opened the panel can never land on it.
+        btn('Close', 'Close the chords panel', toggleChordPanel, '')),
+      ui.chordText);
+    ui.chordBtn = btn('Chords', 'Chords over the lyrics (from Ultimate Guitar or any chord site)', toggleChordPanel, 'chord-btn');
+    ui.practiceBtn = btn('Practice', 'Practise the whole song part by part (verse, chorus…): each part from 30% up to 100%, then at full speed, then the next part; at the end the whole song once. Tap again to stop.', togglePractice, 'practice-btn', 'bolt');
     ui.lyrBody = h('div', { class: 'lyr-body' });
     const touched = () => (L.userScrollAt = now());
     ui.lyrBody.addEventListener('wheel', touched, { passive: true });
@@ -3234,8 +3878,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const grip = h('div', { class: 'lyr-resize', title: 'Drag to make the lyrics area taller or shorter' });
     setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
-      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
-      ui.lyrMeta, ui.lyrSync, ui.lyrTrain, ui.lyrBody, grip);
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, ui.chordBtn, smaller, bigger, ui.lyrPlace, hide, ui.practiceBtn),
+      ui.lyrMeta, ui.lyrSync, ui.chordPanel, ui.lyrBody, grip);
   }
 
   function lyricsOnTop() {
@@ -3342,7 +3986,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
         if (Number.isFinite(saved.offset)) {
           L.offset = saved.offset;
           L.offsetSet = !!saved.offsetSet;
-          L.autoPending = !L.offsetSet && L.autoPending;
+          L.autoPending = !L.offsetSet && L.autoPending && !saved.fine;
+          if (saved.fine) setFine(saved.fine);
           renderLyricsSync();
         }
       } else {
@@ -3444,7 +4089,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (!r) return;
     L.idx = i;
     const lines = r.syncedLyrics ? C.parseLrc(r.syncedLyrics) : null;
-    L.lines = lines && lines.length ? lines : null;
+    L.raw = lines && lines.length ? lines : null;
+    L.lines = L.raw;
+    L.fine = null;
+    L.plain = L.raw ? null : String(r.plainLyrics || '').split(/\r?\n/);
     const d = dur();
     // Time-stamped lyrics always follow the song. Versions that differ from the
     // original (a cappella uploads, edits) are lined up by an offset: found
@@ -3460,50 +4108,276 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ui.lyrMeta.textContent = `${r.trackName || '?'} — ${r.artistName || '?'}${how}${more}`;
     ui.lyrMeta.title = ui.lyrMeta.textContent;
     renderLyricsSync();
-    ui.lyrBody.classList.toggle('synced', L.synced);
-    const kids = [];
-    if (L.lines) {
-      L.lines.forEach((ln, k) => {
-        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then 10 times at 100% (tap again to stop)' }, icon('loop')) : null,
-          h('span', { class: 'lyr-text', text: ln.text || '♪' }),
-          L.synced ? h('span', { class: 'lyr-ab', title: 'Loop from this line: tap here on the first line, then on the last line', text: 'A' }) : null);
-        if (L.synced) p.addEventListener('click', (e) => {
-          // Left edge of a line (the ⟳ button): repeat just this line.
-          // Right edge (the A / B button): loop from one line to another.
-          const r = p.getBoundingClientRect();
-          const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
-          const onAB = e.target.closest && e.target.closest('.lyr-ab');
-          const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
-          if (onAB || (realPoint && !onLoopBtn && r.right - e.clientX < Math.min(72, r.width * 0.2))) {
-            lyricsABTap(k);
-            return;
-          }
-          if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
-            toggleLineLoop(k);
-            return;
-          }
-          if (S.lineLoop) stopLineLoop(true);
-          const at = Math.max(0, ln.t + L.offset);
-          seek(at);
-          L.userScrollAt = 0;
-          if (S.loopOn && hasLoop() && (at < S.a || at >= effEnd())) {
-            S.loopOn = false;
-            flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
-          }
-          renderUI();
-        });
-        p.dataset.i = String(k);
-        kids.push(p);
-      });
-    } else {
-      for (const line of String(r.plainLyrics || '').split(/\r?\n/)) kids.push(h('p', { text: line || ' ' }));
-    }
+    renderLyricLines();
     stopLineLoop(true); // the lines changed
+    ui.lyrBody.scrollTop = 0;
+    if (save) saveLyricsChoice();
+    loadChordsFor(S.vid);
+  }
+
+  // Lyric times with the per-line fine-tune (a cappella: each line starts
+  // where the singing starts).
+  function resetFine() {
+    L.fine = null;
+    L.lines = L.raw;
+  }
+
+  function setFine(fine) {
+    if (!L.raw || !fine || fine.length !== L.raw.length) return resetFine();
+    L.fine = fine;
+    L.lines = L.raw.map((ln, k) => ({ t: ln.t + (fine[k] || 0), text: ln.text }));
+  }
+
+  function lyricTexts() {
+    return L.lines ? L.lines.map((x) => x.text || '') : L.plain || [];
+  }
+
+  // Builds the lyric lines: section name (VERSE 1, CHORUS…) above the first
+  // line of each part, chord-only rows (intros), and chords over the words.
+  function renderLyricLines() {
+    const texts = lyricTexts();
+    const synced = L.synced && !!L.lines;
+    computeSections();
+    ui.lyrBody.classList.toggle('synced', synced);
+    ui.lyrBody.classList.toggle('with-chords', !!CH.map || !!CH.sheetOnly);
+    const kids = [];
+    if (CH.sheetOnly && !texts.length) {
+      // No lyrics found, but chords pasted: show the sheet itself.
+      for (const it of CH.sheetOnly) {
+        if (it.type === 'sec') kids.push(h('p', { class: 'sec-only' }, h('span', { class: 'sec-tag', text: it.name })));
+        else if (it.type === 'chords') kids.push(h('p', {}, chordRow(it.chords)));
+        else kids.push(h('p', {}, h('div', { class: 'lrow' }, lyricText(it.text, it.chords))));
+      }
+      ui.lyrBody.replaceChildren(...kids);
+      L.abKey = '';
+      return;
+    }
+    texts.forEach((text, k) => {
+      const m = CH.map && CH.map[k];
+      const parts = [];
+      const sec = L.secNames[k];
+      if (m && m.pre) {
+        for (const row of m.pre) {
+          if (row.sec) parts.push(h('span', { class: 'sec-tag', text: row.sec }));
+          parts.push(chordRow(row.chords));
+        }
+      }
+      if (sec) parts.unshift(h('span', { class: 'sec-tag', text: sec }));
+      const row = h('div', { class: 'lrow' },
+        synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then at full speed (tap again to stop)' }, icon('loop')) : null,
+        lyricText(text || (synced ? '♪' : ' '), m ? m.chords : null),
+        synced ? h('span', { class: 'lyr-ab', title: 'Loop from this line: tap here on the first line, then on the last line', text: 'A' }) : null);
+      const p = h('p', { class: sec ? 'sec-start' : '' }, ...parts, row);
+      if (synced) p.addEventListener('click', (e) => lineClick(e, p, row, k));
+      p.dataset.i = String(k);
+      kids.push(p);
+    });
     L.abStart = null;
     L.abKey = '';
     ui.lyrBody.replaceChildren(...kids);
-    ui.lyrBody.scrollTop = 0;
-    if (save) saveLyricsChoice();
+    L.nowIdx = -2;
+    markLoopingLine();
+  }
+
+  function lineClick(e, p, row, k) {
+    // Left edge of a line (the ⟳ button): repeat just this line.
+    // Right edge (the A / B button): loop from one line to another.
+    const r = row.getBoundingClientRect();
+    const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
+    const onAB = e.target.closest && e.target.closest('.lyr-ab');
+    const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
+    if (onAB || (realPoint && !onLoopBtn && r.right - e.clientX < Math.min(72, r.width * 0.2))) {
+      lyricsABTap(k);
+      return;
+    }
+    if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
+      toggleLineLoop(k);
+      return;
+    }
+    if (S.lineLoop || PR.on) stopLineLoop(true);
+    const at = Math.max(0, L.lines[k].t + L.offset);
+    seek(at);
+    L.userScrollAt = 0;
+    if (S.loopOn && hasLoop() && (at < S.a || at >= effEnd())) {
+      S.loopOn = false;
+      flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
+    }
+    renderUI();
+  }
+
+  function shownChord(c) {
+    return CH.transpose ? C.transposeChord(c, CH.transpose, CH.flats) : c;
+  }
+
+  function chordRow(chords) {
+    return h('div', { class: 'ch-row' }, ...chords.map((c) => h('span', { class: 'ch', text: shownChord(c) })));
+  }
+
+  // The words with chords sitting right above the syllable they start on.
+  function lyricText(text, chords) {
+    if (!chords || !chords.length) return h('span', { class: 'lyr-text', text });
+    const el = h('span', { class: 'lyr-text has-ch' });
+    const byAt = new Map();
+    for (const c of chords) {
+      const at = Math.max(0, Math.min(text.length, c.at));
+      byAt.set(at, (byAt.has(at) ? byAt.get(at) + ' ' : '') + shownChord(c.c));
+    }
+    const cuts = [...byAt.keys()].sort((a, b) => a - b);
+    if (cuts[0] > 0) el.appendChild(document.createTextNode(text.slice(0, cuts[0])));
+    cuts.forEach((at, n) => {
+      const end = n + 1 < cuts.length ? cuts[n + 1] : text.length;
+      const name = byAt.get(at);
+      let piece = text.slice(at, end);
+      // Room for the chord name, so neighbouring chords never overlap.
+      const need = Math.ceil(name.length * 0.8) + 1;
+      if (piece.length < need && n + 1 < cuts.length) piece += '\u00a0'.repeat(need - piece.length);
+      el.appendChild(h('span', { class: 'seg' }, h('span', { class: 'ch', text: name }), piece || '\u00a0'));
+    });
+    return el;
+  }
+
+  // Song parts: names from the chord sheet when it has them ([Verse 1],
+  // [Chorus]…), otherwise worked out from the lyrics (repeats = chorus…).
+  function computeSections() {
+    const n = lyricTexts().length;
+    let names = new Array(n).fill(null);
+    let fromSheet = 0;
+    if (CH.map) CH.map.forEach((m, k) => {
+      if (m && m.sec) {
+        names[k] = m.sec;
+        fromSheet++;
+      }
+    });
+    if (fromSheet < 2 && L.lines) names = C.detectSections(L.lines).names;
+    L.secNames = names;
+    const sections = [];
+    const sung = (k) => !!String(lyricTexts()[k] || '').replace(/[♪♫\s]/g, '');
+    let cur = null;
+    for (let k = 0; k < n; k++) {
+      if (names[k]) {
+        if (cur && cur.i1 >= cur.i0) sections.push(cur);
+        cur = { name: names[k], i0: k, i1: k - 1 };
+      }
+      if (!cur && sung(k)) cur = { name: 'Intro', i0: k, i1: k - 1 };
+      if (cur && sung(k)) cur.i1 = k;
+    }
+    if (cur && cur.i1 >= cur.i0) sections.push(cur);
+    L.sections = L.lines ? sections : [];
+  }
+
+  // ---- Chords ----
+  function toggleChordPanel() {
+    ui.chordPanel.hidden = !ui.chordPanel.hidden;
+    ui.chordBtn.classList.toggle('on', !ui.chordPanel.hidden);
+    if (!ui.chordPanel.hidden && !ui.chordText.value && CH.text) ui.chordText.value = CH.text;
+  }
+
+  function findChordsOnline() {
+    const meta = songMeta();
+    const g = C.parseSongTitle(meta.title, meta.author);
+    const r = L.results[L.idx];
+    const q = r ? `${r.artistName || ''} ${r.trackName || ''}`.trim() : `${g.artist} ${g.track}`.trim();
+    const url = `https://www.ultimate-guitar.com/search.php?search_type=title&value=${encodeURIComponent(q)}`;
+    window.open(url, '_blank', 'noopener');
+    flash('On the chords page: select all, Copy, then come back and tap Paste.', 8000);
+  }
+
+  async function pasteChords() {
+    let text = '';
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      text = '';
+    }
+    if (!text.trim()) {
+      ui.chordText.focus();
+      flash('Long-press the box and choose Paste, then tap “Use these”.', 6000);
+      return;
+    }
+    ui.chordText.value = text;
+    applyChords(text, { save: true });
+  }
+
+  function applyChords(text, opts = {}) {
+    text = String(text || '');
+    if (!text.trim()) return flash('Paste the chords first.');
+    const items = C.parseChordSheet(text);
+    const chordsIn = items.reduce((n, it) => n + (it.type === 'chords' ? it.chords.length : it.type === 'line' ? it.chords.length : 0), 0);
+    if (!chordsIn) {
+      if (!opts.quiet) flash('No chords found in that text. Copy the chords page itself (with the chord names over the words).', 7000);
+      return false;
+    }
+    const texts = lyricTexts();
+    CH.vid = S.vid;
+    CH.text = text;
+    CH.flats = C.prefersFlats(items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : [])));
+    if (texts.length) {
+      const r = C.alignChordSheet(items, texts);
+      if (r.matched < Math.min(2, r.sheetLines)) {
+        if (!opts.quiet) flash('These chords do not match these lyrics. Is it the same song?', 7000);
+        CH.map = null;
+        CH.sheetOnly = null;
+        renderLyricLines();
+        return false;
+      }
+      CH.map = r.lines;
+      CH.sheetOnly = null;
+      if (!opts.quiet) flash(`Chords placed on ${r.lines.filter((x) => x.chords.length).length} lines.`, 3000);
+    } else {
+      CH.map = null;
+      CH.sheetOnly = items;
+    }
+    if (opts.save && S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text, transpose: CH.transpose } });
+    ui.chordPanel.hidden = true;
+    ui.chordBtn.classList.remove('on');
+    ui.chordBtn.classList.add('has');
+    renderLyricLines();
+    renderLyricsSync();
+    renderUI();
+    return true;
+  }
+
+  function removeChords() {
+    CH.text = '';
+    CH.map = null;
+    CH.sheetOnly = null;
+    CH.transpose = 0;
+    ui.chordText.value = '';
+    ui.chordBtn.classList.remove('has');
+    if (S.vid) storage.remove(['ytl:chords:' + S.vid]);
+    renderLyricLines();
+    renderLyricsSync();
+  }
+
+  function transposeChords(n) {
+    if (!CH.map && !CH.sheetOnly) return;
+    CH.transpose = ((CH.transpose + n + 18) % 12) - 6 || 0; // -5 .. +6
+    if (S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text: CH.text, transpose: CH.transpose } });
+    renderLyricLines();
+    renderLyricsSync();
+  }
+
+  function loadChordsFor(vid) {
+    if (!vid) return;
+    if (CH.vid !== vid) {
+      CH.vid = vid;
+      CH.text = '';
+      CH.map = null;
+      CH.sheetOnly = null;
+      CH.transpose = 0;
+      ui.chordText.value = '';
+      ui.chordBtn.classList.remove('has');
+    }
+    storage.get('ytl:chords:' + vid).then((r) => {
+      const saved = r['ytl:chords:' + vid];
+      if (!saved || S.vid !== vid || !saved.text) {
+        if (CH.text) applyChords(CH.text, { quiet: true });
+        return;
+      }
+      CH.transpose = saved.transpose || 0;
+      ui.chordText.value = saved.text;
+      applyChords(saved.text, { quiet: true });
+    });
   }
 
   // ---- A–B loop from the lyrics ----
@@ -3525,9 +4399,12 @@ if (typeof exports === 'object' && typeof module === 'object') {
       L.abStart = null;
       if (S.lineLoop) stopLineLoop(true);
       S.pendingA = null;
+      if (PR.on) stopLineLoop(true);
       if (setLoop(lineRange(lo).a, lineRange(hi).b, { fresh: true, noHistory: true, play: true })) {
         L.userScrollAt = 0;
-        flash(lo === hi ? 'Looping this line.' : `Looping ${hi - lo + 1} lines.`, 3000);
+        // Chosen from the lyrics: straight into the trainer (your counts).
+        startTrainer(true);
+        flash(`${lo === hi ? 'This line' : `${hi - lo + 1} lines`}: Trainer from ${settings.trainerStart}% to 100% (${settings.trainerReps}×), then ${trainerAfter(settings.trainerReps)}× at 100%.`, 4000);
       }
     }
     renderUI();
@@ -3577,16 +4454,22 @@ if (typeof exports === 'object' && typeof module === 'object') {
     return { a, b };
   }
 
-  function toggleLineLoop(k, fromRun) {
+  // Lines k0..k1 as one loop (a single line, or a whole verse / chorus).
+  function linesRange(k0, k1) {
+    return { a: lineRange(k0).a, b: lineRange(k1).b };
+  }
+
+  function toggleLineLoop(k, fromRun, k1) {
     if (!L.lines || !L.lines[k]) return;
     if (S.lineLoop && S.lineLoop.idx === k && !fromRun) return stopLineLoop(false);
-    if (!fromRun && LR.on) endLineRun(); // practising another line by hand ends the line trainer
-    const r = lineRange(k);
+    if (!fromRun && PR.on) endPractice(); // practising a line by hand ends Practice
+    const k2 = k1 == null ? k : k1;
+    const r = linesRange(k, k2);
     // Remember the speed from before (a trainer keeps its place too) so it can
     // be put back exactly when the line practice ends.
     const saved = S.lineLoop ? S.lineLoop.saved : { rate: S.rate, rateOwned: S.rateOwned };
-    const ramp = LINE_RAMPS.includes(settings.lineRamp) ? settings.lineRamp : 10;
-    S.lineLoop = { a: r.a, b: r.b, idx: k, rep: 1, ramp, full: LINE_FULL, saved };
+    const ramp = TRAINER_REPS.includes(settings.trainerReps) ? settings.trainerReps : TRAINER_DEFAULT_REPS; // same counts as the Trainer
+    S.lineLoop = { a: r.a, b: r.b, idx: k, idx2: k2, rep: 1, ramp, full: trainerAfter(ramp), saved };
     S.rate = C.trainerRate(LINE_START, 1, ramp, 1);
     S.rateOwned = true;
     applyRate();
@@ -3603,11 +4486,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // Stops repeating the line. The song just carries on into the next line,
   // and the A-B loop (if any) takes over again.
   function stopLineLoop(silent) {
-    const wasRun = LR.on;
-    endLineRun();
+    const wasRun = PR.on;
+    endPractice();
     if (!S.lineLoop) {
       if (wasRun && !silent) {
-        flash('Line trainer off.');
+        flash('Practice off.');
         renderUI();
       }
       return;
@@ -3617,7 +4500,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     markLoopingLine();
     S.dirty = true;
     if (!silent) {
-      flash(wasRun ? 'Line trainer off.' : S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
+      flash(wasRun ? 'Practice off.' : S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
       renderUI();
     }
   }
@@ -3642,13 +4525,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     } catch (e) {
       /* ignore */
     }
-    if (LR.on) {
-      const next = nextRunLine(ll.idx);
-      if (next < 0) {
-        endLineRun();
-        seek(ll.a);
-        flash('Line trainer done: every line practised! 🎉', 10000);
-      } else restBeforeLine(next);
+    if (PR.on) {
+      if (PR.pos + 1 < PR.parts.length) restBeforePart(PR.pos + 1);
+      else startFinalPlay();
       S.dirty = true;
       renderUI();
       return;
@@ -3659,74 +4538,107 @@ if (typeof exports === 'object' && typeof module === 'object') {
     renderUI();
   }
 
-  // ---- Line trainer: every line in turn, by itself ----
-  // Each line: speeds up from 30% to 100% (your number of plays), then 10
-  // plays at 100%; a rest (0-40 s) and on to the next line. The loop edges are
-  // the lyric timings (+ the timing shift), so the words and the sound match.
-  const LR = { on: false, timer: 0, tick: 0, restUntil: 0, next: -1 };
+  // ---- Practice: the whole song, part by part, by itself ----
+  // Each part (verse, chorus, bridge…) loops from 30% up to 100% with the
+  // Trainer's counts, then plays at full speed; then the next part. After the
+  // last part the whole song plays once from the start at 100%, and it stops.
+  // The loop edges are the lyric timings (+ the timing shift), so the words
+  // and the sound stay together.
+  const PR = { on: false, parts: [], pos: 0, timer: 0, tick: 0, restUntil: 0, final: false, loopWas: false };
 
-  function singable(k) {
-    const ln = L.lines && L.lines[k];
-    return !!ln && !!ln.text && !!ln.text.replace(/[♪♫\s]/g, '');
-  }
-
-  function nextRunLine(k) {
-    for (let j = k + 1; j < L.lines.length; j++) if (singable(j) && L.lines[j].t > L.lines[k].t + 0.05) return j;
-    return -1;
-  }
-
-  function startLineRun() {
-    if (!L.lines || !L.synced) return flash('The line trainer needs lyrics with timings. Try ⏭ for another match.');
+  function startPractice() {
+    if (!L.lines || !L.synced) return flash('Practice needs lyrics with timings. Try ⏭ for another match.');
+    computeSections();
+    const parts = L.sections.filter((p) => p.i1 >= p.i0);
+    if (!parts.length) return flash('No sung parts found in these lyrics.');
+    stopTrainer(true);
+    if (S.lineLoop) stopLineLoop(true);
     const v = S.video;
-    let k = v ? C.lineAt(L.lines, v.currentTime + 0.15 - L.offset - audioLag()) : -1;
-    if (k < 0 || !singable(k)) k = nextRunLine(Math.max(-1, k));
-    if (k < 0) k = L.lines.findIndex((x, i) => singable(i));
-    if (k < 0) return flash('No sung lines found in these lyrics.');
-    LR.on = true;
-    startRunLine(k);
-    flash(`Line trainer: each line ${settings.lineRamp} plays from 30% to 100%, then ${LINE_FULL} at 100%, ${settings.lineRest ? `${settings.lineRest} s rest, ` : ''}then the next line.`, 6000);
+    const t = v ? v.currentTime : 0;
+    // Start with the part playing now (from the top if nothing is playing yet).
+    let pos = parts.findIndex((p) => linesRange(p.i0, p.i1).b > t + 0.3);
+    if (pos < 0 || t < 0.5) pos = 0;
+    PR.on = true;
+    PR.parts = parts;
+    PR.final = false;
+    PR.loopWas = S.loopOn;
+    startPart(pos);
+    const n = settings.trainerReps;
+    flash(`Practice: ${parts.length} parts. Each one ${settings.trainerStart}% → 100% (${n}×), then ${trainerAfter(n)}× at 100%. Then the whole song once.`, 6000);
   }
 
-  function startRunLine(k) {
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.restUntil = 0;
-    LR.next = -1;
-    toggleLineLoop(k, true);
+  function startPart(pos) {
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    PR.pos = pos;
+    const p = PR.parts[pos];
+    toggleLineLoop(p.i0, true, p.i1);
   }
 
-  function restBeforeLine(k) {
+  function restBeforePart(pos) {
     const rest = settings.lineRest || 0;
-    const r = lineRange(k);
-    seek(r.a); // the next line waits on the playhead
-    if (!rest) return startRunLine(k);
-    LR.next = k;
-    LR.restUntil = now() + rest * 1000;
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.timer = setTimeout(() => startRunLine(k), rest * 1000);
-    LR.tick = setInterval(renderUI, 500);
+    const p = PR.parts[pos];
+    PR.pos = pos;
+    seek(linesRange(p.i0, p.i1).a); // the next part waits on the playhead
+    if (!rest) return startPart(pos);
+    PR.restUntil = now() + rest * 1000;
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.timer = setTimeout(() => startPart(pos), rest * 1000);
+    PR.tick = setInterval(renderUI, 500);
   }
 
-  function endLineRun() {
-    if (!LR.on) return;
-    LR.on = false;
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.restUntil = 0;
-    LR.next = -1;
+  function startFinalPlay() {
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    PR.final = true;
+    S.loopOn = false; // nothing pulls the playhead back
+    S.rate = 1;
+    S.rateOwned = true;
+    applyRate();
+    seek(0);
+    play();
+    flash('Every part done! Now the whole song once at 100%.', 5000);
+    PR.tick = setInterval(() => {
+      const v = S.video;
+      if (!PR.on || !PR.final || !v) return;
+      if (v.ended || v.currentTime >= dur() - 0.4) {
+        try {
+          v.pause();
+        } catch (e) {
+          /* ignore */
+        }
+        endPractice();
+        flash('Practice finished! 🎉', 8000);
+        renderUI();
+      } else renderUI();
+    }, 200);
   }
 
-  function toggleLineRun() {
-    if (LR.on) stopLineLoop(false);
-    else startLineRun();
+  function endPractice() {
+    if (!PR.on) return;
+    PR.on = false;
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    if (PR.final) S.loopOn = PR.loopWas;
+    PR.final = false;
+    if (ui.practiceBtn) ui.practiceBtn.classList.remove('on');
+  }
+
+  function togglePractice() {
+    if (PR.on) stopLineLoop(false);
+    else startPractice();
     renderUI();
   }
 
   function markLoopingLine() {
     if (!ui.lyrBody) return;
     const kids = ui.lyrBody.children;
-    for (let k = 0; k < kids.length; k++) kids[k].classList.toggle('looping', !!S.lineLoop && S.lineLoop.idx === k);
+    const ll = S.lineLoop;
+    for (let k = 0; k < kids.length; k++) kids[k].classList.toggle('looping', !!ll && k >= ll.idx && k <= (ll.idx2 == null ? ll.idx : ll.idx2));
   }
 
   function saveLyricsChoice() {
@@ -3734,12 +4646,12 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (!r || !S.vid) return;
     const slim = { id: r.id, trackName: r.trackName, artistName: r.artistName, duration: r.duration,
       syncedLyrics: r.syncedLyrics || '', plainLyrics: r.plainLyrics || '' };
-    storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim(), offset: L.offset, offsetSet: L.offsetSet } });
+    storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim(), offset: L.offset, offsetSet: L.offsetSet, fine: L.fine || null } });
   }
 
   function nudgeLyrics(delta) {
-    L.offset = Math.round((L.offset + delta) * 10) / 10;
-    if (S.lineLoop && !S.lineLoop.custom) Object.assign(S.lineLoop, lineRange(S.lineLoop.idx));
+    L.offset = Math.round((L.offset + delta) * 100) / 100;
+    if (S.lineLoop && !S.lineLoop.custom) Object.assign(S.lineLoop, linesRange(S.lineLoop.idx, S.lineLoop.idx2 == null ? S.lineLoop.idx : S.lineLoop.idx2));
     L.offsetSet = true;
     L.autoPending = false;
     L.nowIdx = -2;
@@ -3749,11 +4661,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
 
   function renderLyricsSync() {
     if (!ui.lyrSync) return;
-    ui.lyrSync.hidden = !L.lines;
-    if (ui.lyrTrain) ui.lyrTrain.hidden = !L.lines;
+    ui.lyrSync.hidden = !L.lines && !CH.map;
     const o = L.offset;
-    const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(1)}s`;
-    ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : L.offsetSet ? label : `${label} (auto)`;
+    const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(Math.abs(o * 10 - Math.round(o * 10)) > 0.01 ? 2 : 1)}s`;
+    const fined = L.fine ? L.fine.filter((x) => x).length : 0;
+    ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : (L.offsetSet ? label : `${label} (auto)`) + (fined ? ` · ${fined} lines fine-tuned` : '');
+    if (ui.keyBox) {
+      ui.keyBox.hidden = !CH.map;
+      const t = CH.transpose;
+      ui.keyLabel.textContent = `key ${t > 0 ? '+' : t < 0 ? '−' : '±'}${Math.abs(t)}`;
+    }
     ui.lyrOffset.title = 'How much the lyrics are shifted to match this video';
   }
 
@@ -3771,8 +4688,25 @@ if (typeof exports === 'object' && typeof module === 'object') {
     L.autoPending = false;
     if (firstLine && start != null) {
       if (C.isVocalOnlyTitle(songMeta().title)) {
-        const off = Math.round((start - firstLine.t) * 10) / 10;
-        if (Math.abs(off) <= 90) L.offset = off;
+        // A cappella: every line starts where the singing starts after a
+        // breath. Line the lyrics up with all those starts (not just the
+        // first), then move each line onto its own start.
+        const guess = start - firstLine.t;
+        const n = Math.min(S.peaks.n, Math.ceil(d * S.peaks.binRate));
+        const onsets = C.findOnsets(S.peaks.peak, S.peaks.binRate, n);
+        const raw = L.raw || L.lines;
+        const sungIdx = raw.map((ln, k) => (ln.text && ln.text.replace(/[♪♫\s]/g, '') ? k : -1)).filter((k) => k >= 0);
+        const fit = C.alignToOnsets(sungIdx.map((k) => raw[k].t), onsets, guess);
+        const off = Math.abs(fit.offset - guess) <= 1.5 && fit.score >= 0.35 ? fit.offset : Math.round(guess * 100) / 100;
+        if (Math.abs(off) <= 90) {
+          L.offset = Math.round(off * 100) / 100;
+          if (fit.score >= 0.5) {
+            const snap = C.snapToOnsets(sungIdx.map((k) => raw[k].t), onsets, L.offset);
+            const fine = raw.map(() => 0);
+            sungIdx.forEach((k, a) => (fine[k] = snap[a]));
+            setFine(fine);
+          }
+        }
       } else {
         const r = L.results[L.idx];
         const extra = r && r.duration ? d - r.duration : 0;
@@ -4054,6 +4988,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     note: 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z',
     search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
+    paste: 'M19 2h-4.18C14.4.84 13.3 0 12 0S9.6.84 9.18 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z',
     place: 'M4 4h16v6H4zm0 8h7v8H4zm9 0h7v8h-7z',
     back5: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
     fwd5: 'M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z',
@@ -4200,7 +5135,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       else renderUI();
     };
     ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, trainerChoice('trainerStart'), 'Starting speed');
-    ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
+    ui.tReps = select(TRAINER_REPS, (v) => `${v}× up + ${trainerAfter(v)}× at 100%`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
     ui.trainerRow = h('div', { class: 'row sub', hidden: true },
@@ -4241,9 +5176,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
+    ui.restSel = select(PART_RESTS, (v) => (v ? `${v}s` : 'none'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Practice: rest between the parts of the song');
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
+      h('span', { class: 'label', text: 'Rest between Practice parts' }), ui.restSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
@@ -4653,7 +5590,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     ui.lyricsBtn.classList.toggle('on', settings.lyrics);
     ui.trainerBtn.classList.toggle('on', S.trainer.running);
-    if (ui.runBtn) ui.runBtn.classList.toggle('on', LR.on);
+    if (ui.practiceBtn) ui.practiceBtn.classList.toggle('on', PR.on);
     ui.trainerBtn.title = S.trainer.running
       ? 'Stop the speed trainer (back to normal speed)'
       : 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop';
@@ -4662,18 +5599,17 @@ if (typeof exports === 'object' && typeof module === 'object') {
     // Trainer
     const tr = S.trainer;
     if (tr.running) {
-      const total = tr.after > 0 ? tr.reps + tr.after - 1 : tr.reps;
+      const total = tr.reps + tr.after;
       ui.tBar.style.width = `${Math.round((Math.min(tr.rep, total) / total) * 100)}%`;
       let label;
-      if (tr.rep < tr.reps) label = `Speeding up: loop ${tr.rep} of ${tr.reps} at `;
-      else if (tr.after > 0) label = `Full speed: ${tr.rep - tr.reps + 1} of ${tr.after} at `;
-      else label = `Full speed: loop ${tr.rep - tr.reps + 1} at `;
+      if (tr.rep <= tr.reps) label = `Speeding up: ${tr.rep} of ${tr.reps} at `;
+      else label = `Full speed: ${tr.rep - tr.reps} of ${tr.after} at `;
       ui.tStat.replaceChildren(label, h('b', { text: `${Math.round(S.rate * 100)}%` }));
     } else {
       ui.tBar.style.width = '0%';
       const s = settings.trainerStart, g = TRAINER_GOAL, n = settings.trainerReps;
       const stepPct = n > 1 ? (g - s) / (n - 1) : 0;
-      const a = TRAINER_AFTER;
+      const a = trainerAfter(n);
       ui.tStat.textContent = `${s}% → ${g}% (+${Math.max(0, stepPct).toFixed(1)}% per loop)` +
         (a ? `, then ${a}× at ${g}% and stop` : '');
     }
@@ -4684,13 +5620,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
     // Hint line
     if (S.hintOverride && now() < S.hintUntil) {
       setHint([S.hintOverride]);
-    } else if (LR.on && LR.restUntil && L.lines && L.lines[LR.next]) {
-      const left = Math.max(0, Math.ceil((LR.restUntil - now()) / 1000));
-      setHint([['Line trainer · rest '], `${left} s. Next: “${L.lines[LR.next].text}”. Press ▶ to start now.`]);
+    } else if (PR.on && PR.final) {
+      setHint([['Practice: '], 'the whole song once at 100%, then it stops. Tap Practice to stop now.']);
+    } else if (PR.on && PR.restUntil && PR.parts[PR.pos]) {
+      const left = Math.max(0, Math.ceil((PR.restUntil - now()) / 1000));
+      setHint([['Practice · rest '], `${left} s. Next: ${PR.parts[PR.pos].name}. Press ▶ to start now.`]);
     } else if (S.lineLoop && L.lines && L.lines[S.lineLoop.idx]) {
       const ll = S.lineLoop;
       const stage = ll.rep <= ll.ramp ? `speeding up ${ll.rep}/${ll.ramp}` : `full speed ${ll.rep - ll.ramp}/${ll.full}`;
-      setHint([[LR.on ? 'Line trainer: ' : 'Practising one line: '], `“${L.lines[ll.idx].text || '♪'}” · ${stage} at ${Math.round(S.rate * 100)}%. ${LR.on ? 'Tap Line trainer to stop.' : 'Tap ⟳ again to stop.'}`]);
+      const what = PR.on && PR.parts[PR.pos] ? `${PR.parts[PR.pos].name} (part ${PR.pos + 1} of ${PR.parts.length})` : `“${L.lines[ll.idx].text || '♪'}”`;
+      setHint([[PR.on ? 'Practice: ' : 'Practising one line: '], `${what} · ${stage} at ${Math.round(S.rate * 100)}%. ${PR.on ? 'Tap Practice to stop.' : 'Tap ⟳ again to stop.'}`]);
     } else if (S.scan) {
       setHint(['Reading the whole song… it plays muted for a moment, then goes back to where you were.']);
     } else if (!dur()) {
@@ -4733,7 +5672,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
     markLyricsAB();
     d.abStart = L.abStart == null ? '' : String(L.abStart);
-    d.lineRun = !LR.on ? '' : LR.restUntil ? `rest:${LR.next}` : `line:${S.lineLoop ? S.lineLoop.idx : -1}`;
+    d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
+    d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
+    d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
     d.hq = HQ.failed ? 'failed' : HQ.mode;
     if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
@@ -4932,38 +5873,96 @@ if (typeof exports === 'object' && typeof module === 'object') {
     bctx.clearRect(0, 0, W, H);
     dctx.clearRect(0, 0, W, H);
     const span = e - s;
+    // Per column: peak (outer shape), body (average loudness) and colour.
+    // Zoomed in, a bin covers several pixels: interpolate so the outline is
+    // smooth instead of blocky.
+    const pkA = new Float32Array(W);
+    const avA = new Float32Array(W);
+    const col = new Array(W);
+    const binAt = (arr, f) => {
+      const b = Math.floor(f);
+      const fr = f - b;
+      const a0 = P.cov[b] ? arr[b] : 0;
+      const a1 = b + 1 < P.n && P.cov[b + 1] ? arr[b + 1] : a0;
+      return a0 + (a1 - a0) * fr;
+    };
+    const perCol = (span * br) / W;
     for (let x = 0; x < W; x++) {
       const t0 = s + (x / W) * span;
       const t1 = s + ((x + 1) / W) * span;
-      let b0 = Math.floor(t0 * br);
-      let b1 = Math.max(b0 + 1, Math.floor(t1 * br));
-      b1 = Math.min(b1, P.n);
-      let pk = 0, lo = 0, mi = 0, hi = 0, c = 0;
+      if (perCol < 1) {
+        const f = Math.max(0, Math.min(P.n - 1, (t0 + t1) * 0.5 * br - 0.5));
+        if (!P.cov[Math.floor(f)]) {
+          col[x] = null;
+          continue;
+        }
+        const pk = binAt(P.peak, f);
+        pkA[x] = pk;
+        avA[x] = pk * 0.62;
+        col[x] = C.bandColor(binAt(P.low, f), binAt(P.mid, f), binAt(P.high, f));
+        continue;
+      }
+      const b0 = Math.floor(t0 * br);
+      const b1 = Math.min(P.n, Math.max(b0 + 1, Math.floor(t1 * br)));
+      let pk = 0, sum = 0, lo = 0, mi = 0, hi = 0, c = 0;
       for (let b = b0; b < b1; b++) {
         if (!P.cov[b]) continue;
-        if (P.peak[b] > pk) pk = P.peak[b];
+        const v = P.peak[b];
+        if (v > pk) pk = v;
+        sum += v;
         lo += P.low[b];
         mi += P.mid[b];
         hi += P.high[b];
         c++;
       }
       if (!c) {
-        bctx.fillStyle = 'rgba(140,150,170,0.18)';
+        col[x] = null;
+        continue;
+      }
+      pkA[x] = pk;
+      avA[x] = (sum / c) * 0.8;
+      col[x] = C.bandColor(lo / c, mi / c, hi / c);
+    }
+    const shape = (v) => Math.max(dpr * 0.75, Math.pow(v * norm, 0.8) * amp);
+    for (let x = 0; x < W; x++) {
+      const cc = col[x];
+      if (!cc) {
+        bctx.fillStyle = 'rgba(140,150,170,0.16)';
         bctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
-        dctx.fillStyle = 'rgba(140,150,170,0.12)';
+        dctx.fillStyle = 'rgba(140,150,170,0.10)';
         dctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
         continue;
       }
-      const v = Math.pow(pk * norm, 0.85);
-      const hh = Math.max(dpr, v * amp);
-      const [r, gg, bb] = C.bandColor(lo / c, mi / c, hi / c);
-      bctx.fillStyle = `rgb(${r},${gg},${bb})`;
-      bctx.fillRect(x, mid - hh, 1, hh * 2);
-      dctx.fillStyle = `rgba(${r},${gg},${bb},0.62)`;
-      dctx.fillRect(x, mid - hh, 1, hh * 2);
+      const [r, gg, bb] = cc;
+      const ho = shape(pkA[x]);
+      const hi2 = Math.min(ho, shape(avA[x]));
+      // Coming up: full colour, a soft outer peak and a bright body.
+      bctx.fillStyle = `rgba(${r},${gg},${bb},0.5)`;
+      bctx.fillRect(x, mid - ho, 1, ho * 2);
+      bctx.fillStyle = `rgb(${Math.min(255, r + 28)},${Math.min(255, gg + 28)},${Math.min(255, bb + 28)})`;
+      bctx.fillRect(x, mid - hi2, 1, hi2 * 2);
+      // Already played: greyed, like a DJ deck.
+      const gr = Math.round((r + gg + bb) / 3);
+      const mix = (c) => Math.round(c * 0.45 + gr * 0.55);
+      dctx.fillStyle = `rgba(${mix(r)},${mix(gg)},${mix(bb)},0.30)`;
+      dctx.fillRect(x, mid - ho, 1, ho * 2);
+      dctx.fillStyle = `rgba(${mix(r)},${mix(gg)},${mix(bb)},0.55)`;
+      dctx.fillRect(x, mid - hi2, 1, hi2 * 2);
     }
-    // Bright core line in the middle, like a DJ deck.
-    bctx.fillStyle = 'rgba(255,255,255,0.10)';
+    // Light in the middle, fading to the edges: gives the wave depth.
+    for (const ctx2 of [bctx, dctx]) {
+      ctx2.globalCompositeOperation = 'source-atop';
+      const gr = ctx2.createLinearGradient(0, 0, 0, H);
+      gr.addColorStop(0, 'rgba(0,0,0,0.45)');
+      gr.addColorStop(0.42, 'rgba(255,255,255,0.06)');
+      gr.addColorStop(0.5, 'rgba(255,255,255,0.12)');
+      gr.addColorStop(0.58, 'rgba(255,255,255,0.06)');
+      gr.addColorStop(1, 'rgba(0,0,0,0.45)');
+      ctx2.fillStyle = gr;
+      ctx2.fillRect(0, 0, W, H);
+      ctx2.globalCompositeOperation = 'source-over';
+    }
+    bctx.fillStyle = 'rgba(255,255,255,0.08)';
     bctx.fillRect(0, mid - dpr * 0.5, W, dpr);
 
     // Mini map of the whole song when zoomed.
@@ -5001,7 +6000,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     const ctx = cv.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#0b0e14';
+    if (!layers.bg || layers.bgH !== H) {
+      layers.bg = ctx.createLinearGradient(0, 0, 0, H);
+      layers.bg.addColorStop(0, '#0a0c11');
+      layers.bg.addColorStop(0.5, '#0e1118');
+      layers.bg.addColorStop(1, '#090b10');
+      layers.bgH = H;
+    }
+    ctx.fillStyle = layers.bg;
     ctx.fillRect(0, 0, W, H);
     const d = dur();
     if (!d) return;
@@ -5014,14 +6020,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const top = g.waveTop;
     const wh = g.waveH;
 
-    // Waveform: dim after the playhead, bright before it.
-    ctx.drawImage(layers.dim, 0, top, g.w, wh);
+    // Waveform: greyed where it has played, full colour from the playhead on.
+    ctx.drawImage(layers.bright, 0, top, g.w, wh);
     if (px > 0) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, top, Math.min(g.w, px), wh);
       ctx.clip();
-      ctx.drawImage(layers.bright, 0, top, g.w, wh);
+      ctx.fillStyle = '#0c0f15';
+      ctx.fillRect(0, top, Math.min(g.w, px), wh);
+      ctx.drawImage(layers.dim, 0, top, g.w, wh);
       ctx.restore();
     }
 
@@ -5068,8 +6076,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ctx.fillRect(0, RULER - 1, g.w, 1);
     drawRuler(ctx, g);
 
-    // Playhead
+    // Playhead: a bright line with a soft glow.
     if (px >= 0 && px <= g.w) {
+      const glow = ctx.createLinearGradient(px - 10, 0, px + 10, 0);
+      glow.addColorStop(0, 'rgba(255,255,255,0)');
+      glow.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+      glow.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(px - 10, top, 20, wh);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(Math.round(px) - 1, 0, 2, top + wh);
       ctx.beginPath();
@@ -5634,8 +6648,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
         if (IS_IOS) settings.hqAudio = false;
       }
       // New trainer choices (v2): start from 30% over 10 loops unless chosen since.
-      if (settings.trainerV !== 3) {
-        settings.trainerV = 3;
+      if (settings.trainerV !== 4) {
+        settings.trainerV = 4;
         settings.trainerStart = TRAINER_DEFAULT_START;
         settings.trainerReps = TRAINER_DEFAULT_REPS;
       }

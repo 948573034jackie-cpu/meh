@@ -30,14 +30,15 @@
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
-  const TRAINER_REPS = [25, 50, 75];
+  const TRAINER_REPS = [10, 30, 50]; // plays from slow up to 100%...
   const TRAINER_DEFAULT_START = 30;
-  const TRAINER_DEFAULT_REPS = 50;
+  const TRAINER_DEFAULT_REPS = 10;
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
   const DOUBLE_TAP_PX = 40;
-  const TRAINER_AFTER = 10; // plays at full speed before the trainer stops by itself
+  // ...then this many more at 100% before it stops: 10 → 5, 30 → 10, 50 → 10.
+  const trainerAfter = (reps) => (reps <= 10 ? 5 : 10);
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
   const WAVE_CACHE_MAX = 80;
@@ -90,7 +91,7 @@
     gap: 0,
     trainerStart: 30,
     trainerReps: TRAINER_DEFAULT_REPS,
-    trainerV: 3,
+    trainerV: 4,
     lyrics: false,
     lyricsTop: null, // null = automatic: top of the screen on touch screens, beside the wave otherwise
     lyricsFont: 0, // 0 = automatic size
@@ -100,8 +101,7 @@
     hqAudio: !IS_IOS, // studio-quality slow-down (Signalsmith Stretch); off on iPhone/iPad, where Safari can freeze it
     hqV: 1,
     tapVideo: true, // touch screens: a tap on the video pauses / plays
-    lineRamp: 10, // line practice: plays to speed up from 30% to 100% on each line
-    lineRest: 30, // line trainer: seconds of rest before the next line
+    lineRest: 0, // Practice: seconds of rest between parts
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
   };
@@ -727,17 +727,17 @@
     }
     if (S.trainer.running && !S.lineLoop) {
       const tr = S.trainer;
-      // Rep `reps` is the first play at the goal speed. After `after` plays at
-      // the goal speed, training is finished: stop at the loop start.
-      if (tr.after > 0 && tr.rep >= tr.reps + tr.after - 1) {
+      // Plays 1..reps speed up (the last one is at the goal speed), then
+      // `after` more plays at the goal speed, then it stops at the loop start.
+      if (tr.after > 0 && tr.rep >= tr.reps + tr.after) {
         finishTrainer();
         return;
       }
       tr.rep++;
-      if (tr.rep >= tr.reps && !tr.done) {
+      if (tr.rep > tr.reps && !tr.done) {
         tr.done = true;
         flash(tr.after > 0
-          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at this speed, then it stops.`
+          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
           : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
       }
       S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
@@ -861,8 +861,8 @@
   }
 
   function onPlay() {
-    if (LR.on && LR.restUntil && LR.next >= 0) {
-      startRunLine(LR.next); // pressed play during the rest: go now
+    if (PR.on && PR.restUntil) {
+      startPart(PR.pos); // pressed play during the rest: go now
       return;
     }
     if (S.wrapping) {
@@ -1015,7 +1015,7 @@
     tr.start = settings.trainerStart / 100;
     tr.goal = TRAINER_GOAL / 100;
     tr.reps = settings.trainerReps;
-    tr.after = TRAINER_AFTER;
+    tr.after = trainerAfter(tr.reps);
     tr.rep = 1;
     tr.done = false;
     tr.running = true;
@@ -1066,7 +1066,7 @@
     } else {
       tr.rep = C.trainerRepFor(tr.start, tr.goal, tr.reps, r);
     }
-    tr.done = tr.rep >= tr.reps;
+    tr.done = tr.rep > tr.reps;
     S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
     S.rateOwned = true;
     applyRate();
@@ -1109,15 +1109,17 @@
   // ---------------------------------------------------------------------------
   const LYRICS_API = 'https://lrclib.net/api/search';
   const LYRICS_PHONE_H = 170;
-  const LYRICS_NUDGE = 0.2; // seconds per tap on ◀ ▶ (lyrics timing)
-  // One-line practice (tap the left of a lyric line): speed up from 30% to
-  // 100% over 10 plays (5/10/15/20 to choose), then 10 plays at 100%, then stop.
+  const LYRICS_NUDGE = 0.1; // seconds per tap on ◀ ▶ (lyrics timing)
+  // One-line practice (tap the left of a lyric line) and Practice (every part
+  // of the song): speed up from 30% to 100% with the Trainer's counts
+  // (10 / 30 / 50 plays), then 5 or 10 plays at 100%.
   const LINE_START = 0.3;
-  const LINE_RAMPS = [5, 10, 15, 20]; // choice: plays from 30% up to 100%
-  const LINE_FULL = 10; // then this many at 100%
-  const LINE_RESTS = [0, 20, 30, 40]; // line trainer: rest between lines (s)
-  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
-    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '' };
+  const PART_RESTS = [0, 10, 20, 30, 40]; // Practice: rest between parts (s)
+  const L = { vid: null, token: 0, results: [], idx: 0, lines: null, raw: null, fine: null, plain: null, synced: false, nowIdx: -2, userScrollAt: 0,
+    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '', secNames: [], sections: [] };
+  // Chords for the current video: the pasted sheet, how it sits on the lyric
+  // lines, and the transpose amount.
+  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -1147,21 +1149,40 @@
     }, 'icon', 'search');
     ui.lyrMeta = h('div', { class: 'lyr-meta' });
     ui.lyrOffset = h('span', { class: 'lyr-off' });
+    ui.keyLabel = h('span', { class: 'lyr-off key-label' });
+    ui.keyBox = h('span', { class: 'key-box', hidden: true },
+      btn('♭', 'Transpose the chords down a semitone', () => transposeChords(-1), 'lyr-nudge'),
+      ui.keyLabel,
+      btn('♯', 'Transpose the chords up a semitone', () => transposeChords(1), 'lyr-nudge'));
     ui.lyrSync = h('div', { class: 'lyr-sync', hidden: true },
-      btn('◀ 0.2s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-LYRICS_NUDGE), 'lyr-nudge'),
+      btn('◀ 0.1s', 'Lyrics are late: show them earlier', () => nudgeLyrics(-LYRICS_NUDGE), 'lyr-nudge'),
       ui.lyrOffset,
-      btn('0.2s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(LYRICS_NUDGE), 'lyr-nudge'),
+      btn('0.1s ▶', 'Lyrics are early: show them later', () => nudgeLyrics(LYRICS_NUDGE), 'lyr-nudge'),
       btn('Auto', 'Line the lyrics up again automatically', () => {
         L.offsetSet = false;
         L.offset = 0;
+        resetFine();
         L.autoPending = true;
         saveLyricsChoice();
         renderLyricsSync();
-      }, 'lyr-nudge'));
-    ui.runBtn = btn('Line trainer', 'Practise every line in turn: speeds up from 30% to 100%, then 10 times at 100%, a rest, then the next line. Tap again to stop.', toggleLineRun, 'lyr-nudge run', 'bolt');
-    ui.runRamp = select(LINE_RAMPS, (v) => `${v}× up to 100%`, settings.lineRamp, (v) => { settings.lineRamp = v; saveSettings(); }, 'Plays to speed up from 30% to 100% on each line');
-    ui.runRest = select(LINE_RESTS, (v) => (v ? `rest ${v}s` : 'no rest'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Rest before the next line');
-    ui.lyrTrain = h('div', { class: 'lyr-sync lyr-train', hidden: true }, ui.runBtn, ui.runRamp, ui.runRest);
+      }, 'lyr-nudge'),
+      ui.keyBox);
+    // Chords: find them on Ultimate Guitar, copy, come back and paste.
+    ui.chordText = h('textarea', { class: 'chord-text', rows: '5', placeholder: 'Paste the chords here (copied from Ultimate Guitar or any chord site, or ChordPro like [Am]words)', 'aria-label': 'Chords' });
+    ui.chordPanel = h('div', { class: 'chord-panel', hidden: true },
+      h('div', { class: 'chord-title', text: 'Chords' }),
+      h('div', { class: 'chord-steps', text: '1. Find the song on Ultimate Guitar  2. Select all, Copy  3. Come back and tap Paste' }),
+      h('div', { class: 'chord-btns' },
+        btn('Find on Ultimate Guitar', 'Open the chords search for this song in a new tab', findChordsOnline, 'primary', 'search'),
+        btn('Paste', 'Paste the chords you copied', pasteChords, '', 'paste'),
+        btn('Use these', 'Put these chords on the lyrics', () => applyChords(ui.chordText.value, { save: true }), ''),
+        btn('Remove', 'Remove the chords from this song', removeChords, 'danger'),
+        // Close sits away from where the Chords button was, so the tap that
+        // opened the panel can never land on it.
+        btn('Close', 'Close the chords panel', toggleChordPanel, '')),
+      ui.chordText);
+    ui.chordBtn = btn('Chords', 'Chords over the lyrics (from Ultimate Guitar or any chord site)', toggleChordPanel, 'chord-btn');
+    ui.practiceBtn = btn('Practice', 'Practise the whole song part by part (verse, chorus…): each part from 30% up to 100%, then at full speed, then the next part; at the end the whole song once. Tap again to stop.', togglePractice, 'practice-btn', 'bolt');
     ui.lyrBody = h('div', { class: 'lyr-body' });
     const touched = () => (L.userScrollAt = now());
     ui.lyrBody.addEventListener('wheel', touched, { passive: true });
@@ -1178,8 +1199,8 @@
     const grip = h('div', { class: 'lyr-resize', title: 'Drag to make the lyrics area taller or shorter' });
     setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
-      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
-      ui.lyrMeta, ui.lyrSync, ui.lyrTrain, ui.lyrBody, grip);
+      h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, ui.chordBtn, smaller, bigger, ui.lyrPlace, hide, ui.practiceBtn),
+      ui.lyrMeta, ui.lyrSync, ui.chordPanel, ui.lyrBody, grip);
   }
 
   function lyricsOnTop() {
@@ -1286,7 +1307,8 @@
         if (Number.isFinite(saved.offset)) {
           L.offset = saved.offset;
           L.offsetSet = !!saved.offsetSet;
-          L.autoPending = !L.offsetSet && L.autoPending;
+          L.autoPending = !L.offsetSet && L.autoPending && !saved.fine;
+          if (saved.fine) setFine(saved.fine);
           renderLyricsSync();
         }
       } else {
@@ -1388,7 +1410,10 @@
     if (!r) return;
     L.idx = i;
     const lines = r.syncedLyrics ? C.parseLrc(r.syncedLyrics) : null;
-    L.lines = lines && lines.length ? lines : null;
+    L.raw = lines && lines.length ? lines : null;
+    L.lines = L.raw;
+    L.fine = null;
+    L.plain = L.raw ? null : String(r.plainLyrics || '').split(/\r?\n/);
     const d = dur();
     // Time-stamped lyrics always follow the song. Versions that differ from the
     // original (a cappella uploads, edits) are lined up by an offset: found
@@ -1404,50 +1429,276 @@
     ui.lyrMeta.textContent = `${r.trackName || '?'} — ${r.artistName || '?'}${how}${more}`;
     ui.lyrMeta.title = ui.lyrMeta.textContent;
     renderLyricsSync();
-    ui.lyrBody.classList.toggle('synced', L.synced);
-    const kids = [];
-    if (L.lines) {
-      L.lines.forEach((ln, k) => {
-        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then 10 times at 100% (tap again to stop)' }, icon('loop')) : null,
-          h('span', { class: 'lyr-text', text: ln.text || '♪' }),
-          L.synced ? h('span', { class: 'lyr-ab', title: 'Loop from this line: tap here on the first line, then on the last line', text: 'A' }) : null);
-        if (L.synced) p.addEventListener('click', (e) => {
-          // Left edge of a line (the ⟳ button): repeat just this line.
-          // Right edge (the A / B button): loop from one line to another.
-          const r = p.getBoundingClientRect();
-          const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
-          const onAB = e.target.closest && e.target.closest('.lyr-ab');
-          const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
-          if (onAB || (realPoint && !onLoopBtn && r.right - e.clientX < Math.min(72, r.width * 0.2))) {
-            lyricsABTap(k);
-            return;
-          }
-          if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
-            toggleLineLoop(k);
-            return;
-          }
-          if (S.lineLoop) stopLineLoop(true);
-          const at = Math.max(0, ln.t + L.offset);
-          seek(at);
-          L.userScrollAt = 0;
-          if (S.loopOn && hasLoop() && (at < S.a || at >= effEnd())) {
-            S.loopOn = false;
-            flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
-          }
-          renderUI();
-        });
-        p.dataset.i = String(k);
-        kids.push(p);
-      });
-    } else {
-      for (const line of String(r.plainLyrics || '').split(/\r?\n/)) kids.push(h('p', { text: line || ' ' }));
-    }
+    renderLyricLines();
     stopLineLoop(true); // the lines changed
+    ui.lyrBody.scrollTop = 0;
+    if (save) saveLyricsChoice();
+    loadChordsFor(S.vid);
+  }
+
+  // Lyric times with the per-line fine-tune (a cappella: each line starts
+  // where the singing starts).
+  function resetFine() {
+    L.fine = null;
+    L.lines = L.raw;
+  }
+
+  function setFine(fine) {
+    if (!L.raw || !fine || fine.length !== L.raw.length) return resetFine();
+    L.fine = fine;
+    L.lines = L.raw.map((ln, k) => ({ t: ln.t + (fine[k] || 0), text: ln.text }));
+  }
+
+  function lyricTexts() {
+    return L.lines ? L.lines.map((x) => x.text || '') : L.plain || [];
+  }
+
+  // Builds the lyric lines: section name (VERSE 1, CHORUS…) above the first
+  // line of each part, chord-only rows (intros), and chords over the words.
+  function renderLyricLines() {
+    const texts = lyricTexts();
+    const synced = L.synced && !!L.lines;
+    computeSections();
+    ui.lyrBody.classList.toggle('synced', synced);
+    ui.lyrBody.classList.toggle('with-chords', !!CH.map || !!CH.sheetOnly);
+    const kids = [];
+    if (CH.sheetOnly && !texts.length) {
+      // No lyrics found, but chords pasted: show the sheet itself.
+      for (const it of CH.sheetOnly) {
+        if (it.type === 'sec') kids.push(h('p', { class: 'sec-only' }, h('span', { class: 'sec-tag', text: it.name })));
+        else if (it.type === 'chords') kids.push(h('p', {}, chordRow(it.chords)));
+        else kids.push(h('p', {}, h('div', { class: 'lrow' }, lyricText(it.text, it.chords))));
+      }
+      ui.lyrBody.replaceChildren(...kids);
+      L.abKey = '';
+      return;
+    }
+    texts.forEach((text, k) => {
+      const m = CH.map && CH.map[k];
+      const parts = [];
+      const sec = L.secNames[k];
+      if (m && m.pre) {
+        for (const row of m.pre) {
+          if (row.sec) parts.push(h('span', { class: 'sec-tag', text: row.sec }));
+          parts.push(chordRow(row.chords));
+        }
+      }
+      if (sec) parts.unshift(h('span', { class: 'sec-tag', text: sec }));
+      const row = h('div', { class: 'lrow' },
+        synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then at full speed (tap again to stop)' }, icon('loop')) : null,
+        lyricText(text || (synced ? '♪' : ' '), m ? m.chords : null),
+        synced ? h('span', { class: 'lyr-ab', title: 'Loop from this line: tap here on the first line, then on the last line', text: 'A' }) : null);
+      const p = h('p', { class: sec ? 'sec-start' : '' }, ...parts, row);
+      if (synced) p.addEventListener('click', (e) => lineClick(e, p, row, k));
+      p.dataset.i = String(k);
+      kids.push(p);
+    });
     L.abStart = null;
     L.abKey = '';
     ui.lyrBody.replaceChildren(...kids);
-    ui.lyrBody.scrollTop = 0;
-    if (save) saveLyricsChoice();
+    L.nowIdx = -2;
+    markLoopingLine();
+  }
+
+  function lineClick(e, p, row, k) {
+    // Left edge of a line (the ⟳ button): repeat just this line.
+    // Right edge (the A / B button): loop from one line to another.
+    const r = row.getBoundingClientRect();
+    const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
+    const onAB = e.target.closest && e.target.closest('.lyr-ab');
+    const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
+    if (onAB || (realPoint && !onLoopBtn && r.right - e.clientX < Math.min(72, r.width * 0.2))) {
+      lyricsABTap(k);
+      return;
+    }
+    if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
+      toggleLineLoop(k);
+      return;
+    }
+    if (S.lineLoop || PR.on) stopLineLoop(true);
+    const at = Math.max(0, L.lines[k].t + L.offset);
+    seek(at);
+    L.userScrollAt = 0;
+    if (S.loopOn && hasLoop() && (at < S.a || at >= effEnd())) {
+      S.loopOn = false;
+      flash('Loop paused because you jumped outside it. Press Loop to turn it back on.');
+    }
+    renderUI();
+  }
+
+  function shownChord(c) {
+    return CH.transpose ? C.transposeChord(c, CH.transpose, CH.flats) : c;
+  }
+
+  function chordRow(chords) {
+    return h('div', { class: 'ch-row' }, ...chords.map((c) => h('span', { class: 'ch', text: shownChord(c) })));
+  }
+
+  // The words with chords sitting right above the syllable they start on.
+  function lyricText(text, chords) {
+    if (!chords || !chords.length) return h('span', { class: 'lyr-text', text });
+    const el = h('span', { class: 'lyr-text has-ch' });
+    const byAt = new Map();
+    for (const c of chords) {
+      const at = Math.max(0, Math.min(text.length, c.at));
+      byAt.set(at, (byAt.has(at) ? byAt.get(at) + ' ' : '') + shownChord(c.c));
+    }
+    const cuts = [...byAt.keys()].sort((a, b) => a - b);
+    if (cuts[0] > 0) el.appendChild(document.createTextNode(text.slice(0, cuts[0])));
+    cuts.forEach((at, n) => {
+      const end = n + 1 < cuts.length ? cuts[n + 1] : text.length;
+      const name = byAt.get(at);
+      let piece = text.slice(at, end);
+      // Room for the chord name, so neighbouring chords never overlap.
+      const need = Math.ceil(name.length * 0.8) + 1;
+      if (piece.length < need && n + 1 < cuts.length) piece += '\u00a0'.repeat(need - piece.length);
+      el.appendChild(h('span', { class: 'seg' }, h('span', { class: 'ch', text: name }), piece || '\u00a0'));
+    });
+    return el;
+  }
+
+  // Song parts: names from the chord sheet when it has them ([Verse 1],
+  // [Chorus]…), otherwise worked out from the lyrics (repeats = chorus…).
+  function computeSections() {
+    const n = lyricTexts().length;
+    let names = new Array(n).fill(null);
+    let fromSheet = 0;
+    if (CH.map) CH.map.forEach((m, k) => {
+      if (m && m.sec) {
+        names[k] = m.sec;
+        fromSheet++;
+      }
+    });
+    if (fromSheet < 2 && L.lines) names = C.detectSections(L.lines).names;
+    L.secNames = names;
+    const sections = [];
+    const sung = (k) => !!String(lyricTexts()[k] || '').replace(/[♪♫\s]/g, '');
+    let cur = null;
+    for (let k = 0; k < n; k++) {
+      if (names[k]) {
+        if (cur && cur.i1 >= cur.i0) sections.push(cur);
+        cur = { name: names[k], i0: k, i1: k - 1 };
+      }
+      if (!cur && sung(k)) cur = { name: 'Intro', i0: k, i1: k - 1 };
+      if (cur && sung(k)) cur.i1 = k;
+    }
+    if (cur && cur.i1 >= cur.i0) sections.push(cur);
+    L.sections = L.lines ? sections : [];
+  }
+
+  // ---- Chords ----
+  function toggleChordPanel() {
+    ui.chordPanel.hidden = !ui.chordPanel.hidden;
+    ui.chordBtn.classList.toggle('on', !ui.chordPanel.hidden);
+    if (!ui.chordPanel.hidden && !ui.chordText.value && CH.text) ui.chordText.value = CH.text;
+  }
+
+  function findChordsOnline() {
+    const meta = songMeta();
+    const g = C.parseSongTitle(meta.title, meta.author);
+    const r = L.results[L.idx];
+    const q = r ? `${r.artistName || ''} ${r.trackName || ''}`.trim() : `${g.artist} ${g.track}`.trim();
+    const url = `https://www.ultimate-guitar.com/search.php?search_type=title&value=${encodeURIComponent(q)}`;
+    window.open(url, '_blank', 'noopener');
+    flash('On the chords page: select all, Copy, then come back and tap Paste.', 8000);
+  }
+
+  async function pasteChords() {
+    let text = '';
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      text = '';
+    }
+    if (!text.trim()) {
+      ui.chordText.focus();
+      flash('Long-press the box and choose Paste, then tap “Use these”.', 6000);
+      return;
+    }
+    ui.chordText.value = text;
+    applyChords(text, { save: true });
+  }
+
+  function applyChords(text, opts = {}) {
+    text = String(text || '');
+    if (!text.trim()) return flash('Paste the chords first.');
+    const items = C.parseChordSheet(text);
+    const chordsIn = items.reduce((n, it) => n + (it.type === 'chords' ? it.chords.length : it.type === 'line' ? it.chords.length : 0), 0);
+    if (!chordsIn) {
+      if (!opts.quiet) flash('No chords found in that text. Copy the chords page itself (with the chord names over the words).', 7000);
+      return false;
+    }
+    const texts = lyricTexts();
+    CH.vid = S.vid;
+    CH.text = text;
+    CH.flats = C.prefersFlats(items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : [])));
+    if (texts.length) {
+      const r = C.alignChordSheet(items, texts);
+      if (r.matched < Math.min(2, r.sheetLines)) {
+        if (!opts.quiet) flash('These chords do not match these lyrics. Is it the same song?', 7000);
+        CH.map = null;
+        CH.sheetOnly = null;
+        renderLyricLines();
+        return false;
+      }
+      CH.map = r.lines;
+      CH.sheetOnly = null;
+      if (!opts.quiet) flash(`Chords placed on ${r.lines.filter((x) => x.chords.length).length} lines.`, 3000);
+    } else {
+      CH.map = null;
+      CH.sheetOnly = items;
+    }
+    if (opts.save && S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text, transpose: CH.transpose } });
+    ui.chordPanel.hidden = true;
+    ui.chordBtn.classList.remove('on');
+    ui.chordBtn.classList.add('has');
+    renderLyricLines();
+    renderLyricsSync();
+    renderUI();
+    return true;
+  }
+
+  function removeChords() {
+    CH.text = '';
+    CH.map = null;
+    CH.sheetOnly = null;
+    CH.transpose = 0;
+    ui.chordText.value = '';
+    ui.chordBtn.classList.remove('has');
+    if (S.vid) storage.remove(['ytl:chords:' + S.vid]);
+    renderLyricLines();
+    renderLyricsSync();
+  }
+
+  function transposeChords(n) {
+    if (!CH.map && !CH.sheetOnly) return;
+    CH.transpose = ((CH.transpose + n + 18) % 12) - 6 || 0; // -5 .. +6
+    if (S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text: CH.text, transpose: CH.transpose } });
+    renderLyricLines();
+    renderLyricsSync();
+  }
+
+  function loadChordsFor(vid) {
+    if (!vid) return;
+    if (CH.vid !== vid) {
+      CH.vid = vid;
+      CH.text = '';
+      CH.map = null;
+      CH.sheetOnly = null;
+      CH.transpose = 0;
+      ui.chordText.value = '';
+      ui.chordBtn.classList.remove('has');
+    }
+    storage.get('ytl:chords:' + vid).then((r) => {
+      const saved = r['ytl:chords:' + vid];
+      if (!saved || S.vid !== vid || !saved.text) {
+        if (CH.text) applyChords(CH.text, { quiet: true });
+        return;
+      }
+      CH.transpose = saved.transpose || 0;
+      ui.chordText.value = saved.text;
+      applyChords(saved.text, { quiet: true });
+    });
   }
 
   // ---- A–B loop from the lyrics ----
@@ -1469,9 +1720,12 @@
       L.abStart = null;
       if (S.lineLoop) stopLineLoop(true);
       S.pendingA = null;
+      if (PR.on) stopLineLoop(true);
       if (setLoop(lineRange(lo).a, lineRange(hi).b, { fresh: true, noHistory: true, play: true })) {
         L.userScrollAt = 0;
-        flash(lo === hi ? 'Looping this line.' : `Looping ${hi - lo + 1} lines.`, 3000);
+        // Chosen from the lyrics: straight into the trainer (your counts).
+        startTrainer(true);
+        flash(`${lo === hi ? 'This line' : `${hi - lo + 1} lines`}: Trainer from ${settings.trainerStart}% to 100% (${settings.trainerReps}×), then ${trainerAfter(settings.trainerReps)}× at 100%.`, 4000);
       }
     }
     renderUI();
@@ -1521,16 +1775,22 @@
     return { a, b };
   }
 
-  function toggleLineLoop(k, fromRun) {
+  // Lines k0..k1 as one loop (a single line, or a whole verse / chorus).
+  function linesRange(k0, k1) {
+    return { a: lineRange(k0).a, b: lineRange(k1).b };
+  }
+
+  function toggleLineLoop(k, fromRun, k1) {
     if (!L.lines || !L.lines[k]) return;
     if (S.lineLoop && S.lineLoop.idx === k && !fromRun) return stopLineLoop(false);
-    if (!fromRun && LR.on) endLineRun(); // practising another line by hand ends the line trainer
-    const r = lineRange(k);
+    if (!fromRun && PR.on) endPractice(); // practising a line by hand ends Practice
+    const k2 = k1 == null ? k : k1;
+    const r = linesRange(k, k2);
     // Remember the speed from before (a trainer keeps its place too) so it can
     // be put back exactly when the line practice ends.
     const saved = S.lineLoop ? S.lineLoop.saved : { rate: S.rate, rateOwned: S.rateOwned };
-    const ramp = LINE_RAMPS.includes(settings.lineRamp) ? settings.lineRamp : 10;
-    S.lineLoop = { a: r.a, b: r.b, idx: k, rep: 1, ramp, full: LINE_FULL, saved };
+    const ramp = TRAINER_REPS.includes(settings.trainerReps) ? settings.trainerReps : TRAINER_DEFAULT_REPS; // same counts as the Trainer
+    S.lineLoop = { a: r.a, b: r.b, idx: k, idx2: k2, rep: 1, ramp, full: trainerAfter(ramp), saved };
     S.rate = C.trainerRate(LINE_START, 1, ramp, 1);
     S.rateOwned = true;
     applyRate();
@@ -1547,11 +1807,11 @@
   // Stops repeating the line. The song just carries on into the next line,
   // and the A-B loop (if any) takes over again.
   function stopLineLoop(silent) {
-    const wasRun = LR.on;
-    endLineRun();
+    const wasRun = PR.on;
+    endPractice();
     if (!S.lineLoop) {
       if (wasRun && !silent) {
-        flash('Line trainer off.');
+        flash('Practice off.');
         renderUI();
       }
       return;
@@ -1561,7 +1821,7 @@
     markLoopingLine();
     S.dirty = true;
     if (!silent) {
-      flash(wasRun ? 'Line trainer off.' : S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
+      flash(wasRun ? 'Practice off.' : S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
       renderUI();
     }
   }
@@ -1586,13 +1846,9 @@
     } catch (e) {
       /* ignore */
     }
-    if (LR.on) {
-      const next = nextRunLine(ll.idx);
-      if (next < 0) {
-        endLineRun();
-        seek(ll.a);
-        flash('Line trainer done: every line practised! 🎉', 10000);
-      } else restBeforeLine(next);
+    if (PR.on) {
+      if (PR.pos + 1 < PR.parts.length) restBeforePart(PR.pos + 1);
+      else startFinalPlay();
       S.dirty = true;
       renderUI();
       return;
@@ -1603,74 +1859,107 @@
     renderUI();
   }
 
-  // ---- Line trainer: every line in turn, by itself ----
-  // Each line: speeds up from 30% to 100% (your number of plays), then 10
-  // plays at 100%; a rest (0-40 s) and on to the next line. The loop edges are
-  // the lyric timings (+ the timing shift), so the words and the sound match.
-  const LR = { on: false, timer: 0, tick: 0, restUntil: 0, next: -1 };
+  // ---- Practice: the whole song, part by part, by itself ----
+  // Each part (verse, chorus, bridge…) loops from 30% up to 100% with the
+  // Trainer's counts, then plays at full speed; then the next part. After the
+  // last part the whole song plays once from the start at 100%, and it stops.
+  // The loop edges are the lyric timings (+ the timing shift), so the words
+  // and the sound stay together.
+  const PR = { on: false, parts: [], pos: 0, timer: 0, tick: 0, restUntil: 0, final: false, loopWas: false };
 
-  function singable(k) {
-    const ln = L.lines && L.lines[k];
-    return !!ln && !!ln.text && !!ln.text.replace(/[♪♫\s]/g, '');
-  }
-
-  function nextRunLine(k) {
-    for (let j = k + 1; j < L.lines.length; j++) if (singable(j) && L.lines[j].t > L.lines[k].t + 0.05) return j;
-    return -1;
-  }
-
-  function startLineRun() {
-    if (!L.lines || !L.synced) return flash('The line trainer needs lyrics with timings. Try ⏭ for another match.');
+  function startPractice() {
+    if (!L.lines || !L.synced) return flash('Practice needs lyrics with timings. Try ⏭ for another match.');
+    computeSections();
+    const parts = L.sections.filter((p) => p.i1 >= p.i0);
+    if (!parts.length) return flash('No sung parts found in these lyrics.');
+    stopTrainer(true);
+    if (S.lineLoop) stopLineLoop(true);
     const v = S.video;
-    let k = v ? C.lineAt(L.lines, v.currentTime + 0.15 - L.offset - audioLag()) : -1;
-    if (k < 0 || !singable(k)) k = nextRunLine(Math.max(-1, k));
-    if (k < 0) k = L.lines.findIndex((x, i) => singable(i));
-    if (k < 0) return flash('No sung lines found in these lyrics.');
-    LR.on = true;
-    startRunLine(k);
-    flash(`Line trainer: each line ${settings.lineRamp} plays from 30% to 100%, then ${LINE_FULL} at 100%, ${settings.lineRest ? `${settings.lineRest} s rest, ` : ''}then the next line.`, 6000);
+    const t = v ? v.currentTime : 0;
+    // Start with the part playing now (from the top if nothing is playing yet).
+    let pos = parts.findIndex((p) => linesRange(p.i0, p.i1).b > t + 0.3);
+    if (pos < 0 || t < 0.5) pos = 0;
+    PR.on = true;
+    PR.parts = parts;
+    PR.final = false;
+    PR.loopWas = S.loopOn;
+    startPart(pos);
+    const n = settings.trainerReps;
+    flash(`Practice: ${parts.length} parts. Each one ${settings.trainerStart}% → 100% (${n}×), then ${trainerAfter(n)}× at 100%. Then the whole song once.`, 6000);
   }
 
-  function startRunLine(k) {
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.restUntil = 0;
-    LR.next = -1;
-    toggleLineLoop(k, true);
+  function startPart(pos) {
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    PR.pos = pos;
+    const p = PR.parts[pos];
+    toggleLineLoop(p.i0, true, p.i1);
   }
 
-  function restBeforeLine(k) {
+  function restBeforePart(pos) {
     const rest = settings.lineRest || 0;
-    const r = lineRange(k);
-    seek(r.a); // the next line waits on the playhead
-    if (!rest) return startRunLine(k);
-    LR.next = k;
-    LR.restUntil = now() + rest * 1000;
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.timer = setTimeout(() => startRunLine(k), rest * 1000);
-    LR.tick = setInterval(renderUI, 500);
+    const p = PR.parts[pos];
+    PR.pos = pos;
+    seek(linesRange(p.i0, p.i1).a); // the next part waits on the playhead
+    if (!rest) return startPart(pos);
+    PR.restUntil = now() + rest * 1000;
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.timer = setTimeout(() => startPart(pos), rest * 1000);
+    PR.tick = setInterval(renderUI, 500);
   }
 
-  function endLineRun() {
-    if (!LR.on) return;
-    LR.on = false;
-    clearTimeout(LR.timer);
-    clearInterval(LR.tick);
-    LR.restUntil = 0;
-    LR.next = -1;
+  function startFinalPlay() {
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    PR.final = true;
+    S.loopOn = false; // nothing pulls the playhead back
+    S.rate = 1;
+    S.rateOwned = true;
+    applyRate();
+    seek(0);
+    play();
+    flash('Every part done! Now the whole song once at 100%.', 5000);
+    PR.tick = setInterval(() => {
+      const v = S.video;
+      if (!PR.on || !PR.final || !v) return;
+      if (v.ended || v.currentTime >= dur() - 0.4) {
+        try {
+          v.pause();
+        } catch (e) {
+          /* ignore */
+        }
+        endPractice();
+        flash('Practice finished! 🎉', 8000);
+        renderUI();
+      } else renderUI();
+    }, 200);
   }
 
-  function toggleLineRun() {
-    if (LR.on) stopLineLoop(false);
-    else startLineRun();
+  function endPractice() {
+    if (!PR.on) return;
+    PR.on = false;
+    clearTimeout(PR.timer);
+    clearInterval(PR.tick);
+    PR.restUntil = 0;
+    if (PR.final) S.loopOn = PR.loopWas;
+    PR.final = false;
+    if (ui.practiceBtn) ui.practiceBtn.classList.remove('on');
+  }
+
+  function togglePractice() {
+    if (PR.on) stopLineLoop(false);
+    else startPractice();
     renderUI();
   }
 
   function markLoopingLine() {
     if (!ui.lyrBody) return;
     const kids = ui.lyrBody.children;
-    for (let k = 0; k < kids.length; k++) kids[k].classList.toggle('looping', !!S.lineLoop && S.lineLoop.idx === k);
+    const ll = S.lineLoop;
+    for (let k = 0; k < kids.length; k++) kids[k].classList.toggle('looping', !!ll && k >= ll.idx && k <= (ll.idx2 == null ? ll.idx : ll.idx2));
   }
 
   function saveLyricsChoice() {
@@ -1678,12 +1967,12 @@
     if (!r || !S.vid) return;
     const slim = { id: r.id, trackName: r.trackName, artistName: r.artistName, duration: r.duration,
       syncedLyrics: r.syncedLyrics || '', plainLyrics: r.plainLyrics || '' };
-    storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim(), offset: L.offset, offsetSet: L.offsetSet } });
+    storage.set({ ['ytl:lyr:' + S.vid]: { r: slim, q: ui.lyrInput.value.trim(), offset: L.offset, offsetSet: L.offsetSet, fine: L.fine || null } });
   }
 
   function nudgeLyrics(delta) {
-    L.offset = Math.round((L.offset + delta) * 10) / 10;
-    if (S.lineLoop && !S.lineLoop.custom) Object.assign(S.lineLoop, lineRange(S.lineLoop.idx));
+    L.offset = Math.round((L.offset + delta) * 100) / 100;
+    if (S.lineLoop && !S.lineLoop.custom) Object.assign(S.lineLoop, linesRange(S.lineLoop.idx, S.lineLoop.idx2 == null ? S.lineLoop.idx : S.lineLoop.idx2));
     L.offsetSet = true;
     L.autoPending = false;
     L.nowIdx = -2;
@@ -1693,11 +1982,16 @@
 
   function renderLyricsSync() {
     if (!ui.lyrSync) return;
-    ui.lyrSync.hidden = !L.lines;
-    if (ui.lyrTrain) ui.lyrTrain.hidden = !L.lines;
+    ui.lyrSync.hidden = !L.lines && !CH.map;
     const o = L.offset;
-    const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(1)}s`;
-    ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : L.offsetSet ? label : `${label} (auto)`;
+    const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(Math.abs(o * 10 - Math.round(o * 10)) > 0.01 ? 2 : 1)}s`;
+    const fined = L.fine ? L.fine.filter((x) => x).length : 0;
+    ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : (L.offsetSet ? label : `${label} (auto)`) + (fined ? ` · ${fined} lines fine-tuned` : '');
+    if (ui.keyBox) {
+      ui.keyBox.hidden = !CH.map;
+      const t = CH.transpose;
+      ui.keyLabel.textContent = `key ${t > 0 ? '+' : t < 0 ? '−' : '±'}${Math.abs(t)}`;
+    }
     ui.lyrOffset.title = 'How much the lyrics are shifted to match this video';
   }
 
@@ -1715,8 +2009,25 @@
     L.autoPending = false;
     if (firstLine && start != null) {
       if (C.isVocalOnlyTitle(songMeta().title)) {
-        const off = Math.round((start - firstLine.t) * 10) / 10;
-        if (Math.abs(off) <= 90) L.offset = off;
+        // A cappella: every line starts where the singing starts after a
+        // breath. Line the lyrics up with all those starts (not just the
+        // first), then move each line onto its own start.
+        const guess = start - firstLine.t;
+        const n = Math.min(S.peaks.n, Math.ceil(d * S.peaks.binRate));
+        const onsets = C.findOnsets(S.peaks.peak, S.peaks.binRate, n);
+        const raw = L.raw || L.lines;
+        const sungIdx = raw.map((ln, k) => (ln.text && ln.text.replace(/[♪♫\s]/g, '') ? k : -1)).filter((k) => k >= 0);
+        const fit = C.alignToOnsets(sungIdx.map((k) => raw[k].t), onsets, guess);
+        const off = Math.abs(fit.offset - guess) <= 1.5 && fit.score >= 0.35 ? fit.offset : Math.round(guess * 100) / 100;
+        if (Math.abs(off) <= 90) {
+          L.offset = Math.round(off * 100) / 100;
+          if (fit.score >= 0.5) {
+            const snap = C.snapToOnsets(sungIdx.map((k) => raw[k].t), onsets, L.offset);
+            const fine = raw.map(() => 0);
+            sungIdx.forEach((k, a) => (fine[k] = snap[a]));
+            setFine(fine);
+          }
+        }
       } else {
         const r = L.results[L.idx];
         const extra = r && r.duration ? d - r.duration : 0;
@@ -1998,6 +2309,7 @@
     note: 'M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z',
     search: 'M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z',
     next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
+    paste: 'M19 2h-4.18C14.4.84 13.3 0 12 0S9.6.84 9.18 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z',
     place: 'M4 4h16v6H4zm0 8h7v8H4zm9 0h7v8h-7z',
     back5: 'M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z',
     fwd5: 'M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z',
@@ -2144,7 +2456,7 @@
       else renderUI();
     };
     ui.tStart = select(TRAINER_STARTS, pct, settings.trainerStart, trainerChoice('trainerStart'), 'Starting speed');
-    ui.tReps = select(TRAINER_REPS, (v) => `${v} loops`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
+    ui.tReps = select(TRAINER_REPS, (v) => `${v}× up + ${trainerAfter(v)}× at 100%`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
     ui.trainerRow = h('div', { class: 'row sub', hidden: true },
@@ -2185,9 +2497,11 @@
       ui.mixChk.blur();
       if (settings.mixCalls) flash('Plays along with voice calls. If you hear nothing, check the silent switch / silent mode is off.', 6000);
     });
+    ui.restSel = select(PART_RESTS, (v) => (v ? `${v}s` : 'none'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Practice: rest between the parts of the song');
     ui.rescanBtn = btn('Read whole song now', 'Load the full waveform (plays muted at high speed for a few seconds)', () => startScan(), '', 'scan');
     ui.settingsRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label', text: 'Pause between loops' }), ui.gapSel,
+      h('span', { class: 'label', text: 'Rest between Practice parts' }), ui.restSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
@@ -2597,7 +2911,7 @@
     }
     ui.lyricsBtn.classList.toggle('on', settings.lyrics);
     ui.trainerBtn.classList.toggle('on', S.trainer.running);
-    if (ui.runBtn) ui.runBtn.classList.toggle('on', LR.on);
+    if (ui.practiceBtn) ui.practiceBtn.classList.toggle('on', PR.on);
     ui.trainerBtn.title = S.trainer.running
       ? 'Stop the speed trainer (back to normal speed)'
       : 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop';
@@ -2606,18 +2920,17 @@
     // Trainer
     const tr = S.trainer;
     if (tr.running) {
-      const total = tr.after > 0 ? tr.reps + tr.after - 1 : tr.reps;
+      const total = tr.reps + tr.after;
       ui.tBar.style.width = `${Math.round((Math.min(tr.rep, total) / total) * 100)}%`;
       let label;
-      if (tr.rep < tr.reps) label = `Speeding up: loop ${tr.rep} of ${tr.reps} at `;
-      else if (tr.after > 0) label = `Full speed: ${tr.rep - tr.reps + 1} of ${tr.after} at `;
-      else label = `Full speed: loop ${tr.rep - tr.reps + 1} at `;
+      if (tr.rep <= tr.reps) label = `Speeding up: ${tr.rep} of ${tr.reps} at `;
+      else label = `Full speed: ${tr.rep - tr.reps} of ${tr.after} at `;
       ui.tStat.replaceChildren(label, h('b', { text: `${Math.round(S.rate * 100)}%` }));
     } else {
       ui.tBar.style.width = '0%';
       const s = settings.trainerStart, g = TRAINER_GOAL, n = settings.trainerReps;
       const stepPct = n > 1 ? (g - s) / (n - 1) : 0;
-      const a = TRAINER_AFTER;
+      const a = trainerAfter(n);
       ui.tStat.textContent = `${s}% → ${g}% (+${Math.max(0, stepPct).toFixed(1)}% per loop)` +
         (a ? `, then ${a}× at ${g}% and stop` : '');
     }
@@ -2628,13 +2941,16 @@
     // Hint line
     if (S.hintOverride && now() < S.hintUntil) {
       setHint([S.hintOverride]);
-    } else if (LR.on && LR.restUntil && L.lines && L.lines[LR.next]) {
-      const left = Math.max(0, Math.ceil((LR.restUntil - now()) / 1000));
-      setHint([['Line trainer · rest '], `${left} s. Next: “${L.lines[LR.next].text}”. Press ▶ to start now.`]);
+    } else if (PR.on && PR.final) {
+      setHint([['Practice: '], 'the whole song once at 100%, then it stops. Tap Practice to stop now.']);
+    } else if (PR.on && PR.restUntil && PR.parts[PR.pos]) {
+      const left = Math.max(0, Math.ceil((PR.restUntil - now()) / 1000));
+      setHint([['Practice · rest '], `${left} s. Next: ${PR.parts[PR.pos].name}. Press ▶ to start now.`]);
     } else if (S.lineLoop && L.lines && L.lines[S.lineLoop.idx]) {
       const ll = S.lineLoop;
       const stage = ll.rep <= ll.ramp ? `speeding up ${ll.rep}/${ll.ramp}` : `full speed ${ll.rep - ll.ramp}/${ll.full}`;
-      setHint([[LR.on ? 'Line trainer: ' : 'Practising one line: '], `“${L.lines[ll.idx].text || '♪'}” · ${stage} at ${Math.round(S.rate * 100)}%. ${LR.on ? 'Tap Line trainer to stop.' : 'Tap ⟳ again to stop.'}`]);
+      const what = PR.on && PR.parts[PR.pos] ? `${PR.parts[PR.pos].name} (part ${PR.pos + 1} of ${PR.parts.length})` : `“${L.lines[ll.idx].text || '♪'}”`;
+      setHint([[PR.on ? 'Practice: ' : 'Practising one line: '], `${what} · ${stage} at ${Math.round(S.rate * 100)}%. ${PR.on ? 'Tap Practice to stop.' : 'Tap ⟳ again to stop.'}`]);
     } else if (S.scan) {
       setHint(['Reading the whole song… it plays muted for a moment, then goes back to where you were.']);
     } else if (!dur()) {
@@ -2677,7 +2993,9 @@
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
     markLyricsAB();
     d.abStart = L.abStart == null ? '' : String(L.abStart);
-    d.lineRun = !LR.on ? '' : LR.restUntil ? `rest:${LR.next}` : `line:${S.lineLoop ? S.lineLoop.idx : -1}`;
+    d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
+    d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
+    d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
     d.hq = HQ.failed ? 'failed' : HQ.mode;
     if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
@@ -2876,38 +3194,96 @@
     bctx.clearRect(0, 0, W, H);
     dctx.clearRect(0, 0, W, H);
     const span = e - s;
+    // Per column: peak (outer shape), body (average loudness) and colour.
+    // Zoomed in, a bin covers several pixels: interpolate so the outline is
+    // smooth instead of blocky.
+    const pkA = new Float32Array(W);
+    const avA = new Float32Array(W);
+    const col = new Array(W);
+    const binAt = (arr, f) => {
+      const b = Math.floor(f);
+      const fr = f - b;
+      const a0 = P.cov[b] ? arr[b] : 0;
+      const a1 = b + 1 < P.n && P.cov[b + 1] ? arr[b + 1] : a0;
+      return a0 + (a1 - a0) * fr;
+    };
+    const perCol = (span * br) / W;
     for (let x = 0; x < W; x++) {
       const t0 = s + (x / W) * span;
       const t1 = s + ((x + 1) / W) * span;
-      let b0 = Math.floor(t0 * br);
-      let b1 = Math.max(b0 + 1, Math.floor(t1 * br));
-      b1 = Math.min(b1, P.n);
-      let pk = 0, lo = 0, mi = 0, hi = 0, c = 0;
+      if (perCol < 1) {
+        const f = Math.max(0, Math.min(P.n - 1, (t0 + t1) * 0.5 * br - 0.5));
+        if (!P.cov[Math.floor(f)]) {
+          col[x] = null;
+          continue;
+        }
+        const pk = binAt(P.peak, f);
+        pkA[x] = pk;
+        avA[x] = pk * 0.62;
+        col[x] = C.bandColor(binAt(P.low, f), binAt(P.mid, f), binAt(P.high, f));
+        continue;
+      }
+      const b0 = Math.floor(t0 * br);
+      const b1 = Math.min(P.n, Math.max(b0 + 1, Math.floor(t1 * br)));
+      let pk = 0, sum = 0, lo = 0, mi = 0, hi = 0, c = 0;
       for (let b = b0; b < b1; b++) {
         if (!P.cov[b]) continue;
-        if (P.peak[b] > pk) pk = P.peak[b];
+        const v = P.peak[b];
+        if (v > pk) pk = v;
+        sum += v;
         lo += P.low[b];
         mi += P.mid[b];
         hi += P.high[b];
         c++;
       }
       if (!c) {
-        bctx.fillStyle = 'rgba(140,150,170,0.18)';
+        col[x] = null;
+        continue;
+      }
+      pkA[x] = pk;
+      avA[x] = (sum / c) * 0.8;
+      col[x] = C.bandColor(lo / c, mi / c, hi / c);
+    }
+    const shape = (v) => Math.max(dpr * 0.75, Math.pow(v * norm, 0.8) * amp);
+    for (let x = 0; x < W; x++) {
+      const cc = col[x];
+      if (!cc) {
+        bctx.fillStyle = 'rgba(140,150,170,0.16)';
         bctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
-        dctx.fillStyle = 'rgba(140,150,170,0.12)';
+        dctx.fillStyle = 'rgba(140,150,170,0.10)';
         dctx.fillRect(x, mid - dpr * 0.5, 1, dpr);
         continue;
       }
-      const v = Math.pow(pk * norm, 0.85);
-      const hh = Math.max(dpr, v * amp);
-      const [r, gg, bb] = C.bandColor(lo / c, mi / c, hi / c);
-      bctx.fillStyle = `rgb(${r},${gg},${bb})`;
-      bctx.fillRect(x, mid - hh, 1, hh * 2);
-      dctx.fillStyle = `rgba(${r},${gg},${bb},0.62)`;
-      dctx.fillRect(x, mid - hh, 1, hh * 2);
+      const [r, gg, bb] = cc;
+      const ho = shape(pkA[x]);
+      const hi2 = Math.min(ho, shape(avA[x]));
+      // Coming up: full colour, a soft outer peak and a bright body.
+      bctx.fillStyle = `rgba(${r},${gg},${bb},0.5)`;
+      bctx.fillRect(x, mid - ho, 1, ho * 2);
+      bctx.fillStyle = `rgb(${Math.min(255, r + 28)},${Math.min(255, gg + 28)},${Math.min(255, bb + 28)})`;
+      bctx.fillRect(x, mid - hi2, 1, hi2 * 2);
+      // Already played: greyed, like a DJ deck.
+      const gr = Math.round((r + gg + bb) / 3);
+      const mix = (c) => Math.round(c * 0.45 + gr * 0.55);
+      dctx.fillStyle = `rgba(${mix(r)},${mix(gg)},${mix(bb)},0.30)`;
+      dctx.fillRect(x, mid - ho, 1, ho * 2);
+      dctx.fillStyle = `rgba(${mix(r)},${mix(gg)},${mix(bb)},0.55)`;
+      dctx.fillRect(x, mid - hi2, 1, hi2 * 2);
     }
-    // Bright core line in the middle, like a DJ deck.
-    bctx.fillStyle = 'rgba(255,255,255,0.10)';
+    // Light in the middle, fading to the edges: gives the wave depth.
+    for (const ctx2 of [bctx, dctx]) {
+      ctx2.globalCompositeOperation = 'source-atop';
+      const gr = ctx2.createLinearGradient(0, 0, 0, H);
+      gr.addColorStop(0, 'rgba(0,0,0,0.45)');
+      gr.addColorStop(0.42, 'rgba(255,255,255,0.06)');
+      gr.addColorStop(0.5, 'rgba(255,255,255,0.12)');
+      gr.addColorStop(0.58, 'rgba(255,255,255,0.06)');
+      gr.addColorStop(1, 'rgba(0,0,0,0.45)');
+      ctx2.fillStyle = gr;
+      ctx2.fillRect(0, 0, W, H);
+      ctx2.globalCompositeOperation = 'source-over';
+    }
+    bctx.fillStyle = 'rgba(255,255,255,0.08)';
     bctx.fillRect(0, mid - dpr * 0.5, W, dpr);
 
     // Mini map of the whole song when zoomed.
@@ -2945,7 +3321,14 @@
     }
     const ctx = cv.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#0b0e14';
+    if (!layers.bg || layers.bgH !== H) {
+      layers.bg = ctx.createLinearGradient(0, 0, 0, H);
+      layers.bg.addColorStop(0, '#0a0c11');
+      layers.bg.addColorStop(0.5, '#0e1118');
+      layers.bg.addColorStop(1, '#090b10');
+      layers.bgH = H;
+    }
+    ctx.fillStyle = layers.bg;
     ctx.fillRect(0, 0, W, H);
     const d = dur();
     if (!d) return;
@@ -2958,14 +3341,16 @@
     const top = g.waveTop;
     const wh = g.waveH;
 
-    // Waveform: dim after the playhead, bright before it.
-    ctx.drawImage(layers.dim, 0, top, g.w, wh);
+    // Waveform: greyed where it has played, full colour from the playhead on.
+    ctx.drawImage(layers.bright, 0, top, g.w, wh);
     if (px > 0) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, top, Math.min(g.w, px), wh);
       ctx.clip();
-      ctx.drawImage(layers.bright, 0, top, g.w, wh);
+      ctx.fillStyle = '#0c0f15';
+      ctx.fillRect(0, top, Math.min(g.w, px), wh);
+      ctx.drawImage(layers.dim, 0, top, g.w, wh);
       ctx.restore();
     }
 
@@ -3012,8 +3397,14 @@
     ctx.fillRect(0, RULER - 1, g.w, 1);
     drawRuler(ctx, g);
 
-    // Playhead
+    // Playhead: a bright line with a soft glow.
     if (px >= 0 && px <= g.w) {
+      const glow = ctx.createLinearGradient(px - 10, 0, px + 10, 0);
+      glow.addColorStop(0, 'rgba(255,255,255,0)');
+      glow.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+      glow.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(px - 10, top, 20, wh);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(Math.round(px) - 1, 0, 2, top + wh);
       ctx.beginPath();
@@ -3578,8 +3969,8 @@
         if (IS_IOS) settings.hqAudio = false;
       }
       // New trainer choices (v2): start from 30% over 10 loops unless chosen since.
-      if (settings.trainerV !== 3) {
-        settings.trainerV = 3;
+      if (settings.trainerV !== 4) {
+        settings.trainerV = 4;
         settings.trainerStart = TRAINER_DEFAULT_START;
         settings.trainerReps = TRAINER_DEFAULT_REPS;
       }

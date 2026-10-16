@@ -66,6 +66,7 @@ const ctx = await browser.newContext(IPAD ? {
 });
 // iPadOS Safari says "Macintosh" but reports a multi-touch screen.
 if (IPAD) await ctx.addInitScript(() => Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: () => 5 }));
+if (process.env.DBG_INIT) await ctx.addInitScript({ path: process.env.DBG_INIT });
 await ctx.addInitScript({ path: path.join(ROOT, 'userscript', 'wave-looper.user.js') });
 const html = fs.readFileSync(path.join(ROOT, 'test', 'fake-youtube.html'));
 await ctx.route(`https://${HOST}/**`, (route) => {
@@ -81,7 +82,7 @@ await ctx.route(`https://${HOST}/**`, (route) => {
 const lyricsRequests = await installFakeLyrics(ctx);
 page = await ctx.newPage();
 const errors = [];
-page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); if (process.env.DEBUG && m.text().startsWith('PANEL')) console.log(m.text()); });
 page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 page.on('crash', () => console.log('!!! PAGE CRASHED'));
 browser.on('disconnected', () => console.log('!!! BROWSER DISCONNECTED'));
@@ -382,11 +383,11 @@ await step('speed buttons by tap (30 / 50 / 75 / 100%)', async () => {
   await tap('button.speed', '100%');
 });
 
-await step('Trainer: one tap starts it at 30% over 50 loops, another tap stops it at normal speed', async () => {
+await step('Trainer: one tap starts it at 30% over 10 loops, another tap stops it at normal speed', async () => {
   await tap('button', 'Trainer');
   await sleep(300);
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, `starts at 30% (got ${(await vstate()).rate})`);
-  assert((await host()).trainer.startsWith('1/50'), 'trainer running, 50 loops');
+  assert((await host()).trainer.startsWith('1/10'), 'trainer running, 10 loops');
   await page.screenshot({ path: path.join(SHOTS, 'm4-trainer.png') });
   await tap('button', 'Trainer');
   assert((await host()).trainer === '', 'stopped');
@@ -505,22 +506,42 @@ await step('lyrics: A / B buttons at the right of the lines loop from one line t
   assert(h.abStart === '' && h.loop === 'true' && h.a === '4.000' && h.b === '10.000', `loop lines 3 to 5 (${h.a}-${h.b})`);
   const inAB = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].map((p, i) => (p.classList.contains('in-ab') ? i : -1)).filter((i) => i >= 0));
   assert(JSON.stringify(inAB) === '[2,3,4]', `lines 3-5 marked (${inAB})`);
-  await waitFor(async () => { const v = await vstate(); return !v.paused && v.t >= 4 && v.t < 10.2; }, 3000, 'playing inside the loop');
-  try {
-    await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops back');
-  } catch (e) {
-    const d = await page.evaluate(() => {
-      const v = document.querySelector('#movie_player video');
-      const r = (b) => Array.from({ length: b.length }, (_, i) => `${b.start(i).toFixed(2)}-${b.end(i).toFixed(2)}`).join(' ');
-      return { t: v.currentTime, paused: v.paused, rs: v.readyState, ns: v.networkState, seeking: v.seeking, buf: r(v.buffered), rate: v.playbackRate, err: v.error && v.error.code };
-    });
-    throw new Error(`${e.message} ${JSON.stringify(d)}`);
-  }
+  // Chosen from the lyrics: the trainer starts right away (30% → 100%).
+  await waitFor(async () => { const v = await vstate(); return !v.paused && v.t >= 3.95 && v.t < 10.2; }, 3000, 'playing inside the loop');
+  h = await host();
+  assert(h.trainer.startsWith('1/10') && Math.abs((await vstate()).rate - 0.3) < 0.001, `trainer started at 30% (${h.trainer}, ${(await vstate()).rate})`);
   // One line: A and B on the same line.
   await tapRight(6);
   await tapRight(6);
   h = await host();
   assert(h.a === '12.000' && h.b === '14.000', `just line 7 (${h.a}-${h.b})`);
+  assert(h.trainer.startsWith('1/'), 'trainer again');
+  await tap('button', 'Stop the speed trainer (back to normal speed)');
+  assert((await host()).trainer === '' && Math.abs((await vstate()).rate - 1) < 0.001, 'trainer off, normal speed');
+});
+
+await step('chords: paste a sheet; chords over the words, song parts named, big enough to read', async () => {
+  const sheet = ['[Verse 1]', 'C    G', 'Line 1 (0:00)', 'Am   F', 'Line 2 (0:02)', '[Chorus]', 'Fmaj7  Bb13', 'Line 3 (0:04)', 'Line 4 (0:06)'].join('\n');
+  await tap('button', 'Chords over the lyrics (from Ultimate Guitar or any chord site)');
+  await waitFor(async () => page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.chord-panel').hidden), 2000, 'chords panel opens');
+  await page.evaluate((t) => { document.getElementById('ytl-wave-looper').shadowRoot.querySelector('textarea.chord-text').value = t; }, sheet);
+  await tap('button', 'Put these chords on the lyrics');
+  const r = await page.evaluate(() => {
+    const ps = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')];
+    return ps.slice(0, 4).map((p) => ({ sec: [...p.querySelectorAll('.sec-tag')].map((e) => e.textContent).join(','), ch: [...p.querySelectorAll('.seg > .ch')].map((e) => e.textContent), size: parseFloat(getComputedStyle(p).fontSize) }));
+  });
+  assert(r[0].sec === 'Verse 1' && JSON.stringify(r[0].ch) === '["C","G"]', `line 1 ${JSON.stringify(r[0])}`);
+  assert(r[2].sec === 'Chorus' && JSON.stringify(r[2].ch) === '["Fmaj7","Bb13"]', `line 3 ${JSON.stringify(r[2])}`);
+  assert(r[0].size >= 22, `big lyrics (${r[0].size}px)`);
+  // The chord names must not overlap each other or the words.
+  const overlap = await page.evaluate(() => {
+    const chs = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[0].querySelectorAll('.seg > .ch')].map((e) => e.getBoundingClientRect());
+    return chs.length === 2 && chs[0].right > chs[1].left;
+  });
+  assert(!overlap, 'chords do not overlap');
+  await page.evaluate(() => { const b = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body'); b.dispatchEvent(new WheelEvent('wheel')); b.scrollTop = 0; });
+  await sleep(300);
+  await page.screenshot({ path: path.join(SHOTS, 'm8-chords.png') });
 });
 
 await step('play / pause: one button, a little bigger than the others', async () => {
