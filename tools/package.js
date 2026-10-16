@@ -21,6 +21,12 @@ const crc32 = (b) => {
   return (c ^ 0xffffffff) >>> 0;
 };
 
+// A real DOS date and time for every entry (all zeros is not a valid date
+// and some unzip tools complain).
+const now = new Date();
+const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+
 const local = [];
 const central = [];
 let offset = 0;
@@ -32,6 +38,8 @@ for (const name of files) {
   h.writeUInt32LE(0x04034b50, 0);
   h.writeUInt16LE(20, 4);
   h.writeUInt16LE(8, 8);
+  h.writeUInt16LE(dosTime, 10);
+  h.writeUInt16LE(dosDate, 12);
   h.writeUInt32LE(crc32(data), 14);
   h.writeUInt32LE(comp.length, 18);
   h.writeUInt32LE(data.length, 22);
@@ -42,6 +50,8 @@ for (const name of files) {
   c.writeUInt16LE(20, 4);
   c.writeUInt16LE(20, 6);
   c.writeUInt16LE(8, 10);
+  c.writeUInt16LE(dosTime, 12);
+  c.writeUInt16LE(dosDate, 14);
   c.writeUInt32LE(crc32(data), 16);
   c.writeUInt32LE(comp.length, 20);
   c.writeUInt32LE(data.length, 24);
