@@ -1,6 +1,7 @@
-// Phone test: the userscript build on an emulated iPhone (touch, small screen)
-// visiting a simulated m.youtube.com watch page.
-// Run: npm run e2e:mobile   (needs fixtures and: node tools/build-userscript.js)
+// Touch test: the userscript build on an emulated iPhone (small screen,
+// m.youtube.com) or, with IPAD=1, an emulated iPad (Safari on iPad shows the
+// desktop site www.youtube.com, with a touch screen).
+// Run: npm run e2e:mobile / npm run e2e:ipad   (needs fixtures and: node tools/build-userscript.js)
 import { chromium } from 'playwright';
 import fs from 'fs';
 import os from 'os';
@@ -13,6 +14,10 @@ const FX = path.join(ROOT, 'test', 'fixtures');
 const SHOTS = process.env.SHOTS || path.join(os.tmpdir(), 'ytl-shots-mobile');
 fs.mkdirSync(SHOTS, { recursive: true });
 const CHROME = process.env.CHROME || ['/opt/pw-browsers/chromium-1194/chrome-linux/chrome'].find((p) => fs.existsSync(p));
+const IPAD = !!process.env.IPAD;
+const VW = IPAD ? 820 : 390; // iPad Air portrait / iPhone
+const VH = IPAD ? 1180 : 844;
+const HOST = IPAD ? 'www.youtube.com' : 'm.youtube.com';
 const DUR = JSON.parse(fs.readFileSync(path.join(FX, 'manifest.json'), 'utf8')).duration;
 
 let failures = 0;
@@ -44,16 +49,24 @@ async function waitFor(fn, ms, msg) {
 }
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: !process.env.HEADED, args: ['--autoplay-policy=no-user-gesture-required'] });
-const ctx = await browser.newContext({
-  viewport: { width: 390, height: 844 },
+const ctx = await browser.newContext(IPAD ? {
+  viewport: { width: VW, height: VH },
+  deviceScaleFactor: 2,
+  isMobile: false, // iPad Safari asks for the desktop site
+  hasTouch: true,
+  userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+} : {
+  viewport: { width: VW, height: VH },
   deviceScaleFactor: 3,
   isMobile: true,
   hasTouch: true,
   userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
 });
+// iPadOS Safari says "Macintosh" but reports a multi-touch screen.
+if (IPAD) await ctx.addInitScript(() => Object.defineProperty(Navigator.prototype, 'maxTouchPoints', { get: () => 5 }));
 await ctx.addInitScript({ path: path.join(ROOT, 'userscript', 'wave-looper.user.js') });
 const html = fs.readFileSync(path.join(ROOT, 'test', 'fake-youtube.html'));
-await ctx.route('https://m.youtube.com/**', (route) => {
+await ctx.route(`https://${HOST}/**`, (route) => {
   const u = new URL(route.request().url());
   if (u.pathname.startsWith('/__fx/')) {
     const f = path.join(FX, decodeURIComponent(u.pathname.slice(6)));
@@ -100,7 +113,7 @@ async function tapWave(t) {
 }
 
 await step('page loads and plays on the phone', async () => {
-  await page.goto('https://m.youtube.com/watch?v=PHONE001');
+  await page.goto(`https://${HOST}/watch?v=PHONE001`);
   await waitFor(async () => (await vstate()).t > 0.5, 15000, 'playing');
 });
 
@@ -131,11 +144,11 @@ await step('panel fits the phone: big buttons, no sideways scrolling, video stil
       lyr: (() => { const r = root.querySelector('.lyrics').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, w: r.width, on: root.querySelector('.lyrics').classList.contains('top') }; })(),
     };
   });
-  assert(m.lyr.on && m.lyr.top <= 1 && m.lyr.w >= 380, `lyrics on by default, across the top (${JSON.stringify(m.lyr)})`);
+  assert(m.lyr.on && m.lyr.top <= 1 && m.lyr.w >= VW - 10, `lyrics on by default, across the top (${JSON.stringify(m.lyr)})`);
   assert(Math.abs(m.lyr.bottom - m.panelTop) <= 2, `lyrics fill the top half down to the panel (${m.lyr.bottom} vs ${m.panelTop})`);
   assert(m.overflow <= 1, `no sideways overflow (${m.overflow}px)`);
   assert(m.minBtn >= 36, `buttons at least 36px tall (${m.minBtn})`);
-  assert(m.panelH > 844 * 0.42 && m.panelH < 844 * 0.56, `panel takes about half the screen (${m.panelH})`);
+  assert(m.panelH > VH * 0.42 && m.panelH < VH * 0.56, `panel takes about half the screen (${m.panelH})`);
   assert(m.rows <= 4, `two short button rows above and beside the wave (${m.rows})`);
 });
 
@@ -263,8 +276,7 @@ await step('like a DJ app: stop, drag to the start and tap A, drag on and tap B;
   h = await host();
   assert(!h.pending && h.loop === 'true', 'B closes the loop');
   assert(Math.abs(Number(h.a) - pa) < 0.01 && Math.abs(Number(h.b) - 12.5) < 0.05, `loop A..B (${h.a}-${h.b})`);
-  assert(Math.abs((await vstate()).t - Number(h.a)) < 0.05, 'ready at A');
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await waitFor(async () => { const v = await vstate(); return !v.paused && v.t >= Number(h.a) - 0.05 && v.t < Number(h.a) + 1; }, 2000, 'plays the loop from A by itself');
   await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops');
   const b0 = Number((await host()).b);
   await tap('button', 'Move end later by 1 second');
@@ -279,7 +291,7 @@ await step('like a DJ app: stop, drag to the start and tap A, drag on and tap B;
   await tap('button', 'A');
   const h2 = await host();
   assert(Math.abs(Number(h2.a) - Number(h.a) - 1) < 0.05 && h2.b === h.b && !h2.pending, `A moved, B kept (${h2.a}-${h2.b})`);
-  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await waitFor(async () => !(await vstate()).paused, 2000, 'plays the loop by itself');
   await sleep(300);
   const tt = (await vstate()).t;
   assert(tt >= Number(h2.a) - 0.05 && tt <= Number(h2.b) + 0.15, `inside loop (t=${tt})`);
@@ -400,7 +412,7 @@ await step('lyrics: on by default at the top of the screen, big text, A−/A+ an
       overflow: root.querySelector('.panel').scrollWidth - root.querySelector('.panel').clientWidth };
   });
   let m = await info();
-  assert(m.top <= 1 && m.h > 844 * 0.38, `top of the screen, about half of it (${m.h}px)`);
+  assert(m.top <= 1 && m.h > VH * 0.38, `top of the screen, about half of it (${m.h}px)`);
   assert(m.font >= 22, `big words (${m.font}px)`);
   assert(m.inputFont >= 16, 'search box text ≥16px so iPhone does not zoom in when typing');
   assert(m.top + m.h <= m.cvTop, 'the wave stays visible below the lyrics');
@@ -456,6 +468,44 @@ await step('lyrics: tap the left side of a line to practise it (from 30%), tap a
   h = await host();
   assert(h.lineLoop === '', 'stopped');
   assert(Math.abs((await vstate()).rate - 1) < 0.001, 'speed back to 100%');
+});
+
+await step('lyrics: A / B buttons at the right of the lines loop from one line to another', async () => {
+  const tapRight = async (i) => {
+    await page.evaluate((i) => {
+      const body = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.lyr-body');
+      body.dispatchEvent(new WheelEvent('wheel')); // like a finger on the lyrics: pauses auto-scroll
+      const p = body.querySelectorAll('p')[i];
+      const pr = p.getBoundingClientRect(); const br = body.getBoundingClientRect();
+      body.scrollTo({ top: body.scrollTop + pr.top - br.top - body.clientHeight / 2 + pr.height / 2, behavior: 'instant' });
+    }, i);
+    await sleep(400);
+    const b = await page.evaluate((i) => {
+      const r = document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')[i].querySelector('.lyr-ab').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width };
+    }, i);
+    assert(b.w >= 26, `A/B button big enough to tap (${b.w}px)`);
+    await page.touchscreen.tap(b.x, b.y);
+  };
+  await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
+  await tapRight(2); // "Line 3 (0:04)"
+  let h = await host();
+  assert(h.abStart === '2' && h.pending === '4.000', `A waits at line 3 (${h.abStart}, ${h.pending})`);
+  const labels = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-ab')].slice(1, 4).map((e) => e.textContent));
+  assert(JSON.stringify(labels) === '["B","A✓","B"]', `buttons now say B (${labels})`);
+  await tapRight(4); // "Line 5 (0:08)" ends at 10 s
+  h = await host();
+  assert(h.abStart === '' && h.loop === 'true' && h.a === '4.000' && h.b === '10.000', `loop lines 3 to 5 (${h.a}-${h.b})`);
+  const inAB = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('.lyr-body p')].map((p, i) => (p.classList.contains('in-ab') ? i : -1)).filter((i) => i >= 0));
+  assert(JSON.stringify(inAB) === '[2,3,4]', `lines 3-5 marked (${inAB})`);
+  await waitFor(async () => { const v = await vstate(); return !v.paused && v.t >= 4 && v.t < 10.2; }, 3000, 'playing inside the loop');
+  await waitFor(async () => Number((await host()).reps) >= 1, 12000, 'loops back');
+  // One line: A and B on the same line.
+  await tapRight(6);
+  await tapRight(6);
+  h = await host();
+  assert(h.a === '12.000' && h.b === '14.000', `just line 7 (${h.a}-${h.b})`);
+  await tap('button', 'Clear the loop');
 });
 
 await step('play / pause: one button, a little bigger than the others', async () => {

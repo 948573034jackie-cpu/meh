@@ -1469,6 +1469,15 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
 .lyr-body p.looping { background: rgba(190,120,255,.22); color: #fff; font-weight: 700; }
 .lyr-body p.looping .lyr-loop { color: #1a0b2e; background: #c084fc; border-color: #c084fc; }
 .lyr-body.synced p:hover { background: rgba(255,255,255,.05); }
+.lyr-ab {
+  position: absolute; right: .25em; top: 50%; transform: translateY(-50%);
+  min-width: 1.6em; height: 1.5em; min-height: 26px; padding: 0 .3em; border-radius: 8px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: .62em; font-weight: 800; color: #4ade80; border: 1px solid #23503a; background: rgba(34,197,94,.08);
+}
+.lyr-body p.ab-start .lyr-ab { color: #062012; background: #4ade80; border-color: #4ade80; }
+.lyr-body.ab-wait p:not(.ab-start) .lyr-ab { color: #f87171; border-color: #5a2a2a; background: rgba(248,113,113,.08); }
+.lyr-body p.in-ab { box-shadow: inset 3px 0 0 #4ade80, inset -3px 0 0 #f87171; }
 .lyr-body p.past { color: #6f788b; }
 .lyr-body p.now { color: #fff; background: rgba(25,211,255,.16); font-weight: 700; }
 .lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
@@ -2997,7 +3006,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       // playhead is, B marks the end. Stop, drag the wave to the spot, tap A;
       // drag on, tap B.
       if (hasLoop() && S.pendingA == null && t < S.b - C.MIN_LOOP) {
-        setLoop(t, S.b, { noSeek: true });
+        setLoop(t, S.b, { play: true }); // A and B both set: play the loop
         return;
       }
       pushHistory();
@@ -3020,7 +3029,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       const a = S.pendingA != null ? S.pendingA : S.a;
       if (a == null) return flash('Tap A first, where the loop should start.');
       if (Math.abs(t - a) < C.MIN_LOOP) return flash('Move further from A, then tap B.');
-      setLoop(a, t, { fresh: S.pendingA != null, noHistory: S.pendingA != null });
+      setLoop(a, t, { fresh: S.pendingA != null, noHistory: S.pendingA != null, play: true }); // loop chosen: play it from A
       return;
     }
     const a = S.pendingA != null ? S.pendingA : S.a;
@@ -3163,7 +3172,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   const LINE_FULL = 10; // then this many at 100%
   const LINE_RESTS = [0, 20, 30, 40]; // line trainer: rest between lines (s)
   const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
-    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '' };
+    offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '' };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -3455,12 +3464,19 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (L.lines) {
       L.lines.forEach((ln, k) => {
         const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then 10 times at 100% (tap again to stop)' }, icon('loop')) : null,
-          h('span', { class: 'lyr-text', text: ln.text || '♪' }));
+          h('span', { class: 'lyr-text', text: ln.text || '♪' }),
+          L.synced ? h('span', { class: 'lyr-ab', title: 'Loop from this line: tap here on the first line, then on the last line', text: 'A' }) : null);
         if (L.synced) p.addEventListener('click', (e) => {
           // Left edge of a line (the ⟳ button): repeat just this line.
+          // Right edge (the A / B button): loop from one line to another.
           const r = p.getBoundingClientRect();
           const onLoopBtn = e.target.closest && e.target.closest('.lyr-loop');
+          const onAB = e.target.closest && e.target.closest('.lyr-ab');
           const realPoint = e.clientX || e.clientY; // keyboard / scripted clicks have no position
+          if (onAB || (realPoint && !onLoopBtn && r.right - e.clientX < Math.min(72, r.width * 0.2))) {
+            lyricsABTap(k);
+            return;
+          }
           if (onLoopBtn || (realPoint && e.clientX - r.left < Math.min(72, r.width * 0.2))) {
             toggleLineLoop(k);
             return;
@@ -3482,9 +3498,62 @@ if (typeof exports === 'object' && typeof module === 'object') {
       for (const line of String(r.plainLyrics || '').split(/\r?\n/)) kids.push(h('p', { text: line || ' ' }));
     }
     stopLineLoop(true); // the lines changed
+    L.abStart = null;
+    L.abKey = '';
     ui.lyrBody.replaceChildren(...kids);
     ui.lyrBody.scrollTop = 0;
     if (save) saveLyricsChoice();
+  }
+
+  // ---- A–B loop from the lyrics ----
+  // The A / B button at the right of each line: tap it on the first line of
+  // the part (A = where that line starts), then on the last line (B = where
+  // that line ends). Those lines loop, like A / B on the wave.
+  function lyricsABTap(k) {
+    if (!L.lines || !L.lines[k]) return;
+    const r = lineRange(k);
+    if (L.abStart == null || S.pendingA == null) {
+      pushHistory();
+      L.abStart = k;
+      S.pendingA = r.a;
+      S.dirty = true;
+      flash(`A: “${L.lines[k].text || '♪'}”. Now tap B on the last line of the part (or B here for just this line).`, 5000);
+    } else {
+      const lo = Math.min(L.abStart, k);
+      const hi = Math.max(L.abStart, k);
+      L.abStart = null;
+      if (S.lineLoop) stopLineLoop(true);
+      S.pendingA = null;
+      if (setLoop(lineRange(lo).a, lineRange(hi).b, { fresh: true, noHistory: true, play: true })) {
+        L.userScrollAt = 0;
+        flash(lo === hi ? 'Looping this line.' : `Looping ${hi - lo + 1} lines.`, 3000);
+      }
+    }
+    renderUI();
+  }
+
+  // Shows A / B on the buttons and marks the lines inside the A–B loop.
+  function markLyricsAB() {
+    if (!ui.lyrBody || !L.lines || !L.synced) return;
+    if (L.abStart != null && S.pendingA == null) L.abStart = null; // cancelled elsewhere
+    const loop = hasLoop() && S.pendingA == null;
+    const key = `${L.abStart}|${loop ? `${S.a},${S.b}` : ''}|${L.offset}|${L.lines.length}`;
+    if (key === L.abKey) return;
+    L.abKey = key;
+    ui.lyrBody.classList.toggle('ab-wait', L.abStart != null);
+    const kids = ui.lyrBody.children;
+    for (let k = 0; k < kids.length && k < L.lines.length; k++) {
+      const p = kids[k];
+      const ab = p.querySelector('.lyr-ab');
+      let inside = false;
+      if (loop) {
+        const r = lineRange(k);
+        inside = r.a >= S.a - 0.05 && r.a < S.b - 0.1;
+      }
+      p.classList.toggle('in-ab', inside);
+      p.classList.toggle('ab-start', L.abStart === k);
+      if (ab) ab.textContent = L.abStart != null ? (L.abStart === k ? 'A✓' : 'B') : 'A';
+    }
   }
 
   // ---- one-line loop ----
@@ -4661,6 +4730,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
     d.lineLoop = S.lineLoop ? `${S.lineLoop.a.toFixed(2)},${S.lineLoop.b.toFixed(2)}` : '';
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
+    markLyricsAB();
+    d.abStart = L.abStart == null ? '' : String(L.abStart);
     d.lineRun = !LR.on ? '' : LR.restUntil ? `rest:${LR.next}` : `line:${S.lineLoop ? S.lineLoop.idx : -1}`;
     d.hq = HQ.failed ? 'failed' : HQ.mode;
     if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());

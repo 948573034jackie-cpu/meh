@@ -11,7 +11,9 @@
     "zip": "node tools/build-userscript.js && node tools/package.js",
     "build:userscript": "node tools/build-userscript.js",
     "e2e:userscript": "node tools/build-userscript.js && USERSCRIPT=1 node test/e2e.mjs",
-    "e2e:mobile": "node tools/build-userscript.js && node test/e2e-mobile.mjs"
+    "e2e:mobile": "node tools/build-userscript.js && node test/e2e-mobile.mjs",
+    "e2e:ipad": "node tools/build-userscript.js && IPAD=1 node test/e2e-mobile.mjs",
+    "e2e:ipad": "node tools/build-userscript.js && IPAD=1 node test/e2e-mobile.mjs"
   },
   "devDependencies": {
     "playwright": "^1.56.0"

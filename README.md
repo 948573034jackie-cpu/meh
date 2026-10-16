@@ -28,7 +28,8 @@ A Chrome extension for practising music on YouTube. It's made for singers learni
 Chrome on iPhone/iPad can't run extensions, so there is a **script version** that runs in Safari through the free **Userscripts** app. Same panel and features, made for fingers:
 - **DJ wave:** the wave scrolls under a playhead in the middle. Slide your finger on the wave and the song moves with it, like a record. **A quick tap on the wave pauses / plays.** Holding your finger still holds the song; lift it to play on.
 - **Double-tap the wave** to set **A** right there, then double-tap again where the part ends to set **B**: the loop starts playing. (A double tap never pauses the song.)
-- **A / B like a DJ app (loop in / loop out):** tap the wave to stop, drag the wave to where the part starts and tap **A**, drag on to where it ends and tap **B**: it loops. Drag the green **A** / red **B** flags anywhere (the A flag too, while it waits for B), or use ‹ › to move them by 1 second.
+- **A / B like a DJ app (loop in / loop out):** tap the wave to stop, drag the wave to where the part starts and tap **A**, drag on to where it ends and tap **B**: it loops. As soon as both are set, the loop plays by itself. Drag the green **A** / red **B** flags anywhere (the A flag too, while it waits for B), or use ‹ › to move them by 1 second.
+- **Loop from the lyrics:** each lyric line has an **A** button at its right. Tap it on the first line of the part, then tap **B** on the last line: exactly those lines loop and start playing (A and B on the same line = just that line). The looped lines are marked green / red at the edges.
 - **↺ 5s** jumps back 5 seconds and plays (inside a loop it goes back to the loop start). **5s ↻** skips 5 seconds ahead.
 - **Half and half:** the looper takes the bottom half of the screen, the lyrics fill the top half with big words. **A− / A+** change the word size, and the bar under the lyrics drags to make them taller or shorter. The layout button moves the lyrics back beside the wave.
 - **Play / pause** button a little bigger than the others.
@@ -94,6 +95,7 @@ npm test                      # unit tests: logic + WebM/MP4 parsers
 npm run e2e                   # loads the real extension in Chromium on a simulated YouTube page (needs playwright)
 npm run e2e:userscript        # same steps against the userscript build
 npm run e2e:mobile            # userscript on an emulated iPhone visiting m.youtube.com (touch, pinch, layout)
+npm run e2e:ipad              # userscript on an emulated iPad (Safari's desktop site with touch)
 npm run build:userscript      # userscript/wave-looper.user.js (Safari/iOS, Tampermonkey); built from src/
 npm run zip                   # dist/dj-wave-looper.zip for the Chrome Web Store
 ```
