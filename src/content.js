@@ -100,6 +100,8 @@
     hqAudio: !IS_IOS, // studio-quality slow-down (Signalsmith Stretch); off on iPhone/iPad, where Safari can freeze it
     hqV: 1,
     tapVideo: true, // touch screens: a tap on the video pauses / plays
+    lineRamp: 10, // line practice: plays to speed up from 30% to 100% on each line
+    lineRest: 30, // line trainer: seconds of rest before the next line
     mixCalls: IS_IOS, // iPhone/iPad: keep playing during a voice call (Claude voice mode, FaceTime...)
     focusLen: 30,
   };
@@ -715,12 +717,12 @@
     S.reps++;
     if (S.lineLoop) {
       const ll = S.lineLoop;
-      if (ll.rep >= LINE_RAMP + LINE_FULL) {
+      if (ll.rep >= ll.ramp + ll.full) {
         finishLinePractice();
         return;
       }
       ll.rep++;
-      S.rate = C.trainerRate(LINE_START, 1, LINE_RAMP, ll.rep);
+      S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
       applyRate();
     }
     if (S.trainer.running && !S.lineLoop) {
@@ -859,6 +861,10 @@
   }
 
   function onPlay() {
+    if (LR.on && LR.restUntil && LR.next >= 0) {
+      startRunLine(LR.next); // pressed play during the rest: go now
+      return;
+    }
     if (S.wrapping) {
       // The user pressed play during the breath pause: just go.
       clearTimeout(S.gapTimer);
@@ -1105,10 +1111,11 @@
   const LYRICS_PHONE_H = 170;
   const LYRICS_NUDGE = 0.2; // seconds per tap on ◀ ▶ (lyrics timing)
   // One-line practice (tap the left of a lyric line): speed up from 30% to
-  // 100% over 20 plays, then 10 plays at 100%, then stop.
+  // 100% over 10 plays (5/10/15/20 to choose), then 10 plays at 100%, then stop.
   const LINE_START = 0.3;
-  const LINE_RAMP = 20;
-  const LINE_FULL = 10;
+  const LINE_RAMPS = [5, 10, 15, 20]; // choice: plays from 30% up to 100%
+  const LINE_FULL = 10; // then this many at 100%
+  const LINE_RESTS = [0, 20, 30, 40]; // line trainer: rest between lines (s)
   const L = { vid: null, token: 0, results: [], idx: 0, lines: null, synced: false, nowIdx: -2, userScrollAt: 0,
     offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '' };
 
@@ -1151,6 +1158,10 @@
         saveLyricsChoice();
         renderLyricsSync();
       }, 'lyr-nudge'));
+    ui.runBtn = btn('Line trainer', 'Practise every line in turn: speeds up from 30% to 100%, then 10 times at 100%, a rest, then the next line. Tap again to stop.', toggleLineRun, 'lyr-nudge run', 'bolt');
+    ui.runRamp = select(LINE_RAMPS, (v) => `${v}× up to 100%`, settings.lineRamp, (v) => { settings.lineRamp = v; saveSettings(); }, 'Plays to speed up from 30% to 100% on each line');
+    ui.runRest = select(LINE_RESTS, (v) => (v ? `rest ${v}s` : 'no rest'), settings.lineRest, (v) => { settings.lineRest = v; saveSettings(); }, 'Rest before the next line');
+    ui.lyrTrain = h('div', { class: 'lyr-sync lyr-train', hidden: true }, ui.runBtn, ui.runRamp, ui.runRest);
     ui.lyrBody = h('div', { class: 'lyr-body' });
     const touched = () => (L.userScrollAt = now());
     ui.lyrBody.addEventListener('wheel', touched, { passive: true });
@@ -1168,7 +1179,7 @@
     setupLyricsResize(grip);
     return h('div', { class: 'lyrics', hidden: true },
       h('div', { class: 'lyr-head' }, ui.lyrInput, findBtn, ui.lyrNext, smaller, bigger, ui.lyrPlace, hide),
-      ui.lyrMeta, ui.lyrSync, ui.lyrBody, grip);
+      ui.lyrMeta, ui.lyrSync, ui.lyrTrain, ui.lyrBody, grip);
   }
 
   function lyricsOnTop() {
@@ -1397,7 +1408,7 @@
     const kids = [];
     if (L.lines) {
       L.lines.forEach((ln, k) => {
-        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: 20 times from 30% to 100%, then 10 at 100% (tap again to stop)' }, icon('loop')) : null,
+        const p = h('p', {}, L.synced ? h('span', { class: 'lyr-loop', title: 'Practise this line: from 30% up to 100%, then 10 times at 100% (tap again to stop)' }, icon('loop')) : null,
           h('span', { class: 'lyr-text', text: ln.text || '♪' }));
         if (L.synced) p.addEventListener('click', (e) => {
           // Left edge of a line (the ⟳ button): repeat just this line.
@@ -1450,15 +1461,17 @@
     return { a, b };
   }
 
-  function toggleLineLoop(k) {
+  function toggleLineLoop(k, fromRun) {
     if (!L.lines || !L.lines[k]) return;
-    if (S.lineLoop && S.lineLoop.idx === k) return stopLineLoop(false);
+    if (S.lineLoop && S.lineLoop.idx === k && !fromRun) return stopLineLoop(false);
+    if (!fromRun && LR.on) endLineRun(); // practising another line by hand ends the line trainer
     const r = lineRange(k);
     // Remember the speed from before (a trainer keeps its place too) so it can
     // be put back exactly when the line practice ends.
     const saved = S.lineLoop ? S.lineLoop.saved : { rate: S.rate, rateOwned: S.rateOwned };
-    S.lineLoop = { a: r.a, b: r.b, idx: k, rep: 1, saved };
-    S.rate = C.trainerRate(LINE_START, 1, LINE_RAMP, 1);
+    const ramp = LINE_RAMPS.includes(settings.lineRamp) ? settings.lineRamp : 10;
+    S.lineLoop = { a: r.a, b: r.b, idx: k, rep: 1, ramp, full: LINE_FULL, saved };
+    S.rate = C.trainerRate(LINE_START, 1, ramp, 1);
     S.rateOwned = true;
     applyRate();
     clearTimeout(S.wrapTimer);
@@ -1474,13 +1487,21 @@
   // Stops repeating the line. The song just carries on into the next line,
   // and the A-B loop (if any) takes over again.
   function stopLineLoop(silent) {
-    if (!S.lineLoop) return;
+    const wasRun = LR.on;
+    endLineRun();
+    if (!S.lineLoop) {
+      if (wasRun && !silent) {
+        flash('Line trainer off.');
+        renderUI();
+      }
+      return;
+    }
     restoreLineSpeed();
     S.lineLoop = null;
     markLoopingLine();
     S.dirty = true;
     if (!silent) {
-      flash(S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
+      flash(wasRun ? 'Line trainer off.' : S.loopOn && hasLoop() ? 'Line practice off. Back to your A–B loop.' : 'Line practice off. Playing on.');
       renderUI();
     }
   }
@@ -1493,7 +1514,7 @@
     applyRate();
   }
 
-  // All 20 plays done: stop on the line's start, speed back to what it was.
+  // All plays done: stop on the line's start, speed back to what it was.
   // Pressing play goes on as before (A-B loop / trainer / normal playing).
   function finishLinePractice() {
     const ll = S.lineLoop;
@@ -1505,9 +1526,84 @@
     } catch (e) {
       /* ignore */
     }
+    if (LR.on) {
+      const next = nextRunLine(ll.idx);
+      if (next < 0) {
+        endLineRun();
+        seek(ll.a);
+        flash('Line trainer done: every line practised! 🎉', 10000);
+      } else restBeforeLine(next);
+      S.dirty = true;
+      renderUI();
+      return;
+    }
     seek(ll.a);
-    flash(`Line practice done: ${LINE_RAMP + LINE_FULL} times, up to 100%. Press play to go on.`, 10000);
+    flash(`Line practice done: ${ll.ramp + ll.full} times, up to 100%. Press play to go on.`, 10000);
     S.dirty = true;
+    renderUI();
+  }
+
+  // ---- Line trainer: every line in turn, by itself ----
+  // Each line: speeds up from 30% to 100% (your number of plays), then 10
+  // plays at 100%; a rest (0-40 s) and on to the next line. The loop edges are
+  // the lyric timings (+ the timing shift), so the words and the sound match.
+  const LR = { on: false, timer: 0, tick: 0, restUntil: 0, next: -1 };
+
+  function singable(k) {
+    const ln = L.lines && L.lines[k];
+    return !!ln && !!ln.text && !!ln.text.replace(/[♪♫\s]/g, '');
+  }
+
+  function nextRunLine(k) {
+    for (let j = k + 1; j < L.lines.length; j++) if (singable(j) && L.lines[j].t > L.lines[k].t + 0.05) return j;
+    return -1;
+  }
+
+  function startLineRun() {
+    if (!L.lines || !L.synced) return flash('The line trainer needs lyrics with timings. Try ⏭ for another match.');
+    const v = S.video;
+    let k = v ? C.lineAt(L.lines, v.currentTime + 0.15 - L.offset - audioLag()) : -1;
+    if (k < 0 || !singable(k)) k = nextRunLine(Math.max(-1, k));
+    if (k < 0) k = L.lines.findIndex((x, i) => singable(i));
+    if (k < 0) return flash('No sung lines found in these lyrics.');
+    LR.on = true;
+    startRunLine(k);
+    flash(`Line trainer: each line ${settings.lineRamp} plays from 30% to 100%, then ${LINE_FULL} at 100%, ${settings.lineRest ? `${settings.lineRest} s rest, ` : ''}then the next line.`, 6000);
+  }
+
+  function startRunLine(k) {
+    clearTimeout(LR.timer);
+    clearInterval(LR.tick);
+    LR.restUntil = 0;
+    LR.next = -1;
+    toggleLineLoop(k, true);
+  }
+
+  function restBeforeLine(k) {
+    const rest = settings.lineRest || 0;
+    const r = lineRange(k);
+    seek(r.a); // the next line waits on the playhead
+    if (!rest) return startRunLine(k);
+    LR.next = k;
+    LR.restUntil = now() + rest * 1000;
+    clearTimeout(LR.timer);
+    clearInterval(LR.tick);
+    LR.timer = setTimeout(() => startRunLine(k), rest * 1000);
+    LR.tick = setInterval(renderUI, 500);
+  }
+
+  function endLineRun() {
+    if (!LR.on) return;
+    LR.on = false;
+    clearTimeout(LR.timer);
+    clearInterval(LR.tick);
+    LR.restUntil = 0;
+    LR.next = -1;
+  }
+
+  function toggleLineRun() {
+    if (LR.on) stopLineLoop(false);
+    else startLineRun();
     renderUI();
   }
 
@@ -1538,6 +1634,7 @@
   function renderLyricsSync() {
     if (!ui.lyrSync) return;
     ui.lyrSync.hidden = !L.lines;
+    if (ui.lyrTrain) ui.lyrTrain.hidden = !L.lines;
     const o = L.offset;
     const label = Math.abs(o) < 0.05 ? 'timing ±0' : `timing ${o > 0 ? '+' : '−'}${Math.abs(o).toFixed(1)}s`;
     ui.lyrOffset.textContent = L.autoPending ? 'lining up…' : L.offsetSet ? label : `${label} (auto)`;
@@ -2093,7 +2190,8 @@
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays. Double-tap the wave to set A there, double-tap again to set B.'),
           h('li', {}, h('b', { text: 'Make a loop: ' }), `like a DJ app: tap the wave to stop, drag the wave to where the part starts and tap A, drag on to where it ends and tap B. It loops. (Or double-tap the wave at the start, then at the end.) Drag the green A / red B flags anywhere, or use ‹ › to move them by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}. ↺ 5s plays the last 5 seconds again.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
-          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it plays 30 times (30% → 100% over 20, then 10 at 100%) and stops. Tap ⟳ again to stop early.'),
+          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it speeds up from 30% to 100% (10 plays, or 5/15/20 to choose), plays 10 times at 100% and stops. Tap ⟳ again to stop early.'),
+          h('li', {}, h('b', { text: 'Line trainer: ' }), 'tap ⚡ Line trainer above the lyrics: every line in turn, from the one playing now, the same way (speed up, then 10 at 100%), a rest (none / 20 / 30 / 40 s) and on to the next line by itself. ▶ during the rest starts the next line now. Tap Line trainer again to stop.'),
         ] : [
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
@@ -2439,6 +2537,7 @@
     }
     ui.lyricsBtn.classList.toggle('on', settings.lyrics);
     ui.trainerBtn.classList.toggle('on', S.trainer.running);
+    if (ui.runBtn) ui.runBtn.classList.toggle('on', LR.on);
     ui.trainerBtn.title = S.trainer.running
       ? 'Stop the speed trainer (back to normal speed)'
       : 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop';
@@ -2469,10 +2568,13 @@
     // Hint line
     if (S.hintOverride && now() < S.hintUntil) {
       setHint([S.hintOverride]);
+    } else if (LR.on && LR.restUntil && L.lines && L.lines[LR.next]) {
+      const left = Math.max(0, Math.ceil((LR.restUntil - now()) / 1000));
+      setHint([['Line trainer · rest '], `${left} s. Next: “${L.lines[LR.next].text}”. Press ▶ to start now.`]);
     } else if (S.lineLoop && L.lines && L.lines[S.lineLoop.idx]) {
       const ll = S.lineLoop;
-      const stage = ll.rep <= LINE_RAMP ? `speeding up ${ll.rep}/${LINE_RAMP}` : `full speed ${ll.rep - LINE_RAMP}/${LINE_FULL}`;
-      setHint([['Practising one line: '], `“${L.lines[ll.idx].text || '♪'}” · ${stage} at ${Math.round(S.rate * 100)}%. Tap ⟳ again to stop.`]);
+      const stage = ll.rep <= ll.ramp ? `speeding up ${ll.rep}/${ll.ramp}` : `full speed ${ll.rep - ll.ramp}/${ll.full}`;
+      setHint([[LR.on ? 'Line trainer: ' : 'Practising one line: '], `“${L.lines[ll.idx].text || '♪'}” · ${stage} at ${Math.round(S.rate * 100)}%. ${LR.on ? 'Tap Line trainer to stop.' : 'Tap ⟳ again to stop.'}`]);
     } else if (S.scan) {
       setHint(['Reading the whole song… it plays muted for a moment, then goes back to where you were.']);
     } else if (!dur()) {
@@ -2513,6 +2615,7 @@
     d.zoom = S.view ? (S.view.e - S.view.s).toFixed(2) : '';
     d.lineLoop = S.lineLoop ? `${S.lineLoop.a.toFixed(2)},${S.lineLoop.b.toFixed(2)}` : '';
     d.lineRep = S.lineLoop ? String(S.lineLoop.rep) : '';
+    d.lineRun = !LR.on ? '' : LR.restUntil ? `rest:${LR.next}` : `line:${S.lineLoop ? S.lineLoop.idx : -1}`;
     d.hq = HQ.failed ? 'failed' : HQ.mode;
     if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';

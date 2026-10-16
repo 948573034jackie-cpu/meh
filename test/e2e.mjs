@@ -599,7 +599,7 @@ await step('↺ 5s plays the last 5 seconds again; 5s ↻ skips ahead', async ()
   await page.evaluate(() => document.querySelector('#movie_player video').play().catch(() => {}));
 });
 
-await step('line practice: ⟳ plays one line 30 times (30% → 100% over 20, then 10 at 100%), then stops and puts the speed back', async () => {
+await step('line practice: ⟳ plays one line 20 times (30% → 100% over 10, then 10 at 100%), then stops and puts the speed back', async () => {
   if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
   await shadowClick('button.speed', '75%'); // the speed from before, to be restored
   const abBefore = await host();
@@ -620,10 +620,10 @@ await step('line practice: ⟳ plays one line 30 times (30% → 100% over 20, th
   }, 220000, 'line practice finishes by itself');
   h = await host();
   const v = await vstate();
-  const want = [...new Set(Array.from({ length: 20 }, (_, i) => Core.trainerRate(0.3, 1, 20, i + 1))), 0.75];
+  const want = [...new Set(Array.from({ length: 10 }, (_, i) => Core.trainerRate(0.3, 1, 10, i + 1))), 0.75];
   assert(JSON.stringify(rates) === JSON.stringify(want), `speeds ${JSON.stringify(rates)} want ${JSON.stringify(want)}`);
   assert(outside === 0, `stayed on the line (${outside})`);
-  assert(Number(h.reps) - r0 === 30, `30 plays (${Number(h.reps) - r0})`);
+  assert(Number(h.reps) - r0 === 20, `20 plays (${Number(h.reps) - r0})`);
   assert(v.paused && Math.abs(v.t - 8) < 0.15, `stopped at the start of the line (paused=${v.paused}, t=${v.t.toFixed(2)})`);
   assert(Math.abs(v.rate - 0.75) < 0.001, 'speed back to 75%');
   assert(h.a === abBefore.a && h.b === abBefore.b, 'A-B loop untouched');
@@ -656,6 +656,52 @@ await step('line practice: tap ⟳ again to stop early; speed comes back and it 
   assert(Math.abs(v.rate - 0.75) < 0.001 && !v.paused, `75% again and still playing (${v.rate}, paused=${v.paused})`);
   await waitFor(async () => (await vstate()).t > 4.2, 5000, 'plays on into the next line');
   await shadowClick('button.speed', '100%');
+});
+
+await step('line trainer: every line in turn (speeds up, 10 at 100%), a rest, ▶ skips the rest, then the next line; done at the end', async () => {
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
+  await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const set = (title, v) => { const el = [...root.querySelectorAll('select')].find((e) => e.title === title); el.value = v; el.dispatchEvent(new Event('change')); };
+    set('Plays to speed up from 30% to 100% on each line', '5');
+    set('Rest before the next line', '20');
+    const v = document.querySelector('#movie_player video'); v.currentTime = 26.5; v.play().catch(() => {});
+  });
+  await sleep(300);
+  await shadowClick('button', 'Line trainer');
+  let h = await host();
+  assert(h.lineRun === 'line:13' && h.lineLoop === '26.00,28.00', `starts on the line playing now (${h.lineRun} ${h.lineLoop})`);
+  assert(Math.abs((await vstate()).rate - 0.3) < 0.001, 'from 30%');
+  const r0 = Number(h.reps);
+  let outside = 0;
+  await waitFor(async () => {
+    const x = await host();
+    const v = await vstate();
+    if (x.lineLoop && (v.t < 25.95 || v.t > 28.15)) outside++;
+    return x.lineRun.startsWith('rest:') ? x : null;
+  }, 120000, 'rest after the line');
+  h = await host();
+  let v = await vstate();
+  assert(Number(h.reps) - r0 === 15, `5 + 10 plays (${Number(h.reps) - r0})`);
+  assert(outside === 0, `stayed on the line (${outside})`);
+  assert(h.lineRun === 'rest:14' && v.paused && Math.abs(v.t - 28) < 0.15, `resting at the next line (${h.lineRun}, t=${v.t.toFixed(2)}, paused ${v.paused})`);
+  assert(/rest \d+ s/.test(await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.status').textContent)), 'shows the rest countdown');
+  await sleep(1500);
+  assert((await vstate()).paused, 'still resting');
+  await shadowClick('button.play-btn');
+  await waitFor(async () => (await host()).lineRun === 'line:14', 2000, '▶ ends the rest');
+  h = await host();
+  assert(h.lineRun === 'line:14' && Math.abs((await vstate()).rate - 0.3) < 0.001, `▶ starts the next line now (${h.lineRun})`);
+  await waitFor(async () => (await host()).lineRun === '', 120000, 'done after the last line');
+  v = await vstate();
+  h = await host();
+  assert(h.lineLoop === '' && v.paused && Math.abs(v.rate - 1) < 0.001, `stopped, speed back (${v.rate})`);
+  await page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    const set = (title, v) => { const el = [...root.querySelectorAll('select')].find((e) => e.title === title); el.value = v; el.dispatchEvent(new Event('change')); };
+    set('Plays to speed up from 30% to 100% on each line', '10');
+    set('Rest before the next line', '30');
+  });
 });
 
 await step('studio-quality slow-down: at 50% the pitch stays right (440 Hz, not 220 Hz); at 100% the sound is untouched', async () => {

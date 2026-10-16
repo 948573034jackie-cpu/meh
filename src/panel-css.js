@@ -158,6 +158,8 @@ button.lyr-size { font-weight: 800; font-size: 13px; }
 .lyr-msg { color: var(--muted); padding: 10px 6px; line-height: 1.4; }
 .lyr-sync { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 6px 4px; }
 .lyr-sync button { height: 24px; padding: 0 8px; font-size: 12px; border-radius: 12px; }
+.lyr-sync select { height: 24px; font-size: 12px; border-radius: 12px; }
+.lyr-train { padding-top: 0; }
 .lyr-off { color: var(--muted); font-size: 12px; min-width: 96px; text-align: center; font-variant-numeric: tabular-nums; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .overlay {
@@ -225,6 +227,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   .lyr-head input { height: 38px; font-size: 16px; }
   .lyrics-btn { width: 38px; }
   .lyr-sync button { height: 32px; font-size: 13px; padding: 0 12px; border-radius: 16px; }
+  .lyr-sync select { height: 32px; font-size: 13px; border-radius: 16px; }
   button.play-btn { width: 60px; min-width: 60px; height: 44px; }
   button.play-btn svg { width: 28px; height: 28px; }
 
