@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      1.10.0
+// @version      2.0.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
