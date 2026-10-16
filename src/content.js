@@ -1119,7 +1119,7 @@
     offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '', secNames: [], sections: [] };
   // Chords for the current video: the pasted sheet, how it sits on the lyric
   // lines, and the transpose amount.
-  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false };
+  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false, all: [] };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -1631,7 +1631,8 @@
     const texts = lyricTexts();
     CH.vid = S.vid;
     CH.text = text;
-    CH.flats = C.prefersFlats(items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : [])));
+    CH.all = items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : []));
+    CH.flats = C.prefersFlats(CH.all, CH.transpose);
     if (texts.length) {
       const r = C.alignChordSheet(items, texts);
       if (r.matched < Math.min(2, r.sheetLines)) {
@@ -1673,6 +1674,7 @@
   function transposeChords(n) {
     if (!CH.map && !CH.sheetOnly) return;
     CH.transpose = ((CH.transpose + n + 18) % 12) - 6 || 0; // -5 .. +6
+    CH.flats = C.prefersFlats(CH.all || [], CH.transpose);
     if (S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text: CH.text, transpose: CH.transpose } });
     renderLyricLines();
     renderLyricsSync();

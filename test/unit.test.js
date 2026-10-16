@@ -282,6 +282,10 @@ test('transpose keeps the chord type and the bass note', () => {
   assert.equal(C.transposeChord('C', 0), 'C');
   assert.ok(C.prefersFlats(['F', 'Bb', 'C']));
   assert.ok(!C.prefersFlats(['E', 'A', 'B']));
+  assert.ok(C.prefersFlats(['C', 'G', 'Am'], 1), 'C up 1 = Db major: flats');
+  assert.ok(!C.prefersFlats(['C', 'G', 'Am'], 2), 'C up 2 = D major: sharps');
+  assert.ok(!C.prefersFlats(['Bb', 'F'], 1), 'Bb up 1 = B major: sharps');
+  assert.ok(C.prefersFlats(['Dm', 'Bb'], 0), 'D minor = F major: flats');
 });
 
 test('sections from the lyrics alone: verse, pre-chorus, chorus, bridge, outro', () => {

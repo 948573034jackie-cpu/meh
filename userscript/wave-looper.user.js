@@ -1661,7 +1661,13 @@ globalThis.YTL_STORAGE = (() => {
     return r + p.qual + (p.bass != null ? '/' + names[(p.bass + n + 120) % 12] : '');
   }
 
-  /** Should these chords be spelled with flats (Bb) rather than sharps (A#)? */
+  /**
+   * Should these chords (moved by n semitones) be spelled with flats (Bb)
+   * rather than sharps (A#)? Decided by the key you end up in, like a
+   * musician writes it: F Bb Eb Ab Db Gb keys use flats, G D A E B use sharps;
+   * C keeps the sheet's own habit. The key is guessed from the first chord
+   * (a minor first chord means its relative major).
+   */
   function prefersFlats(chords, n = 0) {
     let flat = 0;
     let sharp = 0;
@@ -1669,10 +1675,14 @@ globalThis.YTL_STORAGE = (() => {
       if (/^[A-G](b|♭)/.test(c)) flat++;
       else if (/^[A-G](#|♯)/.test(c)) sharp++;
     }
-    if (flat !== sharp) return flat > sharp;
     const first = chords.length ? chordParts(chords[0]) : null;
-    if (!first) return false;
-    return [5, 10, 3, 8, 1, 6].includes((first.root + n + 120) % 12); // F Bb Eb Ab Db Gb keys
+    if (first) {
+      const minor = /^(m(?!aj)|min|-)/.test(first.qual);
+      const key = (first.root + (minor ? 3 : 0) + n + 120) % 12;
+      if ([5, 10, 3, 8, 1, 6].includes(key)) return true;
+      if ([7, 2, 9, 4, 11].includes(key)) return false;
+    }
+    return flat > sharp;
   }
 
   // ---------------------------------------------------------------------------
@@ -3798,7 +3808,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     offset: 0, offsetSet: false, autoPending: false, mismatch: false, savedQ: '', abStart: null, abKey: '', secNames: [], sections: [] };
   // Chords for the current video: the pasted sheet, how it sits on the lyric
   // lines, and the transpose amount.
-  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false };
+  const CH = { vid: null, text: '', map: null, sheetOnly: null, transpose: 0, flats: false, all: [] };
 
   function songMeta() {
     const fromTap = S.meta && S.meta.vid === S.vid ? S.meta : null;
@@ -4310,7 +4320,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const texts = lyricTexts();
     CH.vid = S.vid;
     CH.text = text;
-    CH.flats = C.prefersFlats(items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : [])));
+    CH.all = items.flatMap((it) => (it.type === 'chords' ? it.chords : it.type === 'line' ? it.chords.map((x) => x.c) : []));
+    CH.flats = C.prefersFlats(CH.all, CH.transpose);
     if (texts.length) {
       const r = C.alignChordSheet(items, texts);
       if (r.matched < Math.min(2, r.sheetLines)) {
@@ -4352,6 +4363,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   function transposeChords(n) {
     if (!CH.map && !CH.sheetOnly) return;
     CH.transpose = ((CH.transpose + n + 18) % 12) - 6 || 0; // -5 .. +6
+    CH.flats = C.prefersFlats(CH.all || [], CH.transpose);
     if (S.vid) storage.set({ ['ytl:chords:' + S.vid]: { text: CH.text, transpose: CH.transpose } });
     renderLyricLines();
     renderLyricsSync();
@@ -5243,14 +5255,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
           h('li', {}, h('b', { text: 'Move the song like a DJ: ' }), 'slide your finger on the wave and the song moves with it. A quick tap on the wave pauses / plays. Double-tap the wave to set A there, double-tap again to set B.'),
           h('li', {}, h('b', { text: 'Make a loop: ' }), `like a DJ app: tap the wave to stop, drag the wave to where the part starts and tap A, drag on to where it ends and tap B. It loops. (Or double-tap the wave at the start, then at the end.) Drag the green A / red B flags anywhere, or use ‹ › to move them by ${TOUCH_NUDGE} second${TOUCH_NUDGE === 1 ? "" : "s"}. ↺ 5s plays the last 5 seconds again.`),
           h('li', {}, h('b', { text: 'Zoom: ' }), 'pinch the wave with two fingers, or press Zoom in / Whole song. Tap the small map under the wave to jump.'),
-          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it speeds up from 30% to 100% (10 plays, or 5/15/20 to choose), plays 10 times at 100% and stops. Tap ⟳ again to stop early.'),
-          h('li', {}, h('b', { text: 'Line trainer: ' }), 'tap ⚡ Line trainer above the lyrics: every line in turn, from the one playing now, the same way (speed up, then 10 at 100%), a rest (none / 20 / 30 / 40 s) and on to the next line by itself. ▶ during the rest starts the next line now. Tap Line trainer again to stop.'),
+          h('li', {}, h('b', { text: 'Practise one line: ' }), 'tap ⟳ at the left of a lyric line: it speeds up from 30% to 100% with the Trainer counts (10, 30 or 50 plays), then 5 or 10 at 100%, and stops. Tap ⟳ again to stop early.'),
+          h('li', {}, h('b', { text: 'Practice the whole song: ' }), 'tap Practice (top right of the lyrics): each part (verse, chorus, bridge…) speeds up from 30% to 100%, then plays at full speed, then the next part. At the end the whole song plays once, then it stops. ▶ during a rest starts the next part now.'),
+          h('li', {}, h('b', { text: 'Loop from the lyrics: ' }), 'tap A at the right of the first line, then B on the last line: those lines loop and the Trainer starts.'),
+          h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
           h('li', {}, h('b', { text: 'Make a loop: ' }), 'click the wave where the part starts, then click where it ends. Or drag across it. It starts looping straight away.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
-        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10–50 loops, then 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
+        h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10, 30 or 50 loops, then 5 or 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       TOUCH ? null : h('ul', {},

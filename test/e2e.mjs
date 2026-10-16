@@ -680,7 +680,8 @@ await step('chords: a pasted Ultimate Guitar sheet sits over the right words, wi
   assert((await host()).chords === '3', 'three lines with chords');
   await shadowClick('button', 'Transpose the chords up a semitone');
   r = await read();
-  assert(r[0].ch[0].startsWith('C#>') && r[2].ch[1].startsWith('B13/D#>'), `up a semitone: ${JSON.stringify(r)}`);
+  // C major up a semitone is Db major: written with flats, like a musician would.
+  assert(r[0].ch[0].startsWith('Db>') && r[1].ch[0].startsWith('Bbm>') && r[2].ch[1].startsWith('B13/Eb>'), `up a semitone: ${JSON.stringify(r)}`);
   await shadowClick('button', 'Transpose the chords down a semitone');
   r = await read();
   assert(r[0].ch[0].startsWith('C>'), 'back');

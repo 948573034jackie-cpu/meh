@@ -771,7 +771,13 @@
     return r + p.qual + (p.bass != null ? '/' + names[(p.bass + n + 120) % 12] : '');
   }
 
-  /** Should these chords be spelled with flats (Bb) rather than sharps (A#)? */
+  /**
+   * Should these chords (moved by n semitones) be spelled with flats (Bb)
+   * rather than sharps (A#)? Decided by the key you end up in, like a
+   * musician writes it: F Bb Eb Ab Db Gb keys use flats, G D A E B use sharps;
+   * C keeps the sheet's own habit. The key is guessed from the first chord
+   * (a minor first chord means its relative major).
+   */
   function prefersFlats(chords, n = 0) {
     let flat = 0;
     let sharp = 0;
@@ -779,10 +785,14 @@
       if (/^[A-G](b|♭)/.test(c)) flat++;
       else if (/^[A-G](#|♯)/.test(c)) sharp++;
     }
-    if (flat !== sharp) return flat > sharp;
     const first = chords.length ? chordParts(chords[0]) : null;
-    if (!first) return false;
-    return [5, 10, 3, 8, 1, 6].includes((first.root + n + 120) % 12); // F Bb Eb Ab Db Gb keys
+    if (first) {
+      const minor = /^(m(?!aj)|min|-)/.test(first.qual);
+      const key = (first.root + (minor ? 3 : 0) + n + 120) % 12;
+      if ([5, 10, 3, 8, 1, 6].includes(key)) return true;
+      if ([7, 2, 9, 4, 11].includes(key)) return false;
+    }
+    return flat > sharp;
   }
 
   // ---------------------------------------------------------------------------
