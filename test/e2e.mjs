@@ -195,6 +195,9 @@ await step('auto scan reads the whole song and puts playback back', async () => 
 });
 
 await step('waveform shows loud and quiet parts in the right places', async () => {
+  // Park the playhead (a bright line) away from the columns measured.
+  const tPlay = (await vstate()).t;
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 15.5; });
   await sleep(300);
   const heights = await page.evaluate((D) => {
     const cv = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas');
@@ -215,6 +218,7 @@ await step('waveform shows loud and quiet parts in the right places', async () =
     assert(heights[loud] > heights[quiet] * 2, `t=${loud}s should be much taller than t=${quiet}s: ${JSON.stringify(heights)}`);
   }
   await page.screenshot({ path: path.join(SHOTS, '2-full-wave.png') });
+  await page.evaluate((t) => { const v = document.querySelector('#movie_player video'); v.currentTime = t; v.play().catch(() => {}); }, tPlay);
 });
 
 await step('the wave can be made bigger and smaller', async () => {
@@ -868,7 +872,7 @@ await step('switching videos resets, coming back restores loop and cached wave',
 const BEAT = 0.625;
 const beatAt = (k) => 0.8 + k * BEAT;
 await step('beats: a 96 BPM drum groove gives the tempo, every beat and the bar "1"; kick / snare / hi-hat hits found', async () => {
-  if (process.env.DEBUG) await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
   await page.evaluate(() => window.__navigate('DRUM0001'));
   await waitFor(async () => (await host()).vid === 'DRUM0001', 5000, 'drum video');
   const h = await waitFor(async () => { const x = await host(); return x.bpm ? x : null; }, 60000, 'beats found');
@@ -876,6 +880,13 @@ await step('beats: a 96 BPM drum groove gives the tempo, every beat and the bar 
   const bars = (Number(h.bar1) - 0.8) / (4 * BEAT);
   assert(Math.abs(bars - Math.round(bars)) < 0.02, `bar "1" on a real downbeat (${h.bar1} s)`);
   assert(Math.abs(Number(h.beats) - 47) <= 2, `beats ${h.beats} (want about 47)`);
+  // Every beat right on the drum hit as the player plays it, through the real
+  // Opus decoding. Chrome's player puts Opus audio 7.8 ms after the source's
+  // own time (measured by recording what the <audio> element plays).
+  const PLAYER_DELAY = 0.0078;
+  const errs = h.beatList.split(',').map(Number).map((t) => (t - PLAYER_DELAY - beatAt(Math.round((t - 0.8) / BEAT))) * 1000);
+  const worst = Math.max(...errs.map(Math.abs));
+  assert(worst < 2, `every beat within 2 ms of the hit (worst ${worst.toFixed(1)} ms; ${errs.map((e) => e.toFixed(1)).join(' ')})`);
   if (process.env.DEBUG) {
     const dump = await waitFor(() => page.evaluate(() => document.documentElement.dataset.ytlPeaks || null), 5000, 'peaks dump');
     fs.writeFileSync(path.join(SHOTS, 'drum-peaks.json'), dump);
@@ -914,6 +925,11 @@ await step('beat loops: 4 beats from the beat you are on, then 8 keeps the start
   assert(Math.abs(Number(h.a) - beatAt(14)) < 0.03 && Math.abs(Number(h.b) - beatAt(22)) < 0.03, `8 beats, same start (got ${h.a}-${h.b})`);
   const on = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.beat-btn.on')].map((b) => b.textContent));
   assert(JSON.stringify(on) === '["8"]', `8 lit (${on})`);
+  // The zero-gap loop audio starts right on the kick: not early, not late.
+  await waitFor(async () => (await host()).slHead, 8000, 'loop audio ready');
+  const [ms, s0] = (await host()).slHead.split(',').map(Number);
+  // (the kick rises to 0.6 within 1 ms: sample 0 under that = cut within 1 ms of the hit)
+  assert(ms < 1.5 && s0 < 0.6, `loop audio starts on the hit (${ms} ms to the hit, sample 0 = ${s0})`);
   await waitFor(async () => Number((await host()).reps) >= 1, 9000, 'loops');
   const t = (await vstate()).t;
   assert(t >= beatAt(14) - 0.05 && t < beatAt(22) + 0.1, `inside the beat loop (t=${t.toFixed(2)})`);
@@ -987,17 +1003,100 @@ await step('DJ mouse: drag the wave like a record, click = stop / play, double-c
   assert((await host()).mouse === 'classic', 'classic mouse again');
 });
 
-await step('grid tools: ½ and 2× tempo, move the "1"', async () => {
+await step('grid by hand: ½ / 2×, move the "1", "1 here", move the grid by ms, type the tempo, Q on ½ beats, reset; saved per song', async () => {
+  const PLAYER_DELAY = 0.0078;
+  const beatsNow = async () => (await host()).beatList.split(',').map(Number);
+  const bar1 = async () => Number((await host()).bar1);
+  await shadowClick('button', 'Grid');
+  assert(await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.grid-row').hidden), 'Grid row open');
+  // ½ and 2×
   await shadowClick('button', 'Half the tempo (the grid has twice too many beats)');
-  assert(Number((await host()).bpm) === 48, `half: ${(await host()).bpm}`);
+  assert(Math.abs(Number((await host()).bpm) - 48) < 0.1, `half: ${(await host()).bpm}`);
   await shadowClick('button', 'Double the tempo (the grid has half the beats)');
-  assert(Number((await host()).bpm) === 96, 'back to 96');
-  const b0 = Number((await host()).bar1);
+  assert(Math.abs(Number((await host()).bpm) - 96) < 0.1, `back to 96: ${(await host()).bpm}`);
+  // Move the "1" one beat later, four times = back; and one earlier.
+  const b0 = await bar1();
   await shadowClick('button', 'Move the "1" (start of the bar) one beat later');
-  const b1 = Number((await host()).bar1);
-  assert(Math.abs(b1 - b0 - BEAT) < 0.03, `the 1 moved one beat (${b0} -> ${b1})`);
-  for (let i = 0; i < 3; i++) await shadowClick('button', 'Move the "1" (start of the bar) one beat later');
-  assert(Math.abs(Number((await host()).bar1) - b0) < 0.03, 'four moves: back where it was');
+  assert(Math.abs((await bar1()) - b0 - BEAT) < 0.03, `the 1 moved one beat (${b0} -> ${await bar1()})`);
+  await shadowClick('button', 'Move the "1" (start of the bar) one beat earlier');
+  assert(Math.abs((await bar1()) - b0) < 0.001, 'and back');
+  // Move the whole grid by milliseconds.
+  const before = await beatsNow();
+  await shadowClick('button', 'Move the whole grid later (5 ms; Shift-click = 1 ms)');
+  await shadowClick('button', 'Move the whole grid later (5 ms; Shift-click = 1 ms)');
+  let h = await host();
+  assert(h.gridMs === '10', `grid +10 ms (${h.gridMs})`);
+  let after = await beatsNow();
+  assert(Math.abs(after[5] - before[5] - 0.01) < 1e-4, `every beat 10 ms later (${before[5]} -> ${after[5]})`);
+  await shadowClick('button', 'Move the whole grid earlier (5 ms; Shift-click = 1 ms)');
+  await shadowClick('button', 'Move the whole grid earlier (5 ms; Shift-click = 1 ms)');
+  assert((await host()).gridMs === '0', 'back to 0 ms');
+  // "1 here" on beat 9 (a "2"): that beat becomes a "1".
+  const at = async (t) => page.evaluate((x) => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = x; }, t);
+  const t9 = beatAt(9) + PLAYER_DELAY;
+  await at(t9);
+  await sleep(100);
+  const ct = await page.evaluate(() => document.querySelector('#movie_player video').currentTime);
+  await shadowClick('button', 'Set the "1" here: the grid moves so a bar starts right at the playhead (stop on the first kick of a bar, then press)');
+  let bars = ((await bar1()) - ct) / (4 * BEAT);
+  assert(Math.abs(bars - Math.round(bars)) < 0.001, `a bar starts at the playhead (${await bar1()} vs ${ct})`);
+  let bl = await beatsNow();
+  assert(bl.some((x) => Math.abs(x - ct) < 0.0006), 'a beat right on the playhead');
+  // Between two beats: the grid slides so a beat sits right there.
+  await at(beatAt(5) + 0.2);
+  await sleep(100);
+  const ct2 = await page.evaluate(() => document.querySelector('#movie_player video').currentTime);
+  await shadowClick('button', 'Set the "1" here: the grid moves so a bar starts right at the playhead (stop on the first kick of a bar, then press)');
+  bl = await beatsNow();
+  assert(bl.some((x) => Math.abs(x - ct2) < 0.0006), `the grid moved onto the playhead (${ct2})`);
+  const moved = Number((await host()).gridMs);
+  assert(Math.abs(moved - (0.2 - PLAYER_DELAY) * 1000) <= 2, `moved the 192 ms from the beat to the playhead (${moved})`);
+  await shadowClick('button', 'Back to the grid the app found in the song');
+  assert(Math.abs((await bar1()) - b0) < 0.001 && (await host()).gridMs === '0', 'Reset: back to the grid found');
+  // Type the tempo.
+  await page.evaluate(() => {
+    const i = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.bpm-in');
+    i.focus();
+    i.value = '100';
+    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  h = await host();
+  assert(Number(h.bpm) === 100 && h.gridManual === '1', `typed 100 BPM (${h.bpm})`);
+  bl = await beatsNow();
+  assert(Math.abs(bl[11] - bl[10] - 0.6) < 1e-6, 'beats every 0.6 s');
+  await shadowClick('button', 'Back to the grid the app found in the song');
+  assert(Math.abs(Number((await host()).bpm) - 96) < 0.1 && !(await host()).gridManual, 'back to 96');
+  // Q on ½ beats: A lands on an "and".
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  await shadowClick('button.q-btn');
+  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 0.5);
+  assert((await host()).quant === 'on:0.5', `Q on ½ (${(await host()).quant})`);
+  await clickWaveAt(beatAt(7) + 0.25);
+  await clickWaveAt(beatAt(13) + 0.05);
+  h = await host();
+  const near = (x, t) => Math.abs(Number(x) - t - PLAYER_DELAY) < 0.002;
+  assert(near(h.a, beatAt(7) + BEAT / 2) && near(h.b, beatAt(13)), `A on the "and" of beat 7, B on beat 13 (${h.a}-${h.b})`);
+  await page.screenshot({ path: path.join(SHOTS, '12-grid.png') });
+  await shadowClick('button', 'Move end later (Shift = fine, Alt = big)');
+  assert(near((await host()).b, beatAt(13) + BEAT / 2), `› moves B half a beat (${(await host()).b})`);
+  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 4);
+  h = await host();
+  bars = (Number(h.a) - (await bar1())) / (4 * BEAT);
+  assert(Math.abs(bars - Math.round(bars)) < 0.002, `Q on bars: A on a "1" (${h.a})`);
+  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 1);
+  await shadowClick('button.q-btn');
+  await shadowClick('button', 'Clear the loop');
+  // Saved for this song.
+  await shadowClick('button', 'Move the whole grid later (5 ms; Shift-click = 1 ms)');
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'other video');
+  assert((await host()).gridMs === '0', 'the other song has its own grid');
+  await page.evaluate(() => window.__navigate('DRUM0001'));
+  await waitFor(async () => (await host()).vid === 'DRUM0001' && (await host()).bpm, 20000, 'drums again');
+  assert((await host()).gridMs === '5', `+5 ms remembered (${(await host()).gridMs})`);
+  await shadowClick('button', 'Back to the grid the app found in the song');
+  await shadowClick('button', 'Grid');
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
   await page.evaluate(() => window.__navigate('VIDAAAA1'));
   await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
 });

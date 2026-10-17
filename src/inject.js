@@ -405,7 +405,10 @@
 
   /**
    * channels: Float32Array[]; sr: sample rate; start: seconds of sample 0.
-   * Returns { startBin, peak, low, mid, high } (Uint8Arrays).
+   * Returns { startBin, peak, low, mid, high, att, atv } (Uint8Arrays).
+   * att / atv: the sharpest attack inside each bin, found in 1 ms frames, so
+   * beats can be placed far finer than one 20 ms bin. att = 1 + its position
+   * in the bin in 0.1 ms (0 = none), atv = how sharp it is.
    */
   function computePeaks(channels, sr, start) {
     const n = channels[0].length;
@@ -419,6 +422,8 @@
     const low = new Uint8Array(count);
     const mid = new Uint8Array(count);
     const high = new Uint8Array(count);
+    const att = new Uint8Array(count);
+    const atv = new Uint8Array(count);
     const lp = biquad('lp', 250, sr);
     const hp = biquad('hp', 2500, sr);
     let lx1 = 0, lx2 = 0, ly1 = 0, ly2 = 0;
@@ -427,6 +432,13 @@
     let bin = 0;
     let binEnd = Math.min(n, Math.round(((firstBin + 1) / BIN_RATE - start) * sr));
     let pk = 0, sl = 0, sm = 0, sh = 0, cnt = 0;
+    // Attacks: a fast envelope of everything above the bass (clicks, snares,
+    // hats) and a slower one of the bass (808s, kicks), compared frame by frame.
+    const fs = Math.max(1, Math.round(sr / 1000));
+    const relHi = Math.exp(-1 / (0.008 * sr));
+    const relLo = Math.exp(-1 / (0.04 * sr));
+    const warm = 3 * fs; // filters start cold: no attacks in the first 3 ms
+    let eHi = 0, eLo = 0, pHi = 0, pLo = 0;
     const flush = () => {
       if (cnt > 0 && bin < count) {
         peak[bin] = Math.min(255, Math.round(pk * 255));
@@ -458,13 +470,31 @@
       hx2 = hx1; hx1 = x; hy2 = hy1; hy1 = yh;
       const ym = x - yl - yh;
       if (a > pk) pk = a;
+      const ah = x - yl < 0 ? yl - x : x - yl;
+      eHi = ah > eHi ? ah : eHi * relHi;
+      const al = yl < 0 ? -yl : yl;
+      eLo = al > eLo ? al : eLo * relLo;
+      if ((i + 1) % fs === 0) {
+        if (i >= warm) {
+          const o = Math.max(0, Math.log((eHi + 2e-3) / (pHi + 2e-3))) + Math.max(0, Math.log((eLo + 2e-3) / (pLo + 2e-3)));
+          const tMid = start + (i + 1 - fs / 2) / sr;
+          const b = Math.floor(tMid * BIN_RATE) - firstBin;
+          const v = Math.min(255, Math.round(o * 40));
+          if (b >= 0 && b < count && v > atv[b]) {
+            atv[b] = v;
+            att[b] = 1 + Math.min(199, Math.max(0, Math.round((tMid * BIN_RATE - (b + firstBin)) * 200)));
+          }
+        }
+        pHi = eHi;
+        pLo = eLo;
+      }
       sl += yl * yl;
       sm += ym * ym;
       sh += yh * yh;
       cnt++;
     }
     flush();
-    return { startBin: firstBin, peak, low, mid, high };
+    return { startBin: firstBin, peak, low, mid, high, att, atv };
   }
 
   // Test hook (only used by the Node unit tests, never set on YouTube).
@@ -833,6 +863,8 @@
       low: res.low,
       mid: res.mid,
       high: res.high,
+      att: res.att,
+      atv: res.atv,
     });
   }
 

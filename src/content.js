@@ -103,6 +103,7 @@
     tapVideo: true, // touch screens: a tap on the video pauses / plays
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
+    qRes: 1, // what Q snaps to, in beats: 1, 0.5, 0.25, or 4 (the start of a bar)
     seamless: !IS_IOS, // loops play from memory: no gap at all between B and A
     mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
     waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
@@ -118,10 +119,11 @@
   // ---------------------------------------------------------------------------
   const S = {
     gridBase: null, // beats found in this video's wave: { vid, g, hits }
-    grid: null, // the beat grid in use (after ½ / 2× / move-the-1)
-    gridAdj: { scale: 1, shift: 0 },
+    grid: null, // the beat grid in use (after the fixes by hand below)
+    gridAdj: gridAdjDefault(), // fixes by hand: ½ / 2×, move the 1, ms shift, typed tempo
     cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
+    gridCov: 0, // how much of the song had been read when the grid was found
     vid: null,
     mainVid: null,
     video: null,
@@ -280,7 +282,7 @@
       if (S.orphan.list.length < 400) S.orphan.list.push(m);
       return;
     }
-    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high);
+    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
     S.dirty = true;
     saveWaveSoon();
   }
@@ -328,14 +330,15 @@
       applyRate();
     }
     if (S.orphan && S.orphan.vid === vid) {
-      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high);
+      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
     }
     S.orphan = null;
     resetLyrics();
     S.gridBase = null;
     S.grid = null;
-    S.gridAdj = { scale: 1, shift: 0 };
+    S.gridAdj = gridAdjDefault();
     S.gridTried = 0;
+    S.gridCov = 0;
     S.cues = [null, null, null, null];
     S.dirty = true;
     renderUI();
@@ -359,7 +362,14 @@
       const num = Number.isFinite;
       if (Array.isArray(st.cues)) S.cues = [0, 1, 2, 3].map((i) => (Number.isFinite(st.cues[i]) ? st.cues[i] : null));
       if (st.gridAdj && [0.5, 1, 2].includes(st.gridAdj.scale)) {
-        S.gridAdj = { scale: st.gridAdj.scale, shift: ((st.gridAdj.shift | 0) % 4 + 4) % 4 };
+        const g = st.gridAdj;
+        S.gridAdj = {
+          scale: g.scale,
+          shift: ((g.shift | 0) % 4 + 4) % 4,
+          offset: num(g.offset) && Math.abs(g.offset) < 2 ? g.offset : 0,
+          bpm: num(g.bpm) && g.bpm >= 20 && g.bpm <= 400 ? g.bpm : null,
+          anchor: num(g.anchor) && g.anchor >= 0 ? g.anchor : null,
+        };
         applyGridAdj();
       }
       if (Array.isArray(st.saved)) S.saved = st.saved.filter((x) => x && num(x.a) && num(x.b) && x.b > x.a).slice(0, 30);
@@ -389,7 +399,7 @@
     clearTimeout(videoStateTimer);
     if (!S.vid) return;
     const hasLoop = S.a != null && S.b != null;
-    if (!hasLoop && !S.saved.length && !S.rateOwned && S.gridAdj.scale === 1 && !S.gridAdj.shift && !S.cues.some((c) => c != null)) {
+    if (!hasLoop && !S.saved.length && !S.rateOwned && gridAdjIsDefault(S.gridAdj) && !S.cues.some((c) => c != null)) {
       storage.remove('ytl:v:' + S.vid);
       return;
     }
@@ -401,7 +411,7 @@
         rate: S.rate,
         rateOwned: S.rateOwned,
         saved: S.saved,
-        gridAdj: S.gridAdj.scale !== 1 || S.gridAdj.shift ? S.gridAdj : undefined,
+        gridAdj: gridAdjIsDefault(S.gridAdj) ? undefined : S.gridAdj,
         cues: S.cues.some((c) => c != null) ? S.cues : undefined,
         t: Date.now(),
       },
@@ -668,6 +678,7 @@
         SL.reqKey = key;
         SL.reqAt = now();
         SL.reqId++;
+        SL.headInfo = '';
         postToPage({ type: 'loopAudio', id: SL.reqId, vid: S.vid, a: r.a, b: r.b, sr: HQ.ctx.sampleRate });
       } else if (SL.reqKey === key && now() - SL.reqAt > 5000) SL.reqKey = ''; // no answer: ask again
       return;
@@ -696,6 +707,13 @@
       buf.copyToChannel(m.ch1 instanceof Float32Array ? m.ch1 : m.ch0, 1);
       SL.buf = buf;
       SL.bufKey = key;
+      if (document.documentElement.dataset.ytlDebug === '1') {
+        // Debug: where the loop's sound really starts (ms to the first clear
+        // sample, and how loud sample 0 is), to check it is cut on the beat.
+        let i = 0;
+        while (i < m.ch0.length && Math.abs(m.ch0[i]) < 0.1) i++;
+        SL.headInfo = `${((i / m.sr) * 1000).toFixed(2)},${Math.abs(m.ch0[0]).toFixed(3)}`;
+      }
     } catch (e) {
       SL.failKey = key;
       SL.failAt = now();
@@ -1255,11 +1273,24 @@
   // ---------------------------------------------------------------------------
   const BEAT_LOOPS = [1, 2, 4, 8, 16];
 
-  // Works out the beats once the whole wave has been read.
+  function gridAdjDefault() {
+    return { scale: 1, shift: 0, offset: 0, bpm: null, anchor: null };
+  }
+
+  function gridAdjIsDefault(a) {
+    return a.scale === 1 && !a.shift && !a.offset && !a.bpm;
+  }
+
+  // Works out the beats once the whole wave has been read, and again when
+  // more of it has been read since (the last 10%, or exact attack times
+  // from playing it).
   function maybeComputeGrid() {
     const d = dur();
-    if (!S.vid || !d || (S.gridBase && S.gridBase.vid === S.vid) || S.scan) return;
-    if (S.peaks.coverage(d) < 0.9 || now() - S.gridTried < 3000) return;
+    if (!S.vid || !d || S.scan) return;
+    const cov = S.peaks.coverage(d);
+    const have = S.gridBase && S.gridBase.vid === S.vid;
+    if (have && !(cov >= S.gridCov + 0.04 || (cov > 0.995 && S.gridCov <= 0.995))) return;
+    if (cov < 0.9 || now() - S.gridTried < (have ? 5000 : 3000)) return;
     S.gridTried = now();
     let g = null;
     let hits = [];
@@ -1269,6 +1300,8 @@
     } catch (e) {
       g = null;
     }
+    S.gridCov = cov;
+    if (have && !g && S.gridBase.g) return; // keep what was found
     S.gridBase = { vid: S.vid, g, hits };
     applyGridAdj();
     if (settings.quantize && hasLoop() && S.pendingA == null && S.grid) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
@@ -1277,16 +1310,34 @@
     renderUI();
   }
 
-  // ½ / 2× tempo and "move the 1" on top of what was found.
+  // The grid in use: what was found, with the fixes made by hand on top:
+  // ½ / 2× tempo, move the "1", shift by milliseconds, or a typed tempo.
   function applyGridAdj() {
-    const base = S.gridBase && S.gridBase.g;
+    const base = S.gridBase && S.gridBase.vid === S.vid ? S.gridBase.g : null;
+    const A = S.gridAdj;
+    if (A.bpm) {
+      // Typed tempo: a straight grid through the anchor (a "1").
+      const p = 60 / A.bpm;
+      const d = dur() || (base ? base.beats[base.beats.length - 1] + 1 : 0);
+      const anchor = A.anchor != null ? A.anchor : 0;
+      const k0 = Math.ceil((0 - anchor) / p - 1e-9);
+      const k1 = Math.floor((d - anchor) / p + 1e-9);
+      const beats = [];
+      for (let k = k0; k <= k1; k++) beats.push(anchor + k * p + A.offset);
+      if (beats.length < 2) {
+        S.grid = null;
+        return;
+      }
+      S.grid = { bpm: A.bpm, beats, first: (((-k0 + A.shift) % 4) + 4) % 4, manual: true };
+      return;
+    }
     if (!base) {
       S.grid = null;
       return;
     }
     let beats = base.beats.slice();
     let first = base.first;
-    const sc = S.gridAdj.scale;
+    const sc = A.scale;
     if (sc === 2) {
       const out = [];
       beats.forEach((b, i) => {
@@ -1300,40 +1351,133 @@
       beats = beats.filter((_, i) => i % 2 === start);
       first = (first - start) / 2;
     }
-    first = (first + S.gridAdj.shift) % 4;
-    S.grid = { bpm: Math.round(base.bpm * sc * 10) / 10, beats, first };
+    if (A.offset) beats = beats.map((b) => b + A.offset);
+    first = (first + A.shift) % 4;
+    S.grid = { bpm: Math.round(base.bpm * sc * 100) / 100, beats, first };
   }
 
-  function adjustGrid(kind) {
-    if (!S.gridBase || !S.gridBase.g) return flash(gridMissingText());
-    const a = S.gridAdj;
-    if (kind === 'half') a.scale = a.scale === 2 ? 1 : 0.5;
-    else if (kind === 'double') a.scale = a.scale === 0.5 ? 1 : 2;
-    else if (kind === 'shift') a.shift = (a.shift + 1) % 4;
+  function gridChanged(msg) {
     applyGridAdj();
-    if (settings.quantize && hasLoop() && S.pendingA == null) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
+    if (settings.quantize && hasLoop() && S.pendingA == null && S.grid) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
     S.dirty = true;
     renderUI();
     saveVideoStateSoon();
-    if (kind === 'shift') flash('The "1" moved one beat later.', 2500);
-    else flash(`Tempo: ${S.grid.bpm} BPM.`, 2500);
+    if (msg) flash(msg, 2500);
+  }
+
+  function adjustGrid(kind) {
+    const a = S.gridAdj;
+    if (!S.grid) return flash(gridMissingText());
+    if (kind === 'half' || kind === 'double') {
+      if (a.bpm) a.bpm = Math.round(a.bpm * (kind === 'half' ? 50 : 200)) / 100;
+      else if (kind === 'half') a.scale = a.scale === 2 ? 1 : 0.5;
+      else a.scale = a.scale === 0.5 ? 1 : 2;
+      applyGridAdj();
+      return gridChanged(`Tempo: ${S.grid.bpm} BPM.`);
+    }
+    if (kind === 'shift') {
+      a.shift = (a.shift + 1) % 4;
+      return gridChanged('The "1" moved one beat later.');
+    }
+    if (kind === 'unshift') {
+      a.shift = (a.shift + 3) % 4;
+      return gridChanged('The "1" moved one beat earlier.');
+    }
+  }
+
+  // Move the whole grid a few milliseconds (5 ms; Shift = 1 ms).
+  function gridNudge(dir, e) {
+    if (!S.grid) return flash(gridMissingText());
+    const stepMs = e && e.shiftKey ? 1 : 5;
+    const a = S.gridAdj;
+    a.offset = Math.round((a.offset * 1000 + dir * stepMs)) / 1000;
+    if (Math.abs(a.offset) < 1e-6) a.offset = 0;
+    gridChanged(`Grid ${a.offset >= 0 ? '+' : ''}${Math.round(a.offset * 1000)} ms.`);
+  }
+
+  // "1 here": the bar starts right at the playhead. The whole grid slides so
+  // a beat sits exactly there, and that beat becomes a "1".
+  function gridOneHere() {
+    const v = S.video;
+    if (!v) return;
+    if (!S.grid) return flash('No grid yet: type the tempo (BPM) first, then press "1 here" on the first beat of a bar.', 4000);
+    const t = v.currentTime;
+    const a = S.gridAdj;
+    if (a.bpm) {
+      a.anchor = t;
+      a.offset = 0;
+      a.shift = 0;
+    } else {
+      const B = S.grid.beats;
+      const k = C.nearestBeatIndex(B, t);
+      a.offset = Math.round((a.offset + (t - B[k])) * 10000) / 10000;
+      applyGridAdj();
+      // which "1" the grid has before the shift, then shift so beat k is a 1
+      const f0 = (((S.grid.first - a.shift) % 4) + 4) % 4;
+      a.shift = (((k - f0) % 4) + 4) % 4;
+    }
+    gridChanged('The bar starts here now (this beat is the "1").');
+  }
+
+  // Type the tempo: a straight grid at that tempo, through the "1" nearest
+  // the playhead (or the playhead itself when no beat was found).
+  function gridSetBpm(bpm) {
+    if (!(bpm >= 20 && bpm <= 400)) return flash('Type a tempo between 20 and 400 BPM.');
+    const a = S.gridAdj;
+    let anchor = S.video ? S.video.currentTime : 0;
+    if (S.grid) {
+      const G = S.grid;
+      const k = C.nearestBeatIndex(G.beats, anchor);
+      const pos = (((k - G.first) % 4) + 4) % 4;
+      const k1 = pos < 2 ? k - pos : k + 4 - pos;
+      anchor = C.beatTime(G.beats, k1);
+      if (anchor < 0) anchor = C.beatTime(G.beats, k1 + 4);
+    }
+    S.gridAdj = { scale: 1, shift: 0, offset: 0, bpm: Math.round(bpm * 100) / 100, anchor: Math.max(0, anchor) };
+    gridChanged(`Tempo: ${S.gridAdj.bpm} BPM.`);
+  }
+
+  function gridReset() {
+    S.gridAdj = gridAdjDefault();
+    gridChanged(S.gridBase && S.gridBase.g ? 'Back to the grid found in the song.' : 'Grid cleared.');
   }
 
   function gridMissingText() {
     if (!dur() || S.peaks.coverage(dur()) < 0.9) return 'Reading the beats… (the whole song needs to be read first)';
-    return 'No steady beat found in this song.';
+    return 'No steady beat found in this song. Open Grid to type the tempo.';
+  }
+
+  // Position on the grid as a beat number (fractional; the grid goes on at
+  // the same tempo before the first and after the last beat), and back.
+  function gridX(t) {
+    const B = S.grid.beats;
+    const L = B.length - 1;
+    if (t <= B[0]) return (t - B[0]) / (C.beatTime(B, Math.min(8, L)) - B[0]) * Math.min(8, L);
+    if (t >= B[L]) return L + ((t - B[L]) / (B[L] - C.beatTime(B, L - Math.min(8, L)))) * Math.min(8, L);
+    let k = C.nearestBeatIndex(B, t);
+    if (B[k] > t) k--;
+    return k + (t - B[k]) / (B[k + 1] - B[k]);
+  }
+
+  function gridT(x) {
+    const B = S.grid.beats;
+    const k = Math.floor(x);
+    const t0 = C.beatTime(B, k);
+    return t0 + (x - k) * (C.beatTime(B, k + 1) - t0);
+  }
+
+  // What Q snaps to: every beat, ½ or ¼ beats, or the start of each bar.
+  function qStep() {
+    const r = settings.qRes;
+    return { step: [0.25, 0.5, 1, 4].includes(r) ? r : 1, base: r === 4 ? S.grid.first : 0 };
   }
 
   // Quantize: a time moved onto the nearest beat (when Q is on).
   function qT(t) {
     if (!settings.quantize || !S.grid || t == null) return t;
-    const B = S.grid.beats;
-    const k = C.nearestBeatIndex(B, t);
-    // Before the first / after the last beat the grid goes on at the same tempo.
-    const per = 60 / S.grid.bpm;
-    if (t < B[0] - per / 2) return Math.max(0, C.beatTime(B, Math.round((t - B[0]) / per)));
-    if (t > B[B.length - 1] + per / 2) return Math.min(dur(), C.beatTime(B, B.length - 1 + Math.round((t - B[B.length - 1]) / per)));
-    return B[k];
+    const { step, base } = qStep();
+    const x = base + Math.round((gridX(t) - base) / step) * step;
+    return Math.max(0, Math.min(dur() || Infinity, gridT(x)));
   }
 
   function toggleQuantize() {
@@ -1342,6 +1486,14 @@
     if (settings.quantize && !S.grid) flash(gridMissingText(), 4000);
     else if (settings.quantize && hasLoop() && S.pendingA == null) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
     else if (settings.quantize && S.pendingA != null) S.pendingA = qT(S.pendingA);
+    S.dirty = true;
+    renderUI();
+  }
+
+  function setQRes(v) {
+    settings.qRes = v;
+    saveSettings();
+    if (settings.quantize && S.grid && hasLoop() && S.pendingA == null) setLoop(qT(S.a), qT(S.b), { noHistory: true, noSeek: true });
     S.dirty = true;
     renderUI();
   }
@@ -1428,11 +1580,12 @@
   function nudge(which, delta) {
     if (!hasLoop()) return;
     if (settings.quantize && S.grid) {
-      // With Q on, ‹ › move by one beat.
-      const B = S.grid.beats;
+      // With Q on, ‹ › move by one step of the grid (a beat, ½, ¼, a bar).
       const cur = which === 'a' ? S.a : S.b;
-      const i = C.nearestBeatIndex(B, cur) + (delta > 0 ? 1 : -1);
-      delta = C.beatTime(B, i) - cur;
+      const { step, base } = qStep();
+      const k = (gridX(cur) - base) / step;
+      const target = delta > 0 ? Math.floor(k + 1e-4) + 1 : Math.ceil(k - 1e-4) - 1;
+      delta = Math.max(0, gridT(base + target * step)) - cur;
     }
     const a = which === 'a' ? S.a + delta : S.a;
     const b = which === 'b' ? S.b + delta : S.b;
@@ -2835,43 +2988,89 @@
 
   // Beats: Q (quantize), DJ beat loops, tempo and the drum view.
   function buildBeatGroup() {
-    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on a beat (1 2 3 4). ‹ › move by one beat.', toggleQuantize, 'q-btn');
+    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on the beat grid (1 2 3 4). ‹ › move by one step. Open Grid to snap to ½ / ¼ beats or bars.', toggleQuantize, 'q-btn');
     ui.beatBtns = BEAT_LOOPS.map((n) => {
       const b = btn(String(n), `Loop ${n} beat${n > 1 ? 's' : ''} from the beat you are on`, () => beatLoop(n), 'beat-btn');
       b.dataset.n = String(n);
       return b;
     });
-    ui.bpm = h('span', { class: 'bpm', title: 'Tempo found in the song (beats per minute)', text: '— BPM' });
+    ui.bpm = h('button', { class: 'bpm', title: 'Tempo found in the song (beats per minute). Click to fix the grid by hand.', text: '— BPM' });
+    ui.bpm.addEventListener('click', () => toggleSub('grid'));
     ui.cueBtns = [0, 1, 2, 3].map((i) => {
       const b = btn(`C${i + 1}`, `Hot cue ${i + 1}: click to mark this spot (on the beat with Q), click again to jump here. Shift-click or right-click clears it.`, (e) => cueTap(i, e), 'cue-btn');
       b.style.setProperty('--cue', CUE_COLORS[i]);
       b.addEventListener('contextmenu', (e) => cueTap(i, e));
       return b;
     });
+    ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
     ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       ui.qBtn,
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
       h('span', { class: 'cues' }, ...ui.cueBtns),
+      ui.gridBtn,
+      ui.drumBtn);
+  }
+
+  // The Grid row: everything to fix the beat grid by hand.
+  function buildGridRow() {
+    ui.bpmIn = h('input', { type: 'number', class: 'bpm-in', min: '20', max: '400', step: '0.01', title: 'Tempo (BPM): type the right tempo and press Enter', 'aria-label': 'Tempo (BPM)' });
+    ui.bpmIn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        gridSetBpm(Number(ui.bpmIn.value));
+        ui.bpmIn.blur();
+      } else if (e.key === 'Escape') ui.bpmIn.blur();
+    });
+    ui.bpmIn.addEventListener('change', () => {
+      if (document.activeElement !== ui.bpmIn && shadow.activeElement !== ui.bpmIn) return;
+      gridSetBpm(Number(ui.bpmIn.value));
+    });
+    ui.gridMs = h('span', { class: 'grid-ms', title: 'How far the grid is moved by hand' });
+    ui.qResSel = select([1, 0.5, 0.25, 4], (v) => ({ 1: 'beat', 0.5: '½ beat', 0.25: '¼ beat', 4: 'bar' })[v], settings.qRes, setQRes,
+      'Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar');
+    ui.gridReset = btn('Reset', 'Back to the grid the app found in the song', gridReset, 'grid-btn');
+    return h('div', { class: 'row sub grid-row', hidden: true },
+      h('span', { class: 'label', text: 'Tempo' }), ui.bpmIn, h('span', { class: 'label', text: 'BPM' }),
       btn('½', 'Half the tempo (the grid has twice too many beats)', () => adjustGrid('half'), 'grid-btn'),
       btn('2×', 'Double the tempo (the grid has half the beats)', () => adjustGrid('double'), 'grid-btn'),
+      h('span', { class: 'sep' }),
+      h('span', { class: 'label', text: 'The "1"' }),
+      btn('◂1', 'Move the "1" (start of the bar) one beat earlier', () => adjustGrid('unshift'), 'grid-btn'),
       btn('1▸', 'Move the "1" (start of the bar) one beat later', () => adjustGrid('shift'), 'grid-btn'),
-      ui.drumBtn);
+      btn('1 here', 'Set the "1" here: the grid moves so a bar starts right at the playhead (stop on the first kick of a bar, then press)', gridOneHere, 'grid-btn one-here'),
+      h('span', { class: 'sep' }),
+      h('span', { class: 'label', text: 'Move grid' }),
+      btn('◂', 'Move the whole grid earlier (5 ms; Shift-click = 1 ms)', (e) => gridNudge(-1, e), 'grid-btn'),
+      ui.gridMs,
+      btn('▸', 'Move the whole grid later (5 ms; Shift-click = 1 ms)', (e) => gridNudge(1, e), 'grid-btn'),
+      h('span', { class: 'sep' }),
+      h('span', { class: 'label', text: 'Q snaps to' }), ui.qResSel,
+      ui.gridReset);
   }
 
   function renderBeats() {
     if (!ui.qBtn) return;
     const G = S.grid;
     ui.qBtn.classList.toggle('on', !!settings.quantize);
+    ui.qBtn.textContent = settings.quantize && settings.qRes !== 1 ? `Q ${({ 0.5: '½', 0.25: '¼', 4: 'bar' })[settings.qRes] || ''}` : 'Q';
     ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
     ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
-    ui.bpm.title = G ? 'Tempo found in the song (beats per minute)' : gridMissingText();
+    ui.bpm.title = (G ? `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.` : gridMissingText()) + ' Click to fix the grid by hand.';
+    ui.bpm.classList.toggle('manual', !gridAdjIsDefault(S.gridAdj));
     ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
     for (const b of ui.beatBtns) {
       b.classList.toggle('on', !!n && S.loopOn && Number(b.dataset.n) === n);
       b.disabled = !G;
+    }
+    ui.gridBtn.classList.toggle('on', !ui.gridRow.hidden);
+    if (!ui.gridRow.hidden) {
+      if (shadow.activeElement !== ui.bpmIn) ui.bpmIn.value = G ? String(G.bpm) : '';
+      const ms = Math.round(S.gridAdj.offset * 1000);
+      ui.gridMs.textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
+      ui.qResSel.value = String(settings.qRes);
+      ui.gridReset.disabled = gridAdjIsDefault(S.gridAdj);
     }
   }
 
@@ -3051,7 +3250,8 @@
       h('div', { class: 'group' }, ui.loopBtn, ui.undoBtn, ui.clearBtn),
       h('div', { class: 'group' }, ui.aMark, ui.bMark),
       buildBeatGroup());
-    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, transport, ui.stage, status, ui.help);
+    ui.gridRow = buildGridRow();
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.gridRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
     setupResize(resize);
@@ -3085,7 +3285,7 @@
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
           h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
-          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats.'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms, and choose what Q snaps to (beat, ½, ¼, bar).'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
@@ -3108,7 +3308,7 @@
   }
 
   function toggleSub(which) {
-    const row = which === 'trainer' ? ui.trainerRow : ui.settingsRow;
+    const row = which === 'trainer' ? ui.trainerRow : which === 'grid' ? ui.gridRow : ui.settingsRow;
     row.hidden = !row.hidden;
     if (settings.collapsed && !row.hidden) toggleCollapse();
     applyLayout();
@@ -3521,8 +3721,14 @@
       document.documentElement.dataset.ytlPeaks = JSON.stringify({ n: P.n, peak: Array.from(P.peak.subarray(0, P.n)), low: Array.from(P.low.subarray(0, P.n)), mid: Array.from(P.mid.subarray(0, P.n)), high: Array.from(P.high.subarray(0, P.n)), cov: Array.from(P.cov.subarray(0, P.n)) });
     }
     d.beats = S.grid ? String(S.grid.beats.length) : '';
+    if (document.documentElement.dataset.ytlDebug === '1') {
+      d.beatList = S.grid ? S.grid.beats.map((x) => x.toFixed(4)).join(',') : '';
+      d.slHead = SL.headInfo || '';
+    }
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
-    d.quant = settings.quantize ? 'on' : '';
+    d.quant = settings.quantize ? (settings.qRes === 1 ? 'on' : `on:${settings.qRes}`) : '';
+    d.gridMs = String(Math.round(S.gridAdj.offset * 1000));
+    d.gridManual = S.grid && S.grid.manual ? '1' : '';
     d.seamless = SL.active ? 'on' : SL.bufKey ? 'ready' : SL.reqKey ? 'loading' : '';
     if (document.documentElement.dataset.ytlDebug === '1') d.slMinRms = SL.analyser ? `${SL.minRms.toFixed(3)}@${(SL.minAt || 0).toFixed(3)}` : '';
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
@@ -3932,6 +4138,7 @@
     const pxBeat = ((60 / G.bpm) / (e - s)) * g.w;
     if (pxBeat < 2.5) return;
     const B = G.beats;
+    const sub = settings.quantize && settings.qRes < 1 && pxBeat * settings.qRes >= 8 ? settings.qRes : 0;
     ctx.font = '600 10.5px Roboto, system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -3954,6 +4161,11 @@
           ctx.fillStyle = 'rgba(255,255,255,0.38)';
           ctx.fillText(String(pos + 1), x + 3, top + 3);
         }
+      }
+      // Q on ½ or ¼ beats: small ticks where A and B can land between beats.
+      if (sub && i + 1 < B.length) {
+        ctx.fillStyle = 'rgba(255,184,77,0.35)';
+        for (let j = 1; j * sub < 1 - 1e-6; j++) ctx.fillRect(Math.round(xAt(B[i] + j * sub * (B[i + 1] - B[i]), g)), top, 1, 7);
       }
     }
   }

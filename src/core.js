@@ -85,6 +85,8 @@
       this.low = new Uint8Array(0);
       this.mid = new Uint8Array(0);
       this.high = new Uint8Array(0);
+      this.att = new Uint8Array(0); // sharpest attack in the bin: 1 + position in 0.1 ms (0 = none)
+      this.atv = new Uint8Array(0); // ... and how sharp it is
       this.cov = new Uint8Array(0);
       this.version = 0;
       this.maxPeak = 0;
@@ -96,7 +98,7 @@
         return;
       }
       const cap = Math.max(n, Math.ceil(this.peak.length * 1.5), 1024);
-      for (const k of ['peak', 'low', 'mid', 'high', 'cov']) {
+      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'cov']) {
         const a = new Uint8Array(cap);
         a.set(this[k]);
         this[k] = a;
@@ -109,7 +111,7 @@
     }
 
     /** Merge a chunk of bins (max-merge, so repeated chunks are harmless). */
-    add(startBin, peak, low, mid, high) {
+    add(startBin, peak, low, mid, high, att, atv) {
       if (!peak || !peak.length || startBin < 0) return;
       const end = startBin + peak.length;
       this.ensure(end);
@@ -119,6 +121,10 @@
         if (low && low[i] > this.low[j]) this.low[j] = low[i];
         if (mid && mid[i] > this.mid[j]) this.mid[j] = mid[i];
         if (high && high[i] > this.high[j]) this.high[j] = high[i];
+        if (att && atv && att[i] && atv[i] > this.atv[j]) {
+          this.atv[j] = atv[i];
+          this.att[j] = att[i];
+        }
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
       }
@@ -155,6 +161,10 @@
         if (other.low[j] > this.low[j]) this.low[j] = other.low[j];
         if (other.mid[j] > this.mid[j]) this.mid[j] = other.mid[j];
         if (other.high[j] > this.high[j]) this.high[j] = other.high[j];
+        if (other.att[j] && other.atv[j] > this.atv[j]) {
+          this.atv[j] = other.atv[j];
+          this.att[j] = other.att[j];
+        }
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
       }
@@ -205,12 +215,14 @@
 
     serialize() {
       const n = this.n;
-      const out = new Uint8Array(n * 5);
+      const out = new Uint8Array(n * 7);
       out.set(this.peak.subarray(0, n), 0);
       out.set(this.low.subarray(0, n), n);
       out.set(this.mid.subarray(0, n), 2 * n);
       out.set(this.high.subarray(0, n), 3 * n);
       out.set(this.cov.subarray(0, n), 4 * n);
+      out.set(this.att.subarray(0, n), 5 * n);
+      out.set(this.atv.subarray(0, n), 6 * n);
       return { binRate: this.binRate, n, data: bytesToBase64(out) };
     }
 
@@ -218,13 +230,17 @@
       const s = new PeakStore(obj.binRate || 50);
       const n = obj.n | 0;
       const raw = base64ToBytes(obj.data || '');
-      if (raw.length !== n * 5) return s;
+      if (raw.length !== n * 5 && raw.length !== n * 7) return s; // 5: saved before attacks were kept
       s.ensure(n);
       s.peak.set(raw.subarray(0, n));
       s.low.set(raw.subarray(n, 2 * n));
       s.mid.set(raw.subarray(2 * n, 3 * n));
       s.high.set(raw.subarray(3 * n, 4 * n));
       s.cov.set(raw.subarray(4 * n, 5 * n));
+      if (raw.length === n * 7) {
+        s.att.set(raw.subarray(5 * n, 6 * n));
+        s.atv.set(raw.subarray(6 * n, 7 * n));
+      }
       for (let i = 0; i < n; i++) if (s.peak[i] > s.maxPeak) s.maxPeak = s.peak[i];
       s.version++;
       return s;
@@ -1042,20 +1058,29 @@
     const n = e.length;
     const lo = Math.floor((60 * binRate) / maxBpm);
     const hi = Math.ceil((60 * binRate) / minBpm);
-    const ac = new Float32Array(hi + 2);
-    for (let L = lo - 1; L <= hi + 1; L++) {
+    const top = Math.min(n - 1, 4 * hi + 4);
+    const ac = new Float32Array(top + 2);
+    for (let L = Math.max(1, lo - 1); L <= top + 1 && L < n; L++) {
       let s = 0;
       for (let i = L; i < n; i++) s += e[i] * e[i - L];
       ac[L] = s / (n - L);
     }
-    // Prefer common tempos (around 120 BPM), as people tap along.
+    const acAt = (x) => {
+      const k = Math.floor(x);
+      const f = x - k;
+      return k + 1 < ac.length ? ac[k] * (1 - f) + ac[k + 1] * f : 0;
+    };
+    // A beat that is right repeats at 2 and 4 beats too (half bar, bar):
+    // this tells 140 from 93 (3 hi-hats) and 76 from 101 (a reggae skank).
+    // Then prefer common tempos (around 120 BPM), as people tap along.
     let best = -1;
     let bestScore = -Infinity;
     for (let L = lo; L <= hi; L++) {
+      if (!(ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1])) continue;
       const bpm = (60 * binRate) / L;
       const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
-      const sc = ac[L] * w;
-      if (sc > bestScore && ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1]) {
+      const sc = (ac[L] + 0.5 * acAt(2 * L) + 0.25 * acAt(4 * L)) * w;
+      if (sc > bestScore) {
         bestScore = sc;
         best = L;
       }
@@ -1126,9 +1151,69 @@
   }
 
   /**
+   * Exact attack time near t (seconds) from the attack data, or null: the
+   * sharpest attack within ±win, weighted by how close it is and by how
+   * hard the drums hit in that bin.
+   */
+  function attackNear(P, t, win, weight) {
+    if (!P.att) return null;
+    const br = P.binRate;
+    let best = null;
+    let bv = 0;
+    for (let b = Math.max(0, Math.floor((t - win) * br)); b <= Math.min(P.n - 1, Math.floor((t + win) * br)); b++) {
+      if (!P.att[b]) continue;
+      const at = (b + (P.att[b] - 0.5) / 200) / br;
+      const d = (at - t) / (win * 0.6);
+      if (Math.abs(at - t) > win) continue;
+      const v = P.atv[b] * Math.exp(-0.5 * d * d) * (weight ? 0.25 + weight(b) : 1);
+      if (v > bv) {
+        bv = v;
+        best = at;
+      }
+    }
+    return best;
+  }
+
+  /** Robust straight line t = a + p*k through (k, t): { a, p, w: weights }. */
+  function robustLine(K, T, scale, iters = 6, W0) {
+    const n = K.length;
+    const w = Float64Array.from(W0 || new Array(n).fill(1));
+    let a = 0;
+    let p = 0;
+    for (let it = 0; it < iters; it++) {
+      let sw = 0, sk = 0, st = 0, skk = 0, skt = 0;
+      for (let i = 0; i < n; i++) {
+        const wi = w[i] * (W0 ? W0[i] : 1);
+        sw += wi; sk += wi * K[i]; st += wi * T[i]; skk += wi * K[i] * K[i]; skt += wi * K[i] * T[i];
+      }
+      const den = sw * skk - sk * sk;
+      if (!(sw > 0) || Math.abs(den) < 1e-12) break;
+      p = (sw * skt - sk * st) / den;
+      a = (st - p * sk) / sw;
+      // Tukey's biweight: beats far off the line (a fill, a pause) stop counting.
+      for (let i = 0; i < n; i++) {
+        const r = (T[i] - a - p * K[i]) / scale;
+        w[i] = Math.abs(r) < 1 ? Math.pow(1 - r * r, 2) : 0;
+      }
+    }
+    return { a, p, w };
+  }
+
+  /**
    * The whole beat grid for a song: { bpm, beats: [seconds], first: index of
-   * the first bar's "1", confidence } or null when there is no steady beat
-   * (e.g. a cappella).
+   * the first bar's "1", confidence, steady } or null when there is no steady
+   * beat (e.g. a cappella).
+   *
+   * 1. Tempo from the drum envelope, beats by dynamic programming.
+   * 2. Each beat moved onto the exact attack of the drum hit (0.1 ms).
+   * 3. Most songs are played to a click: then one straight line through all
+   *    the attacks is the grid (exact tempo, no jitter, a fill or a quiet
+   *    part can't pull it). A live drummer who speeds up gets a grid that
+   *    follows him, smoothed over a few bars.
+   * 4. On the beat, not between: kick and snare land on the beat, hi-hats and
+   *    off-beat chords (house, reggae) do not.
+   * 5. Bar "1": kick on 1 and 3, snare on 2 and 4; the 1 is where the music
+   *    starts, where new parts come in, where the bass and chords change.
    */
   function beatGrid(P, durationSec) {
     const br = P.binRate;
@@ -1148,37 +1233,183 @@
     while (lastSound > 0 && !(P.cov[lastSound] && P.peak[lastSound] > P.maxPeak * 0.08)) lastSound--;
     bins = bins.filter((b) => b >= firstSound - tempo.period * 0.25 && b <= lastSound + tempo.period * 0.25);
     if (bins.length < 8) return null;
-    // Bar "1": kick on 1 and 3, snare on 2 and 4 (4/4); ties go to the first
-    // beat of the music being a "1".
-    const near = (a, b) => {
+
+    const near = (a, t) => {
       let m = 0;
-      const k = Math.round(b);
+      const k = Math.round(t * br);
       for (let j = Math.max(0, k - 1); j <= Math.min(a.length - 1, k + 1); j++) if (a[j] > m) m = a[j];
       return m;
     };
-    const K = bins.map((b) => near(f.kick, b));
-    const S = bins.map((b) => near(f.snare, b));
-    const meanK = K.reduce((s, v) => s + v, 0) / K.length || 1;
-    let first = 0;
-    let bestSc = -Infinity;
-    for (let ph = 0; ph < 4; ph++) {
-      let sc = 0;
-      bins.forEach((_, i) => {
-        const pos = (((i - ph) % 4) + 4) % 4;
-        if (pos === 0) sc += K[i] * 1.15;
-        else if (pos === 2) sc += K[i];
-        else sc += S[i] * 0.9;
-      });
-      if (ph === 0) sc += meanK * 2; // the music usually starts on a "1"
-      if (sc > bestSc) {
-        bestSc = sc;
-        first = ph;
+    // How hard kick + snare hit in a bin (0..~1), to prefer drum attacks.
+    const ks = new Float32Array(n);
+    {
+      let mx = 1e-9;
+      for (let i = 0; i < n; i++) {
+        ks[i] = f.kick[i] + f.snare[i];
+        if (ks[i] > mx) mx = ks[i];
+      }
+      for (let i = 0; i < n; i++) ks[i] /= mx;
+    }
+    const drumW = (b) => Math.max(ks[b], ks[b + 1] || 0);
+    const hasAtt = P.att && P.att.some((v) => v > 0);
+
+    // 2. Exact attacks.
+    const per0 = tempo.period / br;
+    const raw = bins.map((b) => b / br);
+    const T = raw.map((t) => (hasAtt ? attackNear(P, t, Math.min(0.045, per0 * 0.2), drumW) : null) ?? t);
+    // Strength of each beat (for the fit): drums near it.
+    const strength = raw.map((t) => 0.2 + near(env, t));
+
+    // 3. One straight line? Number the beats by the tempo (a missed or extra
+    //    beat from the tracker does not shift the count), fit, number again.
+    let per = per0;
+    let K = T.map((t) => Math.round((t - T[0]) / per));
+    let fit = robustLine(K, T, 0.03, 6, strength);
+    for (let it = 0; it < 2; it++) {
+      per = fit.p;
+      K = T.map((t) => Math.round((t - fit.a) / per));
+      fit = robustLine(K, T, 0.02, 6, strength);
+    }
+    per = fit.p;
+    // Is it steady? The beats must stay on the line all through the song.
+    const res = T.map((t, i) => t - fit.a - per * K[i]);
+    const used = res.map((r, i) => (fit.w[i] > 0 ? Math.abs(r) : null)).filter((x) => x != null).sort((x, y) => x - y);
+    const medRes = used.length ? used[used.length >> 1] : 1;
+    let drift = 0;
+    for (let i = 0; i < res.length; i++) {
+      // median residual over the next 16 beats: a long stretch off the line
+      const win = [];
+      for (let j = i; j < Math.min(res.length, i + 16); j++) if (fit.w[j] > 0) win.push(res[j]);
+      if (win.length >= 8) {
+        win.sort((x, y) => x - y);
+        drift = Math.max(drift, Math.abs(win[win.length >> 1]));
       }
     }
-    const beats = bins.map((b) => b / br);
+    const steady = used.length >= Math.max(8, T.length * 0.5) && medRes < 0.012 && drift < 0.015;
+
+    let beats;
+    if (steady) {
+      const k0 = Math.ceil((firstSound / br - per * 0.25 - fit.a) / per);
+      const k1 = Math.floor((lastSound / br + per * 0.25 - fit.a) / per);
+      beats = [];
+      for (let k = k0; k <= k1; k++) beats.push(fit.a + per * k);
+    } else {
+      // Follow the drummer: number the beats one by one (the tempo moves, so
+      // one line can't number them), then a robust line through the beats
+      // around each one. A beat the tracker put on a fill gets its place
+      // back from its neighbours; a missed beat is filled in.
+      const KL = [0];
+      for (let i = 1; i < T.length; i++) {
+        const lo = Math.max(1, i - 8);
+        const gaps = [];
+        for (let j = lo; j < i; j++) gaps.push((T[j] - T[j - 1]) / Math.max(1, KL[j] - KL[j - 1]));
+        gaps.sort((x, y) => x - y);
+        const lp = gaps.length ? gaps[gaps.length >> 1] : per0;
+        KL.push(KL[i - 1] + Math.max(1, Math.round((T[i] - T[i - 1]) / lp)));
+      }
+      const fitted = T.map((t, i) => {
+        const lo = Math.max(0, i - 8);
+        const hi = Math.min(T.length, i + 9);
+        const l = robustLine(KL.slice(lo, hi), T.slice(lo, hi), 0.025, 5, strength.slice(lo, hi));
+        const wsum = l.w.reduce((x, y) => x + y, 0);
+        const v = l.a + l.p * KL[i];
+        return wsum >= 4 && isFinite(v) ? v : t;
+      });
+      beats = [];
+      for (let i = 0; i < fitted.length; i++) {
+        if (i > 0) {
+          const m = KL[i] - KL[i - 1];
+          for (let j = 1; j < m; j++) beats.push(fitted[i - 1] + ((fitted[i] - fitted[i - 1]) * j) / m);
+        }
+        beats.push(fitted[i]);
+      }
+      per = (beats[beats.length - 1] - beats[0]) / Math.max(1, beats.length - 1);
+      for (let i = 1; i < beats.length; i++) if (beats[i] <= beats[i - 1] + per * 0.3) beats[i] = beats[i - 1] + per * 0.3;
+    }
+    if (beats.length < 8) return null;
+
+    // 4. On the beat or between? Kick + snare on the grid vs half a beat later.
+    {
+      let on = 0;
+      let off = 0;
+      for (const t of beats) {
+        on += near(f.kick, t) + near(f.snare, t);
+        off += near(f.kick, t + per / 2) + near(f.snare, t + per / 2);
+      }
+      if (off > on * 1.25) {
+        beats = beats.map((t) => t + per / 2);
+        if (hasAtt && steady) {
+          // land exactly on the attacks again
+          const shifts = beats.map((t) => {
+            const a = attackNear(P, t, Math.min(0.045, per * 0.2), drumW);
+            return a == null ? null : a - t;
+          }).filter((x) => x != null).sort((x, y) => x - y);
+          if (shifts.length) {
+            const m = shifts[shifts.length >> 1];
+            beats = beats.map((t) => t + m);
+          }
+        }
+        while (beats.length && beats[beats.length - 1] > lastSound / br + per * 0.25) beats.pop();
+      }
+    }
+
+    // 5. Bar "1".
+    const B = beats.length;
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / (a.length || 1) || 1;
+    const K1 = beats.map((t) => near(f.kick, t));
+    const S1 = beats.map((t) => near(f.snare, t));
+    // Loudness of each beat, for "new parts come in on the 1".
+    const loud = beats.map((t) => {
+      const a = Math.max(0, Math.floor(t * br));
+      const b = Math.min(n, Math.max(a + 1, Math.floor((t + per) * br)));
+      let s = 0;
+      for (let j = a; j < b; j++) s += P.cov[j] ? P.peak[j] : 0;
+      return s / (b - a);
+    });
+    const nov = beats.map((_, i) => {
+      if (i === 0) return loud[0];
+      let before = 0, after = 0, nb = 0, na = 0;
+      for (let j = Math.max(0, i - 4); j < i; j++) { before += loud[j]; nb++; }
+      for (let j = i; j < Math.min(B, i + 4); j++) { after += loud[j]; na++; }
+      return Math.max(0, after / na - before / nb);
+    });
+    // Bass and chords that change (low and mid attacks right on the beat).
+    const dMid = new Float32Array(n);
+    for (let i = 1; i < n; i++) if (P.cov[i] && P.cov[i - 1]) dMid[i] = Math.max(0, P.mid[i] - P.mid[i - 1]);
+    const midOn = beats.map((t) => near(dMid, t));
+    const mM = mean(midOn);
+    const mK = mean(K1);
+    const mS = mean(S1);
+    const mN = mean(nov.map((x) => x)) || 1;
+    // 1 and 3 vs 2 and 4 from the kick / snare pattern.
+    // The backbeat (2 and 4) is where the snare's crack is: more highs,
+    // less low end than on 1 and 3.
+    const H1 = beats.map((t) => near(f.hat, t));
+    const mH = mean(H1);
+    const parity = [0, 1].map((ph) => {
+      let sc = 0;
+      for (let i = 0; i < B; i++) {
+        const v = K1[i] / mK - H1[i] / mH + 0.5 * (K1[i] / mK - S1[i] / mS);
+        sc += ((i - ph) % 2 + 2) % 2 === 0 ? v : -v;
+      }
+      return sc;
+    });
+    const par = parity[1] > parity[0] ? 1 : 0;
+    // 1 vs 3: where the music starts and new parts come in, the stronger kick.
+    const one = [par, par + 2].map((ph) => {
+      let sc = 0;
+      for (let i = 0; i < B; i++) {
+        const pos = ((i - ph) % 4 + 4) % 4;
+        const v = 2 * nov[i] / mN + 0.3 * K1[i] / mK + 0.3 * midOn[i] / mM;
+        if (pos === 0) sc += v;
+        else if (pos === 2) sc -= v;
+      }
+      return sc;
+    });
+    const first = one[1] > one[0] ? par + 2 : par;
     // Average tempo over the whole song (a single gap is only 20 ms exact).
-    const avg = (beats[beats.length - 1] - beats[0]) / (beats.length - 1);
-    return { bpm: Math.round(600 / avg) / 10, beats, first, confidence: tempo.confidence };
+    const avg = steady ? per : (beats[B - 1] - beats[0]) / (B - 1);
+    return { bpm: Math.round(6000 / avg) / 100, beats, first, confidence: tempo.confidence, steady };
   }
 
   /**

@@ -331,7 +331,13 @@ button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
 button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3; }
-.bpm { min-width: 84px; text-align: center; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; color: #ffb74d; }
+.bpm { min-width: 84px; height: 30px; padding: 0 6px; text-align: center; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; color: #ffb74d; background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; font-family: inherit; }
+.bpm:hover { border-color: var(--line); background: #121722; }
+.bpm.manual { color: #ffd27a; text-decoration: underline dotted rgba(255,210,122,.6); text-underline-offset: 4px; }
+.grid-row { gap: 6px; }
+.bpm-in { width: 78px; height: 28px; padding: 0 6px; border-radius: 7px; border: 1px solid var(--line); background: #0d1119; color: #ffb74d; font: 700 13px/1 inherit; font-variant-numeric: tabular-nums; }
+.grid-ms { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text, #dfe6f3); }
+button.one-here { color: #ffb74d; }
 .cues { display: inline-flex; gap: 2px; }
 button.cue-btn { min-width: 34px; padding: 0 6px; font-weight: 800; color: var(--cue); border-color: color-mix(in srgb, var(--cue) 35%, transparent); background: transparent; }
 button.cue-btn.set { background: var(--cue); color: #0b0e14; border-color: var(--cue); }
