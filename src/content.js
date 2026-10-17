@@ -247,7 +247,10 @@
       slStop();
       renderUI();
     }],
-    ['seeked', () => (S.dirty = true)],
+    ['seeked', () => {
+      S.dirty = true;
+      renderUI(); // the tempo where you are, the line, the time: right away
+    }],
   ];
 
   // ---------------------------------------------------------------------------
@@ -264,8 +267,64 @@
       onPeaks(m);
     } else if (m.type === 'loopAudio') {
       slOnAudio(m);
+    } else if (m.type === 'download') {
+      onDownload(m);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Download the audio: the whole song or the loop (WAV), or the original file
+  // ---------------------------------------------------------------------------
+  const DL = { id: 0, pending: null, busy: false };
+
+  function downloadAudio(what, fmt) {
+    if (!S.vid || !dur()) return flash('Start a video first.');
+    if (what === 'loop' && !hasLoop()) return flash('Set a loop (A and B) first.');
+    if (DL.busy) return flash('Getting the audio ready…');
+    const need = what === 'loop' ? null : 0.97;
+    if (need && S.peaks.coverage(dur()) < need) {
+      DL.pending = { what, fmt };
+      flash('Reading the whole song first (a few seconds, muted), then it downloads…', 5000);
+      if (!S.scan) startScan();
+      return;
+    }
+    const retry = DL.pending && DL.pending.retry;
+    DL.pending = null;
+    if (!retry) DL.retried = false;
+    DL.busy = true;
+    DL.id++;
+    DL.req = { what, fmt };
+    const F = C.formatTime;
+    const title = (S.meta && S.meta.vid === S.vid && S.meta.title) || document.title.replace(/ - YouTube$/, '') || S.vid;
+    postToPage({ type: 'download', id: DL.id, vid: S.vid, what, fmt, a: S.a, b: effEnd(), duration: dur(), name: title, label: what === 'loop' ? `${F(S.a)}-${F(S.b)}`.replace(/:/g, '.') : '' });
+    flash('Getting the audio ready…', 3000);
+    setTimeout(() => (DL.busy = false), 30000);
+  }
+
+  function onDownload(m) {
+    if (m.id !== DL.id) return;
+    DL.busy = false;
+    DL.last = m;
+    if (m.ok) flash(`Saved "${m.name}" to your Downloads.`, 5000);
+    else if (m.why === 'not loaded' && Array.isArray(m.missing) && m.missing.length && !DL.retried && !S.scan) {
+      // The song's audio is not here (e.g. the wave came from memory): read
+      // those parts once, muted, then download by itself.
+      DL.retried = true;
+      DL.pending = { what: DL.req.what, fmt: DL.req.fmt, retry: true };
+      flash('Reading the song once to get its audio (a few seconds, muted)…', 5000);
+      startScan(m.missing.map(([a, b]) => ({ start: a, end: b })));
+    } else if (m.why === 'not loaded') flash('Part of it is not loaded yet: play that part once (or "Read whole song now" in ⚙), then try again.', 6000);
+    else flash(`Could not make the file (${m.why}).`, 6000);
+    renderUI();
+  }
+
+  // After "read the whole song first": download as soon as it is read.
+  function downloadTick() {
+    if (DL.pending && !S.scan && dur() && S.peaks.coverage(dur()) >= 0.97) {
+      const p = DL.pending;
+      downloadAudio(p.what, p.fmt);
+    }
+  }
 
   function postToPage(msg) {
     msg[TAG] = 'cs';
@@ -283,7 +342,7 @@
       if (S.orphan.list.length < 400) S.orphan.list.push(m);
       return;
     }
-    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
+    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv, m);
     S.dirty = true;
     saveWaveSoon();
   }
@@ -331,7 +390,7 @@
       applyRate();
     }
     if (S.orphan && S.orphan.vid === vid) {
-      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
+      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv, m);
     }
     S.orphan = null;
     resetLyrics();
@@ -1321,7 +1380,7 @@
     let hits = [];
     try {
       g = C.beatGrid(S.peaks, d);
-      hits = C.drumHits(S.peaks, d);
+      hits = C.drumHits(S.peaks, d, g && g.beats);
     } catch (e) {
       g = null;
     }
@@ -2738,7 +2797,9 @@
     }, 500);
   }
 
-  function startScan() {
+  // need: parts to play through (to get their audio); default: the parts
+  // of the wave that are missing.
+  function startScan(need) {
     const v = S.video;
     const d = dur();
     if (!v || !d || S.scan || isAd()) return;
@@ -2747,6 +2808,7 @@
     clearTimeout(S.wrapTimer);
     S.wrapping = false;
     S.scannedVids.add(S.vid);
+    S.lastScanFrom = v.currentTime; // where playback was when the reading began (tests)
     S.scan = {
       vid: S.vid,
       video: v,
@@ -2760,6 +2822,7 @@
       skip: [],
       timer: 0,
       everGotData: S.peaks.coverage(d) > 0,
+      need: Array.isArray(need) && need.length ? need.slice() : null,
     };
     try {
       v.muted = true;
@@ -2771,7 +2834,7 @@
         /* ignore */
       }
     }
-    const g = S.peaks.nextGap(v.currentTime, d);
+    const g = S.scan.need ? S.scan.need[0] : S.peaks.nextGap(v.currentTime, d);
     if (g) seek(g.start);
     play();
     S.scan.timer = setInterval(scanTick, 100);
@@ -2791,7 +2854,13 @@
       sc.lastProgressAt = now();
       sc.everGotData = true;
     }
-    const gaps = S.peaks.gaps(d).filter((g) => !sc.skip.some((s) => Math.abs(s - g.start) < 0.5));
+    if (sc.need) {
+      // done with a part once it has played through (the end of the song: close to it)
+      const t0 = v.currentTime;
+      sc.need = sc.need.filter((g) => !(t0 >= Math.min(g.end, d - 2.6) - 0.3 && t0 >= g.start));
+      sc.everGotData = true;
+    }
+    const gaps = (sc.need || S.peaks.gaps(d)).filter((g) => !sc.skip.some((s) => Math.abs(s - g.start) < 0.5));
     if (!gaps.length) return endScan('done');
     if (now() - sc.startedAt > Math.max(90000, (d / SCAN_RATE) * 4000 + 30000)) return endScan('timeout');
     if (!sc.everGotData && now() - sc.startedAt > 7000) return endScan('nohook');
@@ -2828,6 +2897,7 @@
   function endScan(reason) {
     const sc = S.scan;
     if (!sc) return;
+    S.lastScanEnd = reason;
     clearInterval(sc.timer);
     S.scan = null;
     const v = sc.video;
@@ -3047,7 +3117,7 @@
       return b;
     });
     ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
-    ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
+    ui.drumBtn = btn('Drums', 'Drum view: the wave in drum colours with a drum chart under it, one row per drum: CR crash, HH hi-hat / ride, PC percussion, SN snare / clap, TT toms, KK kick', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       h('span', { class: 'q-pair' }, ui.qBtn, ui.qResSel),
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
@@ -3265,6 +3335,10 @@
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
       ui.rescanBtn,
+      h('span', { class: 'label', text: 'Download' }),
+      btn('Song (WAV)', 'Download the whole song as a WAV file (plays everywhere: Music, GarageBand, any player)', () => downloadAudio('song', 'wav'), 'dl-btn'),
+      btn('Loop (WAV)', 'Download the part between A and B as a WAV file', () => downloadAudio('loop', 'wav'), 'dl-btn'),
+      btn('Song (original)', 'Download the whole song as the original audio file from YouTube (smaller, same quality)', () => downloadAudio('song', 'orig'), 'dl-btn'),
       btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
     // --- waveform ---
@@ -3328,7 +3402,7 @@
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
           h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
-          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms, and choose what Q snaps to (beat, ½, ¼, bar).'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves, also when the tempo changes: 1 2 3 4 on the wave. Q snaps A, B and the hot cues to 1/4, 1/8 or 1/16 notes or bars (pick beside Q); 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows a drum chart: crash, hi-hat, percussion, snare, toms, kick. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms. Follow (top right of the wave): off = the wave stays still, drag it, click to play from there. Download the song or the loop in ⚙.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
@@ -3495,7 +3569,11 @@
     settings.open = false;
     saveSettings();
     stopLineLoop(true);
-    if (S.scan) endScan('cancel');
+    if (S.scan) {
+      // closed while reading the song: read the rest next time it opens
+      S.scannedVids.delete(S.scan.vid);
+      endScan('closed');
+    }
     stopTrainer(true);
     clearTimeout(S.gapTimer);
     S.wrapping = false;
@@ -3765,7 +3843,9 @@
     // Debug only: the wave's band data, to tune the drum analysis.
     if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
       const P = S.peaks;
-      document.documentElement.dataset.ytlPeaks = JSON.stringify({ n: P.n, peak: Array.from(P.peak.subarray(0, P.n)), low: Array.from(P.low.subarray(0, P.n)), mid: Array.from(P.mid.subarray(0, P.n)), high: Array.from(P.high.subarray(0, P.n)), cov: Array.from(P.cov.subarray(0, P.n)) });
+      const dump = { n: P.n };
+      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'sub', 'lmid', 'air', 'cov']) dump[k] = Array.from(P[k].subarray(0, P.n));
+      document.documentElement.dataset.ytlPeaks = JSON.stringify(dump);
     }
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     if (document.documentElement.dataset.ytlDebug === '1') {
@@ -3774,6 +3854,9 @@
     }
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.follow = S.follow ? 'on' : '';
+    d.scanFrom = S.lastScanFrom != null ? S.lastScanFrom.toFixed(2) : '';
+    d.scanEnd = S.lastScanEnd || '';
+    d.download = DL.last ? `${DL.last.ok ? 'ok' : 'fail'}:${DL.last.name || DL.last.why}` : DL.pending ? 'waiting' : '';
     d.quant = settings.quantize ? (settings.qRes === 1 ? 'on' : `on:${settings.qRes}`) : '';
     d.gridMs = String(Math.round(S.gridAdj.offset * 1000));
     d.gridManual = S.grid && S.grid.manual ? '1' : '';
@@ -3791,7 +3874,7 @@
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
-    d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
+    d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat', 'tom', 'cym', 'perc'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
     d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
     d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
     d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
@@ -4251,36 +4334,116 @@
     });
   }
 
-  // Drum lanes under the wave: kick, snare and hi-hat hits, like a drum chart.
-  function drawLanes(ctx, g, top, wh) {
+  // The drum chart under the wave: one row per drum, like reading drum
+  // notation (cymbals on top, kick at the bottom). Only drums the song has.
+  const DRUM_ROWS = [
+    { kind: 'cym', label: 'CR', name: 'crash', col: '#ffd54f' },
+    { kind: 'hat', label: 'HH', name: 'hi-hat / ride', col: '#cdf0ff' },
+    { kind: 'perc', label: 'PC', name: 'percussion', col: '#c792ea' },
+    { kind: 'snare', label: 'SN', name: 'snare / clap', col: '#ffb74d' },
+    { kind: 'tom', label: 'TT', name: 'toms', col: '#7ee081' },
+    { kind: 'kick', label: 'KK', name: 'kick', col: '#ff5436' },
+  ];
+
+  function drumChartRows() {
     const hits = S.gridBase && S.gridBase.vid === S.vid ? S.gridBase.hits : null;
-    if (!hits || !hits.length || settings.waveStyle !== 'drums') return;
+    if (!hits || !hits.length || settings.waveStyle !== 'drums') return null;
+    if (S.gridBase.rowsFor !== hits) {
+      const has = new Set(hits.map((h) => h.kind));
+      S.gridBase.rows = DRUM_ROWS.filter((r) => has.has(r.kind));
+      S.gridBase.rowsFor = hits;
+    }
+    return S.gridBase.rows;
+  }
+
+  // Height of the drum chart at the bottom of the wave.
+  function drumChartH(wh) {
+    const rows = drumChartRows();
+    if (!rows || !rows.length) return 0;
+    return Math.round(Math.min(wh * 0.62, C.clamp(wh * 0.5, rows.length * 12, rows.length * 20)));
+  }
+
+  function drawLanes(ctx, g, top, wh) {
+    const rows = drumChartRows();
+    if (!rows || !rows.length) return;
+    const hits = S.gridBase.hits;
     const { s, e } = viewRange();
-    const laneH = 7;
-    const y0 = top + wh - laneH * 3 - 4;
-    ctx.fillStyle = 'rgba(5,7,11,0.55)';
-    ctx.fillRect(0, y0 - 2, g.w, laneH * 3 + 6);
-    const rows = { hat: 0, snare: 1, kick: 2 };
-    const cols = { kick: '#ff5436', snare: '#ffb74d', hat: '#cdf0ff' };
-    const wpx = Math.max(2, Math.min(5, (0.04 / (e - s)) * g.w));
+    const chartH = drumChartH(wh);
+    const rowH = chartH / rows.length;
+    const y0 = top + wh - chartH;
+    ctx.fillStyle = '#07090e';
+    ctx.fillRect(0, y0 - 1, g.w, chartH + 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(0, y0 - 1, g.w, 1);
+    // the beat grid through the chart: bars, beats, and 16ths when zoomed in
+    const G = S.grid;
+    if (G) {
+      const pxBeat = ((60 / G.bpm) / (e - s)) * g.w;
+      const B = G.beats;
+      for (let i = Math.max(0, C.nearestBeatIndex(B, s) - 1); i < B.length && B[i] <= e + 0.01; i++) {
+        const x = Math.round(xAt(B[i], g));
+        const bar = (((i - G.first) % 4) + 4) % 4 === 0;
+        if (bar || pxBeat >= 6) {
+          ctx.fillStyle = bar ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)';
+          ctx.fillRect(x, y0, 1, chartH);
+        }
+        if (pxBeat >= 28 && i + 1 < B.length) {
+          ctx.fillStyle = 'rgba(255,255,255,0.04)';
+          for (let q = 1; q < 4; q++) ctx.fillRect(Math.round(xAt(B[i] + ((B[i + 1] - B[i]) * q) / 4, g)), y0, 1, chartH);
+        }
+      }
+    }
+    rows.forEach((r, k) => {
+      if (k % 2) {
+        ctx.fillStyle = 'rgba(255,255,255,0.025)';
+        ctx.fillRect(0, y0 + k * rowH, g.w, rowH);
+      }
+    });
+    const row = {};
+    rows.forEach((r, k) => (row[r.kind] = k));
+    const col = {};
+    rows.forEach((r) => (col[r.kind] = r.col));
+    const span = e - s;
+    const wpx = C.clamp((0.045 / span) * g.w, 3, 14);
+    const hh = Math.max(3, rowH - 3);
     let i = 0;
-    while (i < hits.length && hits[i].t < s) i++;
+    while (i < hits.length && hits[i].t < s - 1) i++;
     for (; i < hits.length && hits[i].t <= e; i++) {
       const h = hits[i];
-      ctx.globalAlpha = 0.45 + 0.55 * h.v;
-      ctx.fillStyle = cols[h.kind];
-      ctx.fillRect(xAt(h.t, g) - wpx / 2, y0 + rows[h.kind] * laneH, wpx, laneH - 2);
+      const k = row[h.kind];
+      if (k == null) continue;
+      const x = xAt(h.t, g);
+      const y = y0 + k * rowH + (rowH - hh) / 2;
+      ctx.globalAlpha = 0.35 + 0.65 * h.v;
+      ctx.fillStyle = col[h.kind];
+      if (h.kind === 'cym') {
+        // a crash rings on: a fading tail after the hit
+        const tail = Math.min(g.w, (0.6 / span) * g.w);
+        const gr = ctx.createLinearGradient(x, 0, x + tail, 0);
+        gr.addColorStop(0, 'rgba(255,213,79,0.45)');
+        gr.addColorStop(1, 'rgba(255,213,79,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(x, y + hh * 0.3, tail, hh * 0.4);
+        ctx.fillStyle = col[h.kind];
+      }
+      const rr = Math.min(3, hh / 2, wpx / 2);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x - wpx / 2, y, wpx, hh, rr);
+      else ctx.rect(x - wpx / 2, y, wpx, hh);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
-    if (g.w > 300) {
-      ctx.font = '600 8.5px Roboto, system-ui, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fillText('HH', 3, y0 - 1);
-      ctx.fillText('SN', 3, y0 + laneH - 1);
-      ctx.fillText('KK', 3, y0 + laneH * 2 - 1);
-    }
+    // row names
+    ctx.font = `700 ${Math.round(C.clamp(rowH * 0.62, 8, 11))}px Roboto, system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    rows.forEach((r, k) => {
+      const y = y0 + k * rowH + rowH / 2;
+      ctx.fillStyle = 'rgba(7,9,14,0.85)';
+      ctx.fillRect(0, y0 + k * rowH, 24, rowH);
+      ctx.fillStyle = r.col;
+      ctx.fillText(r.label, 4, y + 0.5);
+    });
   }
 
   function draw() {
@@ -4527,7 +4690,15 @@
       else if (y >= RULER && handleAt(x, g)) cursor = 'ew-resize';
       cv.style.cursor = cursor;
       ui.tip.hidden = false;
-      ui.tip.textContent = y < RULER ? `Jump to ${C.formatTime(t)}` : C.formatTime(t);
+      let tipText = y < RULER ? `Jump to ${C.formatTime(t)}` : C.formatTime(t);
+      // over the drum chart: which drum this row is
+      const rows = drumChartRows();
+      const chH = rows ? drumChartH(g.waveH) : 0;
+      if (chH && y >= g.waveTop + g.waveH - chH && y < g.waveTop + g.waveH) {
+        const r = rows[Math.min(rows.length - 1, Math.floor((y - (g.waveTop + g.waveH - chH)) / (chH / rows.length)))];
+        tipText = `${r.name} · ${C.formatTime(t)}`;
+      }
+      ui.tip.textContent = tipText;
       ui.tip.style.left = `${C.clamp(x, 30, g.w - 30)}px`;
     });
     cv.addEventListener('pointerleave', () => {
@@ -5000,6 +5171,7 @@
       engineTick();
       liveTick();
       maybeComputeGrid();
+      downloadTick();
       if (hostEl && hostEl.style.display !== 'none') {
         followPlayhead();
         lyricsTick();

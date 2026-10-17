@@ -21,7 +21,7 @@ function toStore(x, dur, chunkSec = 10) {
   for (let s = 0; s < x.length; s += chunkSec * SR) {
     const ch = x.subarray(s, Math.min(x.length, s + chunkSec * SR));
     const res = PP.computePeaks([ch], SR, s / SR);
-    if (res) P.add(res.startBin, res.peak, res.low, res.mid, res.high, res.att, res.atv);
+    if (res) P.add(res.startBin, res.peak, res.low, res.mid, res.high, res.att, res.atv, res);
   }
   P.setDuration(dur);
   return P;
@@ -92,4 +92,56 @@ test('beat grid follows the tempo: a jump 90 -> 120, speeding up 100 -> 130, slo
   const g = C.beatGrid(toStore(s.x, s.dur), s.dur);
   assert.deepEqual(g.segments.map((x) => Math.round(x.bpm)), [90, 120], 'two tempos, marked where they start');
   assert.ok(Math.abs(g.segments[1].t - 32.9) < 0.01, `the new tempo starts on its first beat (${g.segments[1].t})`);
+});
+
+test('drum chart: kick, snare, toms, hi-hats, crash and cowbell of a whole kit, each in its own row', () => {
+  const spec = songs.drumKit;
+  const s = synth(spec);
+  const P = toStore(s.x, s.dur);
+  const g = C.beatGrid(P, s.dur);
+  const hits = C.drumHits(P, s.dur, g && g.beats);
+  const near = (list, t) => list.some((x) => Math.abs(x - t) < 0.03);
+  const score = (kind, truthKinds = [kind]) => {
+    const truth = spec.hits.filter((h) => truthKinds.includes(h.kind)).map((h) => h.t);
+    const got = hits.filter((h) => h.kind === kind).map((h) => h.t);
+    return { n: truth.length, found: truth.filter((t) => near(got, t)).length, wrong: got.filter((t) => !near(truth, t)).length };
+  };
+  const k = score('kick');
+  assert.ok(k.found >= k.n - 1 && k.wrong <= 1, `kicks ${JSON.stringify(k)}`);
+  const sn = score('snare');
+  assert.ok(sn.found >= sn.n - 2 && sn.wrong <= 3, `snares ${JSON.stringify(sn)}`);
+  const t = score('tom');
+  assert.ok(t.found === t.n && t.wrong <= 1, `toms ${JSON.stringify(t)}`);
+  const c = score('cym');
+  assert.ok(c.found === c.n && c.wrong <= 1, `crashes ${JSON.stringify(c)}`);
+  const p = score('perc');
+  assert.ok(p.found >= p.n * 0.7 && p.wrong <= 2, `cowbell ${JSON.stringify(p)}`);
+  // hi-hats (and the ride) that are not hidden under a snare or a crash
+  const busy = spec.hits.filter((h) => h.kind === 'snare' || h.kind === 'cym').map((h) => h.t);
+  const hatT = spec.hits.filter((h) => h.kind === 'hat' && !near(busy, h.t)).map((h) => h.t);
+  const gotH = hits.filter((h) => h.kind === 'hat').map((h) => h.t);
+  const foundH = hatT.filter((x) => near(gotH, x)).length;
+  assert.ok(foundH >= hatT.length * 0.75, `hi-hats ${foundH} of ${hatT.length}`);
+});
+
+test('drum chart: house claps on 2 and 4 are snares, the open hi-hat on every off-beat is a hi-hat', () => {
+  const s = synth(songs.house124);
+  const P = toStore(s.x, s.dur);
+  const g = C.beatGrid(P, s.dur);
+  const hits = C.drumHits(P, s.dur, g.beats);
+  const sn = hits.filter((h) => h.kind === 'snare');
+  const claps = s.beats.filter((_, i) => i % 2);
+  assert.ok(Math.abs(sn.length - claps.length) <= 6, `${sn.length} snares for ${claps.length} claps`);
+  const onClap = sn.filter((h) => claps.some((t) => Math.abs(t - h.t) < 0.03)).length;
+  assert.ok(onClap >= sn.length - 3, `snares are on the claps (${onClap} of ${sn.length})`);
+  assert.ok(hits.filter((h) => h.kind === 'kick').length >= s.beats.length - 3, 'four on the floor');
+});
+
+test('drum chart: piano chords and a voice are not toms', () => {
+  for (const name of ['balladPiano70', 'vocalPop96']) {
+    const s = synth(songs[name]);
+    const P = toStore(s.x, s.dur);
+    const hits = C.drumHits(P, s.dur, (C.beatGrid(P, s.dur) || {}).beats);
+    assert.ok(hits.filter((h) => h.kind === 'tom').length <= 2, `${name}: toms ${hits.filter((h) => h.kind === 'tom').length}`);
+  }
 });

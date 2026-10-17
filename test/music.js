@@ -21,6 +21,10 @@ function synth(spec, SR = 16000) {
     bass: (t, len, f, a = 1) => at(t, len, (u) => a * 0.45 * Math.sin(2 * Math.PI * f * u) * Math.min(1, u / 0.012) * Math.min(1, (len - u) / 0.02)),
     chord: (t, len, fs_, a = 1) => at(t, len, (u) => a * 0.12 * fs_.reduce((s, f) => s + Math.sin(2 * Math.PI * f * u) + 0.3 * Math.sin(4 * Math.PI * f * u), 0) * Math.min(1, u / 0.01) * Math.exp(-u / 0.8)),
     pad: (t, len, fs_, a = 1) => at(t, len, (u) => a * 0.06 * fs_.reduce((s, f) => s + Math.sin(2 * Math.PI * f * u), 0) * Math.min(1, u / 0.3) * Math.min(1, (len - u) / 0.3)),
+    tom: (t, f = 120, a = 1) => { let ph = 0; at(t, 0.5, (u) => { ph += 2 * Math.PI * f * (1 + 0.25 * Math.exp(-u / 0.04)) / SR; return a * (0.7 * Math.sin(ph) * Math.exp(-u / 0.22) + (u < 0.004 ? 0.25 * noise() : 0)); }); },
+    crash: (t, a = 1) => { let p = 0; at(t, 2.0, (u) => { const nz = noise(); const hp = nz - 0.6 * p; p = nz; return a * 0.32 * hp * (Math.exp(-u / 0.7) * 0.8 + (u < 0.02 ? 0.5 : 0)); }); },
+    ride: (t, a = 1) => { let p = 0; at(t, 0.9, (u) => { const nz = noise(); const hp = nz - p; p = nz; return a * (0.12 * hp * Math.exp(-u / 0.45) + 0.08 * Math.sin(2 * Math.PI * 3300 * u) * Math.exp(-u / 0.35)); }); },
+    cowbell: (t, a = 1) => at(t, 0.25, (u) => a * 0.22 * (Math.sign(Math.sin(2 * Math.PI * 540 * u)) + Math.sign(Math.sin(2 * Math.PI * 800 * u))) * Math.exp(-u / 0.07)),
     voice: (t, len, f, a = 1) => { let ph = 0; at(t, len, (u) => { ph += 2 * Math.PI * f * (1 + 0.01 * Math.sin(2 * Math.PI * 5.5 * u)) / SR; return a * 0.25 * (Math.sin(ph) + 0.5 * Math.sin(2 * ph) + 0.25 * Math.sin(3 * ph)) * Math.min(1, u / 0.04) * Math.min(1, (len - u) / 0.05); }); },
   };
   const beats = spec.make(S, r); // truth beat times (drum region), downbeats = every 4th starting at index spec.firstDown||0
@@ -32,7 +36,62 @@ const grid = (bpm, t0, n, swing = 0, hum = 0, r) => { const out = []; let t = t0
 // beat times from a list of [count, bpm or [bpmFrom, bpmTo]] parts
 const tempoMap = (t0, parts) => { const out = []; let t = t0; for (const [n, bpm] of parts) for (let i = 0; i < n; i++) { out.push(t); const b = Array.isArray(bpm) ? bpm[0] + (bpm[1] - bpm[0]) * (i / n) : bpm; t += 60 / b; } return out; };
 const popKit = (S, B, opts = {}) => B.forEach((t, i) => { const p = (B[i + 1] || t + 0.5) - t; if (opts.skip && opts.skip(t, i)) return; if (opts.half && opts.half(t, i)) { if (i % 4 === 0) S.kick(t); if (i % 4 === 2) S.snare(t); S.hat(t, 0.6); return; } if (i % 2 === 0) S.kick(t); else S.snare(t); S.hat(t, 0.7); S.hat(t + p / 2, 0.5); if (i % 4 === 0) S.chord(t, 4 * p, [262, 330, 392], 0.8); S.bass(t, p * 0.9, i % 8 < 4 ? 55 : 65, 0.8); });
+// A full drum kit at 100 BPM over 24 bars, every hit written down:
+// kick, snare, closed and open hi-hat, crash, ride, three toms (fills),
+// cowbell; with a bass line and chords under it.
+function drumKit(bars = 24, rideFrom = 8, rideTo = 16, bellFrom = 16, fillEvery = 8) {
+  const hits = [];
+  const add = (kind, t) => hits.push({ kind, t });
+  const beat = 0.6;
+  const t0 = 0.8;
+  const play = [];
+  for (let bar = 0; bar < bars; bar++) {
+    for (let s16 = 0; s16 < 16; s16++) {
+      const t = t0 + (bar * 16 + s16) * (beat / 4);
+      const fill = bar % fillEvery === fillEvery - 1 && s16 >= 8;
+      const ride = bar >= rideFrom && bar < rideTo;
+      if (s16 === 0 || s16 === 8 || (bar % 2 && s16 === 10)) if (!fill) { play.push(['kick', t]); add('kick', t); }
+      if ((s16 === 4 || s16 === 12) && !fill) { play.push(['snare', t]); add('snare', t); }
+      if (fill) {
+        if (s16 % 2 === 0) {
+          const f = [210, 210, 160, 160, 110, 110, 110, 110][s16 - 8];
+          play.push(['tom', t, f]);
+          add('tom', t);
+        }
+      } else if (s16 % 2 === 0) {
+        if (ride) { play.push(['ride', t]); add('hat', t); } // a ride keeps time like a hi-hat: same row
+        else if (s16 === 14 && bar % 2) { play.push(['ohat', t]); add('hat', t); }
+        else { play.push(['hat', t]); add('hat', t); }
+      }
+      if (s16 === 0 && bar % 4 === 0) { play.push(['crash', t]); add('cym', t); }
+      if (bar >= bellFrom && (s16 === 6 || s16 === 14)) { play.push(['cowbell', t]); add('perc', t); }
+    }
+  }
+  return {
+    dur: t0 + bars * 4 * beat + 2,
+    hits,
+    make(S) {
+      for (const [k, t, f] of play) {
+        if (k === 'tom') S.tom(t, f);
+        else if (k === 'hat') S.hat(t, 0.8);
+        else if (k === 'ohat') S.ohat(t, 1);
+        else S[k](t);
+      }
+      for (let bar = 0; bar < bars; bar++) {
+        const tb = t0 + bar * 4 * beat;
+        S.bass(tb, beat * 1.8, bar % 2 ? 49 : 55, 0.7);
+        S.bass(tb + beat * 2, beat * 1.8, bar % 2 ? 44 : 41, 0.7);
+        S.chord(tb, 4 * beat, [262, 330, 392], 0.5);
+      }
+      const B = [];
+      for (let i = 0; i < bars * 4; i++) B.push(t0 + i * beat);
+      return B;
+    },
+  };
+}
+
 const songs = {
+  drumKit: drumKit(),
   tempoJump: { dur: 62, make(S) { const B = tempoMap(0.9, [[48, 90], [64, 120]]); popKit(S, B); return B; } },
   accel: { dur: 66, make(S) { const B = tempoMap(1.1, [[120, [100, 130]]]); popKit(S, B); return B; } },
   ritard: { dur: 66, make(S) { const B = tempoMap(0.7, [[96, 110], [16, [110, 80]]]); popKit(S, B); return B; } },
@@ -50,4 +109,4 @@ const songs = {
   vocalPop96: { dur: 60, make(S) { const p = 0.625; const B = grid(96, 0.8, 94); B.forEach((t, i) => { if (i % 2 === 0) S.kick(t); else S.snare(t); S.hat(t + p / 2, 0.5); if (i % 4 === 3) S.voice(t + p * 0.5, p * 2.5, 294, 1.2); }); return B; } },
 };
 
-module.exports = { synth, songs, tempoMap, popKit };
+module.exports = { synth, songs, tempoMap, popKit, drumKit };

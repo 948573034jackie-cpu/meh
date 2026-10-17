@@ -181,12 +181,14 @@ await step('on a computer the DJ deck is on by default; these tests switch to th
 });
 
 await step('auto scan reads the whole song and puts playback back', async () => {
-  tBeforeScan = (await vstate()).t;
-  await waitFor(async () => (await host()).scanning === 'true', 5000, 'scan started');
-  await page.screenshot({ path: path.join(SHOTS, '1-scanning.png') });
+  // (the scan may already be running or done: the looper says where it began)
+  // (closing the panel stops the reading; it starts again when the panel opens)
+  await waitFor(async () => (await host()).scanning === 'true' || Number((await host()).cov) > 0.97, 8000, 'reading the song');
+  if ((await host()).scanning === 'true') await page.screenshot({ path: path.join(SHOTS, '1-scanning.png') });
   await waitFor(async () => (await host()).scanning === 'false', 40000, 'scan finished');
   const h = await host();
-  assert(Number(h.cov) > 0.97, `coverage ${h.cov}`);
+  tBeforeScan = Number(h.scanFrom);
+  assert(Number(h.cov) > 0.97, `coverage ${h.cov} (the reading ended: ${h.scanEnd})`);
   const v = await vstate();
   assert(!v.muted, 'sound restored');
   assert(Math.abs(v.rate - 1) < 0.001, `rate restored (got ${v.rate})`);
@@ -513,6 +515,7 @@ await step('Follow: on = the wave moves with the song; off = it stays still, dra
   });
   await djMouse();
   assert((await host()).mouse === 'dj', 'DJ mouse on');
+  try {
   await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4; v.play().catch(() => {}); });
   await shadowClick('button.zoom-toggle');
   const view = async () => (await host()).view.split(',').map(Number);
@@ -559,12 +562,14 @@ await step('Follow: on = the wave moves with the song; off = it stays still, dra
   await sleep(300);
   v2 = await view();
   const mx = b.x + b.w * 0.2;
-  const tUnder = v2[0] + (v2[1] - v2[0]) * 0.2;
+  let tUnder = null;
   for (let i = 0; i < 10; i++) {
     await page.evaluate(([x, yy]) => {
       const cv = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas');
       cv.dispatchEvent(new WheelEvent('wheel', { deltaY: -8, ctrlKey: true, clientX: x, clientY: yy, bubbles: true, cancelable: true }));
     }, [mx, y]);
+    // (after the first step Follow is off and nothing else moves the wave)
+    if (i === 0) { const w = await view(); tUnder = w[0] + (w[1] - w[0]) * 0.2; }
   }
   await sleep(700);
   const v3 = await view();
@@ -572,9 +577,12 @@ await step('Follow: on = the wave moves with the song; off = it stays still, dra
   const tNow = v3[0] + (v3[1] - v3[0]) * 0.2;
   assert(Math.abs(tNow - tUnder) < 0.01, `the spot under the mouse stayed under the mouse (${tUnder.toFixed(3)} / ${tNow.toFixed(3)})`);
   assert((await host()).follow === '', 'zooming away from the playhead turns Follow off');
-  await shadowClick('button.follow-btn');
-  await shadowClick('button', 'Show the whole song');
-  await djMouse();
+  } finally {
+    // back to how the next tests expect it: Follow on, whole song, classic mouse
+    if ((await host()).follow !== 'on' && (await host()).zoom) await shadowClick('button.follow-btn');
+    if ((await host()).zoom) await shadowClick('button', 'Show the whole song');
+    if ((await host()).mouse === 'dj') await djMouse();
+  }
   assert((await host()).mouse === 'classic', 'classic mouse again');
 });
 
@@ -1234,16 +1242,88 @@ await step('a song that changes tempo (90 -> 120 BPM): the grid follows it, ever
   const errs = truth.map((t) => Math.min(...B.map((b) => Math.abs(b - t))) * 1000);
   const worst = Math.max(...errs);
   assert(worst < 2, `every beat within 2 ms (worst ${worst.toFixed(1)} ms)`);
+  await waitFor(async () => (await host()).scanning !== 'true', 40000, 'done reading the song');
   for (const [t, want] of [[6, 90], [22, 120]]) {
     await page.evaluate((x) => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = x; }, t);
-    await sleep(150);
+    await waitFor(async () => Math.abs(Number((await host()).bpmNow) - want) < 0.3, 1500, `tempo at ${t} s`).catch(() => {});
     const now = Number((await host()).bpmNow);
-    assert(Math.abs(now - want) < 0.3, `at ${t} s the tempo shows ${want} (${now})`);
+    const hh = await host();
+    const vv = await vstate();
+    assert(Math.abs(now - want) < 0.3, `at ${t} s the tempo shows ${want} (${now}; t=${vv.t.toFixed(2)} paused=${vv.paused} scan=${hh.scanning} loop=${hh.a}-${hh.b} ${hh.loop} line=${hh.lineLoop} practice=${hh.practice})`);
   }
   await page.screenshot({ path: path.join(SHOTS, '13-tempo-change.png') });
   await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
   await page.evaluate(() => window.__navigate('VIDAAAA1'));
   await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
+});
+
+await step('drum chart on a whole kit: kick, snare, toms, hi-hat / ride, crash and cowbell, each on its own row', async () => {
+  const PLAYER_DELAY = 0.0078;
+  if (process.env.DEBUG) await page.evaluate(() => { document.documentElement.dataset.ytlDebug = '1'; delete document.documentElement.dataset.ytlPeaks; });
+  await page.evaluate(() => window.__navigate('DRUMKIT1'));
+  await waitFor(async () => (await host()).vid === 'DRUMKIT1', 5000, 'kit video');
+  const h = await waitFor(async () => { const x = await host(); return x.hits ? x : null; }, 60000, 'drum hits found');
+  if (process.env.DEBUG) {
+    const dump = await waitFor(() => page.evaluate(() => document.documentElement.dataset.ytlPeaks || null), 5000, 'peaks dump');
+    fs.writeFileSync(path.join(SHOTS, 'kit-peaks.json'), dump);
+    await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
+  }
+  const [k, sn, hh, tt, cy, pc] = h.hits.split(',').map(Number);
+  const want = (kind) => manifest.kitHits.filter((x) => x.kind === kind).length;
+  const report = `kick ${k}/${want('kick')} snare ${sn}/${want('snare')} hat ${hh}/${want('hat')} tom ${tt}/${want('tom')} crash ${cy}/${want('cym')} perc ${pc}/${want('perc')}`;
+  assert(Math.abs(k - want('kick')) <= 2 && Math.abs(sn - want('snare')) <= 3, `kick and snare (${report})`);
+  assert(Math.abs(tt - want('tom')) <= 1 && Math.abs(cy - want('cym')) <= 1, `toms and crashes (${report})`);
+  assert(pc >= want('perc') * 0.6 && pc <= want('perc') + 2, `cowbell (${report})`);
+  const rows = await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.host && true);
+  assert(rows, 'panel');
+  // Zoom in on the tom fill and look at it.
+  // the first tom fill: bar 4, beats 3 and 4 (100 BPM: a bar is 2.4 s)
+  await page.evaluate((t) => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = t; }, 0.8 + 3 * 2.4 + 1.5 + PLAYER_DELAY);
+  await shadowClick('button.zoom-toggle');
+  await page.evaluate(() => {
+    const cv = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas');
+    const r = cv.getBoundingClientRect();
+    for (let i = 0; i < 8; i++) cv.dispatchEvent(new WheelEvent('wheel', { deltaY: -8, ctrlKey: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true, cancelable: true }));
+  });
+  await sleep(400);
+  await page.screenshot({ path: path.join(SHOTS, '14-drum-chart.png') });
+  await shadowClick('button', 'Show the whole song');
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
+});
+
+await step('download: the whole song and the loop as WAV, and the original file', async () => {
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  const gear = await host();
+  await shadowClick('button', 'Settings');
+  const grab = async (title) => {
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), shadowClick('button', title)]);
+    const file = path.join(SHOTS, dl.suggestedFilename());
+    await dl.saveAs(file);
+    return { name: dl.suggestedFilename(), bytes: fs.readFileSync(file) };
+  };
+  const wavSeconds = (b) => {
+    assert(b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WAVE', 'a WAV file');
+    const ch = b.readUInt16LE(22);
+    const sr = b.readUInt32LE(24);
+    return b.readUInt32LE(40) / (sr * ch * 2);
+  };
+  let f = await grab('Download the whole song as a WAV file (plays everywhere: Music, GarageBand, any player)');
+  assert(/\.wav$/.test(f.name) && f.name.includes('Song'), `named after the song (${f.name})`);
+  const secs = wavSeconds(f.bytes);
+  assert(Math.abs(secs - DUR) < 0.6, `the whole song: ${secs.toFixed(2)} s`);
+  f = await grab('Download the whole song as the original audio file from YouTube (smaller, same quality)');
+  assert(/\.webm$/.test(f.name) && f.bytes.length > 100000 && f.bytes[0] === 0x1a, `original WebM audio (${f.name}, ${f.bytes.length} bytes)`);
+  // the loop
+  await clickWaveAt(4.2);
+  await clickWaveAt(7.7);
+  const h = await host();
+  f = await grab('Download the part between A and B as a WAV file');
+  const ls = wavSeconds(f.bytes);
+  assert(Math.abs(ls - (Number(h.b) - Number(h.a))) < 0.02, `the loop: ${ls.toFixed(3)} s for ${h.a}-${h.b}`);
+  assert(f.name.includes('loop'), `loop file name (${f.name})`);
+  await shadowClick('button', 'Clear the loop');
+  await shadowClick('button', 'Settings');
 });
 
 await step('a cappella video: lyrics line up with where the singing starts, by themselves', async () => {

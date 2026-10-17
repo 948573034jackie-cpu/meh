@@ -55,7 +55,7 @@
     ms.duration = M.duration;
     // Videos whose id starts with DRUM play the 96 BPM drum groove.
     // TEMPO: a song that goes from 90 to 120 BPM.
-    const audioTrack = /^DRUM/.test(currentVid || '') && M.drums ? M.drums : /^TEMPO/.test(currentVid || '') && M.tempo ? M.tempo : M.audio;
+    const audioTrack = /^DRUMKIT/.test(currentVid || '') && M.kit ? M.kit : /^DRUM/.test(currentVid || '') && M.drums ? M.drums : /^TEMPO/.test(currentVid || '') && M.tempo ? M.tempo : M.audio;
     const tracks = [audioTrack, M.video].map((t) => ({ t, sb: ms.addSourceBuffer(t.mime), busy: false, inited: false }));
     const get = async (u) => new Uint8Array(await (await fetch('/__fx/' + u)).arrayBuffer());
     const append = (tr, bytes) => new Promise((res) => {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DJ Wave Looper for YouTube
 // @namespace    https://github.com/948573034jackie-cpu/meh
-// @version      2.2.0
+// @version      2.3.0
 // @description  Whole-song DJ waveform, click-click A-B loop, 50/75/100% speed and an auto speed-up trainer for practising music on YouTube.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
@@ -505,6 +505,18 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     const high = new Uint8Array(count);
     const att = new Uint8Array(count);
     const atv = new Uint8Array(count);
+    // Extra bands to tell the drums apart: sub (< 100 Hz: the kick's boom),
+    // low-mid (100 - 400 Hz: toms, the snare's body), air (> 5 kHz: hi-hats, cymbals).
+    const sub = new Uint8Array(count);
+    const lmid = new Uint8Array(count);
+    const air = new Uint8Array(count);
+    const lpS = biquad('lp', 100, sr);
+    const lpT = biquad('lp', 400, sr);
+    const hpA = biquad('hp', Math.min(5000, sr * 0.4), sr);
+    let sx1 = 0, sx2 = 0, sy1 = 0, sy2 = 0;
+    let tx1 = 0, tx2 = 0, ty1 = 0, ty2 = 0;
+    let ax1 = 0, ax2 = 0, ay1 = 0, ay2 = 0;
+    let ss = 0, st = 0, sa = 0;
     const lp = biquad('lp', 250, sr);
     const hp = biquad('hp', 2500, sr);
     let lx1 = 0, lx2 = 0, ly1 = 0, ly2 = 0;
@@ -526,8 +538,12 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
         low[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sl / cnt)) * 300));
         mid[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sm / cnt)) * 300));
         high[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sh / cnt)) * 300));
+        sub[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(ss / cnt)) * 300));
+        lmid[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(st / cnt)) * 300));
+        air[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sa / cnt)) * 300));
       }
       pk = sl = sm = sh = cnt = 0;
+      ss = st = sa = 0;
     };
     for (let i = 0; i < n; i++) {
       while (i >= binEnd && bin < count) {
@@ -550,6 +566,15 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       const yh = hp.b0 * x + hp.b1 * hx1 + hp.b2 * hx2 - hp.a1 * hy1 - hp.a2 * hy2;
       hx2 = hx1; hx1 = x; hy2 = hy1; hy1 = yh;
       const ym = x - yl - yh;
+      const ys = lpS.b0 * x + lpS.b1 * sx1 + lpS.b2 * sx2 - lpS.a1 * sy1 - lpS.a2 * sy2;
+      sx2 = sx1; sx1 = x; sy2 = sy1; sy1 = ys;
+      const yt = lpT.b0 * x + lpT.b1 * tx1 + lpT.b2 * tx2 - lpT.a1 * ty1 - lpT.a2 * ty2;
+      tx2 = tx1; tx1 = x; ty2 = ty1; ty1 = yt;
+      const ya = hpA.b0 * x + hpA.b1 * ax1 + hpA.b2 * ax2 - hpA.a1 * ay1 - hpA.a2 * ay2;
+      ax2 = ax1; ax1 = x; ay2 = ay1; ay1 = ya;
+      ss += ys * ys;
+      st += (yt - ys) * (yt - ys);
+      sa += ya * ya;
       if (a > pk) pk = a;
       const ah = x - yl < 0 ? yl - x : x - yl;
       eHi = ah > eHi ? ah : eHi * relHi;
@@ -575,7 +600,7 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       cnt++;
     }
     flush();
-    return { startBin: firstBin, peak, low, mid, high, att, atv };
+    return { startBin: firstBin, peak, low, mid, high, att, atv, sub, lmid, air };
   }
 
   // Test hook (only used by the Node unit tests, never set on YouTube).
@@ -946,6 +971,9 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
       high: res.high,
       att: res.att,
       atv: res.atv,
+      sub: res.sub,
+      lmid: res.lmid,
+      air: res.air,
     });
   }
 
@@ -1125,10 +1153,120 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     post(info);
   }
 
+  // ---------------------------------------------------------------------------
+  // Download the song's audio (for practice): the whole song or the loop as
+  // WAV (plays everywhere), or the whole song as the original file. Made from
+  // the audio this page already received, so the whole song must have been
+  // read once.
+  // ---------------------------------------------------------------------------
+  function wavFile(buf, from, to) {
+    const ch = Math.min(2, buf.numberOfChannels);
+    const n = Math.max(0, to - from);
+    const out = new DataView(new ArrayBuffer(44 + n * ch * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) out.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF');
+    out.setUint32(4, 36 + n * ch * 2, true);
+    str(8, 'WAVE');
+    str(12, 'fmt ');
+    out.setUint32(16, 16, true);
+    out.setUint16(20, 1, true);
+    out.setUint16(22, ch, true);
+    out.setUint32(24, buf.sampleRate, true);
+    out.setUint32(28, buf.sampleRate * ch * 2, true);
+    out.setUint16(32, ch * 2, true);
+    out.setUint16(34, 16, true);
+    str(36, 'data');
+    out.setUint32(40, n * ch * 2, true);
+    const data = [];
+    for (let c = 0; c < ch; c++) data.push(buf.getChannelData(c));
+    let o = 44;
+    for (let i = from; i < to; i++) {
+      for (let c = 0; c < ch; c++) {
+        const v = Math.max(-1, Math.min(1, data[c][i]));
+        out.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+        o += 2;
+      }
+    }
+    return new Blob([out.buffer], { type: 'audio/wav' });
+  }
+
+  // The parts of [a, b] whose audio this page has not received (yet).
+  function missingAudio(vid, a, b) {
+    const k = kept.get(vid);
+    const have = [];
+    if (k) {
+      for (const g of k.groups) for (const c of sortedClusters(g)) have.push([c.time, c.end]);
+      for (const c of k.mp4) have.push([c.start, c.end]);
+    }
+    have.sort((x, y) => x[0] - y[0]);
+    const out = [];
+    let t = a;
+    for (const [s0, e0] of have) {
+      if (e0 <= t + 0.05) continue;
+      if (s0 > t + 0.1) out.push([t, Math.min(b, s0)]);
+      t = Math.max(t, e0);
+      if (t >= b) break;
+    }
+    if (t < b - 0.1) out.push([t, b]);
+    return out.filter(([x, y]) => y - x > 0.05);
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  async function download(req) {
+    const reply = (extra) => post({ type: 'download', id: req.id, vid: req.vid, ...extra });
+    try {
+      const end = req.what === 'loop' ? req.b : Math.max(0.5, req.duration - 0.6);
+      const start = req.what === 'loop' ? req.a : 0;
+      // (the first piece of audio starts a hair after 0)
+      const piece = chunksFor(req.vid, req.what === 'loop' ? Math.max(0, start) : 0.05, end);
+      if (!piece) return reply({ ok: false, why: 'not loaded', missing: missingAudio(req.vid, Math.max(0, start), end) });
+      const base = (req.name || 'audio').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audio';
+      if (req.fmt === 'orig') {
+        // the whole song, as it came (no decoding, no loss)
+        const ext = piece.container === 'mp4' ? 'm4a' : 'webm';
+        saveBlob(new Blob([piece.init, piece.media], { type: piece.container === 'mp4' ? 'audio/mp4' : 'audio/webm' }), `${base}.${ext}`);
+        return reply({ ok: true, name: `${base}.${ext}` });
+      }
+      const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
+      const ctx = new Ctor(2, 1, 48000);
+      const bytes = concat([piece.init, piece.media]);
+      let buf = null;
+      if (piece.container === 'mp4' && piece.mp4 && piece.mp4.asc) {
+        try {
+          const frags = mp4Fragments(piece.media, piece.mp4.timescale);
+          if (frags) buf = await ctx.decodeAudioData(toAdts(frags.samples, piece.mp4.asc).buffer);
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) buf = await ctx.decodeAudioData(bytes.buffer);
+      const sr = buf.sampleRate;
+      const from = req.what === 'loop' ? Math.max(0, Math.round((start - piece.start) * sr)) : 0;
+      const to = req.what === 'loop' ? Math.min(buf.length, Math.round((end - piece.start) * sr)) : buf.length;
+      const name = req.what === 'loop' ? `${base} (loop ${req.label || ''}).wav`.replace(' ()', '') : `${base}.wav`;
+      saveBlob(wavFile(buf, from, to), name);
+      reply({ ok: true, name, seconds: (to - from) / sr });
+    } catch (e) {
+      reply({ ok: false, why: String((e && e.message) || e) });
+    }
+  }
+
   G.addEventListener('message', (e) => {
     if (e.source !== G || !e.data || e.data[TAG] !== 'cs') return;
     if (e.data.type === 'hello') postVideoInfo(true);
     else if (e.data.type === 'loopAudio') loopAudio(e.data);
+    else if (e.data.type === 'download') download(e.data);
   });
   document.addEventListener('yt-navigate-finish', () => postVideoInfo(false), true);
   setInterval(() => postVideoInfo(false), 700);
@@ -1267,6 +1405,9 @@ globalThis.YTL_STORAGE = (() => {
       this.high = new Uint8Array(0);
       this.att = new Uint8Array(0); // sharpest attack in the bin: 1 + position in 0.1 ms (0 = none)
       this.atv = new Uint8Array(0); // ... and how sharp it is
+      this.sub = new Uint8Array(0); // < 100 Hz (kick)
+      this.lmid = new Uint8Array(0); // 100 - 400 Hz (toms, snare body)
+      this.air = new Uint8Array(0); // > 5 kHz (hi-hats, cymbals)
       this.cov = new Uint8Array(0);
       this.version = 0;
       this.maxPeak = 0;
@@ -1278,7 +1419,7 @@ globalThis.YTL_STORAGE = (() => {
         return;
       }
       const cap = Math.max(n, Math.ceil(this.peak.length * 1.5), 1024);
-      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'cov']) {
+      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'sub', 'lmid', 'air', 'cov']) {
         const a = new Uint8Array(cap);
         a.set(this[k]);
         this[k] = a;
@@ -1291,7 +1432,7 @@ globalThis.YTL_STORAGE = (() => {
     }
 
     /** Merge a chunk of bins (max-merge, so repeated chunks are harmless). */
-    add(startBin, peak, low, mid, high, att, atv) {
+    add(startBin, peak, low, mid, high, att, atv, extra) {
       if (!peak || !peak.length || startBin < 0) return;
       const end = startBin + peak.length;
       this.ensure(end);
@@ -1304,6 +1445,9 @@ globalThis.YTL_STORAGE = (() => {
         if (att && atv && att[i] && atv[i] > this.atv[j]) {
           this.atv[j] = atv[i];
           this.att[j] = att[i];
+        }
+        if (extra) {
+          for (const k of ['sub', 'lmid', 'air']) if (extra[k] && extra[k][i] > this[k][j]) this[k][j] = extra[k][i];
         }
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
@@ -1345,6 +1489,7 @@ globalThis.YTL_STORAGE = (() => {
           this.atv[j] = other.atv[j];
           this.att[j] = other.att[j];
         }
+        for (const k of ['sub', 'lmid', 'air']) if (other[k][j] > this[k][j]) this[k][j] = other[k][j];
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
       }
@@ -1395,7 +1540,7 @@ globalThis.YTL_STORAGE = (() => {
 
     serialize() {
       const n = this.n;
-      const out = new Uint8Array(n * 7);
+      const out = new Uint8Array(n * 10);
       out.set(this.peak.subarray(0, n), 0);
       out.set(this.low.subarray(0, n), n);
       out.set(this.mid.subarray(0, n), 2 * n);
@@ -1403,6 +1548,9 @@ globalThis.YTL_STORAGE = (() => {
       out.set(this.cov.subarray(0, n), 4 * n);
       out.set(this.att.subarray(0, n), 5 * n);
       out.set(this.atv.subarray(0, n), 6 * n);
+      out.set(this.sub.subarray(0, n), 7 * n);
+      out.set(this.lmid.subarray(0, n), 8 * n);
+      out.set(this.air.subarray(0, n), 9 * n);
       return { binRate: this.binRate, n, data: bytesToBase64(out) };
     }
 
@@ -1410,16 +1558,22 @@ globalThis.YTL_STORAGE = (() => {
       const s = new PeakStore(obj.binRate || 50);
       const n = obj.n | 0;
       const raw = base64ToBytes(obj.data || '');
-      if (raw.length !== n * 5 && raw.length !== n * 7) return s; // 5: saved before attacks were kept
+      // 5: saved before attacks were kept; 7: before the drum bands
+      if (raw.length !== n * 5 && raw.length !== n * 7 && raw.length !== n * 10) return s;
       s.ensure(n);
       s.peak.set(raw.subarray(0, n));
       s.low.set(raw.subarray(n, 2 * n));
       s.mid.set(raw.subarray(2 * n, 3 * n));
       s.high.set(raw.subarray(3 * n, 4 * n));
       s.cov.set(raw.subarray(4 * n, 5 * n));
-      if (raw.length === n * 7) {
+      if (raw.length >= n * 7) {
         s.att.set(raw.subarray(5 * n, 6 * n));
         s.atv.set(raw.subarray(6 * n, 7 * n));
+      }
+      if (raw.length === n * 10) {
+        s.sub.set(raw.subarray(7 * n, 8 * n));
+        s.lmid.set(raw.subarray(8 * n, 9 * n));
+        s.air.set(raw.subarray(9 * n, 10 * n));
       }
       for (let i = 0; i < n; i++) if (s.peak[i] > s.maxPeak) s.maxPeak = s.peak[i];
       s.version++;
@@ -2902,77 +3056,171 @@ globalThis.YTL_STORAGE = (() => {
   }
 
   /**
-   * Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}].
-   * Each hit is sorted by which bands jump together: a kick is led by the
-   * lows, a snare is a burst in the mids and the highs together, a hi-hat is
-   * highs with little middle (or riding on top of a kick).
+   * Drum hits for the drum chart: [{t, kind, v}], kind one of kick, snare,
+   * tom, hat (closed or open hi-hat), cym (crash, ride), perc (cowbell,
+   * woodblock...). One moment can hold several (kick + crash).
+   * Each hit is sorted by which bands jump together and how long it rings:
+   * a kick is a short boom under 100 Hz; a tom rings at 100 - 400 Hz with
+   * little noise on top; a snare is a crack across the mids and highs; a
+   * hi-hat is a short hiss above 5 kHz, a cymbal a long one; percussion is a
+   * short knock in the mids.
    */
-  function drumHits(P, durationSec) {
+  function drumHits(P, durationSec, beats) {
     const br = P.binRate;
     const n = Math.min(P.n, Math.ceil(durationSec * br));
-    const dl = new Float32Array(n);
-    const dm = new Float32Array(n);
-    const dh = new Float32Array(n);
+    const has6 = !!(P.sub && P.air && P.sub.some((v) => v > 0));
+    const bands = has6 ? { sub: P.sub, lmid: P.lmid, mid: P.mid, high: P.high, air: P.air } : { sub: P.low, lmid: P.low, mid: P.mid, high: P.high, air: P.high };
+    const rise = {};
     // Rise over the last two bins: a hit that falls on the edge between two
     // 20 ms bins is split in two, and still counts in full.
-    for (let i = 2; i < n; i++) {
-      if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
-      dl[i] = Math.max(0, P.low[i] - Math.min(P.low[i - 1], P.low[i - 2]));
-      dm[i] = Math.max(0, P.mid[i] - Math.min(P.mid[i - 1], P.mid[i - 2]));
-      dh[i] = Math.max(0, P.high[i] - Math.min(P.high[i - 1], P.high[i - 2]));
+    for (const [k, a] of Object.entries(bands)) {
+      const d = new Float32Array(n);
+      for (let i = 2; i < n; i++) {
+        if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
+        d[i] = Math.max(0, a[i] - Math.min(a[i - 1], a[i - 2]));
+      }
+      rise[k] = d;
     }
-    const peaksOf = (a) => {
-      const out = [];
-      for (let i = 1; i < n - 1; i++) if (a[i] > 0 && a[i] >= a[i - 1] && a[i] > a[i + 1]) out.push(a[i]);
-      return out.sort((x, y) => x - y);
-    };
-    const loud = (a, floor) => {
-      const pk = peaksOf(a);
-      return pk.length ? Math.max(floor, pk[Math.floor(pk.length * 0.99)] * 0.22) : Infinity;
-    };
-    const thrK = loud(dl, 10);
-    const thrH = loud(dh, 8);
     const at = (a, i) => Math.max(a[i - 1] || 0, a[i], a[i + 1] || 0);
-    const isPeak = (i) => {
-      const e = (k) => dl[k] + 0.6 * dm[k] + 0.8 * dh[k];
-      const env = e(i);
-      return env > 0 && env >= e(i - 1) && env > e(i + 1);
-    };
-    // A snare is a loud burst in the mids and highs together; hi-hats make a
-    // smaller one. "Loud" is measured against this song's own snares (the
-    // top of all mid+high bursts that are not kicks).
-    const burst = [];
-    for (let i = 1; i < n - 1; i++) {
-      if (!isPeak(i)) continue;
-      const L = at(dl, i);
-      const M = at(dm, i);
-      const H = at(dh, i);
-      if (L >= thrK && L >= M) continue;
-      burst.push(Math.min(M, H * 1.5) + 0.25 * M);
+    const envAt = (i) => rise.sub[i] + 0.7 * rise.lmid[i] + 0.6 * rise.mid[i] + 0.8 * rise.high[i] + 0.6 * rise.air[i];
+    const peaks = [];
+    for (let i = 2; i < n - 1; i++) {
+      const e = envAt(i);
+      if (e > 0 && e >= envAt(i - 1) && e > envAt(i + 1)) peaks.push(i);
     }
-    burst.sort((x, y) => x - y);
-    const thrS = burst.length ? Math.max(12, burst[Math.floor(burst.length * 0.92)] * 0.5) : Infinity;
+    // "Loud" for each band, measured against this song's own hits.
+    const loud = (k, floor) => {
+      const v = peaks.map((i) => at(rise[k], i)).sort((x, y) => x - y);
+      return v.length ? Math.max(floor, v[Math.floor(v.length * 0.97)] * 0.25) : Infinity;
+    };
+    const thr = { sub: loud('sub', 10), lmid: loud('lmid', 10), mid: loud('mid', 10), high: loud('high', 8), air: loud('air', 8) };
+    // How much of a hit is left k bins later (0 = gone, 1 = still as loud),
+    // above what was there just before it.
+    const left = (a, i, k) => {
+      let pk = 0;
+      let pi = i;
+      for (let j = i; j <= Math.min(n - 1, i + 2); j++) if (a[j] > pk) {
+        pk = a[j];
+        pi = j;
+      }
+      const floor = Math.min(a[i - 1] || 0, a[i - 2] || 0, a[i - 3] || 0);
+      const j = Math.min(n - 1, pi + k);
+      return pk - floor > 1 ? Math.max(0, Math.min(1.5, (a[j] - floor) / (pk - floor))) : 0;
+    };
+    // How much is left all the way from 60 ms to k bins later (the lowest
+    // point): a cymbal rings on, a run of hi-hats dips between the hits.
+    const ringing = (a, i, k) => {
+      let pk = 0;
+      let pi = i;
+      for (let j = i; j <= Math.min(n - 1, i + 2); j++) if (a[j] > pk) {
+        pk = a[j];
+        pi = j;
+      }
+      // the background: the quietest moment of the last 160 ms (not the
+      // tail of the hit before, which is still dying away)
+      let floor = Infinity;
+      for (let j = Math.max(0, i - 8); j < i; j++) floor = Math.min(floor, a[j]);
+      if (floor === Infinity) floor = 0;
+      if (pk - floor <= 1) return 0;
+      // measured against the body 40 ms in (the first spike is the stick)
+      const body = a[Math.min(n - 1, pi + 2)] - floor;
+      if (body < (pk - floor) * 0.3) return 0;
+      let lo = Infinity;
+      for (let j = pi + 3; j <= Math.min(n - 1, pi + k); j++) lo = Math.min(lo, a[j]);
+      return lo === Infinity ? 0 : Math.max(0, Math.min(1.5, (lo - floor) / body));
+    };
+    // Snares: a loud burst in the mids and highs together; measured against
+    // this song's own snares (the top of all mid+high bursts).
+    const burst = (i) => Math.min(at(rise.mid, i), at(rise.high, i) * 1.5) + 0.25 * at(rise.mid, i);
+    const bursts = peaks.map(burst).sort((x, y) => x - y);
+    const thrS = bursts.length ? Math.max(12, bursts[Math.floor(bursts.length * 0.97)] * 0.45) : Infinity;
     const out = [];
-    const last = { kick: -1, snare: -1, hat: -1 };
-    const push = (kind, i, v, thr) => {
+    const last = {};
+    const push = (kind, i, v, t0) => {
       const t = i / br;
-      if (t - last[kind] < 0.06) return; // one hit, not two
+      if (t - (last[kind] ?? -1) < 0.06) return; // one hit, not two
       last[kind] = t;
-      out.push({ t, kind, v: Math.min(1, v / (thr * 3)) });
+      out.push({ t, kind, v: Math.max(0.15, Math.min(1, v / (t0 * 3))) });
     };
-    for (let i = 1; i < n - 1; i++) {
-      if (!isPeak(i)) continue;
-      const L = at(dl, i);
-      const M = at(dm, i);
-      const H = at(dh, i);
-      const kick = L >= thrK && L >= M;
-      const snare = !kick && H >= 0.35 * M && Math.min(M, H * 1.5) + 0.25 * M >= thrS;
-      if (kick) push('kick', i, L, thrK);
+    // A kick is as loud as this song's kicks (bass and kick beating together
+    // make small booms in between).
+    const subs = peaks.map((i) => at(rise.sub, i)).sort((x, y) => x - y);
+    const booms = subs.filter((v) => v >= thr.sub);
+    const thrK = Math.max(thr.sub, 0.33 * (booms[Math.floor(booms.length * 0.9)] || 0));
+    // A tom is a drum: about as strong as the other drums (a piano chord is not).
+    const lmids = peaks.map((i) => at(rise.lmid, i)).filter((v) => v >= thr.lmid).sort((x, y) => x - y);
+    const thrT = Math.max(thr.lmid, 0.25 * (lmids[Math.floor(lmids.length * 0.95)] || 0));
+    let lastKick = -1;
+    // How much a kick alone lights up the mids and highs (its click), so a
+    // clap or snare on top of a kick still shows.
+    const kickBursts = peaks.filter((i) => at(rise.sub, i) >= thrK).map(burst).sort((x, y) => x - y);
+    const kickOnly = kickBursts.length ? kickBursts[Math.floor(kickBursts.length * 0.3)] : Infinity;
+    for (const i of peaks) {
+      const S0 = at(rise.sub, i);
+      const L = at(rise.lmid, i);
+      const M = at(rise.mid, i);
+      const H = at(rise.high, i);
+      const A = at(rise.air, i);
+      const ringL = has6 ? left(bands.lmid, i, 5) : 0;
+      // Kick: a boom under 100 Hz that dies away (a bass note holds on).
+      // (a quieter boom counts only with the beater's click in the mids:
+      // a bass note and a kick beating together make booms without one)
+      const click = M >= thr.mid && H > Math.max(4, thr.high * 0.2); // the beater: a crack in the mids and highs
+      const kick = (S0 >= thrK * 1.25 || (S0 >= thrK && click)) && S0 >= L * 0.5 && S0 >= M * 0.6 && (!has6 || left(bands.sub, i, 10) < 0.9) &&
+        (click || i / br - lastKick > 0.3); // a boom right after a kick, with no click: its 808 tail
+      if (kick) lastKick = i / br;
+      // Tom: still ringing in the low-mids 100 ms later (a snare is gone by
+      // then), but fading by 300 ms (a sung or played note holds on).
+      // (or: hardly any hiss - a stick on a drum head, not snare wires)
+      const tom = has6 && !kick && L >= thrT && L >= S0 * 1.2 && H > Math.max(4, thr.high * 0.25) && H < M * 0.9 && (ringL > 0.45 || (ringL > 0.25 && H < M * 0.6)) && left(bands.lmid, i, 11) < 0.8;
+      // Percussion: a knock in the mids with no low body and less hiss than a snare or clap.
+      const perc = has6 && !kick && !tom && M >= thr.mid * 1.5 && L < M * 0.3 && H < M * 0.85 && left(bands.mid, i, 6) < 0.5;
+      // (a crash rings on; a hi-hat on a kick hisses higher than a clap or snare)
+      const ringA = has6 ? ringing(bands.air, i, 20) : 0;
+      // (a snare has a body in the low-mids; a clap with none must be loud)
+      const snare = !tom && !perc && ringA < 0.45 && H >= 0.35 * M && burst(i) >= thrS && (L >= M * 0.3 || burst(i) >= thrS * 1.8 || kick) && (!kick || (burst(i) >= kickOnly + thrS * 0.6 && (!has6 || A < H * 0.86)));
+      // Hiss up top: short = hi-hat (or ride), long = crash.
+      const hiss = (has6 ? A : H) >= (kick || snare || tom || perc ? 1.25 : 1) * (has6 ? thr.air : thr.high) && !snare && (!tom || A > M);
+      const ring = hiss ? ringA : 0;
+      const cym = hiss && ring >= 0.45;
+      const hat = hiss && !cym;
+      if (drumHits.debug) drumHits.debug({ t: i / br, S0, L, M, H, A, ringL, ringL11: has6 ? left(bands.lmid, i, 11) : 0, ringA, kick, snare, tom, hat, cym, perc });
+      if (kick) push('kick', i, S0, thrK);
       if (snare) push('snare', i, M, thrS);
-      // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
-      if (!snare && H >= (kick ? thrH * 1.2 : thrH)) push('hat', i, H, thrH);
+      if (tom) push('tom', i, L, thr.lmid);
+      if (hat) push('hat', i, has6 ? A : H, has6 ? thr.air : thr.high);
+      if (cym) push('cym', i, A, thr.air);
+      if (perc) push('perc', i, M, thr.mid);
     }
-    return out.sort((x, y) => x.t - y.t);
+    out.sort((x, y) => x.t - y.t);
+    // A snare or clap together with a kick is real when it keeps coming
+    // (house claps on 2 and 4); now and then, it is a kick with a hi-hat.
+    {
+      const kicks = out.filter((h) => h.kind === 'kick');
+      const onKick = out.filter((h) => h.kind === 'snare' && kicks.some((k) => Math.abs(k.t - h.t) < 0.03));
+      if (onKick.length < kicks.length * 0.25) for (const h of onKick) h.kind = 'drop';
+      for (let i = out.length - 1; i >= 0; i--) if (out[i].kind === 'drop') out.splice(i, 1);
+    }
+    // A "snare" on (nearly) every off-beat is an open hi-hat keeping time
+    // (house, disco): snares and claps hit the beat, not every "and".
+    if (beats && beats.length > 8) {
+      const phase = (t) => {
+        let k = nearestBeatIndex(beats, t);
+        if (beats[k] > t) k--;
+        if (k < 0 || k + 1 >= beats.length) return -1;
+        return (t - beats[k]) / (beats[k + 1] - beats[k]);
+      };
+      const W = 16;
+      for (let b0 = 0; b0 + 4 < beats.length; b0 += W) {
+        const t0 = beats[b0];
+        const t1 = beats[Math.min(beats.length - 1, b0 + W)];
+        const sn = out.filter((h) => h.kind === 'snare' && h.t >= t0 && h.t < t1);
+        const off = sn.filter((h) => Math.abs(phase(h.t) - 0.5) < 0.1);
+        const nBeats = Math.min(W, beats.length - 1 - b0);
+        if (off.length >= nBeats * 0.6) for (const h of off) h.kind = 'hat';
+      }
+    }
+    return out;
   }
 
   /** Index of the beat nearest to t (beats sorted). */
@@ -4077,7 +4325,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
       slStop();
       renderUI();
     }],
-    ['seeked', () => (S.dirty = true)],
+    ['seeked', () => {
+      S.dirty = true;
+      renderUI(); // the tempo where you are, the line, the time: right away
+    }],
   ];
 
   // ---------------------------------------------------------------------------
@@ -4094,8 +4345,64 @@ if (typeof exports === 'object' && typeof module === 'object') {
       onPeaks(m);
     } else if (m.type === 'loopAudio') {
       slOnAudio(m);
+    } else if (m.type === 'download') {
+      onDownload(m);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Download the audio: the whole song or the loop (WAV), or the original file
+  // ---------------------------------------------------------------------------
+  const DL = { id: 0, pending: null, busy: false };
+
+  function downloadAudio(what, fmt) {
+    if (!S.vid || !dur()) return flash('Start a video first.');
+    if (what === 'loop' && !hasLoop()) return flash('Set a loop (A and B) first.');
+    if (DL.busy) return flash('Getting the audio ready…');
+    const need = what === 'loop' ? null : 0.97;
+    if (need && S.peaks.coverage(dur()) < need) {
+      DL.pending = { what, fmt };
+      flash('Reading the whole song first (a few seconds, muted), then it downloads…', 5000);
+      if (!S.scan) startScan();
+      return;
+    }
+    const retry = DL.pending && DL.pending.retry;
+    DL.pending = null;
+    if (!retry) DL.retried = false;
+    DL.busy = true;
+    DL.id++;
+    DL.req = { what, fmt };
+    const F = C.formatTime;
+    const title = (S.meta && S.meta.vid === S.vid && S.meta.title) || document.title.replace(/ - YouTube$/, '') || S.vid;
+    postToPage({ type: 'download', id: DL.id, vid: S.vid, what, fmt, a: S.a, b: effEnd(), duration: dur(), name: title, label: what === 'loop' ? `${F(S.a)}-${F(S.b)}`.replace(/:/g, '.') : '' });
+    flash('Getting the audio ready…', 3000);
+    setTimeout(() => (DL.busy = false), 30000);
+  }
+
+  function onDownload(m) {
+    if (m.id !== DL.id) return;
+    DL.busy = false;
+    DL.last = m;
+    if (m.ok) flash(`Saved "${m.name}" to your Downloads.`, 5000);
+    else if (m.why === 'not loaded' && Array.isArray(m.missing) && m.missing.length && !DL.retried && !S.scan) {
+      // The song's audio is not here (e.g. the wave came from memory): read
+      // those parts once, muted, then download by itself.
+      DL.retried = true;
+      DL.pending = { what: DL.req.what, fmt: DL.req.fmt, retry: true };
+      flash('Reading the song once to get its audio (a few seconds, muted)…', 5000);
+      startScan(m.missing.map(([a, b]) => ({ start: a, end: b })));
+    } else if (m.why === 'not loaded') flash('Part of it is not loaded yet: play that part once (or "Read whole song now" in ⚙), then try again.', 6000);
+    else flash(`Could not make the file (${m.why}).`, 6000);
+    renderUI();
+  }
+
+  // After "read the whole song first": download as soon as it is read.
+  function downloadTick() {
+    if (DL.pending && !S.scan && dur() && S.peaks.coverage(dur()) >= 0.97) {
+      const p = DL.pending;
+      downloadAudio(p.what, p.fmt);
+    }
+  }
 
   function postToPage(msg) {
     msg[TAG] = 'cs';
@@ -4113,7 +4420,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       if (S.orphan.list.length < 400) S.orphan.list.push(m);
       return;
     }
-    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
+    S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv, m);
     S.dirty = true;
     saveWaveSoon();
   }
@@ -4161,7 +4468,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       applyRate();
     }
     if (S.orphan && S.orphan.vid === vid) {
-      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv);
+      for (const m of S.orphan.list) S.peaks.add(m.startBin, m.peak, m.low, m.mid, m.high, m.att, m.atv, m);
     }
     S.orphan = null;
     resetLyrics();
@@ -5151,7 +5458,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     let hits = [];
     try {
       g = C.beatGrid(S.peaks, d);
-      hits = C.drumHits(S.peaks, d);
+      hits = C.drumHits(S.peaks, d, g && g.beats);
     } catch (e) {
       g = null;
     }
@@ -6568,7 +6875,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }, 500);
   }
 
-  function startScan() {
+  // need: parts to play through (to get their audio); default: the parts
+  // of the wave that are missing.
+  function startScan(need) {
     const v = S.video;
     const d = dur();
     if (!v || !d || S.scan || isAd()) return;
@@ -6577,6 +6886,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     clearTimeout(S.wrapTimer);
     S.wrapping = false;
     S.scannedVids.add(S.vid);
+    S.lastScanFrom = v.currentTime; // where playback was when the reading began (tests)
     S.scan = {
       vid: S.vid,
       video: v,
@@ -6590,6 +6900,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       skip: [],
       timer: 0,
       everGotData: S.peaks.coverage(d) > 0,
+      need: Array.isArray(need) && need.length ? need.slice() : null,
     };
     try {
       v.muted = true;
@@ -6601,7 +6912,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         /* ignore */
       }
     }
-    const g = S.peaks.nextGap(v.currentTime, d);
+    const g = S.scan.need ? S.scan.need[0] : S.peaks.nextGap(v.currentTime, d);
     if (g) seek(g.start);
     play();
     S.scan.timer = setInterval(scanTick, 100);
@@ -6621,7 +6932,13 @@ if (typeof exports === 'object' && typeof module === 'object') {
       sc.lastProgressAt = now();
       sc.everGotData = true;
     }
-    const gaps = S.peaks.gaps(d).filter((g) => !sc.skip.some((s) => Math.abs(s - g.start) < 0.5));
+    if (sc.need) {
+      // done with a part once it has played through (the end of the song: close to it)
+      const t0 = v.currentTime;
+      sc.need = sc.need.filter((g) => !(t0 >= Math.min(g.end, d - 2.6) - 0.3 && t0 >= g.start));
+      sc.everGotData = true;
+    }
+    const gaps = (sc.need || S.peaks.gaps(d)).filter((g) => !sc.skip.some((s) => Math.abs(s - g.start) < 0.5));
     if (!gaps.length) return endScan('done');
     if (now() - sc.startedAt > Math.max(90000, (d / SCAN_RATE) * 4000 + 30000)) return endScan('timeout');
     if (!sc.everGotData && now() - sc.startedAt > 7000) return endScan('nohook');
@@ -6658,6 +6975,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   function endScan(reason) {
     const sc = S.scan;
     if (!sc) return;
+    S.lastScanEnd = reason;
     clearInterval(sc.timer);
     S.scan = null;
     const v = sc.video;
@@ -6877,7 +7195,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       return b;
     });
     ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
-    ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
+    ui.drumBtn = btn('Drums', 'Drum view: the wave in drum colours with a drum chart under it, one row per drum: CR crash, HH hi-hat / ride, PC percussion, SN snare / clap, TT toms, KK kick', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       h('span', { class: 'q-pair' }, ui.qBtn, ui.qResSel),
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
@@ -7095,6 +7413,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
       'audioSession' in navigator ? h('label', { class: 'check', title: 'Keep the video sound during a voice call (Claude voice mode, FaceTime…). The silent switch / silent mode mutes it.' }, ui.mixChk,
         'Play along with voice calls') : null,
       ui.rescanBtn,
+      h('span', { class: 'label', text: 'Download' }),
+      btn('Song (WAV)', 'Download the whole song as a WAV file (plays everywhere: Music, GarageBand, any player)', () => downloadAudio('song', 'wav'), 'dl-btn'),
+      btn('Loop (WAV)', 'Download the part between A and B as a WAV file', () => downloadAudio('loop', 'wav'), 'dl-btn'),
+      btn('Song (original)', 'Download the whole song as the original audio file from YouTube (smaller, same quality)', () => downloadAudio('song', 'orig'), 'dl-btn'),
       btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
     // --- waveform ---
@@ -7158,7 +7480,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
           h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
-          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves: 1 2 3 4 on the wave. Q snaps A and B to the beat; 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows kick, snare and hi-hats. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms, and choose what Q snaps to (beat, ½, ¼, bar).'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves, also when the tempo changes: 1 2 3 4 on the wave. Q snaps A, B and the hot cues to 1/4, 1/8 or 1/16 notes or bars (pick beside Q); 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows a drum chart: crash, hi-hat, percussion, snare, toms, kick. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms. Follow (top right of the wave): off = the wave stays still, drag it, click to play from there. Download the song or the loop in ⚙.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
@@ -7325,7 +7647,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
     settings.open = false;
     saveSettings();
     stopLineLoop(true);
-    if (S.scan) endScan('cancel');
+    if (S.scan) {
+      // closed while reading the song: read the rest next time it opens
+      S.scannedVids.delete(S.scan.vid);
+      endScan('closed');
+    }
     stopTrainer(true);
     clearTimeout(S.gapTimer);
     S.wrapping = false;
@@ -7595,7 +7921,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     // Debug only: the wave's band data, to tune the drum analysis.
     if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
       const P = S.peaks;
-      document.documentElement.dataset.ytlPeaks = JSON.stringify({ n: P.n, peak: Array.from(P.peak.subarray(0, P.n)), low: Array.from(P.low.subarray(0, P.n)), mid: Array.from(P.mid.subarray(0, P.n)), high: Array.from(P.high.subarray(0, P.n)), cov: Array.from(P.cov.subarray(0, P.n)) });
+      const dump = { n: P.n };
+      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'sub', 'lmid', 'air', 'cov']) dump[k] = Array.from(P[k].subarray(0, P.n));
+      document.documentElement.dataset.ytlPeaks = JSON.stringify(dump);
     }
     d.beats = S.grid ? String(S.grid.beats.length) : '';
     if (document.documentElement.dataset.ytlDebug === '1') {
@@ -7604,6 +7932,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
     d.follow = S.follow ? 'on' : '';
+    d.scanFrom = S.lastScanFrom != null ? S.lastScanFrom.toFixed(2) : '';
+    d.scanEnd = S.lastScanEnd || '';
+    d.download = DL.last ? `${DL.last.ok ? 'ok' : 'fail'}:${DL.last.name || DL.last.why}` : DL.pending ? 'waiting' : '';
     d.quant = settings.quantize ? (settings.qRes === 1 ? 'on' : `on:${settings.qRes}`) : '';
     d.gridMs = String(Math.round(S.gridAdj.offset * 1000));
     d.gridManual = S.grid && S.grid.manual ? '1' : '';
@@ -7621,7 +7952,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
-    d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
+    d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat', 'tom', 'cym', 'perc'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
     d.practice = !PR.on ? '' : PR.final ? 'final' : PR.restUntil ? `rest:${PR.pos}` : `part:${PR.pos}`;
     d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
     d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
@@ -8081,36 +8412,116 @@ if (typeof exports === 'object' && typeof module === 'object') {
     });
   }
 
-  // Drum lanes under the wave: kick, snare and hi-hat hits, like a drum chart.
-  function drawLanes(ctx, g, top, wh) {
+  // The drum chart under the wave: one row per drum, like reading drum
+  // notation (cymbals on top, kick at the bottom). Only drums the song has.
+  const DRUM_ROWS = [
+    { kind: 'cym', label: 'CR', name: 'crash', col: '#ffd54f' },
+    { kind: 'hat', label: 'HH', name: 'hi-hat / ride', col: '#cdf0ff' },
+    { kind: 'perc', label: 'PC', name: 'percussion', col: '#c792ea' },
+    { kind: 'snare', label: 'SN', name: 'snare / clap', col: '#ffb74d' },
+    { kind: 'tom', label: 'TT', name: 'toms', col: '#7ee081' },
+    { kind: 'kick', label: 'KK', name: 'kick', col: '#ff5436' },
+  ];
+
+  function drumChartRows() {
     const hits = S.gridBase && S.gridBase.vid === S.vid ? S.gridBase.hits : null;
-    if (!hits || !hits.length || settings.waveStyle !== 'drums') return;
+    if (!hits || !hits.length || settings.waveStyle !== 'drums') return null;
+    if (S.gridBase.rowsFor !== hits) {
+      const has = new Set(hits.map((h) => h.kind));
+      S.gridBase.rows = DRUM_ROWS.filter((r) => has.has(r.kind));
+      S.gridBase.rowsFor = hits;
+    }
+    return S.gridBase.rows;
+  }
+
+  // Height of the drum chart at the bottom of the wave.
+  function drumChartH(wh) {
+    const rows = drumChartRows();
+    if (!rows || !rows.length) return 0;
+    return Math.round(Math.min(wh * 0.62, C.clamp(wh * 0.5, rows.length * 12, rows.length * 20)));
+  }
+
+  function drawLanes(ctx, g, top, wh) {
+    const rows = drumChartRows();
+    if (!rows || !rows.length) return;
+    const hits = S.gridBase.hits;
     const { s, e } = viewRange();
-    const laneH = 7;
-    const y0 = top + wh - laneH * 3 - 4;
-    ctx.fillStyle = 'rgba(5,7,11,0.55)';
-    ctx.fillRect(0, y0 - 2, g.w, laneH * 3 + 6);
-    const rows = { hat: 0, snare: 1, kick: 2 };
-    const cols = { kick: '#ff5436', snare: '#ffb74d', hat: '#cdf0ff' };
-    const wpx = Math.max(2, Math.min(5, (0.04 / (e - s)) * g.w));
+    const chartH = drumChartH(wh);
+    const rowH = chartH / rows.length;
+    const y0 = top + wh - chartH;
+    ctx.fillStyle = '#07090e';
+    ctx.fillRect(0, y0 - 1, g.w, chartH + 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(0, y0 - 1, g.w, 1);
+    // the beat grid through the chart: bars, beats, and 16ths when zoomed in
+    const G = S.grid;
+    if (G) {
+      const pxBeat = ((60 / G.bpm) / (e - s)) * g.w;
+      const B = G.beats;
+      for (let i = Math.max(0, C.nearestBeatIndex(B, s) - 1); i < B.length && B[i] <= e + 0.01; i++) {
+        const x = Math.round(xAt(B[i], g));
+        const bar = (((i - G.first) % 4) + 4) % 4 === 0;
+        if (bar || pxBeat >= 6) {
+          ctx.fillStyle = bar ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)';
+          ctx.fillRect(x, y0, 1, chartH);
+        }
+        if (pxBeat >= 28 && i + 1 < B.length) {
+          ctx.fillStyle = 'rgba(255,255,255,0.04)';
+          for (let q = 1; q < 4; q++) ctx.fillRect(Math.round(xAt(B[i] + ((B[i + 1] - B[i]) * q) / 4, g)), y0, 1, chartH);
+        }
+      }
+    }
+    rows.forEach((r, k) => {
+      if (k % 2) {
+        ctx.fillStyle = 'rgba(255,255,255,0.025)';
+        ctx.fillRect(0, y0 + k * rowH, g.w, rowH);
+      }
+    });
+    const row = {};
+    rows.forEach((r, k) => (row[r.kind] = k));
+    const col = {};
+    rows.forEach((r) => (col[r.kind] = r.col));
+    const span = e - s;
+    const wpx = C.clamp((0.045 / span) * g.w, 3, 14);
+    const hh = Math.max(3, rowH - 3);
     let i = 0;
-    while (i < hits.length && hits[i].t < s) i++;
+    while (i < hits.length && hits[i].t < s - 1) i++;
     for (; i < hits.length && hits[i].t <= e; i++) {
       const h = hits[i];
-      ctx.globalAlpha = 0.45 + 0.55 * h.v;
-      ctx.fillStyle = cols[h.kind];
-      ctx.fillRect(xAt(h.t, g) - wpx / 2, y0 + rows[h.kind] * laneH, wpx, laneH - 2);
+      const k = row[h.kind];
+      if (k == null) continue;
+      const x = xAt(h.t, g);
+      const y = y0 + k * rowH + (rowH - hh) / 2;
+      ctx.globalAlpha = 0.35 + 0.65 * h.v;
+      ctx.fillStyle = col[h.kind];
+      if (h.kind === 'cym') {
+        // a crash rings on: a fading tail after the hit
+        const tail = Math.min(g.w, (0.6 / span) * g.w);
+        const gr = ctx.createLinearGradient(x, 0, x + tail, 0);
+        gr.addColorStop(0, 'rgba(255,213,79,0.45)');
+        gr.addColorStop(1, 'rgba(255,213,79,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(x, y + hh * 0.3, tail, hh * 0.4);
+        ctx.fillStyle = col[h.kind];
+      }
+      const rr = Math.min(3, hh / 2, wpx / 2);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x - wpx / 2, y, wpx, hh, rr);
+      else ctx.rect(x - wpx / 2, y, wpx, hh);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
-    if (g.w > 300) {
-      ctx.font = '600 8.5px Roboto, system-ui, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.fillText('HH', 3, y0 - 1);
-      ctx.fillText('SN', 3, y0 + laneH - 1);
-      ctx.fillText('KK', 3, y0 + laneH * 2 - 1);
-    }
+    // row names
+    ctx.font = `700 ${Math.round(C.clamp(rowH * 0.62, 8, 11))}px Roboto, system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    rows.forEach((r, k) => {
+      const y = y0 + k * rowH + rowH / 2;
+      ctx.fillStyle = 'rgba(7,9,14,0.85)';
+      ctx.fillRect(0, y0 + k * rowH, 24, rowH);
+      ctx.fillStyle = r.col;
+      ctx.fillText(r.label, 4, y + 0.5);
+    });
   }
 
   function draw() {
@@ -8357,7 +8768,15 @@ if (typeof exports === 'object' && typeof module === 'object') {
       else if (y >= RULER && handleAt(x, g)) cursor = 'ew-resize';
       cv.style.cursor = cursor;
       ui.tip.hidden = false;
-      ui.tip.textContent = y < RULER ? `Jump to ${C.formatTime(t)}` : C.formatTime(t);
+      let tipText = y < RULER ? `Jump to ${C.formatTime(t)}` : C.formatTime(t);
+      // over the drum chart: which drum this row is
+      const rows = drumChartRows();
+      const chH = rows ? drumChartH(g.waveH) : 0;
+      if (chH && y >= g.waveTop + g.waveH - chH && y < g.waveTop + g.waveH) {
+        const r = rows[Math.min(rows.length - 1, Math.floor((y - (g.waveTop + g.waveH - chH)) / (chH / rows.length)))];
+        tipText = `${r.name} · ${C.formatTime(t)}`;
+      }
+      ui.tip.textContent = tipText;
       ui.tip.style.left = `${C.clamp(x, 30, g.w - 30)}px`;
     });
     cv.addEventListener('pointerleave', () => {
@@ -8830,6 +9249,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       engineTick();
       liveTick();
       maybeComputeGrid();
+      downloadTick();
       if (hostEl && hostEl.style.display !== 'none') {
         followPlayhead();
         lyricsTick();

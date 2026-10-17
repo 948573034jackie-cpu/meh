@@ -87,6 +87,9 @@
       this.high = new Uint8Array(0);
       this.att = new Uint8Array(0); // sharpest attack in the bin: 1 + position in 0.1 ms (0 = none)
       this.atv = new Uint8Array(0); // ... and how sharp it is
+      this.sub = new Uint8Array(0); // < 100 Hz (kick)
+      this.lmid = new Uint8Array(0); // 100 - 400 Hz (toms, snare body)
+      this.air = new Uint8Array(0); // > 5 kHz (hi-hats, cymbals)
       this.cov = new Uint8Array(0);
       this.version = 0;
       this.maxPeak = 0;
@@ -98,7 +101,7 @@
         return;
       }
       const cap = Math.max(n, Math.ceil(this.peak.length * 1.5), 1024);
-      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'cov']) {
+      for (const k of ['peak', 'low', 'mid', 'high', 'att', 'atv', 'sub', 'lmid', 'air', 'cov']) {
         const a = new Uint8Array(cap);
         a.set(this[k]);
         this[k] = a;
@@ -111,7 +114,7 @@
     }
 
     /** Merge a chunk of bins (max-merge, so repeated chunks are harmless). */
-    add(startBin, peak, low, mid, high, att, atv) {
+    add(startBin, peak, low, mid, high, att, atv, extra) {
       if (!peak || !peak.length || startBin < 0) return;
       const end = startBin + peak.length;
       this.ensure(end);
@@ -124,6 +127,9 @@
         if (att && atv && att[i] && atv[i] > this.atv[j]) {
           this.atv[j] = atv[i];
           this.att[j] = att[i];
+        }
+        if (extra) {
+          for (const k of ['sub', 'lmid', 'air']) if (extra[k] && extra[k][i] > this[k][j]) this[k][j] = extra[k][i];
         }
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
@@ -165,6 +171,7 @@
           this.atv[j] = other.atv[j];
           this.att[j] = other.att[j];
         }
+        for (const k of ['sub', 'lmid', 'air']) if (other[k][j] > this[k][j]) this[k][j] = other[k][j];
         this.cov[j] = 1;
         if (this.peak[j] > this.maxPeak) this.maxPeak = this.peak[j];
       }
@@ -215,7 +222,7 @@
 
     serialize() {
       const n = this.n;
-      const out = new Uint8Array(n * 7);
+      const out = new Uint8Array(n * 10);
       out.set(this.peak.subarray(0, n), 0);
       out.set(this.low.subarray(0, n), n);
       out.set(this.mid.subarray(0, n), 2 * n);
@@ -223,6 +230,9 @@
       out.set(this.cov.subarray(0, n), 4 * n);
       out.set(this.att.subarray(0, n), 5 * n);
       out.set(this.atv.subarray(0, n), 6 * n);
+      out.set(this.sub.subarray(0, n), 7 * n);
+      out.set(this.lmid.subarray(0, n), 8 * n);
+      out.set(this.air.subarray(0, n), 9 * n);
       return { binRate: this.binRate, n, data: bytesToBase64(out) };
     }
 
@@ -230,16 +240,22 @@
       const s = new PeakStore(obj.binRate || 50);
       const n = obj.n | 0;
       const raw = base64ToBytes(obj.data || '');
-      if (raw.length !== n * 5 && raw.length !== n * 7) return s; // 5: saved before attacks were kept
+      // 5: saved before attacks were kept; 7: before the drum bands
+      if (raw.length !== n * 5 && raw.length !== n * 7 && raw.length !== n * 10) return s;
       s.ensure(n);
       s.peak.set(raw.subarray(0, n));
       s.low.set(raw.subarray(n, 2 * n));
       s.mid.set(raw.subarray(2 * n, 3 * n));
       s.high.set(raw.subarray(3 * n, 4 * n));
       s.cov.set(raw.subarray(4 * n, 5 * n));
-      if (raw.length === n * 7) {
+      if (raw.length >= n * 7) {
         s.att.set(raw.subarray(5 * n, 6 * n));
         s.atv.set(raw.subarray(6 * n, 7 * n));
+      }
+      if (raw.length === n * 10) {
+        s.sub.set(raw.subarray(7 * n, 8 * n));
+        s.lmid.set(raw.subarray(8 * n, 9 * n));
+        s.air.set(raw.subarray(9 * n, 10 * n));
       }
       for (let i = 0; i < n; i++) if (s.peak[i] > s.maxPeak) s.maxPeak = s.peak[i];
       s.version++;
@@ -1722,77 +1738,171 @@
   }
 
   /**
-   * Drum hits for the drum lanes: [{t, kind: 'kick'|'snare'|'hat', v}].
-   * Each hit is sorted by which bands jump together: a kick is led by the
-   * lows, a snare is a burst in the mids and the highs together, a hi-hat is
-   * highs with little middle (or riding on top of a kick).
+   * Drum hits for the drum chart: [{t, kind, v}], kind one of kick, snare,
+   * tom, hat (closed or open hi-hat), cym (crash, ride), perc (cowbell,
+   * woodblock...). One moment can hold several (kick + crash).
+   * Each hit is sorted by which bands jump together and how long it rings:
+   * a kick is a short boom under 100 Hz; a tom rings at 100 - 400 Hz with
+   * little noise on top; a snare is a crack across the mids and highs; a
+   * hi-hat is a short hiss above 5 kHz, a cymbal a long one; percussion is a
+   * short knock in the mids.
    */
-  function drumHits(P, durationSec) {
+  function drumHits(P, durationSec, beats) {
     const br = P.binRate;
     const n = Math.min(P.n, Math.ceil(durationSec * br));
-    const dl = new Float32Array(n);
-    const dm = new Float32Array(n);
-    const dh = new Float32Array(n);
+    const has6 = !!(P.sub && P.air && P.sub.some((v) => v > 0));
+    const bands = has6 ? { sub: P.sub, lmid: P.lmid, mid: P.mid, high: P.high, air: P.air } : { sub: P.low, lmid: P.low, mid: P.mid, high: P.high, air: P.high };
+    const rise = {};
     // Rise over the last two bins: a hit that falls on the edge between two
     // 20 ms bins is split in two, and still counts in full.
-    for (let i = 2; i < n; i++) {
-      if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
-      dl[i] = Math.max(0, P.low[i] - Math.min(P.low[i - 1], P.low[i - 2]));
-      dm[i] = Math.max(0, P.mid[i] - Math.min(P.mid[i - 1], P.mid[i - 2]));
-      dh[i] = Math.max(0, P.high[i] - Math.min(P.high[i - 1], P.high[i - 2]));
+    for (const [k, a] of Object.entries(bands)) {
+      const d = new Float32Array(n);
+      for (let i = 2; i < n; i++) {
+        if (!P.cov[i] || !P.cov[i - 1] || !P.cov[i - 2]) continue;
+        d[i] = Math.max(0, a[i] - Math.min(a[i - 1], a[i - 2]));
+      }
+      rise[k] = d;
     }
-    const peaksOf = (a) => {
-      const out = [];
-      for (let i = 1; i < n - 1; i++) if (a[i] > 0 && a[i] >= a[i - 1] && a[i] > a[i + 1]) out.push(a[i]);
-      return out.sort((x, y) => x - y);
-    };
-    const loud = (a, floor) => {
-      const pk = peaksOf(a);
-      return pk.length ? Math.max(floor, pk[Math.floor(pk.length * 0.99)] * 0.22) : Infinity;
-    };
-    const thrK = loud(dl, 10);
-    const thrH = loud(dh, 8);
     const at = (a, i) => Math.max(a[i - 1] || 0, a[i], a[i + 1] || 0);
-    const isPeak = (i) => {
-      const e = (k) => dl[k] + 0.6 * dm[k] + 0.8 * dh[k];
-      const env = e(i);
-      return env > 0 && env >= e(i - 1) && env > e(i + 1);
-    };
-    // A snare is a loud burst in the mids and highs together; hi-hats make a
-    // smaller one. "Loud" is measured against this song's own snares (the
-    // top of all mid+high bursts that are not kicks).
-    const burst = [];
-    for (let i = 1; i < n - 1; i++) {
-      if (!isPeak(i)) continue;
-      const L = at(dl, i);
-      const M = at(dm, i);
-      const H = at(dh, i);
-      if (L >= thrK && L >= M) continue;
-      burst.push(Math.min(M, H * 1.5) + 0.25 * M);
+    const envAt = (i) => rise.sub[i] + 0.7 * rise.lmid[i] + 0.6 * rise.mid[i] + 0.8 * rise.high[i] + 0.6 * rise.air[i];
+    const peaks = [];
+    for (let i = 2; i < n - 1; i++) {
+      const e = envAt(i);
+      if (e > 0 && e >= envAt(i - 1) && e > envAt(i + 1)) peaks.push(i);
     }
-    burst.sort((x, y) => x - y);
-    const thrS = burst.length ? Math.max(12, burst[Math.floor(burst.length * 0.92)] * 0.5) : Infinity;
+    // "Loud" for each band, measured against this song's own hits.
+    const loud = (k, floor) => {
+      const v = peaks.map((i) => at(rise[k], i)).sort((x, y) => x - y);
+      return v.length ? Math.max(floor, v[Math.floor(v.length * 0.97)] * 0.25) : Infinity;
+    };
+    const thr = { sub: loud('sub', 10), lmid: loud('lmid', 10), mid: loud('mid', 10), high: loud('high', 8), air: loud('air', 8) };
+    // How much of a hit is left k bins later (0 = gone, 1 = still as loud),
+    // above what was there just before it.
+    const left = (a, i, k) => {
+      let pk = 0;
+      let pi = i;
+      for (let j = i; j <= Math.min(n - 1, i + 2); j++) if (a[j] > pk) {
+        pk = a[j];
+        pi = j;
+      }
+      const floor = Math.min(a[i - 1] || 0, a[i - 2] || 0, a[i - 3] || 0);
+      const j = Math.min(n - 1, pi + k);
+      return pk - floor > 1 ? Math.max(0, Math.min(1.5, (a[j] - floor) / (pk - floor))) : 0;
+    };
+    // How much is left all the way from 60 ms to k bins later (the lowest
+    // point): a cymbal rings on, a run of hi-hats dips between the hits.
+    const ringing = (a, i, k) => {
+      let pk = 0;
+      let pi = i;
+      for (let j = i; j <= Math.min(n - 1, i + 2); j++) if (a[j] > pk) {
+        pk = a[j];
+        pi = j;
+      }
+      // the background: the quietest moment of the last 160 ms (not the
+      // tail of the hit before, which is still dying away)
+      let floor = Infinity;
+      for (let j = Math.max(0, i - 8); j < i; j++) floor = Math.min(floor, a[j]);
+      if (floor === Infinity) floor = 0;
+      if (pk - floor <= 1) return 0;
+      // measured against the body 40 ms in (the first spike is the stick)
+      const body = a[Math.min(n - 1, pi + 2)] - floor;
+      if (body < (pk - floor) * 0.3) return 0;
+      let lo = Infinity;
+      for (let j = pi + 3; j <= Math.min(n - 1, pi + k); j++) lo = Math.min(lo, a[j]);
+      return lo === Infinity ? 0 : Math.max(0, Math.min(1.5, (lo - floor) / body));
+    };
+    // Snares: a loud burst in the mids and highs together; measured against
+    // this song's own snares (the top of all mid+high bursts).
+    const burst = (i) => Math.min(at(rise.mid, i), at(rise.high, i) * 1.5) + 0.25 * at(rise.mid, i);
+    const bursts = peaks.map(burst).sort((x, y) => x - y);
+    const thrS = bursts.length ? Math.max(12, bursts[Math.floor(bursts.length * 0.97)] * 0.45) : Infinity;
     const out = [];
-    const last = { kick: -1, snare: -1, hat: -1 };
-    const push = (kind, i, v, thr) => {
+    const last = {};
+    const push = (kind, i, v, t0) => {
       const t = i / br;
-      if (t - last[kind] < 0.06) return; // one hit, not two
+      if (t - (last[kind] ?? -1) < 0.06) return; // one hit, not two
       last[kind] = t;
-      out.push({ t, kind, v: Math.min(1, v / (thr * 3)) });
+      out.push({ t, kind, v: Math.max(0.15, Math.min(1, v / (t0 * 3))) });
     };
-    for (let i = 1; i < n - 1; i++) {
-      if (!isPeak(i)) continue;
-      const L = at(dl, i);
-      const M = at(dm, i);
-      const H = at(dh, i);
-      const kick = L >= thrK && L >= M;
-      const snare = !kick && H >= 0.35 * M && Math.min(M, H * 1.5) + 0.25 * M >= thrS;
-      if (kick) push('kick', i, L, thrK);
+    // A kick is as loud as this song's kicks (bass and kick beating together
+    // make small booms in between).
+    const subs = peaks.map((i) => at(rise.sub, i)).sort((x, y) => x - y);
+    const booms = subs.filter((v) => v >= thr.sub);
+    const thrK = Math.max(thr.sub, 0.33 * (booms[Math.floor(booms.length * 0.9)] || 0));
+    // A tom is a drum: about as strong as the other drums (a piano chord is not).
+    const lmids = peaks.map((i) => at(rise.lmid, i)).filter((v) => v >= thr.lmid).sort((x, y) => x - y);
+    const thrT = Math.max(thr.lmid, 0.25 * (lmids[Math.floor(lmids.length * 0.95)] || 0));
+    let lastKick = -1;
+    // How much a kick alone lights up the mids and highs (its click), so a
+    // clap or snare on top of a kick still shows.
+    const kickBursts = peaks.filter((i) => at(rise.sub, i) >= thrK).map(burst).sort((x, y) => x - y);
+    const kickOnly = kickBursts.length ? kickBursts[Math.floor(kickBursts.length * 0.3)] : Infinity;
+    for (const i of peaks) {
+      const S0 = at(rise.sub, i);
+      const L = at(rise.lmid, i);
+      const M = at(rise.mid, i);
+      const H = at(rise.high, i);
+      const A = at(rise.air, i);
+      const ringL = has6 ? left(bands.lmid, i, 5) : 0;
+      // Kick: a boom under 100 Hz that dies away (a bass note holds on).
+      // (a quieter boom counts only with the beater's click in the mids:
+      // a bass note and a kick beating together make booms without one)
+      const click = M >= thr.mid && H > Math.max(4, thr.high * 0.2); // the beater: a crack in the mids and highs
+      const kick = (S0 >= thrK * 1.25 || (S0 >= thrK && click)) && S0 >= L * 0.5 && S0 >= M * 0.6 && (!has6 || left(bands.sub, i, 10) < 0.9) &&
+        (click || i / br - lastKick > 0.3); // a boom right after a kick, with no click: its 808 tail
+      if (kick) lastKick = i / br;
+      // Tom: still ringing in the low-mids 100 ms later (a snare is gone by
+      // then), but fading by 300 ms (a sung or played note holds on).
+      // (or: hardly any hiss - a stick on a drum head, not snare wires)
+      const tom = has6 && !kick && L >= thrT && L >= S0 * 1.2 && H > Math.max(4, thr.high * 0.25) && H < M * 0.9 && (ringL > 0.45 || (ringL > 0.25 && H < M * 0.6)) && left(bands.lmid, i, 11) < 0.8;
+      // Percussion: a knock in the mids with no low body and less hiss than a snare or clap.
+      const perc = has6 && !kick && !tom && M >= thr.mid * 1.5 && L < M * 0.3 && H < M * 0.85 && left(bands.mid, i, 6) < 0.5;
+      // (a crash rings on; a hi-hat on a kick hisses higher than a clap or snare)
+      const ringA = has6 ? ringing(bands.air, i, 20) : 0;
+      // (a snare has a body in the low-mids; a clap with none must be loud)
+      const snare = !tom && !perc && ringA < 0.45 && H >= 0.35 * M && burst(i) >= thrS && (L >= M * 0.3 || burst(i) >= thrS * 1.8 || kick) && (!kick || (burst(i) >= kickOnly + thrS * 0.6 && (!has6 || A < H * 0.86)));
+      // Hiss up top: short = hi-hat (or ride), long = crash.
+      const hiss = (has6 ? A : H) >= (kick || snare || tom || perc ? 1.25 : 1) * (has6 ? thr.air : thr.high) && !snare && (!tom || A > M);
+      const ring = hiss ? ringA : 0;
+      const cym = hiss && ring >= 0.45;
+      const hat = hiss && !cym;
+      if (drumHits.debug) drumHits.debug({ t: i / br, S0, L, M, H, A, ringL, ringL11: has6 ? left(bands.lmid, i, 11) : 0, ringA, kick, snare, tom, hat, cym, perc });
+      if (kick) push('kick', i, S0, thrK);
       if (snare) push('snare', i, M, thrS);
-      // Hi-hat: a high burst that is not the snare (on a kick it must stand out more).
-      if (!snare && H >= (kick ? thrH * 1.2 : thrH)) push('hat', i, H, thrH);
+      if (tom) push('tom', i, L, thr.lmid);
+      if (hat) push('hat', i, has6 ? A : H, has6 ? thr.air : thr.high);
+      if (cym) push('cym', i, A, thr.air);
+      if (perc) push('perc', i, M, thr.mid);
     }
-    return out.sort((x, y) => x.t - y.t);
+    out.sort((x, y) => x.t - y.t);
+    // A snare or clap together with a kick is real when it keeps coming
+    // (house claps on 2 and 4); now and then, it is a kick with a hi-hat.
+    {
+      const kicks = out.filter((h) => h.kind === 'kick');
+      const onKick = out.filter((h) => h.kind === 'snare' && kicks.some((k) => Math.abs(k.t - h.t) < 0.03));
+      if (onKick.length < kicks.length * 0.25) for (const h of onKick) h.kind = 'drop';
+      for (let i = out.length - 1; i >= 0; i--) if (out[i].kind === 'drop') out.splice(i, 1);
+    }
+    // A "snare" on (nearly) every off-beat is an open hi-hat keeping time
+    // (house, disco): snares and claps hit the beat, not every "and".
+    if (beats && beats.length > 8) {
+      const phase = (t) => {
+        let k = nearestBeatIndex(beats, t);
+        if (beats[k] > t) k--;
+        if (k < 0 || k + 1 >= beats.length) return -1;
+        return (t - beats[k]) / (beats[k + 1] - beats[k]);
+      };
+      const W = 16;
+      for (let b0 = 0; b0 + 4 < beats.length; b0 += W) {
+        const t0 = beats[b0];
+        const t1 = beats[Math.min(beats.length - 1, b0 + W)];
+        const sn = out.filter((h) => h.kind === 'snare' && h.t >= t0 && h.t < t1);
+        const off = sn.filter((h) => Math.abs(phase(h.t) - 0.5) < 0.1);
+        const nBeats = Math.min(W, beats.length - 1 - b0);
+        if (off.length >= nBeats * 0.6) for (const h of off) h.kind = 'hat';
+      }
+    }
+    return out;
   }
 
   /** Index of the beat nearest to t (beats sorted). */

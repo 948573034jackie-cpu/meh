@@ -487,6 +487,18 @@
     const high = new Uint8Array(count);
     const att = new Uint8Array(count);
     const atv = new Uint8Array(count);
+    // Extra bands to tell the drums apart: sub (< 100 Hz: the kick's boom),
+    // low-mid (100 - 400 Hz: toms, the snare's body), air (> 5 kHz: hi-hats, cymbals).
+    const sub = new Uint8Array(count);
+    const lmid = new Uint8Array(count);
+    const air = new Uint8Array(count);
+    const lpS = biquad('lp', 100, sr);
+    const lpT = biquad('lp', 400, sr);
+    const hpA = biquad('hp', Math.min(5000, sr * 0.4), sr);
+    let sx1 = 0, sx2 = 0, sy1 = 0, sy2 = 0;
+    let tx1 = 0, tx2 = 0, ty1 = 0, ty2 = 0;
+    let ax1 = 0, ax2 = 0, ay1 = 0, ay2 = 0;
+    let ss = 0, st = 0, sa = 0;
     const lp = biquad('lp', 250, sr);
     const hp = biquad('hp', 2500, sr);
     let lx1 = 0, lx2 = 0, ly1 = 0, ly2 = 0;
@@ -508,8 +520,12 @@
         low[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sl / cnt)) * 300));
         mid[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sm / cnt)) * 300));
         high[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sh / cnt)) * 300));
+        sub[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(ss / cnt)) * 300));
+        lmid[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(st / cnt)) * 300));
+        air[bin] = Math.min(255, Math.round(Math.sqrt(Math.sqrt(sa / cnt)) * 300));
       }
       pk = sl = sm = sh = cnt = 0;
+      ss = st = sa = 0;
     };
     for (let i = 0; i < n; i++) {
       while (i >= binEnd && bin < count) {
@@ -532,6 +548,15 @@
       const yh = hp.b0 * x + hp.b1 * hx1 + hp.b2 * hx2 - hp.a1 * hy1 - hp.a2 * hy2;
       hx2 = hx1; hx1 = x; hy2 = hy1; hy1 = yh;
       const ym = x - yl - yh;
+      const ys = lpS.b0 * x + lpS.b1 * sx1 + lpS.b2 * sx2 - lpS.a1 * sy1 - lpS.a2 * sy2;
+      sx2 = sx1; sx1 = x; sy2 = sy1; sy1 = ys;
+      const yt = lpT.b0 * x + lpT.b1 * tx1 + lpT.b2 * tx2 - lpT.a1 * ty1 - lpT.a2 * ty2;
+      tx2 = tx1; tx1 = x; ty2 = ty1; ty1 = yt;
+      const ya = hpA.b0 * x + hpA.b1 * ax1 + hpA.b2 * ax2 - hpA.a1 * ay1 - hpA.a2 * ay2;
+      ax2 = ax1; ax1 = x; ay2 = ay1; ay1 = ya;
+      ss += ys * ys;
+      st += (yt - ys) * (yt - ys);
+      sa += ya * ya;
       if (a > pk) pk = a;
       const ah = x - yl < 0 ? yl - x : x - yl;
       eHi = ah > eHi ? ah : eHi * relHi;
@@ -557,7 +582,7 @@
       cnt++;
     }
     flush();
-    return { startBin: firstBin, peak, low, mid, high, att, atv };
+    return { startBin: firstBin, peak, low, mid, high, att, atv, sub, lmid, air };
   }
 
   // Test hook (only used by the Node unit tests, never set on YouTube).
@@ -928,6 +953,9 @@
       high: res.high,
       att: res.att,
       atv: res.atv,
+      sub: res.sub,
+      lmid: res.lmid,
+      air: res.air,
     });
   }
 
@@ -1107,10 +1135,120 @@
     post(info);
   }
 
+  // ---------------------------------------------------------------------------
+  // Download the song's audio (for practice): the whole song or the loop as
+  // WAV (plays everywhere), or the whole song as the original file. Made from
+  // the audio this page already received, so the whole song must have been
+  // read once.
+  // ---------------------------------------------------------------------------
+  function wavFile(buf, from, to) {
+    const ch = Math.min(2, buf.numberOfChannels);
+    const n = Math.max(0, to - from);
+    const out = new DataView(new ArrayBuffer(44 + n * ch * 2));
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) out.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, 'RIFF');
+    out.setUint32(4, 36 + n * ch * 2, true);
+    str(8, 'WAVE');
+    str(12, 'fmt ');
+    out.setUint32(16, 16, true);
+    out.setUint16(20, 1, true);
+    out.setUint16(22, ch, true);
+    out.setUint32(24, buf.sampleRate, true);
+    out.setUint32(28, buf.sampleRate * ch * 2, true);
+    out.setUint16(32, ch * 2, true);
+    out.setUint16(34, 16, true);
+    str(36, 'data');
+    out.setUint32(40, n * ch * 2, true);
+    const data = [];
+    for (let c = 0; c < ch; c++) data.push(buf.getChannelData(c));
+    let o = 44;
+    for (let i = from; i < to; i++) {
+      for (let c = 0; c < ch; c++) {
+        const v = Math.max(-1, Math.min(1, data[c][i]));
+        out.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+        o += 2;
+      }
+    }
+    return new Blob([out.buffer], { type: 'audio/wav' });
+  }
+
+  // The parts of [a, b] whose audio this page has not received (yet).
+  function missingAudio(vid, a, b) {
+    const k = kept.get(vid);
+    const have = [];
+    if (k) {
+      for (const g of k.groups) for (const c of sortedClusters(g)) have.push([c.time, c.end]);
+      for (const c of k.mp4) have.push([c.start, c.end]);
+    }
+    have.sort((x, y) => x[0] - y[0]);
+    const out = [];
+    let t = a;
+    for (const [s0, e0] of have) {
+      if (e0 <= t + 0.05) continue;
+      if (s0 > t + 0.1) out.push([t, Math.min(b, s0)]);
+      t = Math.max(t, e0);
+      if (t >= b) break;
+    }
+    if (t < b - 0.1) out.push([t, b]);
+    return out.filter(([x, y]) => y - x > 0.05);
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  async function download(req) {
+    const reply = (extra) => post({ type: 'download', id: req.id, vid: req.vid, ...extra });
+    try {
+      const end = req.what === 'loop' ? req.b : Math.max(0.5, req.duration - 0.6);
+      const start = req.what === 'loop' ? req.a : 0;
+      // (the first piece of audio starts a hair after 0)
+      const piece = chunksFor(req.vid, req.what === 'loop' ? Math.max(0, start) : 0.05, end);
+      if (!piece) return reply({ ok: false, why: 'not loaded', missing: missingAudio(req.vid, Math.max(0, start), end) });
+      const base = (req.name || 'audio').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'audio';
+      if (req.fmt === 'orig') {
+        // the whole song, as it came (no decoding, no loss)
+        const ext = piece.container === 'mp4' ? 'm4a' : 'webm';
+        saveBlob(new Blob([piece.init, piece.media], { type: piece.container === 'mp4' ? 'audio/mp4' : 'audio/webm' }), `${base}.${ext}`);
+        return reply({ ok: true, name: `${base}.${ext}` });
+      }
+      const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
+      const ctx = new Ctor(2, 1, 48000);
+      const bytes = concat([piece.init, piece.media]);
+      let buf = null;
+      if (piece.container === 'mp4' && piece.mp4 && piece.mp4.asc) {
+        try {
+          const frags = mp4Fragments(piece.media, piece.mp4.timescale);
+          if (frags) buf = await ctx.decodeAudioData(toAdts(frags.samples, piece.mp4.asc).buffer);
+        } catch (e) {
+          buf = null;
+        }
+      }
+      if (!buf) buf = await ctx.decodeAudioData(bytes.buffer);
+      const sr = buf.sampleRate;
+      const from = req.what === 'loop' ? Math.max(0, Math.round((start - piece.start) * sr)) : 0;
+      const to = req.what === 'loop' ? Math.min(buf.length, Math.round((end - piece.start) * sr)) : buf.length;
+      const name = req.what === 'loop' ? `${base} (loop ${req.label || ''}).wav`.replace(' ()', '') : `${base}.wav`;
+      saveBlob(wavFile(buf, from, to), name);
+      reply({ ok: true, name, seconds: (to - from) / sr });
+    } catch (e) {
+      reply({ ok: false, why: String((e && e.message) || e) });
+    }
+  }
+
   G.addEventListener('message', (e) => {
     if (e.source !== G || !e.data || e.data[TAG] !== 'cs') return;
     if (e.data.type === 'hello') postVideoInfo(true);
     else if (e.data.type === 'loopAudio') loopAudio(e.data);
+    else if (e.data.type === 'download') download(e.data);
   });
   document.addEventListener('yt-navigate-finish', () => postVideoInfo(false), true);
   setInterval(() => postVideoInfo(false), 700);
