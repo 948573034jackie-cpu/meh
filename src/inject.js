@@ -140,6 +140,69 @@
     return last;
   }
 
+  /**
+   * Every complete Cluster in a chunk of media that starts with Clusters:
+   * [{ time, end (seconds), bytes }]. end = the last block's time plus one
+   * frame. The smallest pieces of audio with their own time, so pieces
+   * fetched twice, or cut up differently, can be put back together.
+   */
+  function webmClusters(u8, tcScale) {
+    const out = [];
+    let pos = 0;
+    let guard = 0;
+    const sc = tcScale / 1e9;
+    while (pos < u8.length && guard++ < 100000) {
+      const id = readId(u8, pos);
+      if (!id || id.id !== CLUSTER_ID) break;
+      const size = readSize(u8, pos + id.len);
+      if (!size || size.unknown) break;
+      const dataStart = pos + id.len + size.len;
+      const end = dataStart + size.value;
+      if (end > u8.length) break; // cut off: not complete
+      let time = null;
+      const rel = [];
+      let p = dataStart;
+      let g = 0;
+      while (p < end && g++ < 100000) {
+        const cid = readId(u8, p);
+        if (!cid) break;
+        const cs = readSize(u8, p + cid.len);
+        if (!cs || cs.unknown) break;
+        const ds = p + cid.len + cs.len;
+        if (cid.id === CLUSTER_TIMESTAMP_ID) time = readUint(u8, ds, cs.value);
+        else if (cid.id === 0xa3 || cid.id === 0xa0) {
+          // SimpleBlock, or a BlockGroup holding a Block
+          let b = ds;
+          if (cid.id === 0xa0) {
+            const bid = readId(u8, ds);
+            const bs = bid && readSize(u8, ds + bid.len);
+            b = bid && bid.id === 0xa1 && bs ? ds + bid.len + bs.len : -1;
+          }
+          const tn = b >= 0 ? readSize(u8, b) : null;
+          if (tn && b + tn.len + 2 <= u8.length) {
+            let v = (u8[b + tn.len] << 8) | u8[b + tn.len + 1];
+            if (v & 0x8000) v -= 0x10000;
+            rel.push(v);
+          }
+        }
+        p = ds + cs.value;
+      }
+      if (time !== null && rel.length) {
+        // one frame after the last block (the usual gap between blocks)
+        let frame = 20e6 / tcScale;
+        if (rel.length > 1) {
+          const d = [];
+          for (let i = 1; i < rel.length; i++) d.push(rel[i] - rel[i - 1]);
+          d.sort((x, y) => x - y);
+          frame = d[d.length >> 1] || frame;
+        }
+        out.push({ time: time * sc, end: (time + Math.max(...rel) + frame) * sc, bytes: u8.subarray(pos, end) });
+      }
+      pos = end;
+    }
+    return out;
+  }
+
   /** TimecodeScale (ns per tick) from an init segment. Default 1 ms. */
   function webmTimecodeScale(u8) {
     let pos = 0;
@@ -501,7 +564,7 @@
   if (G.__YTL_TEST__) {
     G.__YTL_TEST__.parsers = {
       readId, readSize, webmFindCluster, webmTimecodeScale, webmClusterTime,
-      boxes, mp4FindMediaStart, mp4InitMeta, mp4Fragments, toAdts, computePeaks, BIN_RATE,
+      boxes, mp4FindMediaStart, mp4InitMeta, mp4Fragments, toAdts, computePeaks, BIN_RATE, webmClusters,
     };
     if (G.__YTL_TEST__.parsersOnly) return;
   }
@@ -873,51 +936,112 @@
   // looper can play it from memory with no gap at all between B and A.
   // The audio chunks of the current video are kept (a few MB per song).
   // ---------------------------------------------------------------------------
-  const kept = new Map(); // vid -> [{ start, end, media, init, container, mp4 }]
+  // Per video: the audio as Clusters (WebM), each kept once by its time, in
+  // groups by header (a new quality is a new group); MP4 as whole chunks.
+  const kept = new Map(); // vid -> { groups: [{ key, init, tc, clusters: Map(ms -> {time, end, bytes}) }], mp4: [chunk] }
   let keptBytes = 0;
   const KEEP_MAX = 96 * 1024 * 1024;
 
+  // A short fingerprint of a header, so the same header sent again counts as the same.
+  function bytesKey(u8) {
+    let h = 2166136261;
+    for (let i = 0; i < u8.length; i++) h = Math.imul(h ^ u8[i], 16777619);
+    return `${u8.length}:${h >>> 0}`;
+  }
+
   function keepChunk(job, durSec) {
     if (!job.vid || !durSec) return;
-    let list = kept.get(job.vid);
-    if (!list) {
+    let k = kept.get(job.vid);
+    if (!k) {
       // Only the newest video's audio is kept.
-      for (const [v, l] of kept) {
-        for (const c of l) keptBytes -= c.media.length;
-        kept.delete(v);
-      }
-      list = [];
-      kept.set(job.vid, list);
+      kept.clear();
+      keptBytes = 0;
+      k = { groups: [], mp4: [] };
+      kept.set(job.vid, k);
     }
+    if (job.container === 'webm') {
+      const tc = (job.st && job.st.tcScale) || 1e6;
+      const cl = webmClusters(job.media, tc);
+      if (!cl.length) return;
+      const shift = job.start - cl[0].time; // the SourceBuffer's timestampOffset
+      const key = bytesKey(job.init);
+      let g = k.groups.find((x) => x.key === key);
+      if (!g) {
+        g = { key, init: job.init, tc, clusters: new Map() };
+        k.groups.push(g);
+      }
+      for (const c of cl) {
+        const time = c.time + shift;
+        const id = Math.round(time * 1000);
+        const old = g.clusters.get(id);
+        if (old && old.bytes.length >= c.bytes.length) continue;
+        if (keptBytes + c.bytes.length - (old ? old.bytes.length : 0) > KEEP_MAX) return;
+        keptBytes += c.bytes.length - (old ? old.bytes.length : 0);
+        g.clusters.set(id, { time, end: c.end + shift, bytes: c.bytes.slice() });
+      }
+      g.sorted = null;
+      return;
+    }
+    const list = k.mp4;
     const end = job.start + durSec;
+    const key = bytesKey(job.init);
     // The same chunk decoded again (it grew): keep the bigger one.
-    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02);
+    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02 && c.key === key);
     if (i >= 0) {
       if (list[i].media.length >= job.media.length) return;
       keptBytes -= list[i].media.length;
       list.splice(i, 1);
     }
     if (keptBytes + job.media.length > KEEP_MAX) return;
-    list.push({ start: job.start, end, media: job.media, init: job.init, container: job.container, mp4: job.mp4 });
+    list.push({ start: job.start, end, media: job.media, init: job.init, key, container: job.container, mp4: job.mp4 });
     keptBytes += job.media.length;
     list.sort((a, b) => a.start - b.start);
   }
 
-  // Contiguous chunks covering [a, b] (plus one before it as an Opus run-up).
+  function sortedClusters(g) {
+    if (!g.sorted) g.sorted = [...g.clusters.values()].sort((a, b) => a.time - b.time);
+    return g.sorted;
+  }
+
+  /**
+   * The audio covering [a, b] as one piece to decode: { init, media, start,
+   * container, mp4 } (with one piece before it as an Opus run-up), or null.
+   */
   function chunksFor(vid, a, b) {
-    const list = kept.get(vid) || [];
-    let i = list.findIndex((c) => c.end > a + 0.001);
-    if (i < 0 || list[i].start > a + 0.001) return null;
-    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1) i--; // run-up
+    const k = kept.get(vid);
+    if (!k) return null;
+    for (const g of k.groups) {
+      const L = sortedClusters(g);
+      let i = -1;
+      for (let j = 0; j < L.length; j++) if (L[j].time <= a + 0.001 && L[j].end > a + 0.001) i = j;
+      if (i < 0) continue;
+      const touch = (x, y) => Math.abs(y.time - x.end) < 0.08;
+      if (i > 0 && touch(L[i - 1], L[i])) i--; // run-up
+      const out = [L[i]];
+      let ok = true;
+      while (out[out.length - 1].end < b - 0.001) {
+        const prev = out[out.length - 1];
+        const next = L[L.indexOf(prev) + 1];
+        if (!next || !touch(prev, next)) {
+          ok = false;
+          break;
+        }
+        out.push(next);
+      }
+      if (ok) return { init: g.init, media: concat(out.map((c) => c.bytes)), start: out[0].time, container: 'webm' };
+    }
+    const list = k.mp4;
+    let i = list.findIndex((c) => c.end > a + 0.001 && c.start <= a + 0.001);
+    if (i < 0) return null;
+    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1 && list[i - 1].key === list[i].key) i--; // run-up
     const out = [list[i]];
     while (out[out.length - 1].end < b - 0.001) {
       const prev = out[out.length - 1];
-      const next = list.find((c) => c.start > prev.start + 0.01 && Math.abs(c.start - prev.end) < 0.1);
-      if (!next) return null;
+      const next = list.find((c) => c.key === prev.key && c.start > prev.start + 0.01 && c.start <= prev.end + 0.1 && c.end > prev.end);
+      if (!next || Math.abs(next.start - prev.end) > 0.1) return null;
       out.push(next);
     }
-    if (out.some((c) => c.init !== out[0].init || c.container !== out[0].container)) return null;
-    return out;
+    return { init: out[0].init, media: concat(out.map((c) => c.media)), start: out[0].start, container: 'mp4', mp4: out[0].mp4 };
   }
 
   let fullCtx = null;
@@ -925,9 +1049,9 @@
     const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, ...extra });
     try {
       const sr = req.sr > 0 ? req.sr : 48000;
-      const list = chunksFor(req.vid, req.a, req.b);
-      if (!list) return reply({ ok: false, why: 'not loaded' });
-      const media = concat(list.map((c) => c.media));
+      const piece = chunksFor(req.vid, req.a, req.b);
+      if (!piece) return reply({ ok: false, why: 'not loaded' });
+      const media = piece.media;
       if (!fullCtx || fullCtx.sampleRate !== sr) {
         const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
         fullCtx = new Ctor(2, 1, sr);
@@ -937,17 +1061,17 @@
         if (p && p.catch) p.catch(reject);
       });
       let buf = null;
-      if (list[0].container === 'mp4' && list[0].mp4 && list[0].mp4.asc) {
+      if (piece.container === 'mp4' && piece.mp4 && piece.mp4.asc) {
         try {
-          const frags = mp4Fragments(media, list[0].mp4.timescale);
-          if (frags) buf = await dec(toAdts(frags.samples, list[0].mp4.asc));
+          const frags = mp4Fragments(media, piece.mp4.timescale);
+          if (frags) buf = await dec(toAdts(frags.samples, piece.mp4.asc));
         } catch (e) {
           buf = null;
         }
       }
-      if (!buf) buf = await dec(concat([list[0].init, media]));
-      const from = Math.round((req.a - list[0].start) * buf.sampleRate);
-      const to = Math.round((req.b - list[0].start) * buf.sampleRate);
+      if (!buf) buf = await dec(concat([piece.init, media]));
+      const from = Math.round((req.a - piece.start) * buf.sampleRate);
+      const to = Math.round((req.b - piece.start) * buf.sampleRate);
       if (from < 0 || to > buf.length || to - from < buf.sampleRate * 0.2) return reply({ ok: false, why: 'short' });
       const ch0 = buf.getChannelData(0).slice(from, to);
       const ch1 = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(from, to);

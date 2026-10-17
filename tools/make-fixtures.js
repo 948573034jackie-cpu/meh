@@ -77,5 +77,14 @@ const mp4 = build('mp4audio', audioIn, ['-c:a', 'aac', '-b:a', '128k'], 'mp4', '
 fs.renameSync(path.join(out, 'mp4audio', 'init.m4s'), path.join(out, 'mp4audio', 'init.mp4'));
 mp4.init = 'mp4audio/init.mp4';
 
-fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4, drums, drumBpm: 96, drumFirstBeat: 0.8 }, null, 2));
+// A song that changes tempo: 20 beats at 90 BPM, then 30 at 120 (drums,
+// bass, chords), for the "the grid follows the tempo" test.
+const { synth, tempoMap, popKit } = require('../test/music.js');
+const tempoSong = synth({ dur: DUR, make(S) { const B = tempoMap(0.9, [[20, 90], [30, 120]]); popKit(S, B); return B; } }, 48000);
+const raw = path.join(out, 'tempo.f32');
+fs.writeFileSync(raw, Buffer.from(tempoSong.x.buffer));
+const tempo = build('tempo', ['-f', 'f32le', '-ar', '48000', '-ac', '1', '-i', raw], ['-c:a', 'libopus', '-b:a', '96k', '-ac', '2'], 'webm', 'webm', 'audio/webm; codecs="opus"', 2);
+fs.rmSync(raw);
+
+fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4, drums, drumBpm: 96, drumFirstBeat: 0.8, tempo, tempoBeats: tempoSong.beats }, null, 2));
 console.log('fixtures written to', out, `audio segs=${audio.segs.length} video segs=${video.segs.length}`);

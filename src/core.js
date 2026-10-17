@@ -1096,6 +1096,107 @@
   }
 
   /**
+   * The tempo all through the song, for songs that speed up, slow down or
+   * jump to a new tempo: the tempo of every 8 s (each second), then the most
+   * likely path through them (Viterbi) - a change of tempo costs a little,
+   * a jump to double or half a lot, so it changes only when the drums do.
+   * Returns the beat period (bins) at every bin.
+   */
+  function localPeriods(env, binRate, globalPeriod, minBpm = 60, maxBpm = 200) {
+    const n = env.length;
+    const W = Math.round(8 * binRate);
+    const hop = Math.round(binRate);
+    const out = new Float32Array(n).fill(globalPeriod);
+    if (n < W * 1.5) return out;
+    const lo = Math.floor((60 * binRate) / maxBpm);
+    const hi = Math.ceil((60 * binRate) / minBpm);
+    const top = Math.min(W - 1, 4 * hi + 2);
+    const centers = [];
+    const cands = []; // per window: [{ L, sc }]
+    const ac = new Float32Array(top + 2);
+    for (let c0 = 0; c0 + W <= n; c0 += hop) {
+      let m = 0;
+      let m2 = 0;
+      for (let i = c0; i < c0 + W; i++) {
+        m += env[i];
+        m2 += env[i] * env[i];
+      }
+      m /= W;
+      const sd = Math.sqrt(Math.max(1e-12, m2 / W - m * m));
+      for (let L = Math.max(1, lo - 1); L <= top + 1 && L < W; L++) {
+        let sum = 0;
+        for (let i = c0 + L; i < c0 + W; i++) sum += (env[i] - m) * (env[i - L] - m);
+        ac[L] = sum / ((W - L) * sd * sd);
+      }
+      const acAt = (x) => {
+        const k = Math.floor(x);
+        const fr = x - k;
+        return k + 1 <= top + 1 ? ac[k] * (1 - fr) + ac[k + 1] * fr : 0;
+      };
+      const list = [];
+      for (let L = lo; L <= hi; L++) {
+        if (!(ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1])) continue;
+        const bpm = (60 * binRate) / L;
+        const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
+        const y0 = ac[L - 1];
+        const y1 = ac[L];
+        const y2 = ac[L + 1];
+        const den = y0 - 2 * y1 + y2;
+        const Lf = L + (den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / den)) : 0);
+        list.push({ L: Lf, sc: Math.max(0, (ac[L] + 0.5 * acAt(2 * Lf) + 0.25 * acAt(4 * Lf)) * w) });
+      }
+      list.sort((a, b) => b.sc - a.sc);
+      const keep = list.slice(0, 6);
+      // the song's own tempo is always a choice (weak windows keep to it)
+      if (!keep.some((x) => Math.abs(x.L / globalPeriod - 1) < 0.03)) keep.push({ L: globalPeriod, sc: 0 });
+      const mx = keep.reduce((a, x) => Math.max(a, x.sc), 0);
+      // A window with no clear beat (a break, an intro) has no say.
+      const strong = mx > 0.15;
+      for (const x of keep) x.sc = strong ? x.sc / mx : 0;
+      centers.push(c0 + W / 2);
+      cands.push(keep);
+    }
+    // Viterbi: the best path of tempos.
+    const COST = 4; // per octave of change between neighbouring windows
+    let prev = cands[0].map((x) => ({ v: x.sc - 0.5 * Math.abs(Math.log2(x.L / globalPeriod)), from: -1 }));
+    const back = [prev];
+    for (let k = 1; k < cands.length; k++) {
+      const cur = cands[k].map((x) => {
+        let best = -Infinity;
+        let from = 0;
+        cands[k - 1].forEach((y, j) => {
+          const v = prev[j].v - COST * Math.abs(Math.log2(x.L / y.L));
+          if (v > best) {
+            best = v;
+            from = j;
+          }
+        });
+        return { v: best + x.sc, from };
+      });
+      back.push(cur);
+      prev = cur;
+    }
+    let j = 0;
+    prev.forEach((x, i) => {
+      if (x.v > prev[j].v) j = i;
+    });
+    const path = new Array(cands.length);
+    for (let k = cands.length - 1; k >= 0; k--) {
+      path[k] = cands[k][j].L;
+      j = back[k][j].from;
+    }
+    // Per bin: between the window centres.
+    let k = 0;
+    for (let t = 0; t < n; t++) {
+      while (k + 1 < centers.length && centers[k + 1] <= t) k++;
+      if (t <= centers[0]) out[t] = path[0];
+      else if (k + 1 >= centers.length) out[t] = path[path.length - 1];
+      else out[t] = path[k] + ((path[k + 1] - path[k]) * (t - centers[k])) / (centers[k + 1] - centers[k]);
+    }
+    return out;
+  }
+
+  /**
    * Beat tracking by dynamic programming (Ellis 2007): every beat lands on a
    * strong onset while the gaps stay close to the tempo, so it follows a
    * drummer who speeds up or slows down a little. Returns beat times in bins
@@ -1106,14 +1207,16 @@
     const e = normalize(env);
     const score = new Float32Array(n);
     const back = new Int32Array(n).fill(-1);
-    const pMin = Math.round(period / 2);
-    const pMax = Math.round(period * 2);
+    const perAt = typeof period === 'number' ? () => period : (t) => period[Math.min(period.length - 1, t)];
     for (let t = 0; t < n; t++) {
       let best = -Infinity;
       let arg = -1;
+      const pt = perAt(t);
+      const pMin = Math.round(pt / 2);
+      const pMax = Math.round(pt * 2);
       for (let tau = t - pMax; tau <= t - pMin; tau++) {
         if (tau < 0) continue;
-        const d = Math.log((t - tau) / period);
+        const d = Math.log((t - tau) / pt);
         const v = score[tau] - tightness * d * d;
         if (v > best) {
           best = v;
@@ -1126,7 +1229,7 @@
     // Best end point in the last period, then follow the links back.
     let t = n - 1;
     let bestEnd = -Infinity;
-    for (let k = Math.max(0, n - Math.round(period)); k < n; k++) {
+    for (let k = Math.max(0, n - Math.round(perAt(n - 1))); k < n; k++) {
       if (score[k] > bestEnd) {
         bestEnd = score[k];
         t = k;
@@ -1199,6 +1302,35 @@
     return { a, p, w };
   }
 
+  /** Robust curve t = a + b*k + c*k^2 through (k, t), value at k0 (or null). */
+  function robustCurveAt(K, T, W0, k0, scale = 0.02) {
+    const n = K.length;
+    if (n < 5) return null;
+    const w = new Float64Array(n).fill(1);
+    let A = 0, B = 0, Cq = 0;
+    for (let it = 0; it < 5; it++) {
+      // normal equations around k0
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+      for (let i = 0; i < n; i++) {
+        const x = K[i] - k0;
+        const wi = w[i] * W0[i];
+        s0 += wi; s1 += wi * x; s2 += wi * x * x; s3 += wi * x * x * x; s4 += wi * x * x * x * x;
+        t0 += wi * T[i]; t1 += wi * x * T[i]; t2 += wi * x * x * T[i];
+      }
+      const det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+      if (!(Math.abs(det) > 1e-12)) return null;
+      A = (t0 * (s2 * s4 - s3 * s3) - s1 * (t1 * s4 - s3 * t2) + s2 * (t1 * s3 - s2 * t2)) / det;
+      B = (s0 * (t1 * s4 - t2 * s3) - t0 * (s1 * s4 - s3 * s2) + s2 * (s1 * t2 - t1 * s2)) / det;
+      Cq = (s0 * (s2 * t2 - s3 * t1) - s1 * (s1 * t2 - s3 * t0) + t0 * (s1 * s3 - s2 * s2)) / det;
+      for (let i = 0; i < n; i++) {
+        const x = K[i] - k0;
+        const r = (T[i] - A - B * x - Cq * x * x) / scale;
+        w[i] = Math.abs(r) < 1 ? Math.pow(1 - r * r, 2) : 0;
+      }
+    }
+    return w.reduce((x, y) => x + y, 0) >= 4 ? A : null;
+  }
+
   /**
    * The whole beat grid for a song: { bpm, beats: [seconds], first: index of
    * the first bar's "1", confidence, steady } or null when there is no steady
@@ -1225,7 +1357,8 @@
     for (let i = 0; i < n; i++) env[i] = f.env[i] + 0.5 * ((f.env[i - 1] || 0) + (f.env[i + 1] || 0));
     const tempo = estimateTempo(env, br);
     if (!tempo.period || tempo.confidence < 0.08) return null;
-    let bins = trackBeatBins(env, tempo.period);
+    const periods = localPeriods(env, br, tempo.period);
+    let bins = trackBeatBins(env, periods);
     // No beats in the silence before the music starts or after it ends.
     let firstSound = 0;
     while (firstSound < n && !(P.cov[firstSound] && P.peak[firstSound] > P.maxPeak * 0.08)) firstSound++;
@@ -1285,46 +1418,222 @@
         drift = Math.max(drift, Math.abs(win[win.length >> 1]));
       }
     }
-    const steady = used.length >= Math.max(8, T.length * 0.5) && medRes < 0.012 && drift < 0.015;
+    // ... and (nearly) every beat with drums on it must be on the line: a
+    // stretch of strong beats off it is a part in another tempo.
+    const sorted = strength.slice().sort((x, y) => x - y);
+    const strongMin = sorted[Math.floor(sorted.length * 0.4)];
+    let strongN = 0;
+    let strongOff = 0;
+    let run = 0;
+    let longestOff = 0;
+    for (let i = 0; i < T.length; i++) {
+      if (strength[i] < strongMin) continue;
+      strongN++;
+      const off = Math.abs(res[i]) > 0.02;
+      if (off) strongOff++;
+      run = off ? run + 1 : 0;
+      longestOff = Math.max(longestOff, run);
+    }
+    const steady = used.length >= Math.max(8, T.length * 0.5) && medRes < 0.012 && drift < 0.015 && strongOff <= strongN * 0.12 && longestOff < 6;
 
     let beats;
+    let segs = null;
     if (steady) {
       const k0 = Math.ceil((firstSound / br - per * 0.25 - fit.a) / per);
       const k1 = Math.floor((lastSound / br + per * 0.25 - fit.a) / per);
       beats = [];
       for (let k = k0; k <= k1; k++) beats.push(fit.a + per * k);
     } else {
-      // Follow the drummer: number the beats one by one (the tempo moves, so
-      // one line can't number them), then a robust line through the beats
-      // around each one. A beat the tracker put on a fill gets its place
-      // back from its neighbours; a missed beat is filled in.
-      const KL = [0];
-      for (let i = 1; i < T.length; i++) {
-        const lo = Math.max(1, i - 8);
-        const gaps = [];
-        for (let j = lo; j < i; j++) gaps.push((T[j] - T[j - 1]) / Math.max(1, KL[j] - KL[j - 1]));
-        gaps.sort((x, y) => x - y);
-        const lp = gaps.length ? gaps[gaps.length >> 1] : per0;
-        KL.push(KL[i - 1] + Math.max(1, Math.round((T[i] - T[i - 1]) / lp)));
-      }
-      const fitted = T.map((t, i) => {
-        const lo = Math.max(0, i - 8);
-        const hi = Math.min(T.length, i + 9);
-        const l = robustLine(KL.slice(lo, hi), T.slice(lo, hi), 0.025, 5, strength.slice(lo, hi));
-        const wsum = l.w.reduce((x, y) => x + y, 0);
-        const v = l.a + l.p * KL[i];
-        return wsum >= 4 && isFinite(v) ? v : t;
-      });
-      beats = [];
-      for (let i = 0; i < fitted.length; i++) {
-        if (i > 0) {
-          const m = KL[i] - KL[i - 1];
-          for (let j = 1; j < m; j++) beats.push(fitted[i - 1] + ((fitted[i] - fitted[i - 1]) * j) / m);
+      // The tempo moves: follow it (see follow() below), then once more with
+      // the tempo stepping sharply where one region of constant tempo ends
+      // and the next begins (the first pass blurs a change over a few beats).
+      const follow = (pers) => {
+        let b2 = trackBeatBins(env, pers);
+        b2 = b2.filter((b) => b >= firstSound - pers[0] * 0.25 && b <= lastSound + pers[n - 1] * 0.25);
+        const raw = b2.map((b) => b / br);
+        const T = raw.map((t, i) => (hasAtt ? attackNear(P, t, Math.min(0.045, (pers[Math.min(n - 1, Math.round(b2[i]))] / br) * 0.2), drumW) : null) ?? t);
+        const strength = raw.map((t) => 0.2 + near(env, t));
+        let beats;
+        let segs;
+        // Follow the drummer: number the beats one by one (the tempo moves, so
+        // one line can't number them), then a robust line through the beats
+        // around each one. A beat the tracker put on a fill gets its place
+        // back from its neighbours; a missed beat is filled in.
+        // A beat far too close to the one before (a hi-hat between two beats,
+        // where the tempo changes) is not a beat: keep the stronger of the two.
+        for (let i = 1; i < T.length; i++) {
+          const lo = Math.max(1, i - 8);
+          const gaps = [];
+          for (let j = lo; j < i; j++) gaps.push(T[j] - T[j - 1]);
+          gaps.sort((x, y) => x - y);
+          const lp = gaps.length >= 3 ? gaps[gaps.length >> 1] : per0;
+          if (T[i] - T[i - 1] < lp * 0.6) {
+            const drop = strength[i] > strength[i - 1] ? i - 1 : i;
+            T.splice(drop, 1);
+            raw.splice(drop, 1);
+            strength.splice(drop, 1);
+            i--;
+          }
         }
-        beats.push(fitted[i]);
-      }
+        const KL = [0];
+        for (let i = 1; i < T.length; i++) {
+          const lo = Math.max(1, i - 8);
+          const gaps = [];
+          for (let j = lo; j < i; j++) gaps.push((T[j] - T[j - 1]) / Math.max(1, KL[j] - KL[j - 1]));
+          gaps.sort((x, y) => x - y);
+          const lp = gaps.length ? gaps[gaps.length >> 1] : per0;
+          KL.push(KL[i - 1] + Math.max(1, Math.round((T[i] - T[i - 1]) / lp)));
+        }
+        // Constant-tempo regions, like Mixxx's: the longest stretches where one
+        // straight line fits the beats (each beat within 25 ms, no drift). A
+        // tempo change starts a new region; each region gets an exact grid.
+        // Where no line fits (a drummer drifting), a line through the beats
+        // around each beat.
+        const valid = (l, r) => {
+          const k = KL.slice(l, r + 1);
+          const tt = T.slice(l, r + 1);
+          const ww = strength.slice(l, r + 1);
+          const fit2 = robustLine(k, tt, 0.025, 6, ww);
+          const rs = tt.map((t, i) => t - fit2.a - fit2.p * k[i]);
+          const inl = rs.filter((x, i) => fit2.w[i] > 0).map(Math.abs).sort((x, y) => x - y);
+          if (inl.length < (r - l + 1) * 0.75) return null;
+          if (inl[inl.length >> 1] > 0.01) return null;
+          // strong beats far off the line, or the beats wandering off it
+          let bad = 0;
+          for (let i = 0; i < rs.length; i++) if (ww[i] >= strongMin && Math.abs(rs[i]) > 0.015) bad++;
+          if (bad > Math.max(1, (r - l + 1) * 0.08)) return null;
+          for (let i = 0; i + 6 <= rs.length; i++) {
+            const win = rs.slice(i, i + 6).sort((x, y) => x - y);
+            if (Math.abs(win[3]) > 0.006) return null;
+          }
+          // one tempo all through: both halves have the same tempo (a drummer
+          // who slowly speeds up does not, and gets the smooth curve instead)
+          if (rs.length >= 16) {
+            const h = rs.length >> 1;
+            const f1 = robustLine(k.slice(0, h + 1), tt.slice(0, h + 1), 0.02, 4, ww.slice(0, h + 1));
+            const f3 = robustLine(k.slice(h), tt.slice(h), 0.02, 4, ww.slice(h));
+            if (Math.abs(f1.p / f3.p - 1) > 0.004) return null;
+          }
+          // the ends of a region sit right on the line (where the tempo changes, it ends)
+          for (const i of [0, 1, rs.length - 2, rs.length - 1]) if (ww[i] >= strongMin && Math.abs(rs[i]) > 0.008) return null;
+          return fit2;
+        };
+        const region = new Int32Array(T.length).fill(-1);
+        const fits = [];
+        let left = 0;
+        while (left < T.length - 1) {
+          const first = Math.min(T.length - 1, left + 8);
+          let fitR = first - left >= 8 ? valid(left, first) : null;
+          if (!fitR) {
+            left++;
+            continue;
+          }
+          let r = first;
+          for (const stepN of [16, 4, 1]) {
+            while (r + stepN <= T.length - 1) {
+              const f2 = valid(left, r + stepN);
+              if (!f2) break;
+              fitR = f2;
+              r += stepN;
+            }
+          }
+          if (r - left >= 16) {
+            for (let i = left; i <= r; i++) if (region[i] < 0 || i > left) region[i] = fits.length;
+            fits.push(fitR);
+            left = r;
+          } else left++; // too short to trust as one tempo: smoothed below
+        }
+        // A region's ends must be on its line; a beat off it at an end is
+        // already in the next tempo (or the last of the old one).
+        fits.forEach((f2, j) => {
+          const idx = [];
+          region.forEach((r, i) => r === j && idx.push(i));
+          const off = (i) => Math.abs(T[i] - f2.a - f2.p * KL[i]) > 0.015;
+          while (idx.length > 2 && off(idx[idx.length - 1])) region[idx.pop()] = -1;
+          while (idx.length > 2 && off(idx[0])) region[idx.shift()] = -1;
+        });
+        // Beats nobody's region holds (a drummer speeding up or slowing
+        // down): a smooth curve through the beats around each one (a fill or
+        // a missed hit can't pull it).
+        const free = T.map((t, i) => {
+          if (region[i] >= 0) return null;
+          const lo = Math.max(0, i - 8);
+          const hi = Math.min(T.length, i + 9);
+          const v = robustCurveAt(KL.slice(lo, hi), T.slice(lo, hi), strength.slice(lo, hi), KL[i]);
+          return v != null && isFinite(v) && Math.abs(v - t) < per0 * 0.3 ? v : t;
+        });
+        // Each region's exact grid, carried on beat by beat into the gap
+        // next to it as long as its beats land on drum hits.
+        const medEnv = strength.slice().sort((x, y) => x - y)[strength.length >> 1] - 0.2;
+        // 1: a drum hit right on it; 0: no drums there (a rest: may be
+        // skipped); -1: drums, but off it (the grid no longer fits: stop)
+        const hit = (t) => {
+          if (near(env, t) < medEnv * 0.3) return 0;
+          const a = hasAtt ? attackNear(P, t, 0.03, drumW) : t;
+          return a != null && Math.abs(a - t) < 0.007 ? 1 : -1;
+        };
+        const regs = fits.map((f2, j) => {
+          const idx = [];
+          region.forEach((r, i) => r === j && idx.push(i));
+          return { a: f2.a, p: f2.p, k0: KL[idx[0]], k1: KL[idx[idx.length - 1]], i0: idx[0], i1: idx[idx.length - 1] };
+        }).filter((r) => r.i0 != null).sort((x, y) => x.i0 - y.i0);
+        const at = (r, k) => r.a + r.p * k;
+        const songA = firstSound / br - per0 * 0.25;
+        const songB = lastSound / br + per0 * 0.25;
+        regs.forEach((r, j) => {
+          const prevEnd = j > 0 ? at(regs[j - 1], regs[j - 1].k1) : songA - 1;
+          const nextStart = j + 1 < regs.length ? at(regs[j + 1], regs[j + 1].k0) : songB + 1;
+          // forward (a beat with no hit may be skipped if the next one hits)
+          for (let k = r.k1 + 1; ; k++) {
+            const t = at(r, k);
+            if (t > Math.min(nextStart - r.p * 0.6, songB)) break;
+            const h = hit(t);
+            if (h > 0) r.k1 = k;
+            else if (h < 0 || !(hit(at(r, k + 1)) > 0 && at(r, k + 1) < nextStart - r.p * 0.6)) break;
+          }
+          for (let k = r.k0 - 1; ; k--) {
+            const t = at(r, k);
+            // (the beat where the tempo changes belongs to both: the new tempo starts on it)
+            if (t < Math.max(prevEnd - 0.004, songA)) break;
+            const h = hit(t);
+            if (h > 0) r.k0 = k;
+            else if (h < 0 || !(hit(at(r, k - 1)) > 0 && at(r, k - 1) > prevEnd + r.p * 0.6)) break;
+          }
+        });
+        beats = [];
+        regs.forEach((r) => {
+          for (let k = r.k0; k <= r.k1; k++) beats.push(at(r, k));
+        });
+        // The free beats that fall outside every region's grid.
+        const covered = (t) => regs.some((r) => t > at(r, r.k0) - r.p * 0.6 && t < at(r, r.k1) + r.p * 0.6);
+        free.forEach((v, i) => {
+          if (v != null && !covered(v)) beats.push(v);
+        });
+        beats.sort((x, y) => x - y);
+        // No beat too close to another; a missing beat in a gap is filled in.
+        const outB = [];
+        for (const t of beats) {
+          if (outB.length && t - outB[outB.length - 1] < per0 * 0.4) continue;
+          outB.push(t);
+        }
+        beats = [];
+        for (let i = 0; i < outB.length; i++) {
+          if (i > 1) {
+            const lp = outB[i - 1] - outB[i - 2];
+            const m = Math.round((outB[i] - outB[i - 1]) / lp);
+            if (m >= 2 && m <= 8 && Math.abs((outB[i] - outB[i - 1]) / m - lp) < lp * 0.15) {
+              for (let j = 1; j < m; j++) beats.push(outB[i - 1] + ((outB[i] - outB[i - 1]) * j) / m);
+            }
+          }
+          beats.push(outB[i]);
+        }
+        segs = regs.map((r) => ({ t: at(r, r.k0), bpm: Math.round(6000 / r.p) / 100 }));
+        return { beats, segs };
+      };
+      const r1 = follow(periods);
+      beats = r1.beats;
+      segs = r1.segs;
       per = (beats[beats.length - 1] - beats[0]) / Math.max(1, beats.length - 1);
-      for (let i = 1; i < beats.length; i++) if (beats[i] <= beats[i - 1] + per * 0.3) beats[i] = beats[i - 1] + per * 0.3;
     }
     if (beats.length < 8) return null;
 
@@ -1409,7 +1718,7 @@
     const first = one[1] > one[0] ? par + 2 : par;
     // Average tempo over the whole song (a single gap is only 20 ms exact).
     const avg = steady ? per : (beats[B - 1] - beats[0]) / (B - 1);
-    return { bpm: Math.round(6000 / avg) / 100, beats, first, confidence: tempo.confidence, steady };
+    return { bpm: Math.round(6000 / avg) / 100, beats, first, confidence: tempo.confidence, steady, segments: segs };
   }
 
   /**

@@ -30,14 +30,14 @@
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
-  const TRAINER_REPS = [10, 30, 50]; // plays from slow up to 100%...
+  const TRAINER_REPS = [10, 30, 50, 70]; // plays from slow up to 100%...
   const TRAINER_DEFAULT_START = 30;
   const TRAINER_DEFAULT_REPS = 10;
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
   const DOUBLE_TAP_PX = 40;
-  // ...then this many more at 100% before it stops: 10 → 5, 30 → 10, 50 → 10.
+  // ...then this many more at 100% before it stops: 10 → 5, 30 / 50 / 70 → 10.
   const trainerAfter = (reps) => (reps <= 10 ? 5 : 10);
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -124,6 +124,7 @@
     cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
     gridCov: 0, // how much of the song had been read when the grid was found
+    follow: true, // the zoomed wave moves with the song (on each time the page opens)
     vid: null,
     mainVid: null,
     video: null,
@@ -339,6 +340,7 @@
     S.gridAdj = gridAdjDefault();
     S.gridTried = 0;
     S.gridCov = 0;
+    S.follow = true;
     S.cues = [null, null, null, null];
     S.dirty = true;
     renderUI();
@@ -537,6 +539,14 @@
   // Once the video's sound runs through our engine it is silent while the
   // engine is suspended (Safari does that on pause, app switch, phone calls,
   // the microphone...). Wake it up whenever we can; a tap always can.
+  // Any click or key on the page (YouTube's own play button, the [ ] keys...)
+  // may start the sound engine, so zero-gap loops work from the first loop.
+  for (const ev of ['pointerdown', 'keydown', 'touchend']) {
+    document.addEventListener(ev, (e) => {
+      if (settings.open && S.vid && e.isTrusted && (!HQ.ctx || HQ.ctx.state !== 'running')) hqGesture();
+    }, true);
+  }
+
   function hqWake() {
     if (!HQ.ctx || !HQ.src || HQ.ctx.state === 'running' || HQ.ctx.state === 'closed') return;
     HQ.ctx.resume().catch(() => {});
@@ -651,6 +661,21 @@
     const b = effEnd();
     if (!r || b - r.a < 0.25 || b - r.a > 180) return null;
     return { a: r.a, b };
+  }
+
+  // Why the loop is not zero-gap right now ('' when it is, or no loop plays).
+  function slWhy() {
+    const v = S.video;
+    if (!v || v.paused || !loopActive() || !hasLoop()) return '';
+    if (SL.active) return '';
+    if (!settings.seamless) return 'Seamless loop is off (⚙ settings).';
+    if (settings.gap > 0) return 'A pause between loops is set (⚙ settings).';
+    const r = loopRegion();
+    if (r && effEnd() - r.a > 180) return 'Loops longer than 3 minutes jump back instead.';
+    if (!HQ.ctx || HQ.ctx.state !== 'running') return 'Click anywhere on the looper once to start its sound engine.';
+    if (S.scan) return 'Reading the song…';
+    if (SL.failKey && SL.bufKey !== SL.failKey && now() - SL.failAt < 3000) return 'This part of the song is not loaded yet: it will be after it has played once.';
+    return 'Getting the loop sound ready…';
   }
 
   function slUsable(v) {
@@ -1353,7 +1378,9 @@
     }
     if (A.offset) beats = beats.map((b) => b + A.offset);
     first = (first + A.shift) % 4;
-    S.grid = { bpm: Math.round(base.bpm * sc * 100) / 100, beats, first };
+    // Where the tempo changes (songs that speed up, slow down, jump).
+    const segments = base.segments && base.segments.length > 1 ? base.segments.map((x) => ({ t: x.t + A.offset, bpm: Math.round(x.bpm * sc * 100) / 100 })) : null;
+    S.grid = { bpm: Math.round(base.bpm * sc * 100) / 100, beats, first, segments, varies: !base.steady };
   }
 
   function gridChanged(msg) {
@@ -1445,6 +1472,16 @@
   function gridMissingText() {
     if (!dur() || S.peaks.coverage(dur()) < 0.9) return 'Reading the beats… (the whole song needs to be read first)';
     return 'No steady beat found in this song. Open Grid to type the tempo.';
+  }
+
+  // The tempo where you are (the grid may change tempo along the song).
+  function bpmAt(t) {
+    const G = S.grid;
+    if (!G) return 0;
+    if (!G.varies || G.beats.length < 6) return G.bpm;
+    const B = G.beats;
+    const k = C.clamp(C.nearestBeatIndex(B, t), 2, B.length - 3);
+    return Math.round((60 * 4 * 10) / (B[k + 2] - B[k - 2])) / 10;
   }
 
   // Position on the grid as a beat number (fractional; the grid goes on at
@@ -1559,7 +1596,7 @@
       flash(`Cue ${i + 1} cleared.`, 1500);
     } else if (S.cues[i] == null) {
       S.cues[i] = qT(v.currentTime);
-      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}. Click it to jump back here.`, 2500);
+      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}${settings.quantize && S.grid ? ` (on the ${Q_NAMES[settings.qRes]} grid)` : ''}. Click it to jump back here.`, 2500);
     } else {
       userSeek(S.cues[i]);
       play();
@@ -2986,9 +3023,16 @@
   let shadow = null;
   const ui = {};
 
+  // What Q snaps to, in beats (a beat = a 1/4 note).
+  const Q_RES = [1, 0.5, 0.25, 4];
+  const Q_NAMES = { 1: '1/4', 0.5: '1/8', 0.25: '1/16', 4: 'bar' };
+  const Q_RES_TITLE = 'Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar';
+
   // Beats: Q (quantize), DJ beat loops, tempo and the drum view.
   function buildBeatGroup() {
-    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on the beat grid (1 2 3 4). ‹ › move by one step. Open Grid to snap to ½ / ¼ beats or bars.', toggleQuantize, 'q-btn');
+    ui.qBtn = btn('Q', 'Quantize (Q): A, B and the hot cues always land on the grid (1/4, 1/8 or 1/16 notes, or bars: pick beside it). ‹ › move by one step.', toggleQuantize, 'q-btn');
+    ui.qResSel = select(Q_RES, (v) => Q_NAMES[v], settings.qRes, setQRes, Q_RES_TITLE);
+    ui.qResSel.classList.add('q-res');
     ui.beatBtns = BEAT_LOOPS.map((n) => {
       const b = btn(String(n), `Loop ${n} beat${n > 1 ? 's' : ''} from the beat you are on`, () => beatLoop(n), 'beat-btn');
       b.dataset.n = String(n);
@@ -3005,7 +3049,7 @@
     ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
     ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
-      ui.qBtn,
+      h('span', { class: 'q-pair' }, ui.qBtn, ui.qResSel),
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
       h('span', { class: 'cues' }, ...ui.cueBtns),
@@ -3027,8 +3071,6 @@
       gridSetBpm(Number(ui.bpmIn.value));
     });
     ui.gridMs = h('span', { class: 'grid-ms', title: 'How far the grid is moved by hand' });
-    ui.qResSel = select([1, 0.5, 0.25, 4], (v) => ({ 1: 'beat', 0.5: '½ beat', 0.25: '¼ beat', 4: 'bar' })[v], settings.qRes, setQRes,
-      'Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar');
     ui.gridReset = btn('Reset', 'Back to the grid the app found in the song', gridReset, 'grid-btn');
     return h('div', { class: 'row sub grid-row', hidden: true },
       h('span', { class: 'label', text: 'Tempo' }), ui.bpmIn, h('span', { class: 'label', text: 'BPM' }),
@@ -3045,7 +3087,6 @@
       ui.gridMs,
       btn('▸', 'Move the whole grid later (5 ms; Shift-click = 1 ms)', (e) => gridNudge(1, e), 'grid-btn'),
       h('span', { class: 'sep' }),
-      h('span', { class: 'label', text: 'Q snaps to' }), ui.qResSel,
       ui.gridReset);
   }
 
@@ -3053,10 +3094,10 @@
     if (!ui.qBtn) return;
     const G = S.grid;
     ui.qBtn.classList.toggle('on', !!settings.quantize);
-    ui.qBtn.textContent = settings.quantize && settings.qRes !== 1 ? `Q ${({ 0.5: '½', 0.25: '¼', 4: 'bar' })[settings.qRes] || ''}` : 'Q';
+    if (ui.qResSel.value !== String(settings.qRes)) ui.qResSel.value = String(settings.qRes);
     ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
-    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
-    ui.bpm.title = (G ? `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.` : gridMissingText()) + ' Click to fix the grid by hand.';
+    ui.bpm.textContent = G ? `${(G.varies && S.video ? bpmAt(S.video.currentTime) : G.bpm).toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
+    ui.bpm.title = (G ? (G.varies ? `The tempo changes in this song (${G.segments ? G.segments.map((x) => x.bpm.toFixed(1)).join(' → ') : 'a live drummer'}): this is the tempo here; the grid follows it.` : `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.`) : gridMissingText()) + ' Click to fix the grid by hand.';
     ui.bpm.classList.toggle('manual', !gridAdjIsDefault(S.gridAdj));
     ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
@@ -3069,7 +3110,6 @@
       if (shadow.activeElement !== ui.bpmIn) ui.bpmIn.value = G ? String(G.bpm) : '';
       const ms = Math.round(S.gridAdj.offset * 1000);
       ui.gridMs.textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
-      ui.qResSel.value = String(settings.qRes);
       ui.gridReset.disabled = gridAdjIsDefault(S.gridAdj);
     }
   }
@@ -3106,6 +3146,8 @@
     ui.backBtn = btn('5s', `Back ${JUMP_SEC} seconds and play`, () => jump(-JUMP_SEC), 'jump', 'back5');
     ui.fwdBtn = btn('5s', `Forward ${JUMP_SEC} seconds`, () => jump(JUMP_SEC), 'jump', 'fwd5');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
+    ui.slDot = h('i', { class: 'sl-dot' });
+    ui.loopBtn.appendChild(ui.slDot);
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
     ui.undoBtn = btn(null, 'Undo the last loop change', undo, 'icon hide-phone', 'undo');
 
@@ -3232,7 +3274,8 @@
     ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
+    ui.followBtn = btn('Follow', 'Follow: on = the wave moves with the song (the playhead stays in the middle). Off = the wave stays still: drag it anywhere, click a spot to play from there.', toggleFollow, 'follow-btn');
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.followBtn);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -3610,6 +3653,8 @@
     ui.zoomLoopBtn.disabled = !hasLoop();
     const zoomed = !!S.view;
     ui.zoomBtn.classList.toggle('on', zoomed);
+    ui.followBtn.hidden = !zoomed;
+    ui.followBtn.classList.toggle('on', S.follow);
     ui.zoomBtn.replaceChildren(icon(zoomed ? 'fit' : 'zoom'), zoomed ? 'Whole song' : 'Zoom in');
     ui.zoomBtn.title = zoomed ? 'Show the whole song' : ZOOM_IN_TITLE;
     ui.zoomBtn.disabled = !dur();
@@ -3715,6 +3760,8 @@
     d.abStart = L.abStart == null ? '' : String(L.abStart);
     renderBeats();
     d.bpm = S.grid ? String(S.grid.bpm) : '';
+    d.bpmNow = S.grid && S.video ? String(bpmAt(S.video.currentTime)) : '';
+    d.tempos = S.grid && S.grid.segments ? S.grid.segments.map((x) => `${x.bpm}@${x.t.toFixed(2)}`).join(',') : '';
     // Debug only: the wave's band data, to tune the drum analysis.
     if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
       const P = S.peaks;
@@ -3726,10 +3773,20 @@
       d.slHead = SL.headInfo || '';
     }
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
+    d.follow = S.follow ? 'on' : '';
     d.quant = settings.quantize ? (settings.qRes === 1 ? 'on' : `on:${settings.qRes}`) : '';
     d.gridMs = String(Math.round(S.gridAdj.offset * 1000));
     d.gridManual = S.grid && S.grid.manual ? '1' : '';
     d.seamless = SL.active ? 'on' : SL.bufKey ? 'ready' : SL.reqKey ? 'loading' : '';
+    {
+      // The light on the Loop button: green = zero gap, amber = getting ready, red = jumps back.
+      const why = slWhy();
+      const st = SL.active ? 'on' : !why ? '' : /ready|Reading/.test(why) ? 'wait' : 'off';
+      if (ui.slDot.dataset.st !== st) {
+        ui.slDot.dataset.st = st;
+        ui.loopBtn.title = st === 'on' ? 'Loop on/off  \\  — zero gap: the loop plays from memory' : why ? `Loop on/off  \\  — ${why}` : 'Loop on/off  \\';
+      }
+    }
     if (document.documentElement.dataset.ytlDebug === '1') d.slMinRms = SL.analyser ? `${SL.minRms.toFixed(3)}@${(SL.minAt || 0).toFixed(3)}` : '';
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
@@ -3883,7 +3940,8 @@
     settings.focusLen = 30;
     saveSettings();
     S.lastViewTouch = 0;
-    focusFollow(true);
+    S.follow = true;
+    focusFollow(true, true);
     renderUI();
   }
 
@@ -3894,8 +3952,11 @@
     return TOUCH || !!settings.mouseDJ;
   }
 
-  function focusFollow(force) {
+  // nav: the user went somewhere on purpose (the map, the Follow button):
+  // centre on it even with Follow off.
+  function focusFollow(force, nav) {
     if (!settings.zoomFocus || !S.video || (drag && drag.mode !== 'scrub')) return;
+    if (!S.follow && !nav) return;
     const d = dur();
     if (!d) return;
     const len = Math.min(focusLen(), d);
@@ -4162,12 +4223,32 @@
           ctx.fillText(String(pos + 1), x + 3, top + 3);
         }
       }
-      // Q on ½ or ¼ beats: small ticks where A and B can land between beats.
+      // Q on 1/8 or 1/16 notes: small ticks where A and B can land between beats.
       if (sub && i + 1 < B.length) {
         ctx.fillStyle = 'rgba(255,184,77,0.35)';
         for (let j = 1; j * sub < 1 - 1e-6; j++) ctx.fillRect(Math.round(xAt(B[i] + j * sub * (B[i + 1] - B[i]), g)), top, 1, 7);
       }
     }
+  }
+
+  // Where the tempo changes: a small tag with the new tempo (like Serato).
+  function drawTempoTags(ctx, g, top) {
+    const G = S.grid;
+    if (!G || !G.segments) return;
+    const { s, e } = viewRange();
+    ctx.font = '700 10.5px Roboto, system-ui, sans-serif';
+    ctx.textBaseline = 'top';
+    G.segments.forEach((sg, i) => {
+      if (i === 0 || sg.t < s || sg.t > e) return;
+      const x = Math.round(xAt(sg.t, g));
+      const label = `${sg.bpm.toFixed(1)}`;
+      const w = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(255,183,77,0.9)';
+      ctx.fillRect(x, top + 16, 2, 14);
+      ctx.fillRect(x, top + 16, w, 14);
+      ctx.fillStyle = '#1d0d00';
+      ctx.fillText(label, x + 5, top + 18);
+    });
   }
 
   // Drum lanes under the wave: kick, snare and hi-hat hits, like a drum chart.
@@ -4249,6 +4330,7 @@
     }
 
     drawGrid(ctx, g, top, wh);
+    drawTempoTags(ctx, g, top);
     drawLanes(ctx, g, top, wh);
     // Hot cue markers.
     S.cues.forEach((c, i) => {
@@ -4408,6 +4490,7 @@
     // Two fingers on the wave: pinch to zoom. 5x quicker than a photo: a small
     // spread of the fingers zooms a lot.
     const PINCH_SPEED = 5;
+    const TRACKPAD_PINCH = 10; // MacBook pinch: a full pinch zooms about 15x
     const fingers = new Map();
     let pinch = null;
     const pinchState = (g) => {
@@ -4422,7 +4505,9 @@
         const p = pinchState(g);
         const d = dur();
         const span = C.clamp((pinch.e - pinch.s) * Math.pow(pinch.dist / p.dist, PINCH_SPEED), Math.min(1, d), d);
-        setView(pinch.tMid - (p.mid / g.w) * span, pinch.tMid + (1 - p.mid / g.w) * span);
+        const ax = zoomAnchor(p.mid, g);
+        const tAt = ax === p.mid ? pinch.tMid : pinch.s + (ax / g.w) * (pinch.e - pinch.s);
+        setView(tAt - (ax / g.w) * span, tAt + (1 - ax / g.w) * span);
         if (settings.zoomFocus) {
           if (!S.view) settings.zoomFocus = false;
           else settings.focusLen = S.view.e - S.view.s;
@@ -4480,7 +4565,7 @@
           // DJ view: the little whole-song map jumps the song there.
           drag = { mode: 'miniSeek' };
           userSeek((x / g.w) * dur());
-          focusFollow(true);
+          focusFollow(true, true);
         } else {
           drag = { mode: 'mini' };
           panMiniTo(x, g);
@@ -4494,6 +4579,11 @@
         } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
+        } else if (S.view && !S.follow && !e.shiftKey && (e.pointerType === 'touch' || settings.mouseDJ)) {
+          // Follow off: drag the wave anywhere (the song keeps playing where
+          // it is); a click plays from that spot; double-click = A then B.
+          const { s: vs, e: ve } = viewRange();
+          drag = { mode: 'pan', x0: x, s0: vs, e0: ve, moved: false, downAt: now(), wasPlaying: !!S.video && !S.video.paused };
         } else if (e.pointerType === 'touch' || (settings.mouseDJ && !e.shiftKey)) {
           // Like a record: hold to stop, drag to move the song, click to
           // play/pause, double-click for A then B. (Shift+drag draws a loop.)
@@ -4526,6 +4616,9 @@
       const { g, x } = local(e);
       if (d.mode === 'scrub') {
         endScrub(d, x, g);
+      } else if (d.mode === 'pan') {
+        if (!d.moved) panClick(timeAt(x, g), x, d);
+        renderUI();
       } else if (d.mode === 'select') {
         if (d.moved) {
           setLoop(qT(d.t0), qT(timeAt(x, g)), { play: true, fresh: true });
@@ -4562,16 +4655,20 @@
         const span = en - s;
         const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
         if (horiz) {
+          // Two fingers sideways: slide the wave freely (Follow goes off).
           const delta = (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) || 0;
+          if (S.view) followOff();
           setView(s + (delta / g.w) * span, en + (delta / g.w) * span);
           return;
         }
         const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
-        // A trackpad pinch (MacBook) arrives as a wheel event with ctrlKey: 5x quicker too.
-        const factor = Math.pow(1.0018, e.deltaY * unit * (e.ctrlKey ? PINCH_SPEED : 1));
-        const tAt = s + (x / g.w) * span;
+        // A trackpad pinch (MacBook) arrives as a wheel event with ctrlKey:
+        // much quicker, and it zooms right where the mouse is.
+        const factor = Math.pow(1.0018, e.deltaY * unit * (e.ctrlKey ? TRACKPAD_PINCH : 1));
+        const ax = zoomAnchor(x, g);
+        const tAt = s + (ax / g.w) * span;
         const ns = Math.max(Math.min(1, d), span * factor);
-        setView(tAt - (x / g.w) * ns, tAt + (1 - x / g.w) * ns);
+        setView(tAt - (ax / g.w) * ns, tAt + (1 - ax / g.w) * ns);
         if (settings.zoomFocus) {
           if (!S.view) settings.zoomFocus = false;
           else settings.focusLen = S.view.e - S.view.s;
@@ -4605,9 +4702,15 @@
     const t = timeAt(x, g);
     if (drag.mode === 'scrub') {
       moveScrub(drag, x, g);
+    } else if (drag.mode === 'pan') {
+      if (Math.abs(x - drag.x0) > 3) drag.moved = true;
+      if (drag.moved) {
+        const dt = ((x - drag.x0) / g.w) * (drag.e0 - drag.s0);
+        setView(drag.s0 - dt, drag.e0 - dt, true);
+      }
     } else if (drag.mode === 'miniSeek') {
       userSeek((x / g.w) * dur());
-      focusFollow(true);
+      focusFollow(true, true);
     } else if (drag.mode === 'seek') {
       userSeek(t);
     } else if (drag.mode === 'mini') {
@@ -4754,6 +4857,52 @@
     setView(t - len * 0.5, t + len * 0.5, true);
   }
 
+  // Where a zoom holds still: the mouse / fingers. With Follow on and the
+  // pointer near the playhead (the middle), the playhead; zooming somewhere
+  // else turns Follow off, so the wave stays on the part you look at.
+  function zoomAnchor(x, g) {
+    if (!S.view || !S.follow || !settings.zoomFocus) return x;
+    if (Math.abs(x - g.w / 2) < g.w * 0.08) return g.w / 2;
+    followOff();
+    return x;
+  }
+
+  function followOff() {
+    if (!S.follow) return;
+    S.follow = false;
+    flash('Follow off: the wave stays where you look. Click a spot to play from there. Follow (top right of the wave) turns it back on.', 4500);
+    renderUI();
+  }
+
+  function toggleFollow() {
+    S.follow = !S.follow;
+    if (S.follow) {
+      if (S.view && !settings.zoomFocus) {
+        settings.zoomFocus = true;
+        settings.focusLen = S.view.e - S.view.s;
+        saveSettings();
+      }
+      S.lastViewTouch = 0;
+      focusFollow(true, true);
+    }
+    S.dirty = true;
+    renderUI();
+  }
+
+  // Follow off, a click on the wave (no drag): play from there. A second
+  // click soon after (a double-click) sets A, then B, as always.
+  function panClick(t, x, d) {
+    const prev = S.lastTap;
+    S.lastTap = null;
+    if (prev && d.downAt - prev.at < DOUBLE_TAP_MS && Math.abs(x - prev.x) < DOUBLE_TAP_PX) {
+      doubleTapAt(t, prev.wasPlaying);
+      return;
+    }
+    S.lastTap = { at: now(), x, wasPlaying: d.wasPlaying };
+    userSeek(t);
+    play();
+  }
+
   function panMiniTo(x, g) {
     const d = dur();
     const { s, e } = viewRange();
@@ -4789,6 +4938,7 @@
   }
 
   function followPlayhead() {
+    if (!S.follow) return; // Follow off: the wave stays where you put it
     if (settings.zoomFocus) return focusFollow(false);
     if (!S.view || !S.video || S.video.paused || drag) return;
     if (now() - S.lastViewTouch < 2000) return;
@@ -4832,6 +4982,7 @@
         handled = false;
       } else handled = false;
       if (handled) {
+        hqGesture(); // a key press also lets the sound engine start
         e.preventDefault();
         e.stopImmediatePropagation();
       }

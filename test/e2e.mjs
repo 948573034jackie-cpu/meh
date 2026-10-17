@@ -305,6 +305,36 @@ await step('seamless loop: B runs straight into A, the sound never drops out (me
   await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
 });
 
+await step('zero-gap loops everywhere in the song, also after jumping around (YouTube re-sends the header, refetches parts)', async () => {
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  const jump = (t) => page.evaluate((x) => { const v = document.querySelector('#movie_player video'); v.currentTime = x; v.play().catch(() => {}); }, t);
+  for (const t of [25, 3, 17, 8, 28, 12]) {
+    await jump(t);
+    await sleep(700);
+  }
+  const report = [];
+  for (const [a, b] of [[2.2, 3.7], [12.3, 15.9], [25.1, 27.4], [5.5, 6.4], [19.6, 23.2]]) {
+    await jump(a + 0.05);
+    await sleep(150);
+    await page.keyboard.press('BracketLeft');
+    await page.evaluate((x) => { document.querySelector('#movie_player video').currentTime = x; }, b);
+    await sleep(100);
+    await page.keyboard.press('BracketRight');
+    await page.evaluate((x) => { const v = document.querySelector('#movie_player video'); v.currentTime = x; v.play().catch(() => {}); }, a + 0.1);
+    let ok = true;
+    try {
+      await waitFor(async () => (await host()).seamless === 'on', 4000, `zero-gap loop ${a}-${b}`);
+      await waitFor(() => page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.sl-dot').dataset.st === 'on'), 1000, 'green light on the Loop button');
+    } catch (e) {
+      ok = false;
+    }
+    const vs = ok ? null : await page.evaluate(() => { const v = document.querySelector('#movie_player video'); return `t=${v.currentTime.toFixed(2)} paused=${v.paused} rs=${v.readyState}`; });
+    report.push(`${a}-${b}:${ok ? 'on' : `${(await host()).seamless || 'off'} (${vs}, loop ${(await host()).a}-${(await host()).b})`}`);
+    await shadowClick('button', 'Clear the loop');
+  }
+  assert(report.every((r) => r.endsWith(':on')), `every loop plays from memory with no gap (${report.join(' ')})`);
+});
+
 await step('speed buttons 30% / 50% / 75% / 100% and keep-pitch', async () => {
   await shadowClick('button.speed', '30%');
   assert(Math.abs((await vstate()).rate - 0.3) < 0.001, '30%');
@@ -346,7 +376,14 @@ await step('Trainer: one tap starts it at 30% over 10 loops, another tap stops i
     .filter((e) => e.title === 'Starting speed' || e.title === 'How many loops to reach 100%')
     .map((e) => [e.title, [...e.options].map((o) => o.value)])));
   assert(JSON.stringify(opts['Starting speed']) === '["30","50","75"]', `start choices ${opts['Starting speed']}`);
-  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["10","30","50"]', `loop choices ${opts['How many loops to reach 100%']}`);
+  assert(JSON.stringify(opts['How many loops to reach 100%']) === '["10","30","50","70"]', `loop choices ${opts['How many loops to reach 100%']}`);
+  // 70 loops from 30% to 100%, then 10 at normal speed.
+  await shadowSelect('How many loops to reach 100%', 70);
+  h = await host();
+  assert(h.trainer.startsWith('1/80') || h.trainer.startsWith('1/70'), `70 loops up (+10 at 100%): ${h.trainer}`);
+  const label = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('select')].find((e) => e.title === 'How many loops to reach 100%').selectedOptions[0].textContent);
+  assert(label === '70× up + 10× at 100%', `choice reads "${label}"`);
+  await shadowSelect('How many loops to reach 100%', 10);
   await shadowClick('button', 'Trainer');
   h = await host();
   assert(h.trainer === '', 'stopped');
@@ -464,8 +501,81 @@ await step('zoom with the mouse wheel and back to the whole song', async () => {
   s0 = await span();
   await wheel(true);
   const pinch = (await span()) / s0;
-  assert(Math.abs(Math.log(pinch) / Math.log(plain) - 5) < 0.2, `trackpad pinch zooms 5x faster (scroll x${plain.toFixed(3)}, pinch x${pinch.toFixed(3)})`);
+  assert(Math.abs(Math.log(pinch) / Math.log(plain) - 10) < 0.3, `trackpad pinch zooms 10x faster (scroll x${plain.toFixed(3)}, pinch x${pinch.toFixed(3)})`);
   await shadowClick('button', 'Show the whole song');
+});
+
+await step('Follow: on = the wave moves with the song; off = it stays still, drag it anywhere, click plays from there; pinch zooms where the mouse is', async () => {
+  if ((await host()).loop === 'true') await page.keyboard.press('Backslash');
+  const djMouse = () => page.evaluate(() => {
+    const root = document.getElementById('ytl-wave-looper').shadowRoot;
+    [...root.querySelectorAll('label.check')].find((l) => l.textContent.includes('DJ mouse')).querySelector('input').click();
+  });
+  await djMouse();
+  assert((await host()).mouse === 'dj', 'DJ mouse on');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4; v.play().catch(() => {}); });
+  await shadowClick('button.zoom-toggle');
+  const view = async () => (await host()).view.split(',').map(Number);
+  const fb = () => page.evaluate(() => { const b = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.follow-btn'); return { hidden: b.hidden, on: b.classList.contains('on') }; });
+  assert((await host()).follow === 'on' && (await fb()).on && !(await fb()).hidden, 'Follow is on and shown next to the wave');
+  let v0 = await view();
+  await sleep(1200);
+  let v1 = await view();
+  assert(v1[0] > v0[0] + 0.5, `Follow on: the wave moves (${v0[0].toFixed(2)} -> ${v1[0].toFixed(2)})`);
+  await shadowClick('button.follow-btn');
+  assert((await host()).follow === '', 'Follow off');
+  v0 = await view();
+  await sleep(1200);
+  v1 = await view();
+  assert(Math.abs(v1[0] - v0[0]) < 0.001, `Follow off: the wave stays still (${v0[0]} / ${v1[0]})`);
+  // Drag the wave: it slides, the song keeps playing where it was.
+  const b = await waveBox();
+  const y = b.y + 18 + (b.h - 18) * 0.45;
+  const t0 = (await vstate()).t;
+  await page.mouse.move(b.x + b.w * 0.7, y);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(b.x + b.w * 0.7 - i * 40, y);
+  await page.mouse.up();
+  v1 = await view();
+  const span = v1[1] - v1[0];
+  assert(Math.abs(v1[0] - v0[0] - (320 / b.w) * span) < span * 0.02, `the wave slid with the mouse (${v0[0].toFixed(2)} -> ${v1[0].toFixed(2)})`);
+  let st = await vstate();
+  assert(!st.paused && st.t >= t0 - 0.05 && st.t < t0 + 2, `the song played on where it was (t ${t0.toFixed(2)} -> ${st.t.toFixed(2)})`);
+  // Click a spot: plays from there, and the wave stays still.
+  const tClick = v1[0] + span * 0.2;
+  await page.mouse.click(b.x + b.w * 0.2, y);
+  await sleep(300);
+  st = await vstate();
+  assert(!st.paused && Math.abs(st.t - tClick) < 0.45, `plays from the clicked spot (${tClick.toFixed(2)} -> t=${st.t.toFixed(2)})`);
+  assert(Math.abs((await view())[0] - v1[0]) < 0.001, 'the wave did not jump');
+  // Follow on again: back to the playhead.
+  await shadowClick('button.follow-btn');
+  await sleep(200);
+  let v2 = await view();
+  st = await vstate();
+  assert(Math.abs((v2[0] + v2[1]) / 2 - st.t) < 0.3, `Follow on: the playhead is in the middle again (${((v2[0] + v2[1]) / 2).toFixed(2)} vs ${st.t.toFixed(2)})`);
+  // Pinch at the left of the wave: the spot under the mouse stays put, Follow goes off.
+  await page.evaluate(() => document.querySelector('#movie_player video').pause());
+  await sleep(300);
+  v2 = await view();
+  const mx = b.x + b.w * 0.2;
+  const tUnder = v2[0] + (v2[1] - v2[0]) * 0.2;
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(([x, yy]) => {
+      const cv = document.getElementById('ytl-wave-looper').shadowRoot.querySelector('canvas');
+      cv.dispatchEvent(new WheelEvent('wheel', { deltaY: -8, ctrlKey: true, clientX: x, clientY: yy, bubbles: true, cancelable: true }));
+    }, [mx, y]);
+  }
+  await sleep(700);
+  const v3 = await view();
+  assert((v3[1] - v3[0]) < (v2[1] - v2[0]) / 3, `a small pinch zooms a lot (${(v2[1] - v2[0]).toFixed(2)} s -> ${(v3[1] - v3[0]).toFixed(2)} s)`);
+  const tNow = v3[0] + (v3[1] - v3[0]) * 0.2;
+  assert(Math.abs(tNow - tUnder) < 0.01, `the spot under the mouse stayed under the mouse (${tUnder.toFixed(3)} / ${tNow.toFixed(3)})`);
+  assert((await host()).follow === '', 'zooming away from the playhead turns Follow off');
+  await shadowClick('button.follow-btn');
+  await shadowClick('button', 'Show the whole song');
+  await djMouse();
+  assert((await host()).mouse === 'classic', 'classic mouse again');
 });
 
 await step('Zoom in button: short window that scrolls with the song; Whole song zooms out', async () => {
@@ -1069,7 +1179,7 @@ await step('grid by hand: ½ / 2×, move the "1", "1 here", move the grid by ms,
   // Q on ½ beats: A lands on an "and".
   if ((await host()).a) await shadowClick('button', 'Clear the loop');
   await shadowClick('button.q-btn');
-  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 0.5);
+  await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 0.5);
   assert((await host()).quant === 'on:0.5', `Q on ½ (${(await host()).quant})`);
   await clickWaveAt(beatAt(7) + 0.25);
   await clickWaveAt(beatAt(13) + 0.05);
@@ -1079,11 +1189,20 @@ await step('grid by hand: ½ / 2×, move the "1", "1 here", move the grid by ms,
   await page.screenshot({ path: path.join(SHOTS, '12-grid.png') });
   await shadowClick('button', 'Move end later (Shift = fine, Alt = big)');
   assert(near((await host()).b, beatAt(13) + BEAT / 2), `› moves B half a beat (${(await host()).b})`);
-  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 4);
+  await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 4);
   h = await host();
   bars = (Number(h.a) - (await bar1())) / (4 * BEAT);
   assert(Math.abs(bars - Math.round(bars)) < 0.002, `Q on bars: A on a "1" (${h.a})`);
-  await shadowSelect('Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar', 1);
+  // 1/16 notes: a hot cue lands on the nearest sixteenth.
+  await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 0.25);
+  await at(beatAt(10) + PLAYER_DELAY + 0.17);
+  await sleep(100);
+  const freeCue = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')].findIndex((x) => !x.classList.contains('set')));
+  await page.evaluate((i) => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')[i].click(), freeCue);
+  const cue = Number((await host()).cues.split(',')[freeCue]);
+  assert(Math.abs(cue - (beatAt(10) + PLAYER_DELAY + BEAT / 4)) < 0.002, `hot cue on the 1/16 note (${cue})`);
+  await page.evaluate((i) => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')[i].dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })), freeCue);
+  await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 1);
   await shadowClick('button.q-btn');
   await shadowClick('button', 'Clear the loop');
   // Saved for this song.
@@ -1096,6 +1215,32 @@ await step('grid by hand: ½ / 2×, move the "1", "1 here", move the grid by ms,
   assert((await host()).gridMs === '5', `+5 ms remembered (${(await host()).gridMs})`);
   await shadowClick('button', 'Back to the grid the app found in the song');
   await shadowClick('button', 'Grid');
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
+});
+
+await step('a song that changes tempo (90 -> 120 BPM): the grid follows it, every beat on the hit, the tempo shown where you are', async () => {
+  const PLAYER_DELAY = 0.0078;
+  const truth = manifest.tempoBeats.map((t) => t + PLAYER_DELAY);
+  await page.evaluate(() => (document.documentElement.dataset.ytlDebug = '1'));
+  await page.evaluate(() => window.__navigate('TEMPO001'));
+  await waitFor(async () => (await host()).vid === 'TEMPO001', 5000, 'tempo video');
+  const h = await waitFor(async () => { const x = await host(); return x.bpm && x.beatList ? x : null; }, 60000, 'beats found');
+  const tempos = h.tempos.split(',').map((x) => x.split('@').map(Number));
+  assert(tempos.length === 2 && Math.abs(tempos[0][0] - 90) < 0.2 && Math.abs(tempos[1][0] - 120) < 0.2, `two tempos 90 and 120 (${h.tempos})`);
+  assert(Math.abs(tempos[1][1] - truth[20]) < 0.01, `120 starts on its first beat (${tempos[1][1]} vs ${truth[20].toFixed(3)})`);
+  const B = h.beatList.split(',').map(Number);
+  const errs = truth.map((t) => Math.min(...B.map((b) => Math.abs(b - t))) * 1000);
+  const worst = Math.max(...errs);
+  assert(worst < 2, `every beat within 2 ms (worst ${worst.toFixed(1)} ms)`);
+  for (const [t, want] of [[6, 90], [22, 120]]) {
+    await page.evaluate((x) => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = x; }, t);
+    await sleep(150);
+    const now = Number((await host()).bpmNow);
+    assert(Math.abs(now - want) < 0.3, `at ${t} s the tempo shows ${want} (${now})`);
+  }
+  await page.screenshot({ path: path.join(SHOTS, '13-tempo-change.png') });
   await page.evaluate(() => (document.documentElement.dataset.ytlDebug = ''));
   await page.evaluate(() => window.__navigate('VIDAAAA1'));
   await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');

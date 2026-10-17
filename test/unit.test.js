@@ -124,6 +124,17 @@ test('computePeaks: loud and quiet parts land in the right bins', () => {
   assert.ok(r.mid[10] > r.low[10], '440 Hz counts as mids');
 });
 
+test('WebM clusters: each with its time and end; segments join up exactly', { skip: !hasFixtures && 'run node tools/make-fixtures.js' }, () => {
+  const m = JSON.parse(fs.readFileSync(path.join(FX, 'manifest.json'), 'utf8'));
+  const all = [];
+  for (const s of m.drums.segs) all.push(...P.webmClusters(read(s.url), 1e6));
+  assert.ok(all.length >= m.drums.segs.length);
+  for (let i = 1; i < all.length; i++) assert.ok(Math.abs(all[i].time - all[i - 1].end) < 0.002, `cluster ${i} starts where ${i - 1} ends (${all[i - 1].end} / ${all[i].time})`);
+  assert.ok(Math.abs(all[all.length - 1].end - m.duration) < 0.05, `last ends at the end (${all[all.length - 1].end})`);
+  const seg = read(m.drums.segs[2].url);
+  assert.equal(P.webmClusters(seg.subarray(0, seg.length - 10), 1e6).length, P.webmClusters(seg, 1e6).length - 1, 'a cut-off cluster is left out');
+});
+
 test('EBML vint parsing', () => {
   assert.deepEqual(plain(P.readId(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]), 0)), { id: 0x1a45dfa3, len: 4 });
   assert.deepEqual(plain(P.readSize(new Uint8Array([0x81]), 0)), { value: 1, len: 1, unknown: false });

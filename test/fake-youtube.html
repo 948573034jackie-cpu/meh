@@ -54,7 +54,8 @@
     await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
     ms.duration = M.duration;
     // Videos whose id starts with DRUM play the 96 BPM drum groove.
-    const audioTrack = /^DRUM/.test(currentVid || '') && M.drums ? M.drums : M.audio;
+    // TEMPO: a song that goes from 90 to 120 BPM.
+    const audioTrack = /^DRUM/.test(currentVid || '') && M.drums ? M.drums : /^TEMPO/.test(currentVid || '') && M.tempo ? M.tempo : M.audio;
     const tracks = [audioTrack, M.video].map((t) => ({ t, sb: ms.addSourceBuffer(t.mime), busy: false, inited: false }));
     const get = async (u) => new Uint8Array(await (await fetch('/__fx/' + u)).arrayBuffer());
     const append = (tr, bytes) => new Promise((res) => {
@@ -74,8 +75,28 @@
         if (seg) {
           const bytes = await get(seg.url);
           if (my !== session) return;
-          // Like SABR, sometimes hand the bytes over in two pieces.
-          if (tr.t === M.audio && seg.url.endsWith('3.webm')) {
+          // Like YouTube: after a jump, the header (init segment) comes again, as new bytes.
+          const next = tr.lastSeg && tr.t.segs.indexOf(seg) === tr.t.segs.indexOf(tr.lastSeg) + 1;
+          if (tr.lastSeg && !next) {
+            await append(tr, await get(tr.t.init));
+            tr.jumped = true;
+          }
+          tr.lastSeg = seg;
+          // Like YouTube, the audio comes in pieces of different sizes: two
+          // segments in one go, starting on even segments before the first
+          // jump and on odd ones after it, so the pieces overlap.
+          const k = tr.t.segs.indexOf(seg);
+          const pair = tr.t === audioTrack && tr.t.segs[k + 1] && k % 2 === (tr.jumped ? 1 : 0);
+          if (pair) {
+            const more = await get(tr.t.segs[k + 1].url);
+            if (my !== session) return;
+            const both = new Uint8Array(bytes.length + more.length);
+            both.set(bytes);
+            both.set(more, bytes.length);
+            await append(tr, both);
+            tr.lastSeg = tr.t.segs[k + 1];
+          } else if (tr.t === M.audio && seg.url.endsWith('3.webm')) {
+            // Like SABR, sometimes hand the bytes over in two pieces.
             const cut = Math.floor(bytes.length / 2);
             await append(tr, bytes.slice(0, cut));
             await append(tr, bytes.slice(cut));

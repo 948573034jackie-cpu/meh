@@ -106,6 +106,10 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .tstat b { color: var(--gold); }
 .stage { position: relative; display: flex; flex: none; height: 140px; }
 .wave-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+button.follow-btn { position: absolute; top: 22px; right: 8px; z-index: 3; height: 24px; padding: 0 10px 0 8px; font-size: 12px; font-weight: 700; border-radius: 12px; background: rgba(12,15,21,.82); color: #9aa6b8; border: 1px solid var(--line); backdrop-filter: blur(4px); }
+button.follow-btn::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; vertical-align: -1px; }
+button.follow-btn.on { color: #4da3ff; border-color: #4da3ff; }
+button.follow-btn.on::before { background: #4da3ff; box-shadow: 0 0 6px #4da3ff; }
 .lyrics {
   flex: 0 0 34%; min-width: 240px; max-width: 480px; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); background: #101216;
@@ -327,6 +331,13 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 .beat-loops { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: #121722; border: 1px solid var(--line); }
 button.beat-btn { min-width: 30px; padding: 0 6px; font-weight: 700; font-variant-numeric: tabular-nums; border-color: transparent; background: transparent; }
 button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
+.sl-dot { display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; background: transparent; }
+.sl-dot[data-st="on"] { background: #3ddc84; box-shadow: 0 0 6px #3ddc84; }
+.sl-dot[data-st="wait"] { background: #ffb000; }
+.sl-dot[data-st="off"] { background: #ff4d6d; }
+.q-pair { display: inline-flex; align-items: center; gap: 0; }
+.q-pair button.q-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+select.q-res { height: 30px; margin-left: -1px; padding: 0 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
 button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }

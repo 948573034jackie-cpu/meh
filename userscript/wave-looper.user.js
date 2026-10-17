@@ -158,6 +158,69 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     return last;
   }
 
+  /**
+   * Every complete Cluster in a chunk of media that starts with Clusters:
+   * [{ time, end (seconds), bytes }]. end = the last block's time plus one
+   * frame. The smallest pieces of audio with their own time, so pieces
+   * fetched twice, or cut up differently, can be put back together.
+   */
+  function webmClusters(u8, tcScale) {
+    const out = [];
+    let pos = 0;
+    let guard = 0;
+    const sc = tcScale / 1e9;
+    while (pos < u8.length && guard++ < 100000) {
+      const id = readId(u8, pos);
+      if (!id || id.id !== CLUSTER_ID) break;
+      const size = readSize(u8, pos + id.len);
+      if (!size || size.unknown) break;
+      const dataStart = pos + id.len + size.len;
+      const end = dataStart + size.value;
+      if (end > u8.length) break; // cut off: not complete
+      let time = null;
+      const rel = [];
+      let p = dataStart;
+      let g = 0;
+      while (p < end && g++ < 100000) {
+        const cid = readId(u8, p);
+        if (!cid) break;
+        const cs = readSize(u8, p + cid.len);
+        if (!cs || cs.unknown) break;
+        const ds = p + cid.len + cs.len;
+        if (cid.id === CLUSTER_TIMESTAMP_ID) time = readUint(u8, ds, cs.value);
+        else if (cid.id === 0xa3 || cid.id === 0xa0) {
+          // SimpleBlock, or a BlockGroup holding a Block
+          let b = ds;
+          if (cid.id === 0xa0) {
+            const bid = readId(u8, ds);
+            const bs = bid && readSize(u8, ds + bid.len);
+            b = bid && bid.id === 0xa1 && bs ? ds + bid.len + bs.len : -1;
+          }
+          const tn = b >= 0 ? readSize(u8, b) : null;
+          if (tn && b + tn.len + 2 <= u8.length) {
+            let v = (u8[b + tn.len] << 8) | u8[b + tn.len + 1];
+            if (v & 0x8000) v -= 0x10000;
+            rel.push(v);
+          }
+        }
+        p = ds + cs.value;
+      }
+      if (time !== null && rel.length) {
+        // one frame after the last block (the usual gap between blocks)
+        let frame = 20e6 / tcScale;
+        if (rel.length > 1) {
+          const d = [];
+          for (let i = 1; i < rel.length; i++) d.push(rel[i] - rel[i - 1]);
+          d.sort((x, y) => x - y);
+          frame = d[d.length >> 1] || frame;
+        }
+        out.push({ time: time * sc, end: (time + Math.max(...rel) + frame) * sc, bytes: u8.subarray(pos, end) });
+      }
+      pos = end;
+    }
+    return out;
+  }
+
   /** TimecodeScale (ns per tick) from an init segment. Default 1 ms. */
   function webmTimecodeScale(u8) {
     let pos = 0;
@@ -519,7 +582,7 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
   if (G.__YTL_TEST__) {
     G.__YTL_TEST__.parsers = {
       readId, readSize, webmFindCluster, webmTimecodeScale, webmClusterTime,
-      boxes, mp4FindMediaStart, mp4InitMeta, mp4Fragments, toAdts, computePeaks, BIN_RATE,
+      boxes, mp4FindMediaStart, mp4InitMeta, mp4Fragments, toAdts, computePeaks, BIN_RATE, webmClusters,
     };
     if (G.__YTL_TEST__.parsersOnly) return;
   }
@@ -891,51 +954,112 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
   // looper can play it from memory with no gap at all between B and A.
   // The audio chunks of the current video are kept (a few MB per song).
   // ---------------------------------------------------------------------------
-  const kept = new Map(); // vid -> [{ start, end, media, init, container, mp4 }]
+  // Per video: the audio as Clusters (WebM), each kept once by its time, in
+  // groups by header (a new quality is a new group); MP4 as whole chunks.
+  const kept = new Map(); // vid -> { groups: [{ key, init, tc, clusters: Map(ms -> {time, end, bytes}) }], mp4: [chunk] }
   let keptBytes = 0;
   const KEEP_MAX = 96 * 1024 * 1024;
 
+  // A short fingerprint of a header, so the same header sent again counts as the same.
+  function bytesKey(u8) {
+    let h = 2166136261;
+    for (let i = 0; i < u8.length; i++) h = Math.imul(h ^ u8[i], 16777619);
+    return `${u8.length}:${h >>> 0}`;
+  }
+
   function keepChunk(job, durSec) {
     if (!job.vid || !durSec) return;
-    let list = kept.get(job.vid);
-    if (!list) {
+    let k = kept.get(job.vid);
+    if (!k) {
       // Only the newest video's audio is kept.
-      for (const [v, l] of kept) {
-        for (const c of l) keptBytes -= c.media.length;
-        kept.delete(v);
-      }
-      list = [];
-      kept.set(job.vid, list);
+      kept.clear();
+      keptBytes = 0;
+      k = { groups: [], mp4: [] };
+      kept.set(job.vid, k);
     }
+    if (job.container === 'webm') {
+      const tc = (job.st && job.st.tcScale) || 1e6;
+      const cl = webmClusters(job.media, tc);
+      if (!cl.length) return;
+      const shift = job.start - cl[0].time; // the SourceBuffer's timestampOffset
+      const key = bytesKey(job.init);
+      let g = k.groups.find((x) => x.key === key);
+      if (!g) {
+        g = { key, init: job.init, tc, clusters: new Map() };
+        k.groups.push(g);
+      }
+      for (const c of cl) {
+        const time = c.time + shift;
+        const id = Math.round(time * 1000);
+        const old = g.clusters.get(id);
+        if (old && old.bytes.length >= c.bytes.length) continue;
+        if (keptBytes + c.bytes.length - (old ? old.bytes.length : 0) > KEEP_MAX) return;
+        keptBytes += c.bytes.length - (old ? old.bytes.length : 0);
+        g.clusters.set(id, { time, end: c.end + shift, bytes: c.bytes.slice() });
+      }
+      g.sorted = null;
+      return;
+    }
+    const list = k.mp4;
     const end = job.start + durSec;
+    const key = bytesKey(job.init);
     // The same chunk decoded again (it grew): keep the bigger one.
-    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02);
+    const i = list.findIndex((c) => Math.abs(c.start - job.start) < 0.02 && c.key === key);
     if (i >= 0) {
       if (list[i].media.length >= job.media.length) return;
       keptBytes -= list[i].media.length;
       list.splice(i, 1);
     }
     if (keptBytes + job.media.length > KEEP_MAX) return;
-    list.push({ start: job.start, end, media: job.media, init: job.init, container: job.container, mp4: job.mp4 });
+    list.push({ start: job.start, end, media: job.media, init: job.init, key, container: job.container, mp4: job.mp4 });
     keptBytes += job.media.length;
     list.sort((a, b) => a.start - b.start);
   }
 
-  // Contiguous chunks covering [a, b] (plus one before it as an Opus run-up).
+  function sortedClusters(g) {
+    if (!g.sorted) g.sorted = [...g.clusters.values()].sort((a, b) => a.time - b.time);
+    return g.sorted;
+  }
+
+  /**
+   * The audio covering [a, b] as one piece to decode: { init, media, start,
+   * container, mp4 } (with one piece before it as an Opus run-up), or null.
+   */
   function chunksFor(vid, a, b) {
-    const list = kept.get(vid) || [];
-    let i = list.findIndex((c) => c.end > a + 0.001);
-    if (i < 0 || list[i].start > a + 0.001) return null;
-    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1) i--; // run-up
+    const k = kept.get(vid);
+    if (!k) return null;
+    for (const g of k.groups) {
+      const L = sortedClusters(g);
+      let i = -1;
+      for (let j = 0; j < L.length; j++) if (L[j].time <= a + 0.001 && L[j].end > a + 0.001) i = j;
+      if (i < 0) continue;
+      const touch = (x, y) => Math.abs(y.time - x.end) < 0.08;
+      if (i > 0 && touch(L[i - 1], L[i])) i--; // run-up
+      const out = [L[i]];
+      let ok = true;
+      while (out[out.length - 1].end < b - 0.001) {
+        const prev = out[out.length - 1];
+        const next = L[L.indexOf(prev) + 1];
+        if (!next || !touch(prev, next)) {
+          ok = false;
+          break;
+        }
+        out.push(next);
+      }
+      if (ok) return { init: g.init, media: concat(out.map((c) => c.bytes)), start: out[0].time, container: 'webm' };
+    }
+    const list = k.mp4;
+    let i = list.findIndex((c) => c.end > a + 0.001 && c.start <= a + 0.001);
+    if (i < 0) return null;
+    if (i > 0 && Math.abs(list[i - 1].end - list[i].start) < 0.1 && list[i - 1].key === list[i].key) i--; // run-up
     const out = [list[i]];
     while (out[out.length - 1].end < b - 0.001) {
       const prev = out[out.length - 1];
-      const next = list.find((c) => c.start > prev.start + 0.01 && Math.abs(c.start - prev.end) < 0.1);
-      if (!next) return null;
+      const next = list.find((c) => c.key === prev.key && c.start > prev.start + 0.01 && c.start <= prev.end + 0.1 && c.end > prev.end);
+      if (!next || Math.abs(next.start - prev.end) > 0.1) return null;
       out.push(next);
     }
-    if (out.some((c) => c.init !== out[0].init || c.container !== out[0].container)) return null;
-    return out;
+    return { init: out[0].init, media: concat(out.map((c) => c.media)), start: out[0].start, container: 'mp4', mp4: out[0].mp4 };
   }
 
   let fullCtx = null;
@@ -943,9 +1067,9 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
     const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, ...extra });
     try {
       const sr = req.sr > 0 ? req.sr : 48000;
-      const list = chunksFor(req.vid, req.a, req.b);
-      if (!list) return reply({ ok: false, why: 'not loaded' });
-      const media = concat(list.map((c) => c.media));
+      const piece = chunksFor(req.vid, req.a, req.b);
+      if (!piece) return reply({ ok: false, why: 'not loaded' });
+      const media = piece.media;
       if (!fullCtx || fullCtx.sampleRate !== sr) {
         const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
         fullCtx = new Ctor(2, 1, sr);
@@ -955,17 +1079,17 @@ if (/(^|.)youtube.com$/.test(location.hostname)) {
         if (p && p.catch) p.catch(reject);
       });
       let buf = null;
-      if (list[0].container === 'mp4' && list[0].mp4 && list[0].mp4.asc) {
+      if (piece.container === 'mp4' && piece.mp4 && piece.mp4.asc) {
         try {
-          const frags = mp4Fragments(media, list[0].mp4.timescale);
-          if (frags) buf = await dec(toAdts(frags.samples, list[0].mp4.asc));
+          const frags = mp4Fragments(media, piece.mp4.timescale);
+          if (frags) buf = await dec(toAdts(frags.samples, piece.mp4.asc));
         } catch (e) {
           buf = null;
         }
       }
-      if (!buf) buf = await dec(concat([list[0].init, media]));
-      const from = Math.round((req.a - list[0].start) * buf.sampleRate);
-      const to = Math.round((req.b - list[0].start) * buf.sampleRate);
+      if (!buf) buf = await dec(concat([piece.init, media]));
+      const from = Math.round((req.a - piece.start) * buf.sampleRate);
+      const to = Math.round((req.b - piece.start) * buf.sampleRate);
       if (from < 0 || to > buf.length || to - from < buf.sampleRate * 0.2) return reply({ ok: false, why: 'short' });
       const ch0 = buf.getChannelData(0).slice(from, to);
       const ch1 = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(from, to);
@@ -2152,6 +2276,107 @@ globalThis.YTL_STORAGE = (() => {
   }
 
   /**
+   * The tempo all through the song, for songs that speed up, slow down or
+   * jump to a new tempo: the tempo of every 8 s (each second), then the most
+   * likely path through them (Viterbi) - a change of tempo costs a little,
+   * a jump to double or half a lot, so it changes only when the drums do.
+   * Returns the beat period (bins) at every bin.
+   */
+  function localPeriods(env, binRate, globalPeriod, minBpm = 60, maxBpm = 200) {
+    const n = env.length;
+    const W = Math.round(8 * binRate);
+    const hop = Math.round(binRate);
+    const out = new Float32Array(n).fill(globalPeriod);
+    if (n < W * 1.5) return out;
+    const lo = Math.floor((60 * binRate) / maxBpm);
+    const hi = Math.ceil((60 * binRate) / minBpm);
+    const top = Math.min(W - 1, 4 * hi + 2);
+    const centers = [];
+    const cands = []; // per window: [{ L, sc }]
+    const ac = new Float32Array(top + 2);
+    for (let c0 = 0; c0 + W <= n; c0 += hop) {
+      let m = 0;
+      let m2 = 0;
+      for (let i = c0; i < c0 + W; i++) {
+        m += env[i];
+        m2 += env[i] * env[i];
+      }
+      m /= W;
+      const sd = Math.sqrt(Math.max(1e-12, m2 / W - m * m));
+      for (let L = Math.max(1, lo - 1); L <= top + 1 && L < W; L++) {
+        let sum = 0;
+        for (let i = c0 + L; i < c0 + W; i++) sum += (env[i] - m) * (env[i - L] - m);
+        ac[L] = sum / ((W - L) * sd * sd);
+      }
+      const acAt = (x) => {
+        const k = Math.floor(x);
+        const fr = x - k;
+        return k + 1 <= top + 1 ? ac[k] * (1 - fr) + ac[k + 1] * fr : 0;
+      };
+      const list = [];
+      for (let L = lo; L <= hi; L++) {
+        if (!(ac[L] >= ac[L - 1] && ac[L] >= ac[L + 1])) continue;
+        const bpm = (60 * binRate) / L;
+        const w = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 120) / 0.9, 2));
+        const y0 = ac[L - 1];
+        const y1 = ac[L];
+        const y2 = ac[L + 1];
+        const den = y0 - 2 * y1 + y2;
+        const Lf = L + (den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (y0 - y2)) / den)) : 0);
+        list.push({ L: Lf, sc: Math.max(0, (ac[L] + 0.5 * acAt(2 * Lf) + 0.25 * acAt(4 * Lf)) * w) });
+      }
+      list.sort((a, b) => b.sc - a.sc);
+      const keep = list.slice(0, 6);
+      // the song's own tempo is always a choice (weak windows keep to it)
+      if (!keep.some((x) => Math.abs(x.L / globalPeriod - 1) < 0.03)) keep.push({ L: globalPeriod, sc: 0 });
+      const mx = keep.reduce((a, x) => Math.max(a, x.sc), 0);
+      // A window with no clear beat (a break, an intro) has no say.
+      const strong = mx > 0.15;
+      for (const x of keep) x.sc = strong ? x.sc / mx : 0;
+      centers.push(c0 + W / 2);
+      cands.push(keep);
+    }
+    // Viterbi: the best path of tempos.
+    const COST = 4; // per octave of change between neighbouring windows
+    let prev = cands[0].map((x) => ({ v: x.sc - 0.5 * Math.abs(Math.log2(x.L / globalPeriod)), from: -1 }));
+    const back = [prev];
+    for (let k = 1; k < cands.length; k++) {
+      const cur = cands[k].map((x) => {
+        let best = -Infinity;
+        let from = 0;
+        cands[k - 1].forEach((y, j) => {
+          const v = prev[j].v - COST * Math.abs(Math.log2(x.L / y.L));
+          if (v > best) {
+            best = v;
+            from = j;
+          }
+        });
+        return { v: best + x.sc, from };
+      });
+      back.push(cur);
+      prev = cur;
+    }
+    let j = 0;
+    prev.forEach((x, i) => {
+      if (x.v > prev[j].v) j = i;
+    });
+    const path = new Array(cands.length);
+    for (let k = cands.length - 1; k >= 0; k--) {
+      path[k] = cands[k][j].L;
+      j = back[k][j].from;
+    }
+    // Per bin: between the window centres.
+    let k = 0;
+    for (let t = 0; t < n; t++) {
+      while (k + 1 < centers.length && centers[k + 1] <= t) k++;
+      if (t <= centers[0]) out[t] = path[0];
+      else if (k + 1 >= centers.length) out[t] = path[path.length - 1];
+      else out[t] = path[k] + ((path[k + 1] - path[k]) * (t - centers[k])) / (centers[k + 1] - centers[k]);
+    }
+    return out;
+  }
+
+  /**
    * Beat tracking by dynamic programming (Ellis 2007): every beat lands on a
    * strong onset while the gaps stay close to the tempo, so it follows a
    * drummer who speeds up or slows down a little. Returns beat times in bins
@@ -2162,14 +2387,16 @@ globalThis.YTL_STORAGE = (() => {
     const e = normalize(env);
     const score = new Float32Array(n);
     const back = new Int32Array(n).fill(-1);
-    const pMin = Math.round(period / 2);
-    const pMax = Math.round(period * 2);
+    const perAt = typeof period === 'number' ? () => period : (t) => period[Math.min(period.length - 1, t)];
     for (let t = 0; t < n; t++) {
       let best = -Infinity;
       let arg = -1;
+      const pt = perAt(t);
+      const pMin = Math.round(pt / 2);
+      const pMax = Math.round(pt * 2);
       for (let tau = t - pMax; tau <= t - pMin; tau++) {
         if (tau < 0) continue;
-        const d = Math.log((t - tau) / period);
+        const d = Math.log((t - tau) / pt);
         const v = score[tau] - tightness * d * d;
         if (v > best) {
           best = v;
@@ -2182,7 +2409,7 @@ globalThis.YTL_STORAGE = (() => {
     // Best end point in the last period, then follow the links back.
     let t = n - 1;
     let bestEnd = -Infinity;
-    for (let k = Math.max(0, n - Math.round(period)); k < n; k++) {
+    for (let k = Math.max(0, n - Math.round(perAt(n - 1))); k < n; k++) {
       if (score[k] > bestEnd) {
         bestEnd = score[k];
         t = k;
@@ -2255,6 +2482,35 @@ globalThis.YTL_STORAGE = (() => {
     return { a, p, w };
   }
 
+  /** Robust curve t = a + b*k + c*k^2 through (k, t), value at k0 (or null). */
+  function robustCurveAt(K, T, W0, k0, scale = 0.02) {
+    const n = K.length;
+    if (n < 5) return null;
+    const w = new Float64Array(n).fill(1);
+    let A = 0, B = 0, Cq = 0;
+    for (let it = 0; it < 5; it++) {
+      // normal equations around k0
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+      for (let i = 0; i < n; i++) {
+        const x = K[i] - k0;
+        const wi = w[i] * W0[i];
+        s0 += wi; s1 += wi * x; s2 += wi * x * x; s3 += wi * x * x * x; s4 += wi * x * x * x * x;
+        t0 += wi * T[i]; t1 += wi * x * T[i]; t2 += wi * x * x * T[i];
+      }
+      const det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+      if (!(Math.abs(det) > 1e-12)) return null;
+      A = (t0 * (s2 * s4 - s3 * s3) - s1 * (t1 * s4 - s3 * t2) + s2 * (t1 * s3 - s2 * t2)) / det;
+      B = (s0 * (t1 * s4 - t2 * s3) - t0 * (s1 * s4 - s3 * s2) + s2 * (s1 * t2 - t1 * s2)) / det;
+      Cq = (s0 * (s2 * t2 - s3 * t1) - s1 * (s1 * t2 - s3 * t0) + t0 * (s1 * s3 - s2 * s2)) / det;
+      for (let i = 0; i < n; i++) {
+        const x = K[i] - k0;
+        const r = (T[i] - A - B * x - Cq * x * x) / scale;
+        w[i] = Math.abs(r) < 1 ? Math.pow(1 - r * r, 2) : 0;
+      }
+    }
+    return w.reduce((x, y) => x + y, 0) >= 4 ? A : null;
+  }
+
   /**
    * The whole beat grid for a song: { bpm, beats: [seconds], first: index of
    * the first bar's "1", confidence, steady } or null when there is no steady
@@ -2281,7 +2537,8 @@ globalThis.YTL_STORAGE = (() => {
     for (let i = 0; i < n; i++) env[i] = f.env[i] + 0.5 * ((f.env[i - 1] || 0) + (f.env[i + 1] || 0));
     const tempo = estimateTempo(env, br);
     if (!tempo.period || tempo.confidence < 0.08) return null;
-    let bins = trackBeatBins(env, tempo.period);
+    const periods = localPeriods(env, br, tempo.period);
+    let bins = trackBeatBins(env, periods);
     // No beats in the silence before the music starts or after it ends.
     let firstSound = 0;
     while (firstSound < n && !(P.cov[firstSound] && P.peak[firstSound] > P.maxPeak * 0.08)) firstSound++;
@@ -2341,46 +2598,222 @@ globalThis.YTL_STORAGE = (() => {
         drift = Math.max(drift, Math.abs(win[win.length >> 1]));
       }
     }
-    const steady = used.length >= Math.max(8, T.length * 0.5) && medRes < 0.012 && drift < 0.015;
+    // ... and (nearly) every beat with drums on it must be on the line: a
+    // stretch of strong beats off it is a part in another tempo.
+    const sorted = strength.slice().sort((x, y) => x - y);
+    const strongMin = sorted[Math.floor(sorted.length * 0.4)];
+    let strongN = 0;
+    let strongOff = 0;
+    let run = 0;
+    let longestOff = 0;
+    for (let i = 0; i < T.length; i++) {
+      if (strength[i] < strongMin) continue;
+      strongN++;
+      const off = Math.abs(res[i]) > 0.02;
+      if (off) strongOff++;
+      run = off ? run + 1 : 0;
+      longestOff = Math.max(longestOff, run);
+    }
+    const steady = used.length >= Math.max(8, T.length * 0.5) && medRes < 0.012 && drift < 0.015 && strongOff <= strongN * 0.12 && longestOff < 6;
 
     let beats;
+    let segs = null;
     if (steady) {
       const k0 = Math.ceil((firstSound / br - per * 0.25 - fit.a) / per);
       const k1 = Math.floor((lastSound / br + per * 0.25 - fit.a) / per);
       beats = [];
       for (let k = k0; k <= k1; k++) beats.push(fit.a + per * k);
     } else {
-      // Follow the drummer: number the beats one by one (the tempo moves, so
-      // one line can't number them), then a robust line through the beats
-      // around each one. A beat the tracker put on a fill gets its place
-      // back from its neighbours; a missed beat is filled in.
-      const KL = [0];
-      for (let i = 1; i < T.length; i++) {
-        const lo = Math.max(1, i - 8);
-        const gaps = [];
-        for (let j = lo; j < i; j++) gaps.push((T[j] - T[j - 1]) / Math.max(1, KL[j] - KL[j - 1]));
-        gaps.sort((x, y) => x - y);
-        const lp = gaps.length ? gaps[gaps.length >> 1] : per0;
-        KL.push(KL[i - 1] + Math.max(1, Math.round((T[i] - T[i - 1]) / lp)));
-      }
-      const fitted = T.map((t, i) => {
-        const lo = Math.max(0, i - 8);
-        const hi = Math.min(T.length, i + 9);
-        const l = robustLine(KL.slice(lo, hi), T.slice(lo, hi), 0.025, 5, strength.slice(lo, hi));
-        const wsum = l.w.reduce((x, y) => x + y, 0);
-        const v = l.a + l.p * KL[i];
-        return wsum >= 4 && isFinite(v) ? v : t;
-      });
-      beats = [];
-      for (let i = 0; i < fitted.length; i++) {
-        if (i > 0) {
-          const m = KL[i] - KL[i - 1];
-          for (let j = 1; j < m; j++) beats.push(fitted[i - 1] + ((fitted[i] - fitted[i - 1]) * j) / m);
+      // The tempo moves: follow it (see follow() below), then once more with
+      // the tempo stepping sharply where one region of constant tempo ends
+      // and the next begins (the first pass blurs a change over a few beats).
+      const follow = (pers) => {
+        let b2 = trackBeatBins(env, pers);
+        b2 = b2.filter((b) => b >= firstSound - pers[0] * 0.25 && b <= lastSound + pers[n - 1] * 0.25);
+        const raw = b2.map((b) => b / br);
+        const T = raw.map((t, i) => (hasAtt ? attackNear(P, t, Math.min(0.045, (pers[Math.min(n - 1, Math.round(b2[i]))] / br) * 0.2), drumW) : null) ?? t);
+        const strength = raw.map((t) => 0.2 + near(env, t));
+        let beats;
+        let segs;
+        // Follow the drummer: number the beats one by one (the tempo moves, so
+        // one line can't number them), then a robust line through the beats
+        // around each one. A beat the tracker put on a fill gets its place
+        // back from its neighbours; a missed beat is filled in.
+        // A beat far too close to the one before (a hi-hat between two beats,
+        // where the tempo changes) is not a beat: keep the stronger of the two.
+        for (let i = 1; i < T.length; i++) {
+          const lo = Math.max(1, i - 8);
+          const gaps = [];
+          for (let j = lo; j < i; j++) gaps.push(T[j] - T[j - 1]);
+          gaps.sort((x, y) => x - y);
+          const lp = gaps.length >= 3 ? gaps[gaps.length >> 1] : per0;
+          if (T[i] - T[i - 1] < lp * 0.6) {
+            const drop = strength[i] > strength[i - 1] ? i - 1 : i;
+            T.splice(drop, 1);
+            raw.splice(drop, 1);
+            strength.splice(drop, 1);
+            i--;
+          }
         }
-        beats.push(fitted[i]);
-      }
+        const KL = [0];
+        for (let i = 1; i < T.length; i++) {
+          const lo = Math.max(1, i - 8);
+          const gaps = [];
+          for (let j = lo; j < i; j++) gaps.push((T[j] - T[j - 1]) / Math.max(1, KL[j] - KL[j - 1]));
+          gaps.sort((x, y) => x - y);
+          const lp = gaps.length ? gaps[gaps.length >> 1] : per0;
+          KL.push(KL[i - 1] + Math.max(1, Math.round((T[i] - T[i - 1]) / lp)));
+        }
+        // Constant-tempo regions, like Mixxx's: the longest stretches where one
+        // straight line fits the beats (each beat within 25 ms, no drift). A
+        // tempo change starts a new region; each region gets an exact grid.
+        // Where no line fits (a drummer drifting), a line through the beats
+        // around each beat.
+        const valid = (l, r) => {
+          const k = KL.slice(l, r + 1);
+          const tt = T.slice(l, r + 1);
+          const ww = strength.slice(l, r + 1);
+          const fit2 = robustLine(k, tt, 0.025, 6, ww);
+          const rs = tt.map((t, i) => t - fit2.a - fit2.p * k[i]);
+          const inl = rs.filter((x, i) => fit2.w[i] > 0).map(Math.abs).sort((x, y) => x - y);
+          if (inl.length < (r - l + 1) * 0.75) return null;
+          if (inl[inl.length >> 1] > 0.01) return null;
+          // strong beats far off the line, or the beats wandering off it
+          let bad = 0;
+          for (let i = 0; i < rs.length; i++) if (ww[i] >= strongMin && Math.abs(rs[i]) > 0.015) bad++;
+          if (bad > Math.max(1, (r - l + 1) * 0.08)) return null;
+          for (let i = 0; i + 6 <= rs.length; i++) {
+            const win = rs.slice(i, i + 6).sort((x, y) => x - y);
+            if (Math.abs(win[3]) > 0.006) return null;
+          }
+          // one tempo all through: both halves have the same tempo (a drummer
+          // who slowly speeds up does not, and gets the smooth curve instead)
+          if (rs.length >= 16) {
+            const h = rs.length >> 1;
+            const f1 = robustLine(k.slice(0, h + 1), tt.slice(0, h + 1), 0.02, 4, ww.slice(0, h + 1));
+            const f3 = robustLine(k.slice(h), tt.slice(h), 0.02, 4, ww.slice(h));
+            if (Math.abs(f1.p / f3.p - 1) > 0.004) return null;
+          }
+          // the ends of a region sit right on the line (where the tempo changes, it ends)
+          for (const i of [0, 1, rs.length - 2, rs.length - 1]) if (ww[i] >= strongMin && Math.abs(rs[i]) > 0.008) return null;
+          return fit2;
+        };
+        const region = new Int32Array(T.length).fill(-1);
+        const fits = [];
+        let left = 0;
+        while (left < T.length - 1) {
+          const first = Math.min(T.length - 1, left + 8);
+          let fitR = first - left >= 8 ? valid(left, first) : null;
+          if (!fitR) {
+            left++;
+            continue;
+          }
+          let r = first;
+          for (const stepN of [16, 4, 1]) {
+            while (r + stepN <= T.length - 1) {
+              const f2 = valid(left, r + stepN);
+              if (!f2) break;
+              fitR = f2;
+              r += stepN;
+            }
+          }
+          if (r - left >= 16) {
+            for (let i = left; i <= r; i++) if (region[i] < 0 || i > left) region[i] = fits.length;
+            fits.push(fitR);
+            left = r;
+          } else left++; // too short to trust as one tempo: smoothed below
+        }
+        // A region's ends must be on its line; a beat off it at an end is
+        // already in the next tempo (or the last of the old one).
+        fits.forEach((f2, j) => {
+          const idx = [];
+          region.forEach((r, i) => r === j && idx.push(i));
+          const off = (i) => Math.abs(T[i] - f2.a - f2.p * KL[i]) > 0.015;
+          while (idx.length > 2 && off(idx[idx.length - 1])) region[idx.pop()] = -1;
+          while (idx.length > 2 && off(idx[0])) region[idx.shift()] = -1;
+        });
+        // Beats nobody's region holds (a drummer speeding up or slowing
+        // down): a smooth curve through the beats around each one (a fill or
+        // a missed hit can't pull it).
+        const free = T.map((t, i) => {
+          if (region[i] >= 0) return null;
+          const lo = Math.max(0, i - 8);
+          const hi = Math.min(T.length, i + 9);
+          const v = robustCurveAt(KL.slice(lo, hi), T.slice(lo, hi), strength.slice(lo, hi), KL[i]);
+          return v != null && isFinite(v) && Math.abs(v - t) < per0 * 0.3 ? v : t;
+        });
+        // Each region's exact grid, carried on beat by beat into the gap
+        // next to it as long as its beats land on drum hits.
+        const medEnv = strength.slice().sort((x, y) => x - y)[strength.length >> 1] - 0.2;
+        // 1: a drum hit right on it; 0: no drums there (a rest: may be
+        // skipped); -1: drums, but off it (the grid no longer fits: stop)
+        const hit = (t) => {
+          if (near(env, t) < medEnv * 0.3) return 0;
+          const a = hasAtt ? attackNear(P, t, 0.03, drumW) : t;
+          return a != null && Math.abs(a - t) < 0.007 ? 1 : -1;
+        };
+        const regs = fits.map((f2, j) => {
+          const idx = [];
+          region.forEach((r, i) => r === j && idx.push(i));
+          return { a: f2.a, p: f2.p, k0: KL[idx[0]], k1: KL[idx[idx.length - 1]], i0: idx[0], i1: idx[idx.length - 1] };
+        }).filter((r) => r.i0 != null).sort((x, y) => x.i0 - y.i0);
+        const at = (r, k) => r.a + r.p * k;
+        const songA = firstSound / br - per0 * 0.25;
+        const songB = lastSound / br + per0 * 0.25;
+        regs.forEach((r, j) => {
+          const prevEnd = j > 0 ? at(regs[j - 1], regs[j - 1].k1) : songA - 1;
+          const nextStart = j + 1 < regs.length ? at(regs[j + 1], regs[j + 1].k0) : songB + 1;
+          // forward (a beat with no hit may be skipped if the next one hits)
+          for (let k = r.k1 + 1; ; k++) {
+            const t = at(r, k);
+            if (t > Math.min(nextStart - r.p * 0.6, songB)) break;
+            const h = hit(t);
+            if (h > 0) r.k1 = k;
+            else if (h < 0 || !(hit(at(r, k + 1)) > 0 && at(r, k + 1) < nextStart - r.p * 0.6)) break;
+          }
+          for (let k = r.k0 - 1; ; k--) {
+            const t = at(r, k);
+            // (the beat where the tempo changes belongs to both: the new tempo starts on it)
+            if (t < Math.max(prevEnd - 0.004, songA)) break;
+            const h = hit(t);
+            if (h > 0) r.k0 = k;
+            else if (h < 0 || !(hit(at(r, k - 1)) > 0 && at(r, k - 1) > prevEnd + r.p * 0.6)) break;
+          }
+        });
+        beats = [];
+        regs.forEach((r) => {
+          for (let k = r.k0; k <= r.k1; k++) beats.push(at(r, k));
+        });
+        // The free beats that fall outside every region's grid.
+        const covered = (t) => regs.some((r) => t > at(r, r.k0) - r.p * 0.6 && t < at(r, r.k1) + r.p * 0.6);
+        free.forEach((v, i) => {
+          if (v != null && !covered(v)) beats.push(v);
+        });
+        beats.sort((x, y) => x - y);
+        // No beat too close to another; a missing beat in a gap is filled in.
+        const outB = [];
+        for (const t of beats) {
+          if (outB.length && t - outB[outB.length - 1] < per0 * 0.4) continue;
+          outB.push(t);
+        }
+        beats = [];
+        for (let i = 0; i < outB.length; i++) {
+          if (i > 1) {
+            const lp = outB[i - 1] - outB[i - 2];
+            const m = Math.round((outB[i] - outB[i - 1]) / lp);
+            if (m >= 2 && m <= 8 && Math.abs((outB[i] - outB[i - 1]) / m - lp) < lp * 0.15) {
+              for (let j = 1; j < m; j++) beats.push(outB[i - 1] + ((outB[i] - outB[i - 1]) * j) / m);
+            }
+          }
+          beats.push(outB[i]);
+        }
+        segs = regs.map((r) => ({ t: at(r, r.k0), bpm: Math.round(6000 / r.p) / 100 }));
+        return { beats, segs };
+      };
+      const r1 = follow(periods);
+      beats = r1.beats;
+      segs = r1.segs;
       per = (beats[beats.length - 1] - beats[0]) / Math.max(1, beats.length - 1);
-      for (let i = 1; i < beats.length; i++) if (beats[i] <= beats[i - 1] + per * 0.3) beats[i] = beats[i - 1] + per * 0.3;
     }
     if (beats.length < 8) return null;
 
@@ -2465,7 +2898,7 @@ globalThis.YTL_STORAGE = (() => {
     const first = one[1] > one[0] ? par + 2 : par;
     // Average tempo over the whole song (a single gap is only 20 ms exact).
     const avg = steady ? per : (beats[B - 1] - beats[0]) / (B - 1);
-    return { bpm: Math.round(6000 / avg) / 100, beats, first, confidence: tempo.confidence, steady };
+    return { bpm: Math.round(6000 / avg) / 100, beats, first, confidence: tempo.confidence, steady, segments: segs };
   }
 
   /**
@@ -2686,6 +3119,10 @@ label.check input { accent-color: var(--accent); width: 15px; height: 15px; marg
 .tstat b { color: var(--gold); }
 .stage { position: relative; display: flex; flex: none; height: 140px; }
 .wave-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+button.follow-btn { position: absolute; top: 22px; right: 8px; z-index: 3; height: 24px; padding: 0 10px 0 8px; font-size: 12px; font-weight: 700; border-radius: 12px; background: rgba(12,15,21,.82); color: #9aa6b8; border: 1px solid var(--line); backdrop-filter: blur(4px); }
+button.follow-btn::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; border: 2px solid currentColor; box-sizing: border-box; vertical-align: -1px; }
+button.follow-btn.on { color: #4da3ff; border-color: #4da3ff; }
+button.follow-btn.on::before { background: #4da3ff; box-shadow: 0 0 6px #4da3ff; }
 .lyrics {
   flex: 0 0 34%; min-width: 240px; max-width: 480px; display: flex; flex-direction: column;
   border-left: 1px solid var(--line); background: #101216;
@@ -2907,6 +3344,13 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 .beat-loops { display: inline-flex; gap: 2px; padding: 2px; border-radius: 9px; background: #121722; border: 1px solid var(--line); }
 button.beat-btn { min-width: 30px; padding: 0 6px; font-weight: 700; font-variant-numeric: tabular-nums; border-color: transparent; background: transparent; }
 button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
+.sl-dot { display: inline-block; width: 7px; height: 7px; margin-left: 5px; border-radius: 50%; background: transparent; }
+.sl-dot[data-st="on"] { background: #3ddc84; box-shadow: 0 0 6px #3ddc84; }
+.sl-dot[data-st="wait"] { background: #ffb000; }
+.sl-dot[data-st="off"] { background: #ff4d6d; }
+.q-pair { display: inline-flex; align-items: center; gap: 0; }
+.q-pair button.q-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+select.q-res { height: 30px; margin-left: -1px; padding: 0 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
 button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }
@@ -3416,14 +3860,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
   const SPEED_PRESETS = [0.3, 0.5, 0.75, 1];
   const TRAINER_STARTS = [30, 50, 75];
   const TRAINER_GOAL = 100;
-  const TRAINER_REPS = [10, 30, 50]; // plays from slow up to 100%...
+  const TRAINER_REPS = [10, 30, 50, 70]; // plays from slow up to 100%...
   const TRAINER_DEFAULT_START = 30;
   const TRAINER_DEFAULT_REPS = 10;
   const TOUCH_NUDGE = 1; // seconds: the ‹ › buttons beside A and B on touch screens
   const TAP_MS = 350; // a touch on the wave shorter than this (without sliding) is a tap
   const DOUBLE_TAP_MS = 330; // two taps this close together = double tap (sets A, then B)
   const DOUBLE_TAP_PX = 40;
-  // ...then this many more at 100% before it stops: 10 → 5, 30 → 10, 50 → 10.
+  // ...then this many more at 100% before it stops: 10 → 5, 30 / 50 / 70 → 10.
   const trainerAfter = (reps) => (reps <= 10 ? 5 : 10);
   const GAPS = [0, 0.5, 1, 2, 3];
   const SCAN_RATE = 16;
@@ -3510,6 +3954,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
     gridCov: 0, // how much of the song had been read when the grid was found
+    follow: true, // the zoomed wave moves with the song (on each time the page opens)
     vid: null,
     mainVid: null,
     video: null,
@@ -3725,6 +4170,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     S.gridAdj = gridAdjDefault();
     S.gridTried = 0;
     S.gridCov = 0;
+    S.follow = true;
     S.cues = [null, null, null, null];
     S.dirty = true;
     renderUI();
@@ -3923,6 +4369,14 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // Once the video's sound runs through our engine it is silent while the
   // engine is suspended (Safari does that on pause, app switch, phone calls,
   // the microphone...). Wake it up whenever we can; a tap always can.
+  // Any click or key on the page (YouTube's own play button, the [ ] keys...)
+  // may start the sound engine, so zero-gap loops work from the first loop.
+  for (const ev of ['pointerdown', 'keydown', 'touchend']) {
+    document.addEventListener(ev, (e) => {
+      if (settings.open && S.vid && e.isTrusted && (!HQ.ctx || HQ.ctx.state !== 'running')) hqGesture();
+    }, true);
+  }
+
   function hqWake() {
     if (!HQ.ctx || !HQ.src || HQ.ctx.state === 'running' || HQ.ctx.state === 'closed') return;
     HQ.ctx.resume().catch(() => {});
@@ -4037,6 +4491,21 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const b = effEnd();
     if (!r || b - r.a < 0.25 || b - r.a > 180) return null;
     return { a: r.a, b };
+  }
+
+  // Why the loop is not zero-gap right now ('' when it is, or no loop plays).
+  function slWhy() {
+    const v = S.video;
+    if (!v || v.paused || !loopActive() || !hasLoop()) return '';
+    if (SL.active) return '';
+    if (!settings.seamless) return 'Seamless loop is off (⚙ settings).';
+    if (settings.gap > 0) return 'A pause between loops is set (⚙ settings).';
+    const r = loopRegion();
+    if (r && effEnd() - r.a > 180) return 'Loops longer than 3 minutes jump back instead.';
+    if (!HQ.ctx || HQ.ctx.state !== 'running') return 'Click anywhere on the looper once to start its sound engine.';
+    if (S.scan) return 'Reading the song…';
+    if (SL.failKey && SL.bufKey !== SL.failKey && now() - SL.failAt < 3000) return 'This part of the song is not loaded yet: it will be after it has played once.';
+    return 'Getting the loop sound ready…';
   }
 
   function slUsable(v) {
@@ -4739,7 +5208,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
     if (A.offset) beats = beats.map((b) => b + A.offset);
     first = (first + A.shift) % 4;
-    S.grid = { bpm: Math.round(base.bpm * sc * 100) / 100, beats, first };
+    // Where the tempo changes (songs that speed up, slow down, jump).
+    const segments = base.segments && base.segments.length > 1 ? base.segments.map((x) => ({ t: x.t + A.offset, bpm: Math.round(x.bpm * sc * 100) / 100 })) : null;
+    S.grid = { bpm: Math.round(base.bpm * sc * 100) / 100, beats, first, segments, varies: !base.steady };
   }
 
   function gridChanged(msg) {
@@ -4831,6 +5302,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
   function gridMissingText() {
     if (!dur() || S.peaks.coverage(dur()) < 0.9) return 'Reading the beats… (the whole song needs to be read first)';
     return 'No steady beat found in this song. Open Grid to type the tempo.';
+  }
+
+  // The tempo where you are (the grid may change tempo along the song).
+  function bpmAt(t) {
+    const G = S.grid;
+    if (!G) return 0;
+    if (!G.varies || G.beats.length < 6) return G.bpm;
+    const B = G.beats;
+    const k = C.clamp(C.nearestBeatIndex(B, t), 2, B.length - 3);
+    return Math.round((60 * 4 * 10) / (B[k + 2] - B[k - 2])) / 10;
   }
 
   // Position on the grid as a beat number (fractional; the grid goes on at
@@ -4945,7 +5426,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
       flash(`Cue ${i + 1} cleared.`, 1500);
     } else if (S.cues[i] == null) {
       S.cues[i] = qT(v.currentTime);
-      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}. Click it to jump back here.`, 2500);
+      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}${settings.quantize && S.grid ? ` (on the ${Q_NAMES[settings.qRes]} grid)` : ''}. Click it to jump back here.`, 2500);
     } else {
       userSeek(S.cues[i]);
       play();
@@ -6372,9 +6853,16 @@ if (typeof exports === 'object' && typeof module === 'object') {
   let shadow = null;
   const ui = {};
 
+  // What Q snaps to, in beats (a beat = a 1/4 note).
+  const Q_RES = [1, 0.5, 0.25, 4];
+  const Q_NAMES = { 1: '1/4', 0.5: '1/8', 0.25: '1/16', 4: 'bar' };
+  const Q_RES_TITLE = 'Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar';
+
   // Beats: Q (quantize), DJ beat loops, tempo and the drum view.
   function buildBeatGroup() {
-    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on the beat grid (1 2 3 4). ‹ › move by one step. Open Grid to snap to ½ / ¼ beats or bars.', toggleQuantize, 'q-btn');
+    ui.qBtn = btn('Q', 'Quantize (Q): A, B and the hot cues always land on the grid (1/4, 1/8 or 1/16 notes, or bars: pick beside it). ‹ › move by one step.', toggleQuantize, 'q-btn');
+    ui.qResSel = select(Q_RES, (v) => Q_NAMES[v], settings.qRes, setQRes, Q_RES_TITLE);
+    ui.qResSel.classList.add('q-res');
     ui.beatBtns = BEAT_LOOPS.map((n) => {
       const b = btn(String(n), `Loop ${n} beat${n > 1 ? 's' : ''} from the beat you are on`, () => beatLoop(n), 'beat-btn');
       b.dataset.n = String(n);
@@ -6391,7 +6879,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
     ui.drumBtn = btn('Drums', 'Drum view: kick (red), snare (amber) and hi-hats (white) stand out, with drum lanes under the wave', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
-      ui.qBtn,
+      h('span', { class: 'q-pair' }, ui.qBtn, ui.qResSel),
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
       h('span', { class: 'cues' }, ...ui.cueBtns),
@@ -6413,8 +6901,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
       gridSetBpm(Number(ui.bpmIn.value));
     });
     ui.gridMs = h('span', { class: 'grid-ms', title: 'How far the grid is moved by hand' });
-    ui.qResSel = select([1, 0.5, 0.25, 4], (v) => ({ 1: 'beat', 0.5: '½ beat', 0.25: '¼ beat', 4: 'bar' })[v], settings.qRes, setQRes,
-      'Q snaps A and B to: every beat, half beats, quarter beats, or the start of each bar');
     ui.gridReset = btn('Reset', 'Back to the grid the app found in the song', gridReset, 'grid-btn');
     return h('div', { class: 'row sub grid-row', hidden: true },
       h('span', { class: 'label', text: 'Tempo' }), ui.bpmIn, h('span', { class: 'label', text: 'BPM' }),
@@ -6431,7 +6917,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
       ui.gridMs,
       btn('▸', 'Move the whole grid later (5 ms; Shift-click = 1 ms)', (e) => gridNudge(1, e), 'grid-btn'),
       h('span', { class: 'sep' }),
-      h('span', { class: 'label', text: 'Q snaps to' }), ui.qResSel,
       ui.gridReset);
   }
 
@@ -6439,10 +6924,10 @@ if (typeof exports === 'object' && typeof module === 'object') {
     if (!ui.qBtn) return;
     const G = S.grid;
     ui.qBtn.classList.toggle('on', !!settings.quantize);
-    ui.qBtn.textContent = settings.quantize && settings.qRes !== 1 ? `Q ${({ 0.5: '½', 0.25: '¼', 4: 'bar' })[settings.qRes] || ''}` : 'Q';
+    if (ui.qResSel.value !== String(settings.qRes)) ui.qResSel.value = String(settings.qRes);
     ui.drumBtn.classList.toggle('on', settings.waveStyle === 'drums');
-    ui.bpm.textContent = G ? `${G.bpm.toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
-    ui.bpm.title = (G ? `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.` : gridMissingText()) + ' Click to fix the grid by hand.';
+    ui.bpm.textContent = G ? `${(G.varies && S.video ? bpmAt(S.video.currentTime) : G.bpm).toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
+    ui.bpm.title = (G ? (G.varies ? `The tempo changes in this song (${G.segments ? G.segments.map((x) => x.bpm.toFixed(1)).join(' → ') : 'a live drummer'}): this is the tempo here; the grid follows it.` : `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.`) : gridMissingText()) + ' Click to fix the grid by hand.';
     ui.bpm.classList.toggle('manual', !gridAdjIsDefault(S.gridAdj));
     ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
@@ -6455,7 +6940,6 @@ if (typeof exports === 'object' && typeof module === 'object') {
       if (shadow.activeElement !== ui.bpmIn) ui.bpmIn.value = G ? String(G.bpm) : '';
       const ms = Math.round(S.gridAdj.offset * 1000);
       ui.gridMs.textContent = `${ms > 0 ? '+' : ''}${ms} ms`;
-      ui.qResSel.value = String(settings.qRes);
       ui.gridReset.disabled = gridAdjIsDefault(S.gridAdj);
     }
   }
@@ -6492,6 +6976,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ui.backBtn = btn('5s', `Back ${JUMP_SEC} seconds and play`, () => jump(-JUMP_SEC), 'jump', 'back5');
     ui.fwdBtn = btn('5s', `Forward ${JUMP_SEC} seconds`, () => jump(JUMP_SEC), 'jump', 'fwd5');
     ui.loopBtn = btn('Loop', 'Loop on/off  \\', toggleLoop, '', 'loop');
+    ui.slDot = h('i', { class: 'sl-dot' });
+    ui.loopBtn.appendChild(ui.slDot);
     ui.clearBtn = btn(null, 'Clear the loop', clearLoop, 'icon danger', 'close');
     ui.undoBtn = btn(null, 'Undo the last loop change', undo, 'icon hide-phone', 'undo');
 
@@ -6618,7 +7104,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ui.scanBtn = btn('Read whole song', 'Load the full waveform', () => startScan(), 'primary', 'scan');
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay);
+    ui.followBtn = btn('Follow', 'Follow: on = the wave moves with the song (the playhead stays in the middle). Off = the wave stays still: drag it anywhere, click a spot to play from there.', toggleFollow, 'follow-btn');
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.followBtn);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -6996,6 +7483,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     ui.zoomLoopBtn.disabled = !hasLoop();
     const zoomed = !!S.view;
     ui.zoomBtn.classList.toggle('on', zoomed);
+    ui.followBtn.hidden = !zoomed;
+    ui.followBtn.classList.toggle('on', S.follow);
     ui.zoomBtn.replaceChildren(icon(zoomed ? 'fit' : 'zoom'), zoomed ? 'Whole song' : 'Zoom in');
     ui.zoomBtn.title = zoomed ? 'Show the whole song' : ZOOM_IN_TITLE;
     ui.zoomBtn.disabled = !dur();
@@ -7101,6 +7590,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     d.abStart = L.abStart == null ? '' : String(L.abStart);
     renderBeats();
     d.bpm = S.grid ? String(S.grid.bpm) : '';
+    d.bpmNow = S.grid && S.video ? String(bpmAt(S.video.currentTime)) : '';
+    d.tempos = S.grid && S.grid.segments ? S.grid.segments.map((x) => `${x.bpm}@${x.t.toFixed(2)}`).join(',') : '';
     // Debug only: the wave's band data, to tune the drum analysis.
     if (document.documentElement.dataset.ytlDebug === '1' && S.gridBase && !document.documentElement.dataset.ytlPeaks) {
       const P = S.peaks;
@@ -7112,10 +7603,20 @@ if (typeof exports === 'object' && typeof module === 'object') {
       d.slHead = SL.headInfo || '';
     }
     d.bar1 = S.grid ? C.beatTime(S.grid.beats, S.grid.first).toFixed(3) : '';
+    d.follow = S.follow ? 'on' : '';
     d.quant = settings.quantize ? (settings.qRes === 1 ? 'on' : `on:${settings.qRes}`) : '';
     d.gridMs = String(Math.round(S.gridAdj.offset * 1000));
     d.gridManual = S.grid && S.grid.manual ? '1' : '';
     d.seamless = SL.active ? 'on' : SL.bufKey ? 'ready' : SL.reqKey ? 'loading' : '';
+    {
+      // The light on the Loop button: green = zero gap, amber = getting ready, red = jumps back.
+      const why = slWhy();
+      const st = SL.active ? 'on' : !why ? '' : /ready|Reading/.test(why) ? 'wait' : 'off';
+      if (ui.slDot.dataset.st !== st) {
+        ui.slDot.dataset.st = st;
+        ui.loopBtn.title = st === 'on' ? 'Loop on/off  \\  — zero gap: the loop plays from memory' : why ? `Loop on/off  \\  — ${why}` : 'Loop on/off  \\';
+      }
+    }
     if (document.documentElement.dataset.ytlDebug === '1') d.slMinRms = SL.analyser ? `${SL.minRms.toFixed(3)}@${(SL.minAt || 0).toFixed(3)}` : '';
     d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
@@ -7269,7 +7770,8 @@ if (typeof exports === 'object' && typeof module === 'object') {
     settings.focusLen = 30;
     saveSettings();
     S.lastViewTouch = 0;
-    focusFollow(true);
+    S.follow = true;
+    focusFollow(true, true);
     renderUI();
   }
 
@@ -7280,8 +7782,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
     return TOUCH || !!settings.mouseDJ;
   }
 
-  function focusFollow(force) {
+  // nav: the user went somewhere on purpose (the map, the Follow button):
+  // centre on it even with Follow off.
+  function focusFollow(force, nav) {
     if (!settings.zoomFocus || !S.video || (drag && drag.mode !== 'scrub')) return;
+    if (!S.follow && !nav) return;
     const d = dur();
     if (!d) return;
     const len = Math.min(focusLen(), d);
@@ -7548,12 +8053,32 @@ if (typeof exports === 'object' && typeof module === 'object') {
           ctx.fillText(String(pos + 1), x + 3, top + 3);
         }
       }
-      // Q on ½ or ¼ beats: small ticks where A and B can land between beats.
+      // Q on 1/8 or 1/16 notes: small ticks where A and B can land between beats.
       if (sub && i + 1 < B.length) {
         ctx.fillStyle = 'rgba(255,184,77,0.35)';
         for (let j = 1; j * sub < 1 - 1e-6; j++) ctx.fillRect(Math.round(xAt(B[i] + j * sub * (B[i + 1] - B[i]), g)), top, 1, 7);
       }
     }
+  }
+
+  // Where the tempo changes: a small tag with the new tempo (like Serato).
+  function drawTempoTags(ctx, g, top) {
+    const G = S.grid;
+    if (!G || !G.segments) return;
+    const { s, e } = viewRange();
+    ctx.font = '700 10.5px Roboto, system-ui, sans-serif';
+    ctx.textBaseline = 'top';
+    G.segments.forEach((sg, i) => {
+      if (i === 0 || sg.t < s || sg.t > e) return;
+      const x = Math.round(xAt(sg.t, g));
+      const label = `${sg.bpm.toFixed(1)}`;
+      const w = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(255,183,77,0.9)';
+      ctx.fillRect(x, top + 16, 2, 14);
+      ctx.fillRect(x, top + 16, w, 14);
+      ctx.fillStyle = '#1d0d00';
+      ctx.fillText(label, x + 5, top + 18);
+    });
   }
 
   // Drum lanes under the wave: kick, snare and hi-hat hits, like a drum chart.
@@ -7635,6 +8160,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     }
 
     drawGrid(ctx, g, top, wh);
+    drawTempoTags(ctx, g, top);
     drawLanes(ctx, g, top, wh);
     // Hot cue markers.
     S.cues.forEach((c, i) => {
@@ -7794,6 +8320,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     // Two fingers on the wave: pinch to zoom. 5x quicker than a photo: a small
     // spread of the fingers zooms a lot.
     const PINCH_SPEED = 5;
+    const TRACKPAD_PINCH = 10; // MacBook pinch: a full pinch zooms about 15x
     const fingers = new Map();
     let pinch = null;
     const pinchState = (g) => {
@@ -7808,7 +8335,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
         const p = pinchState(g);
         const d = dur();
         const span = C.clamp((pinch.e - pinch.s) * Math.pow(pinch.dist / p.dist, PINCH_SPEED), Math.min(1, d), d);
-        setView(pinch.tMid - (p.mid / g.w) * span, pinch.tMid + (1 - p.mid / g.w) * span);
+        const ax = zoomAnchor(p.mid, g);
+        const tAt = ax === p.mid ? pinch.tMid : pinch.s + (ax / g.w) * (pinch.e - pinch.s);
+        setView(tAt - (ax / g.w) * span, tAt + (1 - ax / g.w) * span);
         if (settings.zoomFocus) {
           if (!S.view) settings.zoomFocus = false;
           else settings.focusLen = S.view.e - S.view.s;
@@ -7866,7 +8395,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
           // DJ view: the little whole-song map jumps the song there.
           drag = { mode: 'miniSeek' };
           userSeek((x / g.w) * dur());
-          focusFollow(true);
+          focusFollow(true, true);
         } else {
           drag = { mode: 'mini' };
           panMiniTo(x, g);
@@ -7880,6 +8409,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
         } else if (hnd) {
           pushHistory();
           drag = { mode: 'handle', which: hnd };
+        } else if (S.view && !S.follow && !e.shiftKey && (e.pointerType === 'touch' || settings.mouseDJ)) {
+          // Follow off: drag the wave anywhere (the song keeps playing where
+          // it is); a click plays from that spot; double-click = A then B.
+          const { s: vs, e: ve } = viewRange();
+          drag = { mode: 'pan', x0: x, s0: vs, e0: ve, moved: false, downAt: now(), wasPlaying: !!S.video && !S.video.paused };
         } else if (e.pointerType === 'touch' || (settings.mouseDJ && !e.shiftKey)) {
           // Like a record: hold to stop, drag to move the song, click to
           // play/pause, double-click for A then B. (Shift+drag draws a loop.)
@@ -7912,6 +8446,9 @@ if (typeof exports === 'object' && typeof module === 'object') {
       const { g, x } = local(e);
       if (d.mode === 'scrub') {
         endScrub(d, x, g);
+      } else if (d.mode === 'pan') {
+        if (!d.moved) panClick(timeAt(x, g), x, d);
+        renderUI();
       } else if (d.mode === 'select') {
         if (d.moved) {
           setLoop(qT(d.t0), qT(timeAt(x, g)), { play: true, fresh: true });
@@ -7948,16 +8485,20 @@ if (typeof exports === 'object' && typeof module === 'object') {
         const span = en - s;
         const horiz = Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey;
         if (horiz) {
+          // Two fingers sideways: slide the wave freely (Follow goes off).
           const delta = (e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX) || 0;
+          if (S.view) followOff();
           setView(s + (delta / g.w) * span, en + (delta / g.w) * span);
           return;
         }
         const unit = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
-        // A trackpad pinch (MacBook) arrives as a wheel event with ctrlKey: 5x quicker too.
-        const factor = Math.pow(1.0018, e.deltaY * unit * (e.ctrlKey ? PINCH_SPEED : 1));
-        const tAt = s + (x / g.w) * span;
+        // A trackpad pinch (MacBook) arrives as a wheel event with ctrlKey:
+        // much quicker, and it zooms right where the mouse is.
+        const factor = Math.pow(1.0018, e.deltaY * unit * (e.ctrlKey ? TRACKPAD_PINCH : 1));
+        const ax = zoomAnchor(x, g);
+        const tAt = s + (ax / g.w) * span;
         const ns = Math.max(Math.min(1, d), span * factor);
-        setView(tAt - (x / g.w) * ns, tAt + (1 - x / g.w) * ns);
+        setView(tAt - (ax / g.w) * ns, tAt + (1 - ax / g.w) * ns);
         if (settings.zoomFocus) {
           if (!S.view) settings.zoomFocus = false;
           else settings.focusLen = S.view.e - S.view.s;
@@ -7991,9 +8532,15 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const t = timeAt(x, g);
     if (drag.mode === 'scrub') {
       moveScrub(drag, x, g);
+    } else if (drag.mode === 'pan') {
+      if (Math.abs(x - drag.x0) > 3) drag.moved = true;
+      if (drag.moved) {
+        const dt = ((x - drag.x0) / g.w) * (drag.e0 - drag.s0);
+        setView(drag.s0 - dt, drag.e0 - dt, true);
+      }
     } else if (drag.mode === 'miniSeek') {
       userSeek((x / g.w) * dur());
-      focusFollow(true);
+      focusFollow(true, true);
     } else if (drag.mode === 'seek') {
       userSeek(t);
     } else if (drag.mode === 'mini') {
@@ -8140,6 +8687,52 @@ if (typeof exports === 'object' && typeof module === 'object') {
     setView(t - len * 0.5, t + len * 0.5, true);
   }
 
+  // Where a zoom holds still: the mouse / fingers. With Follow on and the
+  // pointer near the playhead (the middle), the playhead; zooming somewhere
+  // else turns Follow off, so the wave stays on the part you look at.
+  function zoomAnchor(x, g) {
+    if (!S.view || !S.follow || !settings.zoomFocus) return x;
+    if (Math.abs(x - g.w / 2) < g.w * 0.08) return g.w / 2;
+    followOff();
+    return x;
+  }
+
+  function followOff() {
+    if (!S.follow) return;
+    S.follow = false;
+    flash('Follow off: the wave stays where you look. Click a spot to play from there. Follow (top right of the wave) turns it back on.', 4500);
+    renderUI();
+  }
+
+  function toggleFollow() {
+    S.follow = !S.follow;
+    if (S.follow) {
+      if (S.view && !settings.zoomFocus) {
+        settings.zoomFocus = true;
+        settings.focusLen = S.view.e - S.view.s;
+        saveSettings();
+      }
+      S.lastViewTouch = 0;
+      focusFollow(true, true);
+    }
+    S.dirty = true;
+    renderUI();
+  }
+
+  // Follow off, a click on the wave (no drag): play from there. A second
+  // click soon after (a double-click) sets A, then B, as always.
+  function panClick(t, x, d) {
+    const prev = S.lastTap;
+    S.lastTap = null;
+    if (prev && d.downAt - prev.at < DOUBLE_TAP_MS && Math.abs(x - prev.x) < DOUBLE_TAP_PX) {
+      doubleTapAt(t, prev.wasPlaying);
+      return;
+    }
+    S.lastTap = { at: now(), x, wasPlaying: d.wasPlaying };
+    userSeek(t);
+    play();
+  }
+
   function panMiniTo(x, g) {
     const d = dur();
     const { s, e } = viewRange();
@@ -8175,6 +8768,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
   }
 
   function followPlayhead() {
+    if (!S.follow) return; // Follow off: the wave stays where you put it
     if (settings.zoomFocus) return focusFollow(false);
     if (!S.view || !S.video || S.video.paused || drag) return;
     if (now() - S.lastViewTouch < 2000) return;
@@ -8218,6 +8812,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
         handled = false;
       } else handled = false;
       if (handled) {
+        hqGesture(); // a key press also lets the sound engine start
         e.preventDefault();
         e.stopImmediatePropagation();
       }
