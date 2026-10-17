@@ -4811,7 +4811,7 @@ if (typeof exports === 'object' && typeof module === 'object') {
     const v = S.video;
     if (!v || v.paused || !loopActive() || !hasLoop()) return '';
     if (SL.active) return '';
-    if (!settings.seamless) return 'Seamless loop is off (⚙ settings).';
+    if (!settings.seamless) return ''; // switched off on purpose (iPhone default): no light
     if (settings.gap > 0) return 'A pause between loops is set (⚙ settings).';
     const r = loopRegion();
     if (r && effEnd() - r.a > 180) return 'Loops longer than 3 minutes jump back instead.';
