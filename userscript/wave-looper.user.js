@@ -3613,6 +3613,12 @@ button.one-here { color: #ffb74d; }
 .cues { display: inline-flex; gap: 2px; }
 button.cue-btn { min-width: 34px; padding: 0 6px; font-weight: 800; color: var(--cue); border-color: color-mix(in srgb, var(--cue) 35%, transparent); background: transparent; }
 button.cue-btn.set { background: var(--cue); color: #0b0e14; border-color: var(--cue); }
+
+/* Fingers: the beat tools too (they are styled after the rules above). */
+@media (any-pointer: coarse) {
+  .bpm, select.q-res, .bpm-in { height: 38px; }
+  button.follow-btn { height: 36px; padding: 0 14px 0 12px; font-size: 14px; border-radius: 18px; }
+}
 `;
 
 /*
