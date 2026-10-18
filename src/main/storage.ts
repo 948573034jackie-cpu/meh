@@ -4,11 +4,10 @@ import path from 'node:path';
 
 /** Small JSON-file store under userData with atomic writes. One file per collection. */
 export class JsonStore<T> {
-  private file: string;
   private cache: T | null = null;
-  constructor(name: string, private defaults: () => T) {
-    this.file = path.join(dataDir(), `${name}.json`);
-  }
+  constructor(private name: string, private defaults: () => T) {}
+  /** resolved lazily: stores are created at import time, before main/index.ts may redirect userData */
+  private get file(): string { return path.join(dataDir(), `${this.name}.json`); }
   get(): T {
     if (this.cache) return this.cache;
     try {

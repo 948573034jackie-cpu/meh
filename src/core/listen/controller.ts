@@ -3,6 +3,7 @@ import type { Dictionary } from '@core/dict/types';
 import type { VocabState, MarkedRange, Settings } from '@shared/settings';
 import type { ExplainRequest, ExplainKind } from '@shared/api';
 import type { TtsEngine } from '@core/tts/engine';
+import { samePosition } from '@core/model';
 import { getSentence, nextPosition, prevPosition, comparePositions } from '@core/nav';
 import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
@@ -53,7 +54,13 @@ export class ListenController {
   enabled = false;
   private explainedThisChapter = new Map<number, Set<string>>();
   private stopTimes: number[] = [];
-  private current: { cancel: () => void } | null = null;
+  private current: { cancel: () => void; lemma?: string } | null = null;
+  /** lemmas the learner tapped away during a stop: known now, never explained or marked again */
+  private dismissed = new Set<string>();
+  /** skip() asked to end the whole stop for the current sentence, not just the current explanation */
+  private skipRequested = false;
+  /** a manual explanation paused the reading and will resume it when it ends */
+  private pendingResume = false;
   private transcriptId = 0;
   private history: { role: 'user' | 'assistant'; text: string }[] = [];
   private historyChapter = -1;
@@ -79,8 +86,9 @@ export class ListenController {
         const info = ann.infos[ti];
         if (!info) continue;
         const status = vocab[info.lemma];
-        if (status === 'known' || status === 'ignored' || status === 'learning') continue;
+        if (status === 'known' || status === 'ignored' || status === 'learning' || this.dismissed.has(info.lemma)) continue;
         if (s.listen.firstOccurrencePerChapterOnly && seen.has(info.lemma)) continue;
+        if (out.some((t) => t.lemma === info.lemma)) continue; // the same word twice in one sentence: one stop
         const tok = cur.sentence.tokens[ti];
         out.push({ kind: 'word', token: ti, end: ti, target: tok.text, lemma: info.lemma, dict: info.entry ? { ipa: info.entry.ipa, zh: info.entry.zh.split('\n')[0], level: info.entry.level } : null });
       }
@@ -89,9 +97,10 @@ export class ListenController {
       for (const ph of ann.phrases) {
         const lemma = ph.result.lemma;
         const status = vocab[lemma];
-        if (status === 'known' || status === 'ignored' || status === 'learning') continue;
+        if (status === 'known' || status === 'ignored' || status === 'learning' || this.dismissed.has(lemma)) continue;
         if (!isAbove(ph.result.entry.level, s.learnerLevel)) continue;
         if (s.listen.firstOccurrencePerChapterOnly && seen.has(lemma)) continue;
+        if (out.some((t) => t.lemma === lemma)) continue;
         const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end].end);
         out.push({ kind: 'phrase', token: ph.start, end: ph.end, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
       }
@@ -128,37 +137,36 @@ export class ListenController {
     const cur = getSentence(this.deps.book, pos)!;
     const s = this.deps.settings();
     void stoppedAtToken;
+    this.skipRequested = false;
     // Explain every hard word of the sentence in order, then phrases/sentence marks.
-    const words = triggers.filter((t) => t.kind === 'word');
-    const rest = triggers.filter((t) => t.kind !== 'word');
-    for (const t of words) {
-      const ok = await this.runExplanation('word', t.target, pos, cur.text, t.dict ?? null, wordScript(t.target, cur.text, scriptSettings(s)), t.lemma);
-      if (ok === 'aborted') return 'stop';
-    }
-    for (const t of rest) {
-      const ok = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, sentenceScript(cur.text, scriptSettings(s)), t.lemma);
-      if (ok === 'aborted') return 'stop';
+    const ordered = [...triggers.filter((t) => t.kind === 'word'), ...triggers.filter((t) => t.kind !== 'word')];
+    for (const t of ordered) {
+      if (t.lemma && (this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known')) continue; // tapped away meanwhile
+      const script = t.kind === 'word' ? wordScript(t.target, cur.text, scriptSettings(s)) : sentenceScript(cur.text, scriptSettings(s));
+      const res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, script, t.lemma);
+      if (res === 'aborted') return 'stop'; // the learner paused, seeked or stopped: the reading loop that asked is stale
+      if (this.skipRequested) break;
     }
     return 'next';
   }
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
   async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean): Promise<void> {
-    const wasPlaying = resumeAfter ?? this.playback.state === 'playing';
-    this.current?.cancel();
-    this.playback.pause();
+    const wasPlaying = this.beginManual(resumeAfter);
+    const resumeAt = this.playback.position;
     const cur = getSentence(this.deps.book, pos);
     const sentence = cur?.text ?? target;
     const s = this.deps.settings();
     const script = kind === 'word' ? wordScript(target, sentence, scriptSettings(s)) : kind === 'phrase' || kind === 'sentence' ? sentenceScript(sentence, scriptSettings(s)) : plainScript();
-    await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question);
-    if (wasPlaying) this.playback.play(kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos);
+    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question);
+    const readOn = kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
+    this.endManual(wasPlaying, res, resumeAt, readOn);
   }
 
   /** "Explain the last N seconds": the sentences spoken recently, extended to whole sentences. */
   async explainLast(seconds: number): Promise<void> {
-    const wasPlaying = this.playback.state === 'playing';
-    this.playback.pause();
+    const wasPlaying = this.beginManual();
+    const resumeAt = this.playback.position;
     let positions = this.playback.sentencesInLast(seconds);
     if (!positions.length) positions = [this.playback.position];
     // extend backwards to at least two sentences for context
@@ -166,23 +174,49 @@ export class ListenController {
     const texts = positions.map((p) => getSentence(this.deps.book, p)?.text ?? '').filter(Boolean);
     const passage = texts.join(' ');
     const first = positions[0];
-    await this.runExplanation('passage', passage, first, passage, null, plainScript());
-    if (wasPlaying) this.playback.play(this.playback.position);
+    const res = await this.runExplanation('passage', passage, first, passage, null, plainScript());
+    this.endManual(wasPlaying, res, resumeAt, resumeAt);
+  }
+
+  /** Pauses the reading for a manual explanation; returns whether it should resume afterwards. */
+  private beginManual(resumeAfter?: boolean): boolean {
+    const st = this.playback.state;
+    // a manual explanation that interrupts another one inherits its promise to resume the reading
+    const wasPlaying = resumeAfter ?? (st === 'playing' || st === 'explaining' || (this.current !== null && this.pendingResume));
+    this.current?.cancel();
+    this.playback.pause();
+    this.pendingResume = wasPlaying;
+    return wasPlaying;
+  }
+
+  private endManual(wasPlaying: boolean, res: 'done' | 'skipped' | 'aborted', resumeAt: Position, readOn: Position): void {
+    if (this.current) return; // a newer explanation took over and resumes the reading when it ends
+    this.pendingResume = false;
+    // Resume only if the learner did not meanwhile navigate (seek) or start playing by other means.
+    if (!wasPlaying || res === 'aborted') return;
+    const st = this.playback.state;
+    if (st === 'playing' || st === 'explaining' || !samePosition(this.playback.position, resumeAt)) return;
+    this.playback.play(readOn);
   }
 
   /** Interrupts the current explanation; reading continues with the next sentence. */
-  skip(): void { this.current?.cancel(); }
+  skip(): void { this.skipRequested = true; this.current?.cancel(); }
 
   /** true while an explanation (automatic or manual) is being fetched or spoken */
   get busy(): boolean { return this.current !== null; }
 
   /** The learner tapped a highlighted word while listening: it is known now, and never stops again. */
   dismiss(lemma: string): void {
-    this.current?.cancel();
-    void lemma;
+    this.dismissed.add(lemma);
+    if (this.current && this.current.lemma === lemma) this.current.cancel();
   }
 
-  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string): Promise<'done' | 'aborted'> {
+  /**
+   * Fetches and speaks one explanation. 'skipped' = the learner interrupted it (skip, dismiss, a newer
+   * explanation); 'aborted' = the playback state changed underneath it (pause, seek, stop, play), so the
+   * caller must not continue the stop it belongs to.
+   */
+  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string): Promise<'done' | 'skipped' | 'aborted'> {
     if (this.historyChapter !== pos.chapter) { this.history = []; this.historyChapter = pos.chapter; }
     const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking' };
     this.deps.onTranscript({ ...entry });
@@ -196,9 +230,21 @@ export class ListenController {
       dict: dict ?? undefined, question, history: this.history,
     };
     let cancelled = false;
+    let aborted = false;
     let activeHandle: { cancel(): void } | null = null;
     const ai = this.deps.explain(req, (full) => { entry.text = full; this.deps.onTranscript({ ...entry }); });
-    this.current = { cancel: () => { cancelled = true; ai.cancel(); activeHandle?.cancel(); this.deps.explainEngine().cancelAll(); this.deps.zhEngine().cancelAll(); } };
+    ai.done.catch(() => undefined); // a cancelled reply may never be awaited (interrupted before the AI step)
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      ai.cancel(); activeHandle?.cancel(); this.deps.explainEngine().cancelAll(); this.deps.zhEngine().cancelAll();
+    };
+    const mine = { cancel, lemma };
+    this.current = mine;
+    // Any change of the playback state while the explanation runs comes from outside (pause, seek, stop,
+    // play, a new reading loop): the explanation must not keep talking over it.
+    const startState = this.playback.state;
+    const offState = this.playback.on('state', (st) => { if (st !== startState) { aborted = true; cancel(); } });
     const s = this.deps.settings();
     const say = async (text: string, lang: 'en' | 'zh', role: string): Promise<boolean> => {
       if (cancelled || !text.trim()) return !cancelled;
@@ -244,15 +290,17 @@ export class ListenController {
       return true;
     };
     const completed = await runSteps(script);
-    this.current = null;
+    offState();
+    if (this.current === mine) this.current = null;
     if (lemma) {
       // whatever happened, do not stop again for this word in this chapter
       this.explainedThisChapter.set(pos.chapter, (this.explainedThisChapter.get(pos.chapter) ?? new Set()).add(lemma));
-      if (completed || entry.status === 'speaking' || entry.status === 'done') this.deps.onMarkLearning(lemma);
+      if (!this.dismissed.has(lemma) && (completed || entry.status === 'speaking' || entry.status === 'done')) this.deps.onMarkLearning(lemma);
     }
     if (entry.status !== 'error') entry.status = cancelled ? 'skipped' : 'done';
     this.deps.onTranscript({ ...entry });
-    return cancelled && this.playback.state === 'idle' ? 'aborted' : 'done';
+    if (aborted || this.playback.state === 'idle') return 'aborted';
+    return cancelled ? 'skipped' : 'done';
   }
 
   /** For the UI: how many times listening mode would stop in a chapter from its start. */

@@ -64,8 +64,10 @@ test.describe('reader', () => {
 
   test('settings change theme, level and layout', async () => {
     const { app, page } = await launchApp();
+    await page.getByRole('button', { name: 'Level & stops' }).click();
     await page.getByTestId('level-C1').click();
-    await page.getByText('Appearance').click();
+    await expect(page.getByTestId('level-C1')).toHaveClass(/primary/);
+    await page.getByRole('button', { name: 'Appearance' }).click();
     await page.locator('select').first().selectOption('light');
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
     await page.getByTestId('finish-onboarding').click();

@@ -1,4 +1,5 @@
 import type { Book, Position } from '@core/model';
+import { sentenceKey } from '@core/model';
 import type { TtsEngine, SpeakHandle } from '@core/tts/engine';
 import { getSentence, nextPosition, prevPosition, paragraphStart, firstPosition } from '@core/nav';
 import { tokenIndexAtChar } from '@core/tts/timing';
@@ -37,6 +38,8 @@ export class Playback {
   private _pos: Position;
   private gen = 0;
   private handle: SpeakHandle | null = null;
+  /** the sentence currently being spoken (recorded in the timeline when it ends or is interrupted) */
+  private speaking: TimelineEntry | null = null;
   private listeners = new Map<keyof PlaybackEvents, Set<(...args: never[]) => void>>();
   readonly timeline: TimelineEntry[] = [];
   hooks: PlaybackHooks = {};
@@ -109,35 +112,56 @@ export class Playback {
   sentencesInLast(seconds: number): Position[] {
     const now = performance.now();
     const cutoff = now - seconds * 1000;
-    const hits = this.timeline.filter((t) => t.end >= cutoff);
-    if (hits.length === 0 && this.timeline.length) return [this.timeline[this.timeline.length - 1].pos];
-    return hits.map((t) => t.pos);
+    const entries = this.speaking ? [...this.timeline, { ...this.speaking, end: now }] : this.timeline;
+    let hits = entries.filter((t) => t.end >= cutoff);
+    if (hits.length === 0 && entries.length) hits = [entries[entries.length - 1]];
+    // a sentence restarted after a pause or a speed change appears once
+    const seen = new Set<string>();
+    const out: Position[] = [];
+    for (const t of hits) { const k = sentenceKey(t.pos); if (!seen.has(k)) { seen.add(k); out.push(t.pos); } }
+    return out;
+  }
+
+  private recordSpoken(): void {
+    const sp = this.speaking;
+    if (!sp) return;
+    this.speaking = null;
+    this.timeline.push({ ...sp, end: performance.now() });
+    if (this.timeline.length > 200) this.timeline.shift();
   }
 
   private cancelCurrent(): void {
     const h = this.handle;
     this.handle = null;
     h?.cancel();
+    this.recordSpoken();
     this.deps.engine().cancelAll();
   }
 
   private async run(gen: number): Promise<void> {
     while (gen === this.gen) {
-      const pos = this._pos;
-      const cur = getSentence(this.book, pos);
-      if (!cur) { this.setState('idle'); this.emit('finished'); return; }
+      let pos = this._pos;
+      let cur = getSentence(this.book, pos);
+      if (!cur) {
+        // e.g. a chapter whose first paragraph has no sentences: continue with the next real sentence
+        const alt = nextPosition(this.book, pos.sentence > 0 ? pos : { ...pos, sentence: -1 });
+        cur = alt ? getSentence(this.book, alt) : null;
+        if (!alt || !cur) { this.setState('idle'); this.emit('finished'); return; }
+        pos = alt; this._pos = alt;
+      }
       const text = cur.text;
       this.emit('sentence', pos);
       const stopAt = this.hooks.stopAt?.(pos) ?? null;
       const engine = this.deps.engine();
       const voice = this.deps.voice();
       this.prefetchAhead(engine, voice);
-      const started = performance.now();
+      this.speaking = { pos, start: performance.now(), end: 0 };
       let stoppedAtToken: number | null = null;
       let lastToken = -1;
       let outcome: 'ended' | 'cancelled' | 'error' = 'ended';
+      let handle: SpeakHandle | null = null;
       if (text.trim()) {
-        const handle = engine.speak(text, {
+        handle = engine.speak(text, {
           voiceId: voice.voiceId,
           rate: voice.rate,
           onWord: (charIndex) => {
@@ -148,7 +172,7 @@ export class Playback {
             if (typeof stopAt === 'number' && idx > stopAt && cur.sentence.tokens.slice(stopAt + 1, idx + 1).some((t) => t.kind === 'word')) {
               // the word after the hard word has started: stop here
               stoppedAtToken = stopAt;
-              handle.cancel();
+              handle?.cancel();
               return;
             }
             this.emit('word', pos, idx);
@@ -159,14 +183,16 @@ export class Playback {
         if (this.handle === handle) this.handle = null;
       }
       if (gen !== this.gen) return;
-      this.timeline.push({ pos, start: started, end: performance.now() });
-      if (this.timeline.length > 200) this.timeline.shift();
+      this.recordSpoken();
       if (outcome === 'error') {
-        this.emit('error', this.handle?.error ?? new Error('speech failed'));
+        this.emit('error', handle?.error ?? new Error('speech failed'));
         this.setState('paused');
         return;
       }
       if (outcome === 'cancelled' && stoppedAtToken === null) return; // paused/stopped externally
+      // The hard word was the last word of the sentence, or the engine gave no word boundaries at all:
+      // the sentence has been read completely, so the stop happens at its end.
+      if (outcome === 'ended' && typeof stopAt === 'number' && stoppedAtToken === null && cur.sentence.tokens[stopAt]) stoppedAtToken = stopAt;
       this.emit('sentenceEnd', pos);
       if (stoppedAtToken !== null || stopAt === 'end') {
         this.setState('explaining');

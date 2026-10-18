@@ -38,3 +38,29 @@ describe('prompts', () => {
     expect(spokenEnglish(parts)).toEqual(['Just a plain answer.']);
   });
 });
+
+describe('parseExplanation tolerance', () => {
+  it('finds labels that the model put on one line', () => {
+    const parts = parseExplanation('DEFINITION: Sanguine means hopeful. IN THIS SENTENCE: He stays positive. CHINESE: 乐观的', 'word');
+    expect(parts.definition).toBe('Sanguine means hopeful.');
+    expect(parts.inSentence).toBe('He stays positive.');
+    expect(parts.chinese).toBe('乐观的');
+  });
+  it('accepts bullets, numbering, bold labels and dashes instead of colons', () => {
+    const parts = parseExplanation('- **Definition** — Sanguine means hopeful.\n2. In this sentence - He stays positive.\n* Chinese: 乐观的', 'word');
+    expect(parts.definition).toBe('Sanguine means hopeful.');
+    expect(parts.inSentence).toBe('He stays positive.');
+    expect(parts.chinese).toBe('乐观的');
+  });
+  it('keeps only the Chinese characters of the CHINESE line (no pinyin for the Chinese voice)', () => {
+    expect(parseExplanation('DEFINITION: x\nCHINESE: 乐观的 (lèguān de)', 'word').chinese).toBe('乐观的');
+    expect(parseExplanation('DEFINITION: x\nCHINESE: 乐观的、充满希望的。', 'word').chinese).toBe('乐观的、充满希望的');
+  });
+  it('treats "there are none" style hard-word lines as empty and skips items without a meaning', () => {
+    expect(parseExplanation('MEANING: Easy.\nHARD WORDS: There are none.', 'sentence').hardWords).toEqual([]);
+    expect(parseExplanation('MEANING: Easy.\nHARD WORDS: None in this sentence.', 'sentence').hardWords).toEqual([]);
+    const parts = parseExplanation('MEANING: Easy.\nHARD WORDS: grudge, a lasting bad feeling, 怨恨; sulk', 'sentence');
+    expect(parts.hardWords).toEqual([{ word: 'grudge', meaning: 'a lasting bad feeling', zh: '怨恨' }]);
+    expect(spokenEnglish(parts)).toEqual(['Easy.', 'grudge: a lasting bad feeling']);
+  });
+});

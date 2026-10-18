@@ -99,3 +99,84 @@ describe('Playback', () => {
     expect(engine.spoken[engine.spoken.length - 1].text).toBe('Fifth one.');
   });
 });
+
+// ---- regression tests ----------------------------------------------------------------------------
+
+/** Engine that reports no word boundaries at all (online Web Speech voices, OpenAI audio before estimation). */
+class SilentEngine extends FakeTtsEngine {
+  override speak(text: string, opts: Parameters<FakeTtsEngine['speak']>[1]) { return super.speak(text, { ...opts, onWord: undefined }); }
+}
+
+class FailingEngine extends FakeTtsEngine {
+  override speak(text: string, opts: Parameters<FakeTtsEngine['speak']>[1]) {
+    const h = super.speak(text, opts);
+    const out: typeof h = { cancel: () => h.cancel(), done: h.done.then((o) => { if (o !== 'ended') return o; out.error = new Error('Microsoft voice returned no audio'); return 'error' as const; }) };
+    return out;
+  }
+}
+
+describe('Playback regressions', () => {
+  it('stops for a hard word even when it is the last word of the sentence', async () => {
+    const engine = new FakeTtsEngine(2);
+    const pb = makePlayback(engine);
+    const stops: { pos: string; token: number | null }[] = [];
+    // 'Third one.' -> tokens [Third, one, .]; the hard word 'one' (index 1) is the last word
+    pb.hooks = {
+      stopAt: (pos) => (pos.chapter === 0 && pos.paragraph === 1 ? 1 : null),
+      onStop: async (pos, token) => { stops.push({ pos: `${pos.chapter}.${pos.paragraph}.${pos.sentence}`, token }); return 'next'; },
+    };
+    const finished = new Promise<void>((r) => pb.on('finished', r));
+    pb.play();
+    await finished;
+    expect(stops).toEqual([{ pos: '0.1.0', token: 1 }]);
+  });
+
+  it('stops for a hard word when the engine delivers no word boundaries', async () => {
+    const engine = new SilentEngine(2);
+    const pb = makePlayback(engine);
+    const stops: number[] = [];
+    pb.hooks = { stopAt: (pos) => (pos.chapter === 0 && pos.paragraph === 0 && pos.sentence === 0 ? 1 : null), onStop: async (_p, t) => { stops.push(t ?? -1); return 'next'; } };
+    const finished = new Promise<void>((r) => pb.on('finished', r));
+    pb.play();
+    await finished;
+    expect(stops).toEqual([1]);
+  });
+
+  it('reports the engine error message', async () => {
+    const engine = new FailingEngine(1);
+    const pb = makePlayback(engine);
+    const errors: string[] = [];
+    pb.on('error', (e) => errors.push(e.message));
+    const paused = new Promise<void>((r) => pb.on('state', (s) => { if (s === 'paused') r(); }));
+    pb.play();
+    await paused;
+    expect(errors).toEqual(['Microsoft voice returned no audio']);
+  });
+
+  it('"last N seconds" includes the sentence that was being spoken when the learner paused, without duplicates', async () => {
+    const engine = new FakeTtsEngine(20);
+    const pb = makePlayback(engine);
+    pb.play();
+    await new Promise((r) => setTimeout(r, 40));
+    pb.pause();
+    expect(pb.sentencesInLast(30)).toEqual([{ chapter: 0, paragraph: 0, sentence: 0 }]);
+    pb.resume();
+    await new Promise((r) => setTimeout(r, 40));
+    pb.pause();
+    // the same sentence was started twice: reported once
+    expect(pb.sentencesInLast(30)).toEqual([{ chapter: 0, paragraph: 0, sentence: 0 }]);
+  });
+
+  it('a seek to an empty paragraph continues with the next sentence instead of ending the book', async () => {
+    const gapBook = makeBook([{ title: 'One', paragraphs: ['Alpha beta.'] }, { title: 'Two', paragraphs: ['', 'Gamma delta.'] }]);
+    const engine = new FakeTtsEngine(1);
+    const pb = new Playback(gapBook, { engine: () => engine, voice: () => ({ voiceId: 'fake-gb', rate: 1 }), pauseMs: () => 0 });
+    let finished = false; pb.on('finished', () => { finished = true; });
+    const sentences: string[] = []; pb.on('sentence', (p) => sentences.push(`${p.chapter}.${p.paragraph}.${p.sentence}`));
+    pb.play({ chapter: 1, paragraph: 0, sentence: 0 });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(engine.spoken.map((s) => s.text)).toEqual(['Gamma delta.']);
+    expect(sentences).toContain('1.1.0');
+    expect(finished).toBe(true);
+  });
+});

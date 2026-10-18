@@ -26,3 +26,19 @@ describe('cloud TTS timing helpers', () => {
     expect(t).toEqual([{ start: 0, end: 0.2, charIndex: 0, charLength: 2 }, { start: 0.3, end: 0.6, charIndex: 3, charLength: 3 }]);
   });
 });
+
+describe('alignWords edge cases', () => {
+  it('does not match an engine word inside another word', () => {
+    // the engine dropped the boundary for 'cat': 'at' must not land inside 'cat'
+    const t = alignWords([{ start: 0, end: 1, word: 'the' }, { start: 1, end: 2, word: 'at' }], 'the cat at home');
+    expect(t.map((x) => x.charIndex)).toEqual([0, 8]);
+  });
+  it('keeps contractions and curly apostrophes aligned', () => {
+    const t = alignWords([{ start: 0, end: 1, word: 'I' }, { start: 1, end: 2, word: "don't" }, { start: 2, end: 3, word: 'know' }], 'I don’t know.');
+    expect(t.map((x) => [x.charIndex, x.charLength])).toEqual([[0, 1], [2, 5], [8, 4]]);
+  });
+  it('ignores metadata entries without text', () => {
+    const chunk = JSON.stringify({ Metadata: [{ Type: 'WordBoundary', Data: { Offset: 0, Duration: 1 } }] });
+    expect(parseEdgeMetadata([chunk], 'Hi')).toBeNull();
+  });
+});
