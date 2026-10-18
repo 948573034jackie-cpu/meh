@@ -120,19 +120,45 @@ describe('ListenController', () => {
     expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
   });
 
-  it('a manual explanation during an automatic one replaces it and stays skippable', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.']);
+  it('a manual explanation during an automatic one replaces it, ends that stop, and stays skippable', async () => {
+    const t = setup(['The sanguine man was acrimonious.', 'Then he left.']);
     t.playback.play();
     await until(() => t.ai.calls.length === 1);
     const p = t.controller.explainNow('word', 'left', { chapter: 0, paragraph: 0, sentence: 1 }, null, 'left');
     expect(t.ai.calls[0].cancelled).toBe(true);
     await until(() => t.ai.calls.length === 2);
-    await sleep(30); // the cancelled explanation finishes its bookkeeping
+    await sleep(60); // the cancelled explanation finishes its bookkeeping
+    expect(t.ai.calls.length).toBe(2); // no automatic explanation of 'acrimonious' while the manual one runs
     expect(t.controller.busy).toBe(true);
-    t.controller.skip();
+    t.controller.skip(); // skipping a manual explanation must not swallow the pause steps either
     expect(t.ai.calls[1].cancelled).toBe(true);
-    await p;
+    await Promise.race([p, sleep(100).then(() => { throw new Error('skip took too long'); })]);
     expect(t.controller.busy).toBe(false);
+    await sleep(50);
+    expect(t.ai.calls.length).toBe(2);
+    // it was listening before: reading resumed with the sentence of the explained word and ran to the end
+    expect(t.states.slice(-3)).toEqual(['paused', 'playing', 'idle']);
+    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+  });
+
+  it('"explain the last seconds" includes the sentence being spoken and resumes reading where it paused', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.']);
+    t.controller.enabled = false;
+    t.reader.msPerChar = 20;
+    t.playback.play();
+    await until(() => t.reader.spoken.length === 1);
+    await sleep(30);
+    const p = t.controller.explainLast(30);
+    expect(t.playback.state).toBe('paused');
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req.kind).toBe('passage');
+    expect(t.ai.calls[0].req.target).toBe('He was sanguine.');
+    t.ai.calls[0].resolve('SUMMARY: He felt hopeful.\nHARD WORDS: none');
+    await p;
+    expect(t.explainer.spoken.map((s) => s.text)).toEqual(['He felt hopeful.']);
+    expect(t.playback.state).toBe('playing');
+    expect(t.playback.position).toEqual({ chapter: 0, paragraph: 0, sentence: 0 });
+    t.playback.stop();
   });
 
   it('navigating away during a manual explanation does not drag the reader back afterwards', async () => {

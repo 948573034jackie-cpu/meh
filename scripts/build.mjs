@@ -49,6 +49,9 @@ const renderer = {
 
 function copyStatic() {
   for (const f of ['index.html']) fs.copyFileSync(path.join(root, 'src/renderer', f), path.join(dist, 'renderer', f));
+  // pdf.js (legacy build) loads its "fake worker" module next to the bundle in Node: ship it beside dist/main/index.js
+  fs.mkdirSync(path.join(dist, 'main'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'), path.join(dist, 'main/pdf.worker.mjs'));
   // main.css is emitted by esbuild from the CSS imports in main.tsx.
 }
 

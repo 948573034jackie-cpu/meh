@@ -234,10 +234,11 @@ export class ListenController {
     let activeHandle: { cancel(): void } | null = null;
     const ai = this.deps.explain(req, (full) => { entry.text = full; this.deps.onTranscript({ ...entry }); });
     ai.done.catch(() => undefined); // a cancelled reply may never be awaited (interrupted before the AI step)
+    let wake: (() => void) | null = null;
     const cancel = () => {
       if (cancelled) return;
       cancelled = true;
-      ai.cancel(); activeHandle?.cancel(); this.deps.explainEngine().cancelAll(); this.deps.zhEngine().cancelAll();
+      ai.cancel(); activeHandle?.cancel(); wake?.(); this.deps.explainEngine().cancelAll(); this.deps.zhEngine().cancelAll();
     };
     const mine = { cancel, lemma };
     this.current = mine;
@@ -258,7 +259,7 @@ export class ListenController {
       activeHandle = null;
       return out === 'ended' && !cancelled;
     };
-    const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const pause = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
     let aiParts: ExplanationParts | null = null;
     const runSteps = async (steps: ScriptStep[]): Promise<boolean> => {
       for (const st of steps) {
