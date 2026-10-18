@@ -70,6 +70,13 @@ The app shows the real cost after every explanation, warns when a day passes you
 
 Space play/pause · ← → previous/next sentence · Shift+← → paragraph · PageUp/PageDown page · R replay · E explain word, selection or sentence · Shift+E explain the last part · K known · L learning · X ignore · Q listening mode · B subtitle band · S say the word · + − speed · 0 normal speed · Tab / Shift+Tab next/previous hard word · H mark selection or sentence for listening · Esc close popup or skip an explanation · ⌘O open · ⌘⇧V paste text · ⌘= ⌘− text size · ⌘T theme.
 
+## Known limitations of this first version
+
+- Tested on Linux with a stand-in voice; the Mac voices, the Microsoft voices and real Claude/ChatGPT calls were not exercised on a Mac yet. The Diagnostics screen (View → Diagnostics) shows what the app sees on your machine; paste it back if something is off.
+- PDF: works for ordinary text PDFs. Scanned PDFs are refused. Two-column pages, heading-based chapters and tagged-PDF structure are not handled yet (the skipped tests in `test/unit/pdf.test.ts` describe the intended behaviour).
+- Idioms and phrasal verbs are only detected when they are in the offline dictionary (about 900 phrases); ask the AI about any phrase by selecting it.
+- The Kokoro offline neural voice and voice questions through the microphone are planned, not included.
+
 ## Development
 
 ```

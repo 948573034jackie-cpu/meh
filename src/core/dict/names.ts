@@ -104,6 +104,8 @@ function titleBefore(tokens: Token[], i: number): boolean {
   return false;
 }
 
+const CALENDAR_WORDS = new Set(['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december', 'christmas', 'easter']);
+
 export function detectNames(book: Pick<Book, 'chapters'>, dict: Dictionary): string[] {
   const stats = new Map<string, Stat>();
   const stat = (key: string): Stat => {
@@ -142,8 +144,11 @@ export function detectNames(book: Pick<Book, 'chapters'>, dict: Dictionary): str
     if (STOP_WORDS.has(key) || ABBREV_TITLES.has(key) || WORD_TITLES.has(key)) continue;
     if (!st.titled && st.cap === 0) continue;      // only ever capitalised where capitals are conventional
     if (st.lower > st.cap) continue;                // a common word that is sometimes capitalised
-    if (st.titled || st.cap >= 2) { names.push(key); continue; }
+    if (CALENDAR_WORDS.has(key)) continue;          // days and months are always capitalised but are vocabulary
     const r = dict.lookup(key);
+    // a word from a CEFR list (countries, languages, nationalities) is vocabulary unless it carries a title ("Mr Long")
+    if (r && r.entry.levelSource !== 'est' && !st.titled) continue;
+    if (st.titled || st.cap >= 2) { names.push(key); continue; }
     if (!r) { names.push(key); continue; }
     const e = r.entry;
     if (e.frq === 0 && e.bnc === 0 && e.tags.length === 0) names.push(key);

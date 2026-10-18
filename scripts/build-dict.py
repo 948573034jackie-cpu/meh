@@ -19,7 +19,7 @@ out = sys.argv[2] if len(sys.argv) > 2 else 'resources/dict/dict.json.gz'
 csv.field_size_limit(10 ** 9)
 P = lambda n: os.path.join(src, n)
 LV = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
-WORD = re.compile(r"[a-z][a-z'\-]*")
+WORD = re.compile(r"[A-Za-z][a-z'\-]*")
 PHRASE = re.compile(r"[a-z][a-z'\- ]*[a-z]")
 
 # --- British IPA ---------------------------------------------------------
@@ -91,6 +91,12 @@ with open(P('ecdict.csv'), newline='', encoding='utf-8') as f:
     for row in csv.DictReader(f):
         w = row['word']
         is_word = bool(WORD.fullmatch(w))
+        if is_word:
+            # capitalised headwords (Tuesday, London, English) are stored lower-cased; a lower-case twin wins
+            lw = w.lower()
+            if w != lw and (lw in rows or not (row['tag'] or row['oxford'] == '1' or row['collins'] not in ('', '0'))):
+                continue
+            w = lw
         is_phrase = (not is_word) and (' ' in w) and bool(PHRASE.fullmatch(w)) and len(w) <= 40
         if not (is_word or is_phrase):
             continue

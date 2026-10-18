@@ -126,7 +126,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       }),
     ];
     setReady(true);
-    return () => { offs.forEach((f) => f()); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
+    return () => { offs.forEach((f) => f()); controller.skip(); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dict, book]);
 
@@ -368,7 +368,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   };
   const explainCurrentSentence = () => { const cur = getSentence(book, posRef.current); if (cur) void ctl()?.explainNow('sentence', cur.text, posRef.current, null); };
   const explainLast = () => void ctl()?.explainLast(settingsRef.current.listen.lastSecondsWindow);
-  const sayPopup = () => { if (!popup) return; const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(popup.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
+  const sayPopup = () => { if (!popup) return; ctl()?.skip(); const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(popup.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
   const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in listening mode'); };
   const setRate = (r: number) => { void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate: Math.round(r * 10) / 10 } }).then(() => pb()?.rateChanged()); };
   const jumpHard = (dir: 1 | -1) => {

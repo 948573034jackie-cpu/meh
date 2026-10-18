@@ -205,30 +205,47 @@ function isInitial(abbr: string, trimmedText: string): boolean {
 }
 
 /**
- * How many straight quotes of kind `c` (" or ') are open at the end of `range`. A quote opens when it
- * follows the start, whitespace, a bracket, a dash or another quote and is followed by a visible
- * character; any other quote closes (never below zero, so a plural possessive like "boys' hats" does
- * not count as an unmatched quote). An apostrophe between two letters ("don't") is not a quote.
+ * Running count of the straight quotes (" and ') still open in the sentence being assembled by the
+ * merge pass. The scan resumes where it stopped as the sentence grows, which keeps the pass linear
+ * even in a paragraph that never closes its quotes.
  */
-function openQuoteDepth(s: string, c: string, range: Range): number {
-  let depth = 0;
-  for (let k = range.start; k < range.end; k++) {
-    if (s[k] !== c) continue;
-    const prev = k > range.start ? s[k - 1] : '';
-    const next = k + 1 < range.end ? s[k + 1] : '';
-    if (c === "'" && prev !== '' && WORD_CHAR.test(prev) && next !== '' && WORD_CHAR.test(next)) continue;
+interface QuoteScan { start: number; pos: number; double: number; single: number }
+
+function newQuoteScan(start: number): QuoteScan {
+  return { start, pos: start, double: 0, single: 0 };
+}
+
+/**
+ * Advances the scan to `end`. A quote opens when it follows the start of the sentence, whitespace, a
+ * bracket, a dash or another quote and is followed by a visible character; any other quote closes
+ * (never below zero, so a plural possessive like "boys' hats" is not an unmatched quote). An
+ * apostrophe between two letters ("don't") is not a quote.
+ */
+function scanQuotes(s: string, q: QuoteScan, end: number): void {
+  for (let k = q.pos; k < end; k++) {
+    const c = s[k];
+    if (c !== '"' && c !== "'") continue;
+    const prev = k > q.start ? s[k - 1] : '';
+    const next = k + 1 < end ? s[k + 1] : '';
     const opens = (prev === '' || BEFORE_OPENING_QUOTE.test(prev)) && next !== '' && !INVISIBLE_CHAR.test(next);
-    if (opens) depth++;
-    else if (depth > 0) depth--;
+    if (c === '"') {
+      if (opens) q.double++;
+      else if (q.double > 0) q.double--;
+    } else {
+      if (prev !== '' && WORD_CHAR.test(prev) && next !== '' && WORD_CHAR.test(next)) continue;
+      if (opens) q.single++;
+      else if (q.single > 0) q.single--;
+    }
   }
-  return depth;
+  q.pos = end;
 }
 
 /**
  * Decides whether a closing quote at the start of the next segment belongs to the sentence before it
- * (merge) or opens a new quotation (keep the split). `i` is the index of the quote character.
+ * (merge) or opens a new quotation (keep the split). `i` is the index of the quote character; `cur`
+ * is the trimmed sentence so far and `quotes` its running quote scan.
  */
-function closerBelongsToPrevious(s: string, i: number, cur: Range): boolean {
+function closerBelongsToPrevious(s: string, i: number, cur: Range, quotes: QuoteScan): boolean {
   const c = s[i];
   if (UNAMBIGUOUS_CLOSERS.has(c)) return true;
   if (!AMBIGUOUS_CLOSERS.has(c)) return false;
@@ -239,7 +256,8 @@ function closerBelongsToPrevious(s: string, i: number, cur: Range): boolean {
   if (c === '’') return false;
   // " or ' directly before a letter closes the previous sentence only if that sentence still has an
   // open quote of the same kind ('He said "stop. "Then he left.' is a misplaced space, not a quote).
-  return openQuoteDepth(s, c, cur) > 0;
+  scanQuotes(s, quotes, cur.end);
+  return (c === '"' ? quotes.double : quotes.single) > 0;
 }
 
 /** Index of the first character of `r` that is not an opening quote/bracket (so '"Then' reads as 'Then'). */
@@ -254,7 +272,7 @@ function skipLeadingOpeners(s: string, r: Range): number {
  * Both ranges are non-empty after trimming and contain at least one letter or digit (the caller
  * absorbs word-less segments before asking).
  */
-function shouldMerge(s: string, cur: Range, next: Range): boolean {
+function shouldMerge(s: string, cur: Range, next: Range, quotes: QuoteScan): boolean {
   const curTrim = trimRange(s, cur.start, cur.end);
   const nextTrim = trimRange(s, next.start, next.end);
 
@@ -262,7 +280,7 @@ function shouldMerge(s: string, cur: Range, next: Range): boolean {
   // 1. A sentence does not start with a lowercase letter: "...!" | "he said."  "whispered..." | "and"
   if (STARTS_LOWER.test(nextHead)) return true;
   // 2. Closing quote/bracket left at the start of the next segment: 'He said. ' | '” Then.'
-  if (closerBelongsToPrevious(s, nextTrim.start, curTrim)) return true;
+  if (closerBelongsToPrevious(s, nextTrim.start, curTrim, quotes)) return true;
 
   // 3. Abbreviations and initials before the boundary.
   const curText = s.slice(Math.max(curTrim.start, curTrim.end - TAIL_WINDOW), curTrim.end);
@@ -310,18 +328,20 @@ function segmentSentenceRanges(sentenceSegmenter: Intl.Segmenter, s: string): Ra
   const merged: Range[] = [];
   let cur: Range = { start: raw[0].start, end: raw[0].end };
   let curHasWord = hasWordChar(s, cur);
+  let quotes = newQuoteScan(cur.start);
   for (let i = 1; i < raw.length; i++) {
     const next = raw[i];
     const nextHasWord = hasWordChar(s, next);
     // A segment without any letter or digit (whitespace, stray punctuation, an opening quote at the
     // end of the paragraph) is never a sentence of its own: absorb it into its neighbour.
-    if (!curHasWord || !nextHasWord || shouldMerge(s, cur, next)) {
+    if (!curHasWord || !nextHasWord || shouldMerge(s, cur, next, quotes)) {
       cur.end = next.end;
       curHasWord = curHasWord || nextHasWord;
     } else {
       merged.push(cur);
       cur = { start: next.start, end: next.end };
       curHasWord = nextHasWord;
+      quotes = newQuoteScan(cur.start);
     }
   }
   merged.push(cur);
