@@ -51,6 +51,9 @@ export interface TtsEngine {
   readonly paused: boolean;
 }
 
+/** Engines offered in the UI (kokoro is reserved for a later version). */
+export const AVAILABLE_ENGINES: TtsEngineId[] = ['webspeech', 'edge', 'openai', 'elevenlabs'];
+
 export const ENGINE_LABELS: Record<TtsEngineId, { label: string; kind: 'local' | 'cloud'; cost: string; quality: string }> = {
   webspeech: { label: 'Mac voices (built in)', kind: 'local', cost: 'Free', quality: 'Good with the Enhanced or Premium British voices (free download in System Settings)' },
   edge: { label: 'Microsoft neural voices', kind: 'cloud', cost: 'Free (unofficial, needs internet)', quality: 'Very good British voices (Sonia, Ryan, Libby, Thomas)' },

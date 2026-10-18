@@ -23,7 +23,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
     "dompurify": "^3.4.17",
-    "electron": "^44.9.0",
     "jszip": "^3.10.2",
     "msedge-tts": "^2.1.0",
     "openai": "^7.38.0",
@@ -42,6 +41,46 @@
     "esbuild": "^0.25.12",
     "playwright": "^1.64.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^3.2.7",
+    "electron": "^44.9.0"
+  },
+  "build": {
+    "appId": "app.readalong.desktop",
+    "productName": "ReadAlong",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "identity": null,
+      "minimumSystemVersion": "13.0.0",
+      "darkModeSupport": true,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "ReadAlong uses the microphone only if you ask a question by voice."
+      }
+    },
+    "npmRebuild": false,
+    "compression": "normal"
   }
 }

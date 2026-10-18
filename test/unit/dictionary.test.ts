@@ -142,7 +142,8 @@ describe('createDictionary with synthetic data (spelling rules in isolation)', (
     expect(via('running')).toBe('suffix');
     // -ly only when the stem exists; -ness / -ment never
     expect(lemma('kindly')).toBe('kind');
-    expect(lemma('bigly')).toBeNull();
+    expect(lemma('bigly')).toBe('big');          // the stem exists, so -ly is stripped
+    expect(lemma('zorply')).toBeNull();           // no such stem
     expect(lemma('kindnesses')).toBe('kindness');  // plural of a -ness word is fine, the -ness itself stays
     expect(lemma('runment')).toBeNull();
     expect(lemma('xyzzy')).toBeNull();

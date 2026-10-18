@@ -3,7 +3,7 @@ import type { Book } from '@core/model';
 import type { PlaybackState } from '@core/listen/playback';
 import type { Settings, TtsEngineId } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
-import { ENGINE_LABELS } from '@core/tts/engine';
+import { ENGINE_LABELS, AVAILABLE_ENGINES } from '@core/tts/engine';
 
 interface Props {
   book: Book;
@@ -30,7 +30,7 @@ interface Props {
 
 export function Transport(p: Props): JSX.Element {
   const playing = p.state === 'playing' || p.state === 'explaining';
-  const engines = Object.keys(ENGINE_LABELS) as TtsEngineId[];
+  const engines = AVAILABLE_ENGINES;
   return (
     <div className="transport" data-testid="transport">
       <button className="icon" title="Previous sentence (←)" onClick={p.onPrev}>⏮</button>
