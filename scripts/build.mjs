@@ -11,11 +11,10 @@ fs.mkdirSync(path.join(dist, 'renderer'), { recursive: true });
 const alias = { '@core': path.join(root, 'src/core'), '@shared': path.join(root, 'src/shared') };
 
 // While core modules are still being written, resolve missing ones to an empty module so the app builds.
-const optionalModules = ['src/core/import/epub.ts', 'src/core/import/pdf.ts', 'src/core/import/text.ts', 'src/core/dict/dictionary.ts', 'src/core/dict/names.ts'];
 const missingModulePlugin = {
   name: 'missing-core-modules',
   setup(build) {
-    build.onResolve({ filter: /^@core\/(import\/(epub|pdf|text)|dict\/(dictionary|names))$/ }, (args) => {
+    build.onResolve({ filter: /^@core\/(import\/(epub|pdf|text)|dict\/(dictionary|names)|vocab\/analysis)$/ }, (args) => {
       const rel = `src/core/${args.path.slice('@core/'.length)}.ts`;
       if (fs.existsSync(path.join(root, rel))) return null;
       console.warn(`[build] ${rel} is missing; using an empty stub`);

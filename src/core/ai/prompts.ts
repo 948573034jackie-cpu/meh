@@ -1,0 +1,156 @@
+import type { ExplainRequest, ExplainKind } from '@shared/api';
+import type { CefrLevel } from '@core/model';
+
+export interface PromptBundle { system: string; user: string; maxTokens: number }
+
+/**
+ * Builds the system prompt (stable across a session, cacheable) and the per-request user message.
+ * The reply is spoken aloud, so the prompts insist on plain spoken English and a fixed line format
+ * that parseExplanation() turns into script parts.
+ */
+export function buildPrompt(req: ExplainRequest, opts: { level: CefrLevel; instructions: string; length: 'short' | 'normal' | 'long' }): PromptBundle {
+  const system = [
+    `You are a patient English tutor inside a reading app. The learner is a native Chinese speaker at CEFR level ${opts.level}.`,
+    `Your reply will be SPOKEN ALOUD by a text-to-speech voice. Write for the ear: short sentences, plain common words, no markdown, no bullet points, no headings, no asterisks, no emojis, no phonetic symbols, and do not put quotation marks around words.`,
+    `Never translate a whole sentence into Chinese. Use Chinese only for the meaning of single words or short phrases, where the format asks for it.`,
+    `Keep to the exact line labels requested. Do not add greetings or closing remarks.`,
+    opts.instructions.trim() ? `The learner's own instructions: ${opts.instructions.trim()}` : '',
+  ].filter(Boolean).join('\n');
+
+  const len = opts.length;
+  const ctx = [
+    `Book: ${req.book.title}${req.book.chapter ? ` — ${req.book.chapter}` : ''}`,
+    req.before ? `Text before: ${req.before}` : '',
+    `Sentence: ${req.sentence}`,
+    req.after ? `Text after: ${req.after}` : '',
+  ].filter(Boolean).join('\n');
+
+  let task = '';
+  let maxTokens = 600;
+  const t = req.target;
+  const dict = req.dict ? ` (dictionary hint: ${[req.dict.ipa, req.dict.zh, req.dict.level ? `level ${req.dict.level}` : ''].filter(Boolean).join('; ')})` : '';
+  switch (req.kind) {
+    case 'word':
+    case 'phrase': {
+      const what = req.kind === 'word' ? 'word' : 'phrase';
+      const n = len === 'short' ? 'one short sentence' : len === 'long' ? 'two or three sentences' : 'one or two sentences';
+      task = [
+        `${what[0].toUpperCase()}${what.slice(1)} to explain: ${t}${dict}`,
+        `Answer with exactly these lines, each starting with the label:`,
+        `DEFINITION: ${n} saying what ${t} means in general, in simple English.`,
+        `IN THIS SENTENCE: ${n} explaining what ${t} means here, in this story, and why the author uses it.`,
+        len === 'short' ? '' : `EXAMPLE: one short new example sentence using ${t} with the same meaning.`,
+        `CHINESE: the Chinese meaning of ${t} as used here, two to eight characters, nothing else.`,
+      ].filter(Boolean).join('\n');
+      maxTokens = len === 'long' ? 700 : 450;
+      break;
+    }
+    case 'sentence': {
+      task = [
+        `Explain this sentence: ${t}`,
+        `Answer with exactly these lines, each starting with the label:`,
+        `MEANING: ${len === 'short' ? 'one or two' : len === 'long' ? 'three to five' : 'two to four'} short, simple English sentences explaining what this sentence means in the story. Break it into parts if it is long.`,
+        `HARD WORDS: up to three difficult words or phrases from the sentence, each as: word, then its simple English meaning, then its Chinese meaning, separated by commas; separate items with semicolons. If there are none, write: none.`,
+      ].join('\n');
+      maxTokens = len === 'long' ? 800 : 500;
+      break;
+    }
+    case 'passage': {
+      task = [
+        `Explain this passage the learner just listened to: ${t}`,
+        `Answer with exactly these lines, each starting with the label:`,
+        `SUMMARY: ${len === 'short' ? 'two' : len === 'long' ? 'four to six' : 'three or four'} short, simple English sentences explaining what happens and what it means.`,
+        `HARD WORDS: up to five difficult words or phrases from the passage, each as: word, then its simple English meaning, then its Chinese meaning, separated by commas; separate items with semicolons. If there are none, write: none.`,
+      ].join('\n');
+      maxTokens = 900;
+      break;
+    }
+    case 'question': {
+      task = [`The learner asks: ${req.question ?? ''}`, `Answer in plain spoken English in at most ${len === 'short' ? 60 : len === 'long' ? 180 : 110} words. Give the Chinese meaning of any single word you define.`].join('\n');
+      maxTokens = 700;
+      break;
+    }
+  }
+  const history = req.history.length ? `Earlier in this chapter you were asked:\n${req.history.slice(-6).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 400)}`).join('\n')}\n\n` : '';
+  return { system, user: `${history}${ctx}\n\n${task}`, maxTokens };
+}
+
+export interface ExplanationParts {
+  definition?: string;
+  inSentence?: string;
+  example?: string;
+  chinese?: string;
+  meaning?: string;
+  summary?: string;
+  hardWords?: { word: string; meaning: string; zh: string }[];
+  /** everything, when no labels were found */
+  free?: string;
+}
+
+const LABELS: Record<string, keyof ExplanationParts> = {
+  'DEFINITION': 'definition', 'IN THIS SENTENCE': 'inSentence', 'EXAMPLE': 'example', 'CHINESE': 'chinese', 'MEANING': 'meaning', 'SUMMARY': 'summary', 'HARD WORDS': 'hardWords',
+};
+
+/** Parses the labelled reply into parts; tolerant of missing labels, extra whitespace, and markdown bold. */
+export function parseExplanation(text: string, kind: ExplainKind): ExplanationParts {
+  const clean = text.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').trim();
+  const parts: ExplanationParts = {};
+  const re = /^\s*(DEFINITION|IN THIS SENTENCE|EXAMPLE|CHINESE|MEANING|SUMMARY|HARD WORDS)\s*[:：]\s*/im;
+  const lines = clean.split(/\n+/);
+  let current: keyof ExplanationParts | null = null;
+  let found = false;
+  const buf: Record<string, string[]> = {};
+  for (const line of lines) {
+    const m = re.exec(line);
+    if (m) {
+      found = true;
+      current = LABELS[m[1].toUpperCase()];
+      (buf[current] ??= []).push(line.slice(m[0].length).trim());
+    } else if (current) {
+      buf[current].push(line.trim());
+    }
+  }
+  if (!found) {
+    parts.free = clean;
+    return parts;
+  }
+  for (const [k, v] of Object.entries(buf)) {
+    const joined = v.join(' ').trim();
+    if (k === 'hardWords') parts.hardWords = parseHardWords(joined);
+    else (parts as Record<string, unknown>)[k] = joined;
+  }
+  void kind;
+  return parts;
+}
+
+function parseHardWords(s: string): { word: string; meaning: string; zh: string }[] {
+  if (!s || /^none\.?$/i.test(s.trim())) return [];
+  return s.split(/;|\n/).map((item) => item.trim()).filter(Boolean).map((item) => {
+    const bits = item.split(/,|，|=|—|–/).map((b) => b.trim()).filter(Boolean);
+    const zhIdx = bits.findIndex((b) => /[一-鿿]/.test(b));
+    const zh = zhIdx >= 0 ? bits[zhIdx] : '';
+    const rest = bits.filter((_, i) => i !== zhIdx);
+    return { word: rest[0] ?? item, meaning: rest.slice(1).join(', '), zh };
+  });
+}
+
+/** The English text to speak for a parsed explanation, in the order the learner asked for. */
+export function spokenEnglish(parts: ExplanationParts): string[] {
+  const out: string[] = [];
+  if (parts.free) return [parts.free];
+  if (parts.definition) out.push(parts.definition);
+  if (parts.inSentence) out.push(`In this sentence: ${parts.inSentence}`);
+  if (parts.example) out.push(`For example: ${parts.example}`);
+  if (parts.meaning) out.push(parts.meaning);
+  if (parts.summary) out.push(parts.summary);
+  if (parts.hardWords?.length) out.push(...parts.hardWords.map((h) => `${h.word}: ${h.meaning}`));
+  return out;
+}
+
+/** Chinese fragments to speak with a Chinese voice (the word meaning only, never whole sentences). */
+export function spokenChinese(parts: ExplanationParts): string[] {
+  const out: string[] = [];
+  if (parts.chinese) out.push(parts.chinese);
+  if (parts.hardWords?.length) out.push(...parts.hardWords.filter((h) => h.zh).map((h) => `${h.word}, ${h.zh}`));
+  return out;
+}

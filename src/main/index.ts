@@ -36,7 +36,7 @@ function createWindow(): void {
   win.once('ready-to-show', () => win?.show());
   win.on('closed', () => { win = null; });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  void win.loadURL(`${APP_SCHEME}://-/index.html`);
+  void win.loadURL(`${APP_SCHEME}://-/index.html${process.env.READALONG_E2E ? '?e2e=1' : ''}`);
 }
 
 app.whenReady().then(() => {

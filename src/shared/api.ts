@@ -23,7 +23,7 @@ export interface ExplainRequest {
 
 export type AiEvent =
   | { type: 'delta'; streamId: string; text: string }
-  | { type: 'done'; streamId: string; text: string; usage: { inputTokens: number; outputTokens: number; cachedTokens: number; usd: number } }
+  | { type: 'done'; streamId: string; text: string; usage: { inputTokens: number; outputTokens: number; cachedTokens: number; usd: number; dailyUsd: number; monthlyUsd: number; model: string } }
   | { type: 'error'; streamId: string; message: string; code?: 'no_key' | 'auth' | 'rate_limit' | 'spend_limit' | 'network' | 'budget' | 'cancelled' | 'other' };
 
 export interface TtsVoiceInfo { id: string; name: string; lang: string; gender?: string; quality?: string; note?: string }
