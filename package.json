@@ -1,0 +1,47 @@
+{
+  "name": "readalong",
+  "productName": "ReadAlong",
+  "version": "0.1.0",
+  "description": "Reading and listening app for English learners: read EPUB/PDF aloud with word highlighting, tap-to-translate, and AI explanations.",
+  "main": "dist/main/index.js",
+  "private": true,
+  "license": "MIT",
+  "author": "ReadAlong",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "start": "npm run build && electron .",
+    "test": "vitest run",
+    "test:e2e": "xvfb-run -a playwright test -c test/e2e/playwright.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dist:mac": "npm run build && electron-builder --mac zip --arm64 --x64 --publish never",
+    "dist:mac:local": "npm run build && electron-builder --mac zip -c.mac.identity=- -c.mac.hardenedRuntime=false --publish never"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "dompurify": "^3.4.17",
+    "electron": "^44.9.0",
+    "jszip": "^3.10.2",
+    "msedge-tts": "^2.1.0",
+    "openai": "^7.38.0",
+    "pdfjs-dist": "^6.4.299",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "electron-builder": "^26.17.0",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.64.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
