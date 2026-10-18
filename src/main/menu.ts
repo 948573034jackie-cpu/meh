@@ -19,7 +19,6 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
     ] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [
-      { label: 'Play / Pause', accelerator: 'Space', click: send('playPause'), visible: false },
       { label: 'Bigger Text', accelerator: 'CmdOrCtrl+=', click: send('fontUp') },
       { label: 'Smaller Text', accelerator: 'CmdOrCtrl+-', click: send('fontDown') },
       { label: 'Cycle Theme', accelerator: 'CmdOrCtrl+T', click: send('theme') },

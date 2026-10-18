@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { ReadAlongApi } from '@shared/api';
 
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
@@ -6,6 +6,7 @@ const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(chann
 const api: ReadAlongApi = {
   importBookDialog: () => invoke('library:importDialog'),
   importFile: (p) => invoke('library:importFile', p),
+  pathForFile: (file) => webUtils.getPathForFile(file),
   importText: (title, text) => invoke('library:importText', title, text),
   listLibrary: () => invoke('library:list'),
   loadBook: (id) => invoke('library:load', id),

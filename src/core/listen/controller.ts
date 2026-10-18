@@ -143,8 +143,9 @@ export class ListenController {
   }
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
-  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string): Promise<void> {
-    const wasPlaying = this.playback.state === 'playing';
+  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean): Promise<void> {
+    const wasPlaying = resumeAfter ?? this.playback.state === 'playing';
+    this.current?.cancel();
     this.playback.pause();
     const cur = getSentence(this.deps.book, pos);
     const sentence = cur?.text ?? target;
@@ -171,6 +172,9 @@ export class ListenController {
 
   /** Interrupts the current explanation; reading continues with the next sentence. */
   skip(): void { this.current?.cancel(); }
+
+  /** true while an explanation (automatic or manual) is being fetched or spoken */
+  get busy(): boolean { return this.current !== null; }
 
   /** The learner tapped a highlighted word while listening: it is known now, and never stops again. */
   dismiss(lemma: string): void {
@@ -241,28 +245,28 @@ export class ListenController {
     };
     const completed = await runSteps(script);
     this.current = null;
-    if (lemma && (completed || entry.status === 'speaking' || entry.status === 'done')) {
+    if (lemma) {
+      // whatever happened, do not stop again for this word in this chapter
       this.explainedThisChapter.set(pos.chapter, (this.explainedThisChapter.get(pos.chapter) ?? new Set()).add(lemma));
-      this.deps.onMarkLearning(lemma);
-    } else if (lemma && cancelled) {
-      this.explainedThisChapter.set(pos.chapter, (this.explainedThisChapter.get(pos.chapter) ?? new Set()).add(lemma));
+      if (completed || entry.status === 'speaking' || entry.status === 'done') this.deps.onMarkLearning(lemma);
     }
     if (entry.status !== 'error') entry.status = cancelled ? 'skipped' : 'done';
     this.deps.onTranscript({ ...entry });
     return cancelled && this.playback.state === 'idle' ? 'aborted' : 'done';
   }
 
-  /** For the UI: the ordered sentence positions with their trigger counts in a chapter (stop preview). */
+  /** For the UI: how many times listening mode would stop in a chapter from its start. */
   countStops(chapter: number): number {
-    let n = 0;
     const ch = this.deps.book.chapters[chapter];
     if (!ch) return 0;
-    const seen = new Set<string>();
     const s = this.deps.settings();
+    const seen = new Set<string>();
+    let n = 0;
     for (const para of ch.paragraphs) for (const sent of para.sentences) {
-      const ts = this.triggersFor({ chapter, paragraph: para.index, sentence: sent.index }).filter((t) => !t.lemma || !seen.has(t.lemma));
+      const ts = this.triggersFor({ chapter, paragraph: para.index, sentence: sent.index })
+        .filter((t) => !t.lemma || !s.listen.firstOccurrencePerChapterOnly || !seen.has(t.lemma));
       for (const t of ts) if (t.lemma) seen.add(t.lemma);
-      if (ts.length && (!s.listen.firstOccurrencePerChapterOnly || ts.some((t) => !t.lemma || true))) n += 1;
+      if (ts.length) n += 1;
     }
     return n;
   }

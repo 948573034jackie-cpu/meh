@@ -78,7 +78,8 @@
       "darkModeSupport": true,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "ReadAlong uses the microphone only if you ask a question by voice."
-      }
+      },
+      "icon": "build/icon.png"
     },
     "npmRebuild": false,
     "compression": "normal"

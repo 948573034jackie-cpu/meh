@@ -94,11 +94,8 @@ export async function importText(title: string, text: string): Promise<Book> {
 }
 
 export async function importBookDialog(win: BrowserWindow | null): Promise<Book | null> {
-  const res = await dialog.showOpenDialog(win ?? undefined as never, {
-    title: 'Open a book',
-    properties: ['openFile'],
-    filters: [{ name: 'Books', extensions: ['epub', 'pdf', 'txt', 'md'] }],
-  });
+  const opts: Electron.OpenDialogOptions = { title: 'Open a book', properties: ['openFile'], filters: [{ name: 'Books', extensions: ['epub', 'pdf', 'txt', 'md'] }] };
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
   if (res.canceled || res.filePaths.length === 0) return null;
   return importFile(res.filePaths[0]);
 }

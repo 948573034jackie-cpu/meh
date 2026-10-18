@@ -25,14 +25,29 @@ export function Library(): JSX.Element {
     } finally { setBusy(false); }
   };
 
+  const [dragOver, setDragOver] = useState(false);
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault(); setDragOver(false);
+    const files = Array.from(e.dataTransfer.files).filter((f) => /\.(epub|pdf|txt|md)$/i.test(f.name));
+    if (!files.length) return;
+    setBusy(true);
+    try {
+      let last = null;
+      for (const f of files) last = await window.readalong.importFile(window.readalong.pathForFile(f));
+      await useApp.getState().refreshLibrary();
+      if (last && files.length === 1) { useApp.getState().setBook(last); useApp.getState().setView('reader'); }
+    } catch (err) { useApp.getState().showToast(`Could not import: ${(err as Error).message}`); }
+    finally { setBusy(false); }
+  };
   return (
-    <div className="library" data-testid="library">
+    <div className={`library ${dragOver ? 'drag-over' : ''}`} data-testid="library" onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={onDrop}>
       <h1>Your books</h1>
       <div className="actions">
         <button className="primary" onClick={() => Library.openDialog()} data-testid="open-book">Open EPUB / PDF / text…</button>
         <button onClick={() => _setPasteOpen(true)} data-testid="paste-text">Paste text…</button>
       </div>
-      {library.length === 0 && <div className="empty">No books yet. Open an EPUB or PDF, or paste some text.</div>}
+      {busy && <div className="muted">Importing…</div>}
+      {library.length === 0 && <div className="empty">No books yet. Open an EPUB or PDF, drop a file here, or paste some text.</div>}
       <div className="grid">
         {library.map((it) => (
           <div className="book-card" key={it.id} onClick={() => useApp.getState().openBook(it.id)} data-testid="book-card">

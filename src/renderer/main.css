@@ -35,6 +35,7 @@ a { color: var(--accent); }
 
 /* Library */
 .library { padding: 24px; overflow: auto; height: 100%; }
+.library.drag-over { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .library h1 { font-size: 22px; margin: 0 0 16px; }
 .library .actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
 .library .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }

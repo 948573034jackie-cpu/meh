@@ -43,6 +43,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const warnedRef = useRef<string>('');
   const posRef = useRef<Position>(firstPosition(book) ?? { chapter: 0, paragraph: 0, sentence: 0 });
   const currentWordRef = useRef<HTMLElement[]>([]);
+  const resumeAfterPopupRef = useRef(false);
 
   const [chapter, setChapter] = useState<number>(() => (library.find((b) => b.id === book.id)?.position ?? firstPosition(book))?.chapter ?? 0);
   const [position, setPosition] = useState<Position>(posRef.current);
@@ -117,7 +118,13 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       playback.on('word', (pos, ti) => highlightWord(pos, ti)),
       playback.on('state', (st) => setPlayState(st)),
       playback.on('finished', () => showToast('End of the book.')),
-      playback.on('error', (e) => showToast(`Voice error: ${e.message}`)),
+      playback.on('error', (e) => {
+        const eng = settingsRef.current.voice.engine;
+        if (eng !== 'webspeech') {
+          showToast(`${eng === 'edge' ? 'Microsoft' : eng === 'openai' ? 'OpenAI' : 'ElevenLabs'} voice failed (${e.message}). Switching to the Mac voice.`);
+          void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine: 'webspeech', voiceId: '' } }).then(async () => { voiceIdRef.current = await defaultVoiceFor('webspeech'); playback.play(); });
+        } else showToast(`Voice error: ${e.message}`);
+      }),
     ];
     setReady(true);
     return () => { offs.forEach((f) => f()); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
@@ -284,12 +291,14 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         controllerRef.current?.dismiss(w.dataset.lemma);
         return;
       }
+      // looking a word up pauses the reading; closing the popup resumes it
+      if (playing && !ctl()?.busy) { playbackRef.current?.pause(); resumeAfterPopupRef.current = true; }
       openPopupFor(w);
       return;
     }
     const pos = posOf(target);
-    if (pos && !target.closest('.popup')) { setPopup(null); playbackRef.current?.seek(pos); if (playbackRef.current?.state === 'idle') { posRef.current = pos; setPosition(pos); highlightSentence(pos); } }
-    else setPopup(null);
+    if (pos && !target.closest('.popup')) { closePopup(false); nav((p) => p.seek(pos)); if (playbackRef.current?.state === 'idle') { posRef.current = pos; setPosition(pos); highlightSentence(pos); } }
+    else closePopup();
   };
   const onDocDoubleClick = (e: React.MouseEvent) => {
     const w = (e.target as HTMLElement).closest<HTMLElement>('.w');
@@ -332,14 +341,32 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   // ---- actions ------------------------------------------------------------------------------------
   const pb = () => playbackRef.current;
   const ctl = () => controllerRef.current;
-  const playPause = () => { const p = pb(); if (!p) return; if (p.state === 'playing' || p.state === 'explaining') { ctl()?.skip(); p.pause(); } else p.play(p.state === 'idle' ? posRef.current : undefined); };
+  /** navigation always interrupts a running explanation first */
+  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; resumeAfterPopupRef.current = false; ctl()?.skip(); fn(p); };
+  const closePopup = (resume = true) => {
+    setPopup(null);
+    if (resume && resumeAfterPopupRef.current) { resumeAfterPopupRef.current = false; pb()?.play(); }
+    else resumeAfterPopupRef.current = false;
+  };
+  const playPause = () => {
+    const p = pb(); if (!p) return;
+    resumeAfterPopupRef.current = false;
+    if (ctl()?.busy) { ctl()!.skip(); return; }
+    if (p.state === 'playing' || p.state === 'explaining') p.pause(); else p.play(p.state === 'idle' ? posRef.current : undefined);
+  };
   const toggleListen = () => {
     const on = !listenOn; setListenOn(on);
     if (ctl()) { ctl()!.enabled = on; setStops(on ? ctl()!.countStops(chapter) : null); }
     showToast(on ? 'Listening mode on: hard words will be explained automatically.' : 'Listening mode off.');
   };
   useEffect(() => { if (listenOn) setStops(ctl()?.countStops(chapter) ?? null); }, [listenOn, chapter, vocab.words, settings.learnerLevel, settings.listen]);
-  const explainPopupWord = () => { if (!popup) return; const d = popup.zh || popup.ipa ? { ipa: popup.ipa, zh: popup.zh.split('\n')[0], level: popup.level ?? undefined } : null; void ctl()?.explainNow('word', popup.word, popup.pos, d, popup.isName ? undefined : popup.lemma); setPopup(null); };
+  const explainPopupWord = () => {
+    if (!popup) return;
+    const d = popup.zh || popup.ipa ? { ipa: popup.ipa, zh: popup.zh.split('\n')[0], level: popup.level ?? undefined } : null;
+    const resume = resumeAfterPopupRef.current; resumeAfterPopupRef.current = false;
+    void ctl()?.explainNow('word', popup.word, popup.pos, d, popup.isName ? undefined : popup.lemma, undefined, resume);
+    setPopup(null);
+  };
   const explainCurrentSentence = () => { const cur = getSentence(book, posRef.current); if (cur) void ctl()?.explainNow('sentence', cur.text, posRef.current, null); };
   const explainLast = () => void ctl()?.explainLast(settingsRef.current.listen.lastSecondsWindow);
   const sayPopup = () => { if (!popup) return; const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(popup.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
@@ -354,7 +381,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const el = all[idx] ?? all[0];
     const w = el.classList.contains('w') ? el : el.querySelector<HTMLElement>('.w');
     const pos = posOf(el);
-    if (pos) { posRef.current = pos; setPosition(pos); pb()?.seek(pos); highlightSentence(pos); }
+    if (pos) { posRef.current = pos; setPosition(pos); nav((p) => p.seek(pos)); highlightSentence(pos); }
     if (w) openPopupFor(w);
   };
 
@@ -365,19 +392,19 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       const sc = settingsRef.current.shortcuts;
       const is = (name: string) => matchesShortcut(e, sc[name]);
       if (is('playPause')) { e.preventDefault(); playPause(); }
-      else if (is('closePopup')) { if (popup) setPopup(null); else if (selBar) setSelBar(null); else ctl()?.skip(); }
-      else if (is('nextSentence')) pb()?.next();
-      else if (is('prevSentence')) pb()?.prev();
-      else if (is('nextParagraph')) pb()?.nextParagraph();
-      else if (is('prevParagraph')) pb()?.prevParagraph();
+      else if (is('closePopup')) { if (popup) closePopup(); else if (selBar) setSelBar(null); else ctl()?.skip(); }
+      else if (is('nextSentence')) nav((p) => p.next());
+      else if (is('prevSentence')) nav((p) => p.prev());
+      else if (is('nextParagraph')) nav((p) => p.nextParagraph());
+      else if (is('prevParagraph')) nav((p) => p.prevParagraph());
       else if (is('nextPage')) { e.preventDefault(); isPage ? setPage((p) => ({ ...p, index: Math.min(p.count - 1, p.index + 1) })) : docRef.current?.scrollBy({ top: docRef.current.clientHeight * 0.9, behavior: 'smooth' }); }
       else if (is('prevPage')) { e.preventDefault(); isPage ? setPage((p) => ({ ...p, index: Math.max(0, p.index - 1) })) : docRef.current?.scrollBy({ top: -docRef.current.clientHeight * 0.9, behavior: 'smooth' }); }
-      else if (is('replaySentence')) pb()?.replay();
+      else if (is('replaySentence')) nav((p) => p.replay());
       else if (is('explainLast')) { e.preventDefault(); explainLast(); }
       else if (is('explain')) { e.preventDefault(); if (popup) explainPopupWord(); else if (selBar) { void ctl()?.explainNow(selBar.kind, selBar.text, selBar.pos, null); setSelBar(null); } else explainCurrentSentence(); }
-      else if (is('markKnown')) { if (popup) { void changeStatus(popup.lemma, 'known'); setPopup(null); } }
-      else if (is('markLearning')) { if (popup) { void changeStatus(popup.lemma, 'learning'); setPopup(null); } }
-      else if (is('ignore')) { if (popup) { void changeStatus(popup.lemma, 'ignored'); setPopup(null); } }
+      else if (is('markKnown')) { if (popup) { void changeStatus(popup.lemma, 'known'); closePopup(); } }
+      else if (is('markLearning')) { if (popup) { void changeStatus(popup.lemma, 'learning'); closePopup(); } }
+      else if (is('ignore')) { if (popup) { void changeStatus(popup.lemma, 'ignored'); closePopup(); } }
       else if (is('toggleListen')) toggleListen();
       else if (is('toggleBand')) void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, bandEnabled: !settingsRef.current.appearance.bandEnabled } });
       else if (is('sayWord')) sayPopup();
@@ -409,7 +436,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   if (!dict) return <div className="empty">Loading dictionary…</div>;
 
   return (
-    <div className="reader" data-testid="reader" onClick={() => { if (popup) setPopup(null); }}>
+    <div className="reader" data-testid="reader" onClick={() => { if (popup) closePopup(); }}>
       <div className="reader-main">
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
           <div className={`reader-doc ${isPage ? 'page' : 'scroll'}`} ref={docRef} onClick={(e) => { e.stopPropagation(); onDocClick(e); }} onDoubleClick={onDocDoubleClick} onMouseUp={onMouseUp} data-testid="doc">
@@ -427,8 +454,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
             </div>
           )}
           {popup && (
-            <Popup data={popup} onClose={() => setPopup(null)} onSay={sayPopup} onAsk={explainPopupWord}
-              onStatus={(s) => { void changeStatus(popup.lemma, s); setPopup(null); }} onMarkSentence={() => { markSentence(popup.pos); setPopup(null); }} />
+            <Popup data={popup} onClose={() => closePopup()} onSay={sayPopup} onAsk={explainPopupWord}
+              onStatus={(s) => { void changeStatus(popup.lemma, s); closePopup(); }} onMarkSentence={() => { markSentence(popup.pos); closePopup(); }} />
           )}
           {selBar && (
             <div className="selection-bar" style={{ left: Math.max(8, selBar.x - 120), top: Math.max(4, selBar.y - 44) }} onClick={(e) => e.stopPropagation()} data-testid="selection-bar">
@@ -441,9 +468,9 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         {transcriptOpen && <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} />}
       </div>
       <Transport book={book} state={playState} listenOn={listenOn} settings={settings} chapter={chapter} voices={voices} stops={stops} transcriptOpen={transcriptOpen}
-        onPlayPause={playPause} onPrev={() => pb()?.prev()} onNext={() => pb()?.next()} onToggleListen={toggleListen} onExplainLast={explainLast} onRate={setRate}
+        onPlayPause={playPause} onPrev={() => nav((p) => p.prev())} onNext={() => nav((p) => p.next())} onToggleListen={toggleListen} onExplainLast={explainLast} onRate={setRate}
         onVoice={(engine, voiceId) => void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine, voiceId } })}
-        onChapter={(i) => { const p = { chapter: i, paragraph: 0, sentence: 0 }; posRef.current = p; setPosition(p); setChapter(i); pb()?.seek(p); }}
+        onChapter={(i) => { const p = { chapter: i, paragraph: 0, sentence: 0 }; posRef.current = p; setPosition(p); setChapter(i); nav((pbk) => pbk.seek(p)); }}
         onLayout={() => void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, layout: isPage ? 'scroll' : 'page' } })}
         onBand={() => void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, bandEnabled: !settingsRef.current.appearance.bandEnabled } })}
         onTranscript={() => setTranscriptOpen((v) => !v)}

@@ -42,6 +42,8 @@ export interface ReadAlongApi {
   // library
   importBookDialog(): Promise<Book | null>;
   importFile(path: string): Promise<Book>;
+  /** absolute path of a File dropped on the window (Electron's webUtils) */
+  pathForFile(file: File): string;
   importText(title: string, text: string): Promise<Book>;
   listLibrary(): Promise<LibraryItem[]>;
   loadBook(id: string): Promise<Book | null>;
