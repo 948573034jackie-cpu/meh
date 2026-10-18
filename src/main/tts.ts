@@ -81,8 +81,11 @@ async function synthEdge(text: string, voice: string, rate: number): Promise<Clo
     metadataStream.on('end', resolve);
     metadataStream.on('error', () => resolve());
   }) : Promise.resolve();
-  await withTimeout(Promise.all([audioDone, metaDone]), 70_000, 'Microsoft voice synthesis');
-  try { tts.close(); } catch { /* ignore */ }
+  try {
+    await withTimeout(Promise.all([audioDone, metaDone]), 70_000, 'Microsoft voice synthesis');
+  } finally {
+    try { tts.close(); } catch { /* ignore */ }
+  }
   const audio = Buffer.concat(chunks);
   if (audio.length === 0) throw new Error('Microsoft voice returned no audio (the free service may be temporarily unavailable).');
   const timings = parseEdgeMetadata(metaChunks, text);
@@ -97,7 +100,7 @@ export function parseEdgeMetadata(chunks: string[], text: string): WordTiming[] 
       try {
         const obj = JSON.parse(piece) as { Metadata?: { Type: string; Data: { Offset: number; Duration: number; text: { Text: string } } }[] };
         for (const m of obj.Metadata ?? []) {
-          if (m.Type !== 'WordBoundary') continue;
+          if (m.Type !== 'WordBoundary' || typeof m.Data?.text?.Text !== 'string') continue;
           words.push({ start: m.Data.Offset / 1e7, end: (m.Data.Offset + m.Data.Duration) / 1e7, word: m.Data.text.Text });
         }
       } catch { /* partial chunk */ }
@@ -117,6 +120,8 @@ export function alignWords(words: { start: number; end: number; word: string }[]
     const needle = w.word.toLowerCase().replace(/[^\p{L}\p{N}'’\-]/gu, '');
     if (!needle) continue;
     let idx = lower.indexOf(needle, cursor);
+    // a word must start at a word boundary ("at" is not the tail of "cat"); apostrophe-led pieces ("'s") may follow a letter
+    if (/^[\p{L}\p{N}]/u.test(needle)) while (idx > 0 && /[\p{L}\p{N}]/u.test(lower[idx - 1])) idx = lower.indexOf(needle, idx + 1);
     let len = needle.length;
     if (idx < 0 || idx - cursor > 40) {
       // the engine normalised the token (e.g. "2000" spoken as "two thousand"): take the next original token instead

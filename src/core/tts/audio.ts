@@ -21,6 +21,8 @@ export class AudioTtsEngine implements TtsEngine {
   readonly wordBoundaries: boolean;
   private cache = new Map<string, Promise<CloudTtsResult>>();
   private current: { audio: HTMLAudioElement; cancel: () => void } | null = null;
+  /** every unfinished speak(), including those still waiting for synthesis */
+  private pending = new Set<SpeakHandle>();
   private _paused = false;
   constructor(readonly id: TtsEngineId, private synthesize: Synthesize, private voices: ListVoices, wordBoundaries: boolean) {
     this.label = ENGINE_LABELS[id].label;
@@ -56,7 +58,10 @@ export class AudioTtsEngine implements TtsEngine {
     let finished = false;
     let cleanup: (() => void) | null = null;
     const handle: SpeakHandle = { done, cancel: () => finish('cancelled') };
-    const finish = (o: SpeakOutcome) => { if (finished) return; finished = true; cleanup?.(); if (this.current?.cancel === handle.cancel) this.current = null; resolve(o); };
+    const finish = (o: SpeakOutcome) => { if (finished) return; finished = true; this.pending.delete(handle); cleanup?.(); if (this.current?.cancel === handle.cancel) this.current = null; resolve(o); };
+    this.pending.add(handle);
+    // the main process trims the text before synthesis: provider timings index the trimmed text
+    const lead = text.length - text.trimStart().length;
     (async () => {
       let res: CloudTtsResult;
       try { res = await this.fetch(text, opts.voiceId, opts.rate); } catch (e) { handle.error = e as Error; finish('error'); return; }
@@ -67,7 +72,7 @@ export class AudioTtsEngine implements TtsEngine {
       audio.preservesPitch = true;
       audio.playbackRate = Math.min(4, Math.max(0.25, opts.rate));
       let raf = 0;
-      let timings: WordTiming[] | null = res.timings;
+      let timings: WordTiming[] | null = res.timings?.length ? res.timings.map((w) => ({ ...w, charIndex: w.charIndex + lead })) : null;
       let nextWord = 0;
       const tick = () => {
         if (finished) return;
@@ -92,7 +97,7 @@ export class AudioTtsEngine implements TtsEngine {
   }
 
   pause(): void { if (this.current) { this.current.audio.pause(); this._paused = true; } }
-  resume(): void { if (this.current) void this.current.audio.play(); this._paused = false; }
-  cancelAll(): void { this._paused = false; this.current?.cancel(); this.current = null; }
+  resume(): void { if (this.current) this.current.audio.play().catch(() => undefined); this._paused = false; }
+  cancelAll(): void { this._paused = false; for (const h of [...this.pending]) h.cancel(); this.current = null; }
   setRate(rate: number): void { if (this.current) this.current.audio.playbackRate = Math.min(4, Math.max(0.25, rate)); }
 }

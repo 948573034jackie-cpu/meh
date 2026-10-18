@@ -48,8 +48,8 @@ const renderer = {
 };
 
 function copyStatic() {
-  for (const f of ['index.html', 'main.css']) fs.copyFileSync(path.join(root, 'src/renderer', f), path.join(dist, 'renderer', f));
-  // pdf.js worker is loaded from the main process (node), nothing to copy for the renderer.
+  for (const f of ['index.html']) fs.copyFileSync(path.join(root, 'src/renderer', f), path.join(dist, 'renderer', f));
+  // main.css is emitted by esbuild from the CSS imports in main.tsx.
 }
 
 if (watch) {

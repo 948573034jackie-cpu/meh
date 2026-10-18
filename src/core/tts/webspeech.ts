@@ -15,7 +15,8 @@ export class WebSpeechEngine implements TtsEngine {
   readonly kind = 'local' as const;
   readonly costNote = 'Free';
   readonly wordBoundaries = true;
-  private inflight = new Set<SpeechSynthesisUtterance>();
+  /** utterances handed to the engine or waiting for it, with the function that settles their handle */
+  private inflight = new Map<SpeechSynthesisUtterance, (o: SpeakOutcome) => void>();
   private settling: Promise<void> = Promise.resolve();
   private _paused = false;
   get paused(): boolean { return this._paused; }
@@ -51,7 +52,16 @@ export class WebSpeechEngine implements TtsEngine {
     const done = new Promise<SpeakOutcome>((r) => { resolve = r; });
     let finished = false;
     const finish = (o: SpeakOutcome) => { if (finished) return; finished = true; this.inflight.delete(u); resolve(o); };
-    const handle: SpeakHandle = { done, cancel: () => { if (!finished) { speechSynthesis.cancel(); finish('cancelled'); } } };
+    const handle: SpeakHandle = {
+      done,
+      cancel: () => {
+        if (finished) return;
+        finish('cancelled');
+        speechSynthesis.cancel();
+        // cancel() immediately followed by speak() can drop the new utterance (Chromium): let the engine settle first
+        this.settling = settle();
+      },
+    };
     u.onstart = () => opts.onStart?.();
     let lastIndex = -1;
     u.onboundary = (e) => {
@@ -65,7 +75,7 @@ export class WebSpeechEngine implements TtsEngine {
       if (e.error === 'interrupted' || e.error === 'canceled') finish('cancelled');
       else { handle.error = new Error(`speech error: ${e.error}`); finish('error'); }
     };
-    this.inflight.add(u);
+    this.inflight.set(u, finish);
     // serialize behind any cancellation still settling, then speak
     this.settling = this.settling.then(async () => {
       if (finished) return;
@@ -80,11 +90,15 @@ export class WebSpeechEngine implements TtsEngine {
   resume(): void { if (speechSynthesis.paused) { speechSynthesis.resume(); } this._paused = false; }
   cancelAll(): void {
     this._paused = false;
+    // utterances still waiting behind a settle window never reach the engine: settle them here
+    for (const finish of [...this.inflight.values()]) finish('cancelled');
     speechSynthesis.cancel();
     // give the engine a moment to emit end/error events before the next speak()
-    this.settling = new Promise((r) => setTimeout(r, 60));
+    this.settling = settle();
   }
 }
+
+function settle(ms = 60): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
 
 function rank(v: TtsVoice): number {
   let r = 0;

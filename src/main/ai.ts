@@ -29,11 +29,17 @@ export function estimateUsd(model: string, inputTokens: number, outputTokens: nu
 const streams = new Map<string, AbortController>();
 let counter = 0;
 
-function monthStart(): string { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; }
-function today(): string { return new Date().toISOString().slice(0, 10); }
+/** Usage records carry UTC instants; the budgets are per local day and local month, so compare against local midnight. */
+export function periodStarts(now = new Date()): { day: string; month: string } {
+  return { day: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(), month: new Date(now.getFullYear(), now.getMonth(), 1).toISOString() };
+}
 
 export function registerAiHandlers(getWindow: () => BrowserWindow | null): void {
-  const send = (ev: AiEvent) => getWindow()?.webContents.send('ai:event', ev);
+  const send = (ev: AiEvent) => {
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return;
+    try { win.webContents.send('ai:event', ev); } catch { /* window closed while streaming */ }
+  };
 
   ipcMain.handle('ai:explain', async (_e, req: ExplainRequest) => {
     const streamId = `s${++counter}`;
@@ -49,24 +55,27 @@ export function registerAiHandlers(getWindow: () => BrowserWindow | null): void 
 }
 
 async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortController, send: (ev: AiEvent) => void): Promise<void> {
-  const s = getSettings();
-  const provider = s.ai.provider;
-  const model = provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel;
-  const key = getSecret(provider);
-  if (!key) { send({ type: 'error', streamId, message: provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.', code: 'no_key' }); return; }
-  const monthly = usdSpent(monthStart());
-  if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) {
-    send({ type: 'error', streamId, message: `Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in Settings to continue.`, code: 'budget' });
-    return;
-  }
-  const prompt = buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength });
+  // Everything is inside the try: the renderer waits for a 'done' or 'error' event and nothing else may end the stream.
   try {
+    const s = getSettings();
+    const provider = s.ai.provider;
+    const model = provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel;
+    const key = getSecret(provider);
+    if (!key) { send({ type: 'error', streamId, message: provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.', code: 'no_key' }); return; }
+    const monthly = usdSpent(periodStarts().month);
+    if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) {
+      send({ type: 'error', streamId, message: `Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in Settings to continue.`, code: 'budget' });
+      return;
+    }
+    const prompt = buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength });
     const result = provider === 'anthropic'
       ? await streamAnthropic(key, model, prompt, ctrl.signal, (t) => send({ type: 'delta', streamId, text: t }))
       : await streamOpenAI(key, model, prompt, ctrl.signal, (t) => send({ type: 'delta', streamId, text: t }));
     const usd = estimateUsd(model, result.inputTokens, result.outputTokens, result.cachedTokens);
-    addUsage({ date: new Date().toISOString(), provider, model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd });
-    send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: usdSpent(today()), monthlyUsd: usdSpent(monthStart()), model } });
+    // a failed usage write must not lose the reply the learner is waiting for
+    try { addUsage({ date: new Date().toISOString(), provider, model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd }); } catch (e) { console.error('usage not recorded', e); }
+    const { day, month } = periodStarts();
+    send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: usdSpent(day), monthlyUsd: usdSpent(month), model } });
   } catch (e) {
     send({ type: 'error', streamId, ...classifyError(e) });
   }
@@ -121,15 +130,17 @@ async function streamOpenAI(apiKey: string, model: string, prompt: { system: str
   return { text, inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, cachedTokens: usage.cached };
 }
 
-function classifyError(e: unknown): { message: string; code: Extract<AiEvent, { type: 'error' }>['code'] } {
+export function classifyError(e: unknown): { message: string; code: Extract<AiEvent, { type: 'error' }>['code'] } {
   const err = e as { name?: string; status?: number; message?: string; code?: string; error?: { error?: { message?: string } } };
   if (err?.name === 'AbortError' || err?.code === 'cancelled' || /abort/i.test(err?.message ?? '')) return { message: 'Cancelled', code: 'cancelled' };
   if (e instanceof Anthropic.AuthenticationError || e instanceof OpenAI.AuthenticationError || err?.status === 401) return { message: 'The API key was rejected. Check it in Settings.', code: 'auth' };
   if (e instanceof Anthropic.RateLimitError || e instanceof OpenAI.RateLimitError || err?.status === 429) {
-    const spend = /spend|usage limit|billing|quota|insufficient/i.test(err?.message ?? '');
+    const spend = /spend|usage limit|billing|quota|insufficient|credit/i.test(err?.message ?? '');
     return { message: spend ? 'Your API account has no credit left or reached its spending limit.' : 'Too many requests right now; try again in a moment.', code: spend ? 'spend_limit' : 'rate_limit' };
   }
-  if (err?.status === 400 && /usage limit|spend/i.test(err?.message ?? '')) return { message: 'Your API account reached its spending limit.', code: 'spend_limit' };
+  // Anthropic reports an empty prepaid balance as a 400 ("credit balance is too low")
+  if (err?.status === 400 && /usage limit|spend|credit balance|insufficient/i.test(err?.message ?? '')) return { message: 'Your API account has no credit left or reached its spending limit.', code: 'spend_limit' };
+  if (err?.status === 529 || err?.status === 503 || /overloaded/i.test(err?.message ?? '')) return { message: 'The AI service is overloaded right now; try again in a moment.', code: 'rate_limit' };
   if (e instanceof Anthropic.APIConnectionError || e instanceof OpenAI.APIConnectionError || /fetch failed|ENOTFOUND|ECONN|network/i.test(err?.message ?? '')) return { message: 'No internet connection, or the AI service is unreachable.', code: 'network' };
   return { message: err?.message ?? 'Unknown AI error', code: 'other' };
 }

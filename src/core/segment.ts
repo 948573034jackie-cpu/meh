@@ -16,20 +16,28 @@ import type { Sentence, Token, TokenKind } from './model';
  *   The 'space' TokenKind therefore never occurs in the output of this module.
  * - Sentences are trimmed (no leading/trailing whitespace or invisible format characters) and never
  *   empty; a paragraph with no terminal punctuation is a single sentence; a whitespace-only paragraph
- *   yields no sentences.
- * - Soft hyphens (U+00AD) are removed before segmentation so ICU sees the intact word. Offsets are
- *   mapped back, so a token that contains a soft hyphen in the middle keeps it in its text
- *   ("ab\u00ADsolutely"); a token never starts or ends with one. Dictionary lookups should fold it.
+ *   yields no sentences. Every sentence of a paragraph that contains any letter or digit contains at
+ *   least one letter or digit: stray punctuation between sentences ("Hello. “") is absorbed.
+ * - Invisible format characters (Unicode category Cf: soft hyphen U+00AD, zero-width joiners, bidi
+ *   marks and isolates, BOM/word joiner, ...) are removed before segmentation so ICU and the
+ *   abbreviation heuristics see the intact word. Offsets are mapped back, so a token that contains
+ *   such a character in the middle keeps it in its text ("ab­solutely"); a token never starts
+ *   or ends with one. Dictionary lookups should fold them (at least U+00AD). The zero-width SPACE
+ *   (U+200B) is a word separator, not glue, and is left for ICU to break on.
  * - Runs of adjacent punctuation collapse into one 'punct' token ("?!", "...", ".”").
  * - word + single hyphen (- U+2010 U+2011) + word, with no spaces, joins into one token
  *   ("well-known", "state-of-the-art"); a double hyphen or dash never joins. A joined token is a
- *   'number' only when every part is a number ("1-2"), otherwise a 'word' ("5-year").
+ *   'number' only when every part is a number ("10-12"), otherwise a 'word' ("5-year").
  *
  * Known limitations of the heuristics (documented so the reader can explain surprising splits):
  * - A single capital letter before a period is always treated as an initial, so "Plan A. Then we
  *   left." becomes one sentence. "I." is only an initial when it follows another initial or a title.
  * - Title abbreviations always merge, so "Main St. The house..." is one sentence (spec requirement).
- * - A hard line break followed by an uppercase letter is a sentence boundary (ICU behaviour).
+ * - A conditional abbreviation followed by an ALL CAPS word splits ("THE U.S. ECONOMY" is two
+ *   sentences): in capitals, the uppercase signal that ends "the U.S. Then he left." is lost.
+ * - A hard line break followed by an uppercase letter is a sentence boundary (ICU behaviour);
+ *   importers normalise whitespace so this does not arise for imported books.
+ * - A straight single quote before a lowercase elision ("'tis") counts as an opening quote.
  */
 export interface Segmenter {
   /** Splits one paragraph of plain text into sentences with word/number/punct tokens. Offsets index into `text`. */
@@ -78,19 +86,27 @@ const UNAMBIGUOUS_CLOSERS = new Set(['”', '»', ')', ']']); // ” » ) ]
 const AMBIGUOUS_CLOSERS = new Set(['"', "'", '’']); // " ' ’  (also used as openers / apostrophes)
 /** Opening quotes/brackets that ICU sometimes glues to the END of the previous segment ("end.”“Start"). */
 const UNAMBIGUOUS_OPENERS = new Set(['“', '‘', '«', '(', '[']); // “ ‘ « ( [
+/** Everything that may precede the first letter of a sentence ("“Then", '("Then'). */
+const LEADING_OPENERS = new Set(['“', '‘', '«', '‹', '(', '[', '{', '"', "'"]);
 
 /** Hyphens that join two words into one token (ASCII hyphen-minus, U+2010 hyphen, U+2011 non-breaking hyphen). */
-const JOINING_HYPHENS = new Set(['-', '\u2010', '\u2011']);
-
-const SOFT_HYPHEN = '\u00AD';
+const JOINING_HYPHENS = new Set(['-', '‐', '‑']);
 
 // ---------------------------------------------------------------------------------------------
 // Character classes
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Invisible format characters (category Cf) that glue to the surrounding text in ICU's word rules:
+ * soft hyphen, ZWJ/ZWNJ, bidi marks/embeddings/isolates, BOM, word joiner, invisible operators,
+ * tag characters. The zero-width space U+200B is excluded: it separates words.
+ */
+const FORMAT_CHAR = /(?!​)\p{Cf}/u;
+const FORMAT_CHAR_G = /(?!​)\p{Cf}/gu;
 /** Whitespace plus invisible control/format characters (never part of a token, trimmed from sentences). */
 const INVISIBLE_CHAR = /[\s\p{Cf}\p{Cc}]/u;
 const ONLY_INVISIBLE = /^[\s\p{Cf}\p{Cc}]*$/u;
+const WORD_CHAR = /[\p{L}\p{N}]/u;
 const STARTS_LOWER = /^\p{Ll}/u;
 const STARTS_UPPER = /^\p{Lu}/u;
 const STARTS_ALNUM = /^[\p{L}\p{N}]/u;
@@ -105,41 +121,42 @@ const NUMBER_TOKEN = /^\p{Nd}+(?:[.,]\p{Nd}+)*$/u;
 const TRAILING_ABBREVIATION = /(?:^|[^\p{L}\p{N}.])(\p{L}+(?:\.\p{L}+)*)\.$/u;
 /** How much of a segment's tail the abbreviation check looks at; keeps the merge pass O(n). */
 const TAIL_WINDOW = 64;
+/** A straight quote after one of these opens a quotation (start of text, whitespace, brackets, dashes, quotes). */
+const BEFORE_OPENING_QUOTE = /[\s\p{Ps}\p{Pi}\p{Pd}"']/u;
 
 // ---------------------------------------------------------------------------------------------
-// Soft-hyphen stripping with an offset map back to the original string
+// Format-character stripping with an offset map back to the original string
 // ---------------------------------------------------------------------------------------------
 
 interface Stripped {
-  /** text without soft hyphens */
+  /** text without format characters */
   text: string;
-  /** orig[i] = index in the original string of the i-th character of `text`; null when nothing was stripped */
+  /** orig[i] = index in the original string of the i-th code unit of `text`; null when nothing was stripped */
   orig: Int32Array | null;
 }
 
-function stripSoftHyphens(text: string): Stripped {
-  if (text.indexOf(SOFT_HYPHEN) === -1) return { text, orig: null };
+function stripFormatChars(text: string): Stripped {
+  if (!FORMAT_CHAR.test(text)) return { text, orig: null };
   const orig = new Int32Array(text.length);
   let out = '';
   let n = 0;
-  // Build the kept text in chunks between soft hyphens to avoid per-character string concatenation.
+  // Build the kept text in chunks between format characters (some are astral, hence m[0].length).
   let chunkStart = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) === 0xad) {
-      out += text.slice(chunkStart, i);
-      chunkStart = i + 1;
-    } else {
-      orig[n++] = i;
-    }
+  for (const m of text.matchAll(FORMAT_CHAR_G)) {
+    const i = m.index;
+    for (let k = chunkStart; k < i; k++) orig[n++] = k;
+    out += text.slice(chunkStart, i);
+    chunkStart = i + m[0].length;
   }
+  for (let k = chunkStart; k < text.length; k++) orig[n++] = k;
   out += text.slice(chunkStart);
-  return { text: out, orig: n === orig.length ? orig : orig.subarray(0, n) };
+  return { text: out, orig: orig.subarray(0, n) };
 }
 
 /** Maps a half-open range in the stripped text to the original text. Requires start < end. */
 function mapRange(st: Stripped, start: number, end: number): [number, number] {
   if (!st.orig) return [start, end];
-  // End maps to just after the last KEPT character, so a token never ends with a trailing soft hyphen.
+  // End maps to just after the last KEPT character, so a token never ends with a stripped character.
   return [st.orig[start], st.orig[end - 1] + 1];
 }
 
@@ -153,6 +170,10 @@ function trimRange(s: string, start: number, end: number): Range {
   while (start < end && INVISIBLE_CHAR.test(s[start])) start++;
   while (end > start && INVISIBLE_CHAR.test(s[end - 1])) end--;
   return { start, end };
+}
+
+function hasWordChar(s: string, r: Range): boolean {
+  return WORD_CHAR.test(s.slice(r.start, r.end));
 }
 
 /** Returns the abbreviation candidate (without its period) that ends the trimmed text, or null. */
@@ -184,6 +205,26 @@ function isInitial(abbr: string, trimmedText: string): boolean {
 }
 
 /**
+ * How many straight quotes of kind `c` (" or ') are open at the end of `range`. A quote opens when it
+ * follows the start, whitespace, a bracket, a dash or another quote and is followed by a visible
+ * character; any other quote closes (never below zero, so a plural possessive like "boys' hats" does
+ * not count as an unmatched quote). An apostrophe between two letters ("don't") is not a quote.
+ */
+function openQuoteDepth(s: string, c: string, range: Range): number {
+  let depth = 0;
+  for (let k = range.start; k < range.end; k++) {
+    if (s[k] !== c) continue;
+    const prev = k > range.start ? s[k - 1] : '';
+    const next = k + 1 < range.end ? s[k + 1] : '';
+    if (c === "'" && prev !== '' && WORD_CHAR.test(prev) && next !== '' && WORD_CHAR.test(next)) continue;
+    const opens = (prev === '' || BEFORE_OPENING_QUOTE.test(prev)) && next !== '' && !INVISIBLE_CHAR.test(next);
+    if (opens) depth++;
+    else if (depth > 0) depth--;
+  }
+  return depth;
+}
+
+/**
  * Decides whether a closing quote at the start of the next segment belongs to the sentence before it
  * (merge) or opens a new quotation (keep the split). `i` is the index of the quote character.
  */
@@ -196,23 +237,26 @@ function closerBelongsToPrevious(s: string, i: number, cur: Range): boolean {
   if (!STARTS_ALNUM.test(after)) return true;
   // ’ directly before a letter is an apostrophe ("’tis") or an opening single quote, never a closer.
   if (c === '’') return false;
-  // " or ' directly before a letter: it closes the previous sentence only if that sentence has an
-  // unmatched quote of the same kind. Apostrophes between letters (don't) are not counted.
-  let count = 0;
-  for (let k = cur.start; k < cur.end; k++) {
-    if (s[k] !== c) continue;
-    if (c === "'" && k > cur.start && k + 1 < cur.end && /\p{L}/u.test(s[k - 1]) && /\p{L}/u.test(s[k + 1])) continue;
-    count++;
-  }
-  return count % 2 === 1;
+  // " or ' directly before a letter closes the previous sentence only if that sentence still has an
+  // open quote of the same kind ('He said "stop. "Then he left.' is a misplaced space, not a quote).
+  return openQuoteDepth(s, c, cur) > 0;
 }
 
-/** True when the ICU boundary between `cur` and `next` is spurious and the two should be one sentence. */
+/** Index of the first character of `r` that is not an opening quote/bracket (so '"Then' reads as 'Then'). */
+function skipLeadingOpeners(s: string, r: Range): number {
+  let k = r.start;
+  while (k < r.end && LEADING_OPENERS.has(s[k])) k++;
+  return k;
+}
+
+/**
+ * True when the ICU boundary between `cur` and `next` is spurious and the two should be one sentence.
+ * Both ranges are non-empty after trimming and contain at least one letter or digit (the caller
+ * absorbs word-less segments before asking).
+ */
 function shouldMerge(s: string, cur: Range, next: Range): boolean {
   const curTrim = trimRange(s, cur.start, cur.end);
-  if (curTrim.start === curTrim.end) return true; // never emit an empty sentence
   const nextTrim = trimRange(s, next.start, next.end);
-  if (nextTrim.start === nextTrim.end) return true; // trailing whitespace: absorb, trimming removes it
 
   const nextHead = s.slice(nextTrim.start, nextTrim.start + 2); // 2 code units so astral letters match
   // 1. A sentence does not start with a lowercase letter: "...!" | "he said."  "whispered..." | "and"
@@ -228,9 +272,11 @@ function shouldMerge(s: string, cur: Range, next: Range): boolean {
   if (isInitial(abbr, curText)) return true;
   const lower = abbr.toLowerCase();
   if (ALWAYS_MERGE_ABBREVIATIONS.has(lower)) return true;
-  // "5 p.m. on Tuesday" merges; "5 p.m. He left." and "the U.S. Then he left." stay split.
-  if (CONDITIONAL_ABBREVIATIONS.has(lower) && !STARTS_UPPER.test(nextHead)) return true;
-  return false;
+  if (!CONDITIONAL_ABBREVIATIONS.has(lower)) return false;
+  // "5 p.m. on Tuesday" merges; "5 p.m. He left.", "the U.S. Then he left." and 'etc. "Fine," she
+  // said.' stay split: an uppercase letter (possibly behind an opening quote) starts a new sentence.
+  const w = skipLeadingOpeners(s, nextTrim);
+  return !STARTS_UPPER.test(s.slice(w, w + 2));
 }
 
 /**
@@ -240,10 +286,12 @@ function shouldMerge(s: string, cur: Range, next: Range): boolean {
 function moveTrailingOpeners(s: string, raw: Range[]): void {
   for (let i = 0; i + 1 < raw.length; i++) {
     const cur = raw[i];
-    let end = trimRange(s, cur.start, cur.end).end;
-    while (end - 1 > cur.start && UNAMBIGUOUS_OPENERS.has(s[end - 1])) end--;
-    if (end !== cur.end && end > cur.start) {
-      // Only move if what we strip is openers plus whitespace (trimRange only removed whitespace).
+    const t = trimRange(s, cur.start, cur.end);
+    let end = t.end;
+    while (end > t.start && UNAMBIGUOUS_OPENERS.has(s[end - 1])) end--;
+    // Move only when something visible remains before the openers; a segment that is nothing but
+    // openers is absorbed into its neighbour by the word-less rule of the merge pass instead.
+    if (end < t.end && end > t.start) {
       cur.end = end;
       raw[i + 1].start = end;
     }
@@ -261,10 +309,20 @@ function segmentSentenceRanges(sentenceSegmenter: Intl.Segmenter, s: string): Ra
 
   const merged: Range[] = [];
   let cur: Range = { start: raw[0].start, end: raw[0].end };
+  let curHasWord = hasWordChar(s, cur);
   for (let i = 1; i < raw.length; i++) {
     const next = raw[i];
-    if (shouldMerge(s, cur, next)) cur.end = next.end;
-    else { merged.push(cur); cur = { start: next.start, end: next.end }; }
+    const nextHasWord = hasWordChar(s, next);
+    // A segment without any letter or digit (whitespace, stray punctuation, an opening quote at the
+    // end of the paragraph) is never a sentence of its own: absorb it into its neighbour.
+    if (!curHasWord || !nextHasWord || shouldMerge(s, cur, next)) {
+      cur.end = next.end;
+      curHasWord = curHasWord || nextHasWord;
+    } else {
+      merged.push(cur);
+      cur = { start: next.start, end: next.end };
+      curHasWord = nextHasWord;
+    }
   }
   merged.push(cur);
 
@@ -345,7 +403,7 @@ function toTokens(st: Stripped, original: string, raw: RawToken[]): Token[] {
 /**
  * Hands the paragraph's tokens out to its sentences by offset. `raw` and `ranges` are both sorted.
  * Sentence boundaries and ICU word boundaries agree in practice; the one exception is a collapsed
- * punctuation run spanning a boundary we moved ("end.\u201D\u201CStart" -> '.\u201D' | '\u201C'),
+ * punctuation run spanning a boundary we moved ("end.”“Start" -> '.”' | '“'),
  * which is clipped at the boundary so every token lies inside its sentence.
  */
 function distributeTokens(s: string, raw: RawToken[], ranges: Range[]): RawToken[][] {
@@ -379,13 +437,19 @@ function distributeTokens(s: string, raw: RawToken[], ranges: Range[]): RawToken
 // Public factory
 // ---------------------------------------------------------------------------------------------
 
+function requireString(text: unknown, fn: string): asserts text is string {
+  if (typeof text !== 'string') throw new TypeError(`Segmenter.${fn}: expected a string, got ${text === null ? 'null' : typeof text}`);
+}
+
 export function createSegmenter(): Segmenter {
   const sentenceSegmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
   const wordSegmenter = new Intl.Segmenter('en', { granularity: 'word' });
 
   return {
     segmentParagraph(text: string): Sentence[] {
-      const st = stripSoftHyphens(text);
+      requireString(text, 'segmentParagraph');
+      if (text.length === 0) return [];
+      const st = stripFormatChars(text);
       const ranges = segmentSentenceRanges(sentenceSegmenter, st.text);
       if (ranges.length === 0) return [];
       const perSentence = distributeTokens(st.text, tokenizeText(wordSegmenter, st.text), ranges);
@@ -399,8 +463,9 @@ export function createSegmenter(): Segmenter {
     },
 
     tokenize(text: string): Token[] {
+      requireString(text, 'tokenize');
       if (text.length === 0) return [];
-      const st = stripSoftHyphens(text);
+      const st = stripFormatChars(text);
       return toTokens(st, text, tokenizeText(wordSegmenter, st.text));
     },
   };

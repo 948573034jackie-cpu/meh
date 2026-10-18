@@ -14,7 +14,6 @@ import { Popup, type PopupData } from './Popup';
 import { Transport } from './Transport';
 import { Transcript } from './Transcript';
 import { matchesShortcut, isTypingTarget } from './shortcuts';
-import './reader.css';
 
 const E2E = typeof location !== 'undefined' && new URLSearchParams(location.search).has('e2e');
 if (E2E) useFakeEngine(2);

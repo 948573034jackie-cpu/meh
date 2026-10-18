@@ -91,47 +91,60 @@ const LABELS: Record<string, keyof ExplanationParts> = {
   'DEFINITION': 'definition', 'IN THIS SENTENCE': 'inSentence', 'EXAMPLE': 'example', 'CHINESE': 'chinese', 'MEANING': 'meaning', 'SUMMARY': 'summary', 'HARD WORDS': 'hardWords',
 };
 
-/** Parses the labelled reply into parts; tolerant of missing labels, extra whitespace, and markdown bold. */
+/**
+ * Parses the labelled reply into parts. Tolerant of what models actually produce: markdown bold, bullets or
+ * numbering before a label, a Chinese colon or a dash after it, several labels on one line (upper-case only,
+ * so "for example:" inside a definition is not a label), extra lines, and pinyin after the Chinese meaning.
+ */
 export function parseExplanation(text: string, kind: ExplainKind): ExplanationParts {
-  const clean = text.replace(/\*\*/g, '').replace(/^#+\s*/gm, '').trim();
+  const clean = text.replace(/\*\*|__/g, '').replace(/^#+[ \t]*/gm, '').replace(/\r/g, '').trim();
   const parts: ExplanationParts = {};
-  const re = /^\s*(DEFINITION|IN THIS SENTENCE|EXAMPLE|CHINESE|MEANING|SUMMARY|HARD WORDS)\s*[:：]\s*/im;
-  const lines = clean.split(/\n+/);
-  let current: keyof ExplanationParts | null = null;
-  let found = false;
-  const buf: Record<string, string[]> = {};
-  for (const line of lines) {
-    const m = re.exec(line);
-    if (m) {
-      found = true;
-      current = LABELS[m[1].toUpperCase()];
-      (buf[current] ??= []).push(line.slice(m[0].length).trim());
-    } else if (current) {
-      buf[current].push(line.trim());
-    }
+  const re = /(^|\n[ \t]*|[ \t]+)(?:(?:[-*•]|\d+[.)])[ \t]*)?(DEFINITION|IN THIS SENTENCE|EXAMPLE|CHINESE|MEANING|SUMMARY|HARD WORDS)[ \t]*(?:[:：]|[-–—](?=\s))[ \t]*/gi;
+  const hits: { key: keyof ExplanationParts; start: number; end: number }[] = [];
+  for (const m of clean.matchAll(re)) {
+    const atLineStart = m.index === 0 || m[1].startsWith('\n');
+    if (!atLineStart && m[2] !== m[2].toUpperCase()) continue;
+    hits.push({ key: LABELS[m[2].toUpperCase()], start: m.index!, end: m.index! + m[0].length });
   }
-  if (!found) {
+  if (!hits.length) {
     parts.free = clean;
     return parts;
   }
-  for (const [k, v] of Object.entries(buf)) {
+  const buf: Partial<Record<keyof ExplanationParts, string[]>> = {};
+  hits.forEach((h, i) => {
+    const body = clean.slice(h.end, i + 1 < hits.length ? hits[i + 1].start : undefined).replace(/\s+/g, ' ').trim();
+    (buf[h.key] ??= []).push(body);
+  });
+  for (const [k, v] of Object.entries(buf) as [keyof ExplanationParts, string[]][]) {
     const joined = v.join(' ').trim();
     if (k === 'hardWords') parts.hardWords = parseHardWords(joined);
+    else if (k === 'chinese') parts.chinese = chineseOnly(joined);
     else (parts as Record<string, unknown>)[k] = joined;
   }
   void kind;
   return parts;
 }
 
+const CJK = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+
+/** Keeps the Chinese meaning itself: no pinyin, no bracketed notes, no trailing full stop (it is read by a Chinese voice). */
+function chineseOnly(s: string): string {
+  let t = s.replace(/[(（][^)）]*[)）]/g, ' ').trim();
+  if (!CJK.test(t)) return t;
+  t = t.replace(/[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF、，,；;/ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.replace(/^[、，,；;/ ]+|[、，,；;/ .。]+$/g, '');
+}
+
 function parseHardWords(s: string): { word: string; meaning: string; zh: string }[] {
-  if (!s || /^none\.?$/i.test(s.trim())) return [];
-  return s.split(/;|\n/).map((item) => item.trim()).filter(Boolean).map((item) => {
+  const t = s.trim();
+  if (!t || /^(?:there (?:are|is) )?none\b/i.test(t) || /^no (?:hard|difficult) words/i.test(t)) return [];
+  return t.split(/;|；|\n/).map((item) => item.trim()).filter(Boolean).map((item) => {
     const bits = item.split(/,|，|=|—|–/).map((b) => b.trim()).filter(Boolean);
-    const zhIdx = bits.findIndex((b) => /[一-鿿]/.test(b));
+    const zhIdx = bits.findIndex((b) => CJK.test(b));
     const zh = zhIdx >= 0 ? bits[zhIdx] : '';
     const rest = bits.filter((_, i) => i !== zhIdx);
     return { word: rest[0] ?? item, meaning: rest.slice(1).join(', '), zh };
-  });
+  }).filter((h) => h.meaning || h.zh);
 }
 
 /** The English text to speak for a parsed explanation, in the order the learner asked for. */
@@ -143,7 +156,7 @@ export function spokenEnglish(parts: ExplanationParts): string[] {
   if (parts.example) out.push(`For example: ${parts.example}`);
   if (parts.meaning) out.push(parts.meaning);
   if (parts.summary) out.push(parts.summary);
-  if (parts.hardWords?.length) out.push(...parts.hardWords.map((h) => `${h.word}: ${h.meaning}`));
+  if (parts.hardWords?.length) out.push(...parts.hardWords.map((h) => (h.meaning ? `${h.word}: ${h.meaning}` : h.word)));
   return out;
 }
 

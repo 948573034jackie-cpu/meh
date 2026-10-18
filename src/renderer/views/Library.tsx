@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../state/store';
 
 let setPasteOpen: ((v: boolean) => void) | null = null;
@@ -10,6 +10,7 @@ export function Library(): JSX.Element {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   setPasteOpen = _setPasteOpen;
+  useEffect(() => { void useApp.getState().refreshLibrary(); }, []);
 
   const importPaste = async () => {
     if (!text.trim()) return;
