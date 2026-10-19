@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import { registerAppScheme, installAppProtocol, APP_SCHEME } from './protocol';
 import { registerIpc } from './ipc';
+import { checkSecrets } from './secrets';
 import { rendererDir, preloadPath } from './paths';
 import { buildMenu } from './menu';
 
@@ -42,6 +43,8 @@ function createWindow(): void {
 app.whenReady().then(() => {
   installAppProtocol(path.resolve(rendererDir()));
   registerIpc(() => win);
+  // Decrypt every saved API key once so a key that was lost (old Keychain record after a re-sign) is reported in Settings.
+  try { checkSecrets(); } catch (e) { console.error('secrets: startup check failed', e); }
   Menu.setApplicationMenu(buildMenu(() => win));
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

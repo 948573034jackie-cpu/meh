@@ -6,6 +6,12 @@ import { CEFR_LEVELS } from '@core/model';
 import { ENGINE_LABELS, AVAILABLE_ENGINES, type TtsVoice } from '@core/tts/engine';
 import { getEngine, defaultVoiceFor } from '@core/tts/registry';
 import { shortcutLabel } from '../reader/shortcuts';
+import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap } from '@shared/api';
+
+export const STORAGE_NOTE = 'Keys are stored encrypted in the app\'s own data folder; they survive updates and re-signing.';
+const EMPTY_STATUS: SecretStatus = { saved: false, verified: false, lostAtStartup: false };
+export const NO_KEYS: SecretStatusMap = { anthropic: EMPTY_STATUS, openai: EMPTY_STATUS, elevenlabs: EMPTY_STATUS, azure: EMPTY_STATUS, google: EMPTY_STATUS };
+const KEY_PLACEHOLDER: Record<SecretName, string> = { anthropic: 'sk-ant-…', openai: 'sk-…', elevenlabs: 'sk_… or 32 hex characters', azure: 'Speech resource key', google: 'AIza…' };
 
 type Section = 'start' | 'ai' | 'voice' | 'level' | 'appearance' | 'shortcuts' | 'data';
 
@@ -21,13 +27,16 @@ export function SettingsView(): JSX.Element {
   const settings = useApp((s) => s.settings);
   const patch = useApp((s) => s.patchSettings);
   const [section, setSection] = useState<Section>(settings.onboarded ? 'ai' : 'start');
-  const [keys, setKeys] = useState<{ anthropic: boolean; openai: boolean; elevenlabs: boolean }>({ anthropic: false, openai: false, elevenlabs: false });
-  const [keyInput, setKeyInput] = useState<Record<string, string>>({});
-  const [testResult, setTestResult] = useState<string>('');
+  const [keys, setKeys] = useState<SecretStatusMap>(NO_KEYS);
+  const [keyInput, setKeyInput] = useState<Partial<Record<SecretName, string>>>({});
+  const [azureRegion, setAzureRegion] = useState<string>('uksouth');
+  /** per key: the warning or error from the last Save */
+  const [keyNotes, setKeyNotes] = useState<Partial<Record<SecretName, string>>>({});
+  const [testResult, setTestResult] = useState<Partial<Record<SecretName, string>>>({});
   const [voices, setVoices] = useState<TtsVoice[]>([]);
   const [usage, setUsage] = useState<{ today: number; month: number }>({ today: 0, month: 0 });
 
-  const refreshKeys = async () => setKeys({ anthropic: await window.readalong.hasSecret('anthropic'), openai: await window.readalong.hasSecret('openai'), elevenlabs: await window.readalong.hasSecret('elevenlabs') });
+  const refreshKeys = async () => { try { setKeys(await window.readalong.secretStatus()); } catch { /* main not ready */ } };
   useEffect(() => { void refreshKeys(); }, []);
   useEffect(() => {
     (async () => {
@@ -45,12 +54,26 @@ export function SettingsView(): JSX.Element {
     });
   }, [section]);
 
-  const saveKey = async (name: 'anthropic' | 'openai' | 'elevenlabs') => {
-    await window.readalong.setSecret(name, keyInput[name]?.trim() ?? '');
-    setKeyInput((k) => ({ ...k, [name]: '' }));
+  const saveKey = async (name: SecretName) => {
+    let value = keyInput[name]?.trim() ?? '';
+    if (name === 'azure' && value) value = JSON.stringify({ key: value, region: azureRegion.trim().toLowerCase() || 'uksouth' });
+    setTestResult((t) => ({ ...t, [name]: '' }));
+    try {
+      const r = await window.readalong.setSecret(name, value);
+      setKeyNotes((n) => ({ ...n, [name]: r.warning ?? 'Saved and verified.' }));
+      setKeyInput((k) => ({ ...k, [name]: '' }));
+    } catch (e) {
+      setKeyNotes((n) => ({ ...n, [name]: `Could not save: ${(e as Error).message}` }));
+    }
     await refreshKeys();
   };
-  const testKey = async (provider: AiProviderId) => { setTestResult('Testing…'); const r = await window.readalong.aiTest(provider); setTestResult(`${r.ok ? '✅' : '❌'} ${r.message}`); };
+  const removeKey = async (name: SecretName) => { await window.readalong.setSecret(name, ''); setKeyNotes((n) => ({ ...n, [name]: '' })); setTestResult((t) => ({ ...t, [name]: '' })); await refreshKeys(); };
+  const testKey = async (name: SecretName) => {
+    setTestResult((t) => ({ ...t, [name]: 'Testing…' }));
+    try { const r = await window.readalong.aiTest(name); setTestResult((t) => ({ ...t, [name]: `${r.ok ? '✅' : '❌'} ${r.message}` })); }
+    catch (e) { setTestResult((t) => ({ ...t, [name]: `❌ ${(e as Error).message}` })); }
+  };
+  const dismissLost = async () => { await window.readalong.dismissLostKeys(); await refreshKeys(); };
   const previewVoice = async (engine: TtsEngineId, voiceId: string) => {
     const e = getEngine(engine);
     e.cancelAll();
@@ -108,18 +131,21 @@ export function SettingsView(): JSX.Element {
             <div className="hint">Costs are estimates for about 120 explanations a day. You pay the AI company directly through your own API key; this app adds nothing.</div>
           </div>
           <div className="field">
-            <label>{S.ai.provider === 'anthropic' ? 'Anthropic API key' : 'OpenAI API key'} {keys[S.ai.provider] ? <span className="badge free">saved</span> : <span className="badge paid">missing</span>}</label>
+            <label><KeyStatusDot status={keys[S.ai.provider]} /> {S.ai.provider === 'anthropic' ? 'Anthropic API key' : 'OpenAI API key'} <KeyBadge status={keys[S.ai.provider]} /></label>
+            <LostKeyNotice name={S.ai.provider} status={keys[S.ai.provider]} onDismiss={dismissLost} />
             <div className="row">
-              <input type="password" style={{ flex: 1 }} placeholder={S.ai.provider === 'anthropic' ? 'sk-ant-…' : 'sk-…'} value={keyInput[S.ai.provider] ?? ''} onChange={(e) => setKeyInput((k) => ({ ...k, [S.ai.provider]: e.target.value }))} data-testid="api-key" />
+              <input type="password" style={{ flex: 1 }} placeholder={KEY_PLACEHOLDER[S.ai.provider]} value={keyInput[S.ai.provider] ?? ''} onChange={(e) => setKeyInput((k) => ({ ...k, [S.ai.provider]: e.target.value }))} data-testid="api-key" />
               <button className="primary" onClick={() => saveKey(S.ai.provider)} disabled={!keyInput[S.ai.provider]?.trim()}>Save key</button>
-              <button onClick={() => testKey(S.ai.provider)} disabled={!keys[S.ai.provider]}>Test</button>
-              {keys[S.ai.provider] && <button onClick={() => { void window.readalong.setSecret(S.ai.provider, '').then(refreshKeys); }}>Remove</button>}
+              <button onClick={() => testKey(S.ai.provider)} disabled={!keys[S.ai.provider].saved}>Test</button>
+              {keys[S.ai.provider].saved && <button onClick={() => removeKey(S.ai.provider)}>Remove</button>}
             </div>
-            {testResult && <div className="hint" data-testid="test-result">{testResult}</div>}
+            {keyNotes[S.ai.provider] && <div className="hint" data-testid="key-note">{keyNotes[S.ai.provider]}</div>}
+            {testResult[S.ai.provider] && <div className="hint" data-testid="test-result">{testResult[S.ai.provider]}</div>}
             <div className="hint">
               {S.ai.provider === 'anthropic'
-                ? <>Get a key: sign in at <a href="#" onClick={(e) => { e.preventDefault(); void window.readalong.openExternal('https://platform.claude.com/'); }}>platform.claude.com</a>, open Billing to add 5 dollars of credit, then API keys → Create key. The key is stored in your Mac keychain.</>
-                : <>Get a key: sign in at <a href="#" onClick={(e) => { e.preventDefault(); void window.readalong.openExternal('https://platform.openai.com/api-keys'); }}>platform.openai.com</a>, add credit under Billing, then create an API key. The key is stored in your Mac keychain.</>}
+                ? <>Get a key: sign in at <a href="#" onClick={(e) => { e.preventDefault(); void window.readalong.openExternal('https://platform.claude.com/'); }}>platform.claude.com</a>, open Billing to add 5 dollars of credit, then API keys → Create key.</>
+                : <>Get a key: sign in at <a href="#" onClick={(e) => { e.preventDefault(); void window.readalong.openExternal('https://platform.openai.com/api-keys'); }}>platform.openai.com</a>, add credit under Billing, then create an API key.</>}
+              {' '}{STORAGE_NOTE}
             </div>
           </div>
           <div className="field">
@@ -149,7 +175,7 @@ export function SettingsView(): JSX.Element {
             <div className="choice-grid">
               {AVAILABLE_ENGINES.map((id) => {
                 const m = ENGINE_LABELS[id];
-                const needsKey = id === 'openai' ? !keys.openai : id === 'elevenlabs' ? !keys.elevenlabs : false;
+                const needsKey = id === 'openai' ? !keys.openai.saved : id === 'elevenlabs' ? !keys.elevenlabs.saved : false;
                 return (
                   <div key={id} className={`choice ${S.voice.engine === id ? 'active' : ''}`} onClick={() => set({ voice: { ...S.voice, engine: id, voiceId: '' } })} data-testid={`engine-${id}`}>
                     <span className="name">{m.label} <span className={`badge ${m.cost.startsWith('Free') ? 'free' : 'paid'}`}>{m.cost.startsWith('Free') ? 'free' : 'paid'}</span></span>
@@ -177,15 +203,22 @@ export function SettingsView(): JSX.Element {
           </div>
           <div className="field">
             <label>Keys for paid voices</label>
-            {(['openai', 'elevenlabs'] as const).map((name) => (
-              <div className="row" key={name}>
-                <span style={{ width: 110 }}>{name === 'openai' ? 'OpenAI' : 'ElevenLabs'} {keys[name] ? <span className="badge free">saved</span> : <span className="badge">none</span>}</span>
-                <input type="password" style={{ flex: 1 }} placeholder="API key" value={keyInput[name] ?? ''} onChange={(e) => setKeyInput((k) => ({ ...k, [name]: e.target.value }))} />
-                <button onClick={() => saveKey(name)} disabled={!keyInput[name]?.trim()}>Save</button>
-                {keys[name] && <button onClick={() => { void window.readalong.setSecret(name, '').then(refreshKeys); }}>Remove</button>}
-              </div>
+            {(['openai', 'elevenlabs', 'azure', 'google'] as const).map((name) => (
+              <React.Fragment key={name}>
+                <LostKeyNotice name={name} status={keys[name]} onDismiss={dismissLost} />
+                <div className="row" data-testid={`voice-key-${name}`}>
+                  <span style={{ width: 150 }}><KeyStatusDot status={keys[name]} /> {SECRET_LABELS[name]} <KeyBadge status={keys[name]} /></span>
+                  <input type="password" style={{ flex: 1 }} placeholder={KEY_PLACEHOLDER[name]} value={keyInput[name] ?? ''} onChange={(e) => setKeyInput((k) => ({ ...k, [name]: e.target.value }))} />
+                  {name === 'azure' && <input type="text" style={{ width: 110 }} placeholder="region" title="Azure region of the Speech resource, e.g. uksouth" value={azureRegion} onChange={(e) => setAzureRegion(e.target.value)} />}
+                  <button onClick={() => saveKey(name)} disabled={!keyInput[name]?.trim()}>Save</button>
+                  <button onClick={() => testKey(name)} disabled={!keys[name].saved}>Test</button>
+                  {keys[name].saved && <button onClick={() => removeKey(name)}>Remove</button>}
+                </div>
+                {keyNotes[name] && <div className="hint">{keyNotes[name]}</div>}
+                {testResult[name] && <div className="hint" data-testid={`test-result-${name}`}>{testResult[name]}</div>}
+              </React.Fragment>
             ))}
-            <div className="hint">The OpenAI key is shared with ChatGPT explanations. Microsoft voices need no key but use an unofficial free service that may stop working one day.</div>
+            <div className="hint">The OpenAI key is shared with ChatGPT explanations. Azure needs the key and the region of your Speech resource; Google needs a Cloud API key with the Text-to-Speech API enabled. Azure and Google voices are coming in a later version; the keys can already be saved and tested. Microsoft Edge voices need no key but use an unofficial free service that may stop working one day. {STORAGE_NOTE}</div>
           </div>
         </section>
       )}
@@ -264,6 +297,29 @@ export function SettingsView(): JSX.Element {
       )}
 
       {section === 'data' && <DataSection usage={usage} />}
+    </div>
+  );
+}
+
+/** Green = saved and readable, orange = saved but unreadable, grey = none. */
+export function KeyStatusDot({ status }: { status: SecretStatus }): JSX.Element {
+  const color = status.verified ? 'var(--ok)' : status.saved ? 'var(--accent)' : status.lostAtStartup ? 'var(--danger)' : 'var(--fg-muted)';
+  const title = status.verified ? 'Key saved and verified' : status.saved ? 'Key saved but cannot be read; paste it again' : status.lostAtStartup ? 'Key could not be recovered' : 'No key saved';
+  return <span title={title} aria-label={title} style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: color, verticalAlign: 'middle', marginRight: 2 }} />;
+}
+
+function KeyBadge({ status }: { status: SecretStatus }): JSX.Element {
+  if (status.verified) return <span className="badge free">saved</span>;
+  if (status.saved) return <span className="badge paid">unreadable</span>;
+  return <span className="badge">none</span>;
+}
+
+/** Shown once per session for a key that was stored with the old Keychain scheme and could not be read after a re-sign. */
+export function LostKeyNotice({ name, status, onDismiss }: { name: SecretName; status: SecretStatus; onDismiss: () => void }): JSX.Element | null {
+  if (!status.lostAtStartup || status.saved) return null;
+  return (
+    <div className="hint" style={{ color: 'var(--danger)' }} data-testid={`lost-key-${name}`}>
+      Your {SECRET_LABELS[name]} key could not be recovered after the app was updated or re-signed. Please paste it again. <a href="#" onClick={(e) => { e.preventDefault(); onDismiss(); }}>Dismiss</a>
     </div>
   );
 }

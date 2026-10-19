@@ -1,5 +1,5 @@
 import { app, ipcMain, shell, BrowserWindow } from 'electron';
-import type { Diagnostics } from '@shared/api';
+import type { Diagnostics, SecretName } from '@shared/api';
 import * as library from './library';
 import * as settings from './settings';
 import * as secrets from './secrets';
@@ -23,8 +23,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('settings:get', () => settings.getSettings());
   ipcMain.handle('settings:set', (_e, patch) => settings.setSettings(patch));
-  ipcMain.handle('secrets:set', (_e, name, value: string) => secrets.setSecret(name, value));
-  ipcMain.handle('secrets:has', (_e, name) => secrets.hasSecret(name));
+  ipcMain.handle('secrets:set', (_e, name: SecretName, value: string) => secrets.setSecret(name, value));
+  ipcMain.handle('secrets:has', (_e, name: SecretName) => secrets.hasSecret(name));
+  ipcMain.handle('secrets:status', () => secrets.secretStatus());
+  ipcMain.handle('secrets:dismissLost', () => secrets.dismissLostKeys());
 
   ipcMain.handle('app:openExternal', (_e, url: string) => {
     if (/^https?:\/\//.test(url)) return shell.openExternal(url);
@@ -35,7 +37,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return {
       platform: process.platform, arch: process.arch, electron: process.versions.electron, chrome: process.versions.chrome,
       node: process.versions.node, appVersion: app.getVersion(), userData: app.getPath('userData'),
-      safeStorage: secrets.encryptionAvailable(), dictWords, secrets: secrets.secretStatus(),
+      secretsFile: secrets.secretsFilePath(), dictWords, secrets: secrets.secretStatus(),
     };
   });
 
