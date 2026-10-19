@@ -41,7 +41,7 @@ const LOW_CONFIDENCE_MIN_RATIO = 0.85;
 /** Phrase grammar per intent, including Mandarin-L1 accent variants (final-consonant drop, th→d/s, v→w). */
 export const PHRASES: Record<CommandIntent, readonly string[]> = {
   dont_know: [
-    "i don't know", 'i dont know', 'i don no', 'i do not know', 'i dono', 'i dunno', 'dunno', "don't know", 'dont know', 'don no',
+    "i don't know", 'i dont know', 'i don no', 'i do not know', 'dunno', "don't know", 'dont know', 'don no',
     'no idea', 'not sure', "i'm not sure", 'i am not sure', 'i not sure',
     'what', 'again', 'explain again', 'say again', 'say it again', 'one more time', "i don't understand", 'i dont understand', 'i don understand',
   ],
@@ -116,7 +116,7 @@ export function phoneticWord(word: string): string {
   if (!w) return '';
   if (/^(kn|gn|pn|wr|ae)/.test(w)) w = w.slice(1);
   else if (w.startsWith('x')) w = 's' + w.slice(1);
-  else if (w.startsWith('wh')) w = 'w' + w.slice(1);
+  else if (w.startsWith('wh')) w = 'w' + w.slice(2);
   const out: string[] = [];
   const last = w.length - 1;
   for (let i = 0; i < w.length; i++) {
@@ -207,7 +207,7 @@ interface Candidate { intent: CommandIntent; score: number; matched: string }
  * - whole-utterance match: utterance ≤ phrase + 6 chars AND (ratio ≥ minRatio OR phonetic keys equal)
  * - prefix match: the first N words match a phrase of N words the same way, and the tail is ≤ 3 words and
  *   no longer than the phrase itself ("i don't know this word" → dont_know; "i know that word already" → question)
- * - confidence < 0.6 → the ratio threshold is raised to 0.85 (phonetic equality still accepted)
+ * - confidence < 0.6 → the ratio threshold is raised to 0.85 and phonetic-only matches are not accepted
  * - otherwise 'question'
  */
 export function detectCommand(text: string, opts: DetectOptions = {}): Detection {
@@ -217,7 +217,8 @@ export function detectCommand(text: string, opts: DetectOptions = {}): Detection
   if (words.length > MAX_COMMAND_WORDS) return { intent: 'question', score: 0 };
 
   let minRatio = opts.minRatio ?? DEFAULT_MIN_RATIO;
-  if (opts.confidence !== undefined && opts.confidence < LOW_CONFIDENCE) minRatio = Math.max(minRatio, LOW_CONFIDENCE_MIN_RATIO);
+  const lowConfidence = opts.confidence !== undefined && opts.confidence < LOW_CONFIDENCE;
+  if (lowConfidence) minRatio = Math.max(minRatio, LOW_CONFIDENCE_MIN_RATIO);
 
   const wholeKey = phoneticKey(norm);
   const headKeys = new Map<number, string>();
@@ -236,7 +237,7 @@ export function detectCommand(text: string, opts: DetectOptions = {}): Detection
       const r = ratio(norm, phrase);
       bestOverall = Math.max(bestOverall, r);
       if (norm.length <= phrase.length + MAX_EXTRA_CHARS) {
-        const phon = wholeKey === phoneticKey(phrase);
+        const phon = !lowConfidence && wholeKey === phoneticKey(phrase);
         if (r >= minRatio || phon) {
           const score = phon ? Math.max(r, minRatio) : r;
           if (!best || score > best.score) best = { intent, score, matched: phrase };
@@ -249,7 +250,7 @@ export function detectCommand(text: string, opts: DetectOptions = {}): Detection
       if (tail <= 0 || tail > MAX_TAIL_WORDS || tail > n) continue;
       const [head, headKey] = headOf(n);
       const hr = ratio(head, phrase);
-      const hphon = headKey === phoneticKey(phrase);
+      const hphon = !lowConfidence && headKey === phoneticKey(phrase);
       if (hr >= minRatio || hphon) {
         const score = hphon ? Math.max(hr, minRatio) : hr;
         if (!best || score > best.score) best = { intent, score, matched: phrase };
