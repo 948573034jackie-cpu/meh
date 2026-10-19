@@ -1,7 +1,7 @@
 {
   "name": "dream-read",
   "productName": "Dream Read",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dream Read: a calm reading and listening app for English learners. Reads EPUB, PDF and pasted text aloud with word highlighting, tap-to-translate, and spoken AI explanations.",
   "main": "dist/main/index.js",
   "private": true,
