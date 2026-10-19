@@ -127,8 +127,4 @@ export function withFallback<T extends object>(impl: T): ReadAlongApi {
 
 export function createWebApi(): ReadAlongApi { return withFallback(webApiImpl); }
 
-/** Loads the stores the synchronous paths need; call once before the renderer starts. */
-export async function warmUp(): Promise<void> {
-  await Promise.all([secrets.loadSecrets(), settings.getSettings()]).catch((e) => console.warn('[web] storage warm-up failed', e));
-}
 

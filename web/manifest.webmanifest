@@ -1,0 +1,20 @@
+{
+  "name": "Dream Read",
+  "short_name": "Dream Read",
+  "description": "A calm reading and listening app for English learners: EPUB, PDF and pasted text read aloud with word highlighting, tap-to-translate and spoken AI explanations.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#15171c",
+  "theme_color": "#15171c",
+  "lang": "en",
+  "categories": ["education", "books"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

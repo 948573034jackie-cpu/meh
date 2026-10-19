@@ -10,6 +10,8 @@ import { annotateSentence } from '@core/vocab/analysis';
 import { resolveStyle } from '@shared/styles';
 import type { Playback } from './playback';
 import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
+import { StreamSentenceSplitter } from './sentences';
+import { cleanSpokenProse } from '@core/ai/prompts';
 
 function scriptSettings(s: Settings): ScriptSettings { return { ...s.listen, speakChinese: s.ai.speakChinese }; }
 
@@ -33,6 +35,10 @@ export interface TranscriptEntry {
   status: 'thinking' | 'speaking' | 'done' | 'error' | 'skipped';
   error?: string;
   usd?: number;
+  /** kind 'question': what the learner asked (typed or spoken) */
+  question?: string;
+  /** kind 'question': the learner spoke it (voice chat) rather than typed it */
+  spoken?: boolean;
 }
 
 export interface ListenDeps {
@@ -57,7 +63,16 @@ export interface ListenDeps {
   mode?: () => ReadMode;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
+  /**
+   * The learner may answer now: the pause after an explanation (Listening), a quiz wait, or a short moment after
+   * an explanation in Reading mode. Voice chat opens the mic for "I know" / "I don't know" / a question while
+   * it is open. Calls come in pairs (true, then false).
+   */
+  onPauseWindow?: (open: boolean) => void;
 }
+
+/** The last word/phrase/sentence explanation (what "I know" and "I don't know" refer to). */
+export interface LastExplained { kind: ExplainKind; target: string; pos: Position; lemma?: string }
 
 interface Trigger { kind: 'word' | 'phrase' | 'sentence'; token: number; end: number; target: string; lemma?: string; dict?: ExplainRequest['dict'] }
 
@@ -123,8 +138,9 @@ export class ListenController {
         if (!isAbove(ph.result.entry.level, s.learnerLevel)) continue;
         if (recently(lemma)) continue;
         if (out.some((t) => t.lemma === lemma)) continue;
-        const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end].end);
-        out.push({ kind: 'phrase', token: ph.start, end: ph.end, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
+        // PhraseSpan.end is exclusive (the last word is tokens[end - 1]); Trigger.end is inclusive like word triggers
+        const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end - 1].end);
+        out.push({ kind: 'phrase', token: ph.start, end: ph.end - 1, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
       }
     }
     for (const m of this.deps.marked()) {
@@ -175,26 +191,85 @@ export class ListenController {
 
   /** Listening: a short silence, then the book continues. Reading: stop and wait for the learner. */
   private async afterExplanation(): Promise<'next' | 'stop'> {
-    if ((this.deps.mode?.() ?? 'listening') === 'reading') return 'stop';
+    if ((this.deps.mode?.() ?? 'listening') === 'reading') { this.readingWindow(); return 'stop'; }
     const ms = this.deps.settings().listen.pauseAfterExplainMs;
     if (ms > 0 && !this.skipRequested) {
       const startState = this.playback.state;
       let changed = false;
       const off = this.playback.on('state', (st) => { if (st !== startState) changed = true; });
-      await new Promise<void>((r) => { const t = setTimeout(r, ms); this.wakeAfter = () => { clearTimeout(t); r(); }; });
-      this.wakeAfter = null; off();
+      this.deps.onPauseWindow?.(true);
+      let wakeMine: (() => void) | null = null;
+      let extendMine: ((more: number) => void) | null = null;
+      await new Promise<void>((r) => {
+        let t = setTimeout(r, ms);
+        wakeMine = this.wakeAfter = () => { clearTimeout(t); r(); };
+        extendMine = this.extendAfter = (more) => { clearTimeout(t); t = setTimeout(r, more); };
+      });
+      if (this.wakeAfter === wakeMine) this.wakeAfter = null;
+      if (this.extendAfter === extendMine) this.extendAfter = null;
+      off();
+      this.deps.onPauseWindow?.(false);
       if (changed || this.playback.state === 'idle') return 'stop';
     }
     return 'next';
   }
 
+  /** Reading mode: no pause (the book stays stopped), but the learner may still answer for a moment. */
+  private readingWindow(): void {
+    const ms = this.deps.settings().listen.pauseAfterExplainMs;
+    if (!this.deps.onPauseWindow || ms <= 0) return;
+    if (this.readingWindowTimer) clearTimeout(this.readingWindowTimer); else this.deps.onPauseWindow(true);
+    this.readingWindowTimer = setTimeout(() => { this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); }, ms);
+  }
+  private readingWindowTimer: ReturnType<typeof setTimeout> | null = null;
+
   /** Ends the current wait (the pause after an explanation, or a quiz wait) without cancelling anything. */
-  continueNow(): void { this.wakeAfter?.(); this.wakeWait?.(); }
+  continueNow(): void { this.wakeAfter?.(); this.wakeWait?.(); this.closeReadingWindow(); }
+  /** The learner started talking during the pause: give them `ms` more before the book goes on. */
+  keepWaiting(ms = 5000): void { this.extendAfter?.(ms); }
+  private closeReadingWindow(): void { if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); } }
   private wakeAfter: (() => void) | null = null;
+  private extendAfter: ((ms: number) => void) | null = null;
   private wakeWait: (() => void) | null = null;
+  /** the learner is talking (voice chat): no explanation may resume the reading until they asked or gave up */
+  private held = false;
+
+  /** What "I know" / "I don't know" refer to: the last word, phrase or sentence explained. */
+  get lastExplained(): LastExplained | null { const l = this.last; return l ? { kind: l.kind, target: l.target, pos: l.pos, lemma: l.lemma } : null; }
+
+  /**
+   * The learner started talking (voice chat barge-in): the explanation or reply being spoken is cancelled and
+   * the reading pauses. Returns whether the reading was going on (so the reply to the learner's question can
+   * resume it in Listening mode). Ended by the next explainNow() or by release().
+   */
+  hold(): boolean {
+    const st = this.playback.state;
+    const wasPlaying = st === 'playing' || st === 'explaining' || (this.current !== null && this.pendingResume) || (this.held && this.heldResume);
+    this.held = true; this.heldResume = wasPlaying;
+    this.current?.cancel();
+    this.wakeAfter?.(); this.wakeWait?.();
+    this.playback.pause();
+    return wasPlaying;
+  }
+  private heldResume = false;
+
+  /** The learner said nothing after all (noise) or ended the call: the reading resumes when `resume` is true. */
+  release(resume: boolean): void {
+    if (!this.held) return;
+    this.held = false; this.heldResume = false;
+    if (!resume || this.current) return;
+    const st = this.playback.state;
+    if (st === 'playing' || st === 'explaining') return;
+    this.playback.play();
+  }
+
+  /** true between hold() and the next explanation / release() */
+  get holding(): boolean { return this.held; }
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
-  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean, again?: boolean): Promise<void> {
+  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean, again?: boolean, spoken?: boolean): Promise<void> {
+    if (this.held) { resumeAfter = (resumeAfter ?? false) || this.heldResume; this.held = false; this.heldResume = false; }
+    this.closeReadingWindow();
     const wasPlaying = this.beginManual(resumeAfter);
     const resumeAt = this.playback.position;
     const cur = getSentence(this.deps.book, pos);
@@ -202,10 +277,12 @@ export class ListenController {
     const s = this.deps.settings();
     const script = scriptFor(kind, target, sentence, s);
     if (kind === 'word' || kind === 'phrase' || kind === 'sentence') this.last = { kind, target, pos, dict, lemma };
-    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again);
+    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again, spoken);
     const readOn = kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
     // Reading mode: stop and wait. Listening mode: the pause, then on with the book.
-    const resume = wasPlaying && (this.deps.mode?.() ?? 'listening') === 'listening' && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');
+    const listening = (this.deps.mode?.() ?? 'listening') === 'listening';
+    const resume = wasPlaying && listening && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');
+    if (res === 'done' && !this.current && (!wasPlaying || !listening)) this.readingWindow();
     this.endManual(resume, res, resumeAt, readOn);
   }
 
@@ -231,12 +308,14 @@ export class ListenController {
     const wasPlaying = resumeAfter ?? (st === 'playing' || st === 'explaining' || (this.current !== null && this.pendingResume));
     this.current?.cancel();
     this.playback.pause();
+    this.wakeAfter?.(); // a pause after an explanation ends here (the playback state changed: it will not resume by itself)
     this.pendingResume = wasPlaying;
     return wasPlaying;
   }
 
   private endManual(wasPlaying: boolean, res: 'done' | 'skipped' | 'aborted', resumeAt: Position, readOn: Position): void {
     if (this.current) return; // a newer explanation took over and resumes the reading when it ends
+    if (this.held) { this.heldResume = this.heldResume || wasPlaying; this.pendingResume = false; return; } // the learner is talking: their question decides
     this.pendingResume = false;
     // Resume only if the learner did not meanwhile navigate (seek) or start playing by other means.
     if (!wasPlaying || res === 'aborted') return;
@@ -272,9 +351,9 @@ export class ListenController {
    * explanation); 'aborted' = the playback state changed underneath it (pause, seek, stop, play), so the
    * caller must not continue the stop it belongs to.
    */
-  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string, again?: boolean): Promise<'done' | 'skipped' | 'aborted'> {
+  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string, again?: boolean, spoken?: boolean): Promise<'done' | 'skipped' | 'aborted'> {
     if (this.historyChapter !== pos.chapter) { this.history = []; this.historyChapter = pos.chapter; }
-    const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking' };
+    const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking', ...(kind === 'question' ? { question, spoken } : {}) };
     this.deps.onTranscript({ ...entry });
     const s0 = this.deps.settings();
     const ctx = contextAround(this.deps.book, pos, s0.ai.contextWordsBefore, s0.ai.contextWordsAfter);
@@ -282,7 +361,7 @@ export class ListenController {
       kind, target, sentence,
       before: ctx.before, after: ctx.after,
       book: { title: this.deps.book.title, chapter: this.deps.book.chapters[pos.chapter]?.title ?? '' },
-      dict: dict ?? undefined, question, history: this.history,
+      dict: dict ?? undefined, question, history: [...this.history],
       position: { chapter: pos.chapter, paragraph: pos.paragraph, sentence: pos.sentence },
       styleId: s0.ai.activeStyle,
       again,
@@ -290,7 +369,15 @@ export class ListenController {
     let cancelled = false;
     let aborted = false;
     let activeHandle: { cancel(): void } | null = null;
-    const ai = this.deps.explain(req, (full) => { entry.text = full; this.deps.onTranscript({ ...entry }); });
+    // questions (typed or spoken) are answered sentence by sentence as the reply streams in
+    const streamed = kind === 'question';
+    const splitter = new StreamSentenceSplitter();
+    const ready: string[] = [];
+    let notify: (() => void) | null = null;
+    const ai = this.deps.explain(req, (full) => {
+      entry.text = full; this.deps.onTranscript({ ...entry });
+      if (streamed) { const got = splitter.push(full); if (got.length) { ready.push(...got); notify?.(); } }
+    });
     ai.done.catch(() => undefined); // a cancelled reply may never be awaited (interrupted before the AI step)
     let wake: (() => void) | null = null;
     const cancel = () => {
@@ -322,8 +409,10 @@ export class ListenController {
     const wait = async (): Promise<void> => {
       // quiz: give the learner time to answer (voice chat or the typed box ends it early via continueNow)
       this.deps.onWaiting?.(true);
+      this.deps.onPauseWindow?.(true);
       await new Promise<void>((r) => { const t = setTimeout(r, s.listen.quizWaitMs); this.wakeWait = () => { clearTimeout(t); r(); }; wake = this.wakeWait; });
       this.wakeWait = null; wake = null;
+      this.deps.onPauseWindow?.(false);
       this.deps.onWaiting?.(false);
     };
     const prose = kind === 'word' || kind === 'phrase' || kind === 'sentence';
@@ -340,7 +429,7 @@ export class ListenController {
           aiParts = prose ? { free: res.text } : parseExplanation(res.text, kind);
           entry.parts = aiParts; entry.status = 'speaking';
           this.deps.onTranscript({ ...entry });
-          this.history.push({ role: 'user', text: `${kind}: ${target}` }, { role: 'assistant', text: res.text });
+          this.history.push({ role: 'user', text: kind === 'question' && question ? question : `${kind}: ${target}` }, { role: 'assistant', text: res.text });
           if (this.history.length > 12) this.history.splice(0, this.history.length - 12);
           this.deps.onBudget?.(res.usage.dailyUsd, res.usage.monthlyUsd);
         } catch (e) {
@@ -358,7 +447,40 @@ export class ListenController {
       }
       return true;
     };
-    const completed = await runSteps(script);
+    /** A question: each sentence of the reply is spoken as soon as it has arrived. */
+    const runStreamed = async (): Promise<boolean> => {
+      let finished = false;
+      let failure: (Error & { code?: string }) | null = null;
+      ai.done.then((res) => {
+        entry.text = res.text; entry.usd = res.usage.usd;
+        ready.push(...splitter.flush(res.text));
+        this.history.push({ role: 'user', text: question || target }, { role: 'assistant', text: res.text });
+        if (this.history.length > 12) this.history.splice(0, this.history.length - 12);
+        this.deps.onBudget?.(res.usage.dailyUsd, res.usage.monthlyUsd);
+      }, (e: Error & { code?: string }) => { failure = e; }).finally(() => { finished = true; notify?.(); });
+      for (;;) {
+        if (cancelled) return false;
+        const next = ready.shift();
+        if (next !== undefined) {
+          const text = cleanSpokenProse(next);
+          if (entry.status === 'thinking') { entry.status = 'speaking'; this.deps.onTranscript({ ...entry }); }
+          if (text && !(await say(text, 'en', 'explanation'))) return false;
+          continue;
+        }
+        if (finished) break;
+        await new Promise<void>((r) => { notify = r; wake = r; });
+        notify = null; wake = null;
+      }
+      const err = failure as (Error & { code?: string }) | null;
+      if (err) {
+        entry.status = err.code === 'cancelled' ? 'skipped' : 'error'; entry.error = err.message;
+        this.deps.onTranscript({ ...entry });
+        return false;
+      }
+      entry.parts = { free: entry.text };
+      return true;
+    };
+    const completed = streamed ? await runStreamed() : await runSteps(script);
     offState();
     if (this.current === mine) this.current = null;
     if (lemma) {

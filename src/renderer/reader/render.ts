@@ -75,7 +75,7 @@ export function renderSentence(para: Paragraph, s: Sentence, chapter: number, op
       const st = opts.vocab[ph.lemma];
       const cls = st === 'known' || st === 'ignored' ? '' : st === 'learning' ? 'hl-learning' : above(ph.level, opts.learner) ? 'hl-unknown' : '';
       out.push(`<span class="ph ${cls}" data-lemma="${esc(ph.lemma)}" data-level="${ph.level}" data-start="${i}" data-end="${ph.end}">`);
-      phraseEnd = ph.end;
+      phraseEnd = ph.end - 1; // PhraseSpan.end is exclusive: the span closes after its last word
     }
     const info = ann.infos[i];
     if (t.kind === 'word' && info) {
