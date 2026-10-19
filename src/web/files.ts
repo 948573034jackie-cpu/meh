@@ -35,16 +35,14 @@ export function pickFile(accept = '.epub,.pdf,.txt,.md,application/epub+zip,appl
     const finish = (f: File | null) => {
       if (settled) return;
       settled = true;
-      window.removeEventListener('focus', onFocus);
       input.remove();
       resolve(f);
     };
-    // 'cancel' fires in recent browsers; the focus fallback covers the others (the change event, if any, comes first)
-    const onFocus = () => setTimeout(() => { if (!input.files?.length) finish(null); }, 1000);
+    // 'cancel' fires when the picker is dismissed in recent Safari and Chrome. Without it the promise simply
+    // stays pending, which is harmless; a focus-based guess would misfire on slow iCloud downloads.
     input.addEventListener('change', () => finish(input.files?.[0] ?? null));
     input.addEventListener('cancel', () => finish(null));
     document.body.appendChild(input);
-    window.addEventListener('focus', onFocus);
     input.click();
   });
 }

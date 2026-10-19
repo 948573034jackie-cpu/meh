@@ -5,7 +5,8 @@
  *
  * Forward compatibility: the object is wrapped in a Proxy. A method the renderer calls that this file does
  * not implement yet (added to ReadAlongApi later) resolves harmlessly (undefined; `on*` subscriptions return
- * an unsubscribe function) and logs one warning per method name.
+ * an unsubscribe function) and logs one warning per method name. The optional local speech-recognition
+ * methods (stt*) are deliberately left undefined, because the renderer feature-detects them.
  */
 import type { ReadAlongApi, KokoroStatus, Diagnostics } from '@shared/api';
 
@@ -110,6 +111,13 @@ export const webApiImpl = {
 
 const warned = new Set<string>();
 
+/**
+ * Optional methods the renderer feature-detects (`typeof api.sttStatus === 'function'`) and that cannot work in
+ * a browser: they must stay absent so the renderer takes its own fallback (local speech recognition: "Talking by
+ * voice needs the Mac app. You can type your question."). Any later stt* / onStt* method is treated the same.
+ */
+const ABSENT_OPTIONAL = /^(stt|onStt)[A-Z]/;
+
 /** Wraps an implementation so methods it lacks resolve harmlessly (see the file comment). */
 export function withFallback<T extends object>(impl: T): ReadAlongApi {
   return new Proxy(impl, {
@@ -117,6 +125,7 @@ export function withFallback<T extends object>(impl: T): ReadAlongApi {
       if (typeof prop === 'symbol' || prop in target) return Reflect.get(target, prop, receiver);
       // never look like a promise, and leave React/devtools probes alone
       if (prop === 'then' || prop === 'toJSON' || prop.startsWith('$$') || prop.startsWith('@@')) return undefined;
+      if (ABSENT_OPTIONAL.test(prop)) return undefined;
       return (..._args: unknown[]) => {
         if (!warned.has(prop)) { warned.add(prop); console.warn(`[web] window.readalong.${prop}() is not available in the web version; ignored.`); }
         return prop.startsWith('on') ? () => undefined : Promise.resolve(undefined);

@@ -76,8 +76,9 @@ function writeServiceWorker() {
   const version = hash.digest('hex').slice(0, 12);
   const assets = ['./', ...files];
   const sw = fs.readFileSync(path.join(root, 'web/sw.js'), 'utf8')
-    .replace('__VERSION__', version)
-    .replace('__ASSETS__', JSON.stringify(assets, null, 1));
+    .replace("const VERSION = '__VERSION__';", `const VERSION = '${version}';`)
+    .replace('const ASSETS = __ASSETS__;', `const ASSETS = ${JSON.stringify(assets, null, 1)};`);
+  if (sw.includes("'__VERSION__';") || sw.includes('= __ASSETS__')) throw new Error('sw.js placeholders not replaced');
   fs.writeFileSync(path.join(out, 'sw.js'), sw);
   return { version, count: assets.length };
 }
