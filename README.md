@@ -1,4 +1,4 @@
-# ReadAlong
+# Dream Read
 
 A macOS reading and listening app for English learners. It reads EPUB, PDF or pasted text aloud with a British voice, highlights each sentence and word as it is spoken, shows the pronunciation and Chinese meaning of any word you tap, and, in **listening mode**, stops at words above your level so Claude (or ChatGPT) can explain them out loud before the book continues.
 
@@ -13,21 +13,21 @@ A macOS reading and listening app for English learners. It reads EPUB, PDF or pa
 - **Explain the last part** (Shift+E): explains what was read in the last 20, 30, 40 or 60 seconds, rounded to whole sentences.
 - **Voices**: the free Mac voices (download the Enhanced or Premium British ones in System Settings), free Microsoft neural voices (unofficial service), or paid OpenAI and ElevenLabs voices.
 - **AI**: Claude Haiku, Sonnet or Opus, or ChatGPT, through your own API key. Costs are shown per explanation and per month, with a daily warning and a monthly stop you set.
-- **Look**: dark theme by default, light and sepia themes, selectable highlight colours, three fonts, text size, line height and margins.
+- **Look**: a calm, Kindle-like design. Night theme (warm dark) by default, plus Sepia, Light and Grey; separate sizes for book text, listening subtitles, explanations and the interface; line spacing and line length; selectable highlight colours and three fonts.
 
 ## Install on your Mac
 
 The app is not signed with an Apple developer certificate, so macOS will refuse to open it until you run two commands once.
 
-1. Unzip `ReadAlong-<version>-arm64-mac.zip` (Apple Silicon: M1, M2, M3, M4) or `ReadAlong-<version>-mac.zip` (Intel). Check Apple menu → About This Mac if unsure.
-2. Drag `ReadAlong.app` into your Applications folder.
+1. Unzip `DreamRead-<version>-arm64.zip` (Apple Silicon: M1, M2, M3, M4) or `DreamRead-<version>-x64.zip` (Intel). Check Apple menu → About This Mac if unsure.
+2. Drag `Dream Read.app` into your Applications folder.
 3. Open Terminal (Applications → Utilities → Terminal), paste this line and press Return:
 
    ```
-   xattr -cr /Applications/ReadAlong.app && codesign --force --deep --sign - /Applications/ReadAlong.app
+   xattr -cr "/Applications/Dream Read.app" && codesign --force --deep --sign - "/Applications/Dream Read.app"
    ```
 
-4. Open ReadAlong from Applications. If macOS still shows a warning, open System Settings → Privacy & Security, scroll down and click **Open Anyway**.
+4. Open Dream Read from Applications. If macOS still shows a warning, open System Settings → Privacy & Security, scroll down and click **Open Anyway**.
 
 macOS 13 Ventura or newer is required.
 
@@ -36,8 +36,8 @@ macOS 13 Ventura or newer is required.
 Install [Node.js](https://nodejs.org) (LTS), then in Terminal:
 
 ```
-git clone https://github.com/948573034jackie-cpu/meh.git readalong
-cd readalong
+git clone https://github.com/948573034jackie-cpu/meh.git dream-read
+cd dream-read
 npm install
 npm run dist:mac:local
 ```
@@ -46,11 +46,11 @@ The app appears in `release/`. This path produces an ad-hoc-signed app that open
 
 ## First-time setup (5 minutes)
 
-1. **AI key**. Choose Claude or ChatGPT in Settings → AI explanations.
-   - Claude: sign in at platform.claude.com (a separate account from claude.ai; the same email works), open **Settings → Billing → Buy credits** and buy 5 dollars of credit with a credit or debit card, then open **API keys → Create key**, copy the key (shown once) and paste it into ReadAlong. On the Billing page you can also set a monthly spend limit. Anthropic's rules do not allow Chinese mainland, Hong Kong or Macau billing addresses or phone numbers.
-   - ChatGPT: sign in at platform.openai.com, add credit under Billing, create an API key, paste it into ReadAlong.
+1. **AI key**. Choose Claude or ChatGPT in Settings → AI.
+   - Claude: sign in at platform.claude.com (a separate account from claude.ai; the same email works), open **Settings → Billing → Buy credits** and buy 5 dollars of credit with a credit or debit card, then open **API keys → Create key**, copy the key (shown once) and paste it into Dream Read. On the Billing page you can also set a monthly spend limit. Anthropic's rules do not allow Chinese mainland, Hong Kong or Macau billing addresses or phone numbers.
+   - ChatGPT: sign in at platform.openai.com, add credit under Billing, create an API key, paste it into Dream Read.
    - Without a key, tapping words still shows the dictionary meaning; only the spoken AI explanations need the key.
-2. **Voice**. The Mac voices work right away. For a much better British voice, open System Settings → Accessibility → Spoken Content → System Voice → Manage Voices…, download **Daniel (Enhanced)**, **Serena (Premium)** or **Jamie (Premium)**, restart ReadAlong and pick the voice in Settings → Voice & speed. The free Microsoft voices (Sonia, Ryan) need an internet connection.
+2. **Voice**. The Mac voices work right away. For a much better British voice, open System Settings → Accessibility → Spoken Content → System Voice → Manage Voices…, download **Daniel (Enhanced)**, **Serena (Premium)** or **Jamie (Premium)**, restart Dream Read and pick the voice in Settings → Voice. The free Microsoft voices (Sonia, Ryan) need an internet connection.
 3. **Level**. Settings → Level & stops: pick your CEFR level (default B2).
 
 ## Roughly what it costs
@@ -93,4 +93,4 @@ Layout: `src/main` (Electron main process: files, storage, API calls, cloud voic
 
 ## Data and credits
 
-Dictionary data: [ECDICT](https://github.com/skywind3000/ECDICT) (MIT repository), [ipa-dict](https://github.com/open-dict-data/ipa-dict) en_UK (GPL-3 derived), [CEFR-J Wordlist](https://www.cefr-j.org/) 1.5 (Tono Laboratory, TUFS; free with citation), [Octanove Vocabulary Profile C1/C2](https://github.com/openlanguageprofiles/olp-en-cefrj) (CC BY-SA 4.0). The level of words outside these lists is estimated from exam tags and frequency ranks. Your books, vocabulary, settings and API keys stay on your Mac (`~/Library/Application Support/ReadAlong`); only the word, its sentence and the surrounding sentences are sent to the AI you chose.
+Dictionary data: [ECDICT](https://github.com/skywind3000/ECDICT) (MIT repository), [ipa-dict](https://github.com/open-dict-data/ipa-dict) en_UK (GPL-3 derived), [CEFR-J Wordlist](https://www.cefr-j.org/) 1.5 (Tono Laboratory, TUFS; free with citation), [Octanove Vocabulary Profile C1/C2](https://github.com/openlanguageprofiles/olp-en-cefrj) (CC BY-SA 4.0). The level of words outside these lists is estimated from exam tags and frequency ranks. Your books, vocabulary, settings and API keys stay on your Mac (`~/Library/Application Support/Dream Read`; data from the app's earlier name, ReadAlong, is copied over on first start); exports go to `~/Documents/Dream Read`; only the word, its sentence and the surrounding sentences are sent to the AI you chose.

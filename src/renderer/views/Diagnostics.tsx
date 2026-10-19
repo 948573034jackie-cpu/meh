@@ -24,7 +24,7 @@ export function DiagnosticsView(): JSX.Element {
     return () => speechSynthesis.removeEventListener('voiceschanged', load);
   }, []);
   const runProbe = () => {
-    const u = new SpeechSynthesisUtterance('Testing word boundary events for ReadAlong.');
+    const u = new SpeechSynthesisUtterance('Testing word boundary events for Dream Read.');
     const gb = speechSynthesis.getVoices().find((v) => v.lang.replace('_', '-').toLowerCase() === 'en-gb');
     if (gb) u.voice = gb;
     let words = 0; const t0 = performance.now();

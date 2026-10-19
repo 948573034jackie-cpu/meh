@@ -67,9 +67,21 @@ test.describe('reader', () => {
     await page.getByRole('button', { name: 'Level & stops' }).click();
     await page.getByTestId('level-C1').click();
     await expect(page.getByTestId('level-C1')).toHaveClass(/primary/);
-    await page.getByRole('button', { name: 'Appearance' }).click();
-    await page.locator('select').first().selectOption('light');
+    await page.getByRole('button', { name: 'Reading look' }).click();
+    await page.getByTestId('theme-light').click();
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('light');
+    await page.getByTestId('theme-sepia').click();
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe('sepia');
+    // sizes: the slider updates the CSS variables at once and survives a settings round-trip
+    await page.getByTestId('size-subtitle').fill('30');
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--subtitle-size').trim())).toBe('30px');
+    await page.getByTestId('layout').selectOption('scroll');
+    const saved = await page.evaluate(() => window.readalong.getSettings());
+    expect(saved.appearance.theme).toBe('sepia');
+    expect(saved.appearance.subtitleSizePx).toBe(30);
+    expect(saved.appearance.layout).toBe('scroll');
+    expect(saved.appearance.maxLineChars).toBe(70);
+    expect(saved.appearance.showTips).toBe(true);
     await page.getByTestId('finish-onboarding').click();
     await expect(page.getByTestId('library')).toBeVisible();
     await app.close();

@@ -1,12 +1,13 @@
 import type { Settings, VocabState, WordStatus, MarkedRange, UsageRecord } from '@shared/settings';
-import { DEFAULT_SETTINGS } from '@shared/settings';
+import { DEFAULT_SETTINGS, migrateSettings } from '@shared/settings';
 import { JsonStore } from './storage';
 
 const settingsStore = new JsonStore<Settings>('settings', () => structuredClone(DEFAULT_SETTINGS));
 const vocabStore = new JsonStore<VocabState>('vocab', () => ({ words: {}, marked: {} }));
 const usageStore = new JsonStore<{ records: UsageRecord[] }>('usage', () => ({ records: [] }));
 
-function deepMerge<T>(base: T, patch: Partial<T>): T {
+/** Recursively merges patch over base: nested plain objects merge, arrays and scalars replace. Exported for tests. */
+export function deepMerge<T>(base: T, patch: Partial<T>): T {
   const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
     const cur = out[k];
@@ -16,9 +17,10 @@ function deepMerge<T>(base: T, patch: Partial<T>): T {
   return out as T;
 }
 
-export function getSettings(): Settings { return deepMerge(structuredClone(DEFAULT_SETTINGS), settingsStore.get()); }
+/** Stored settings over the defaults, so every field added in a later version has a value; old theme ids are migrated. */
+export function getSettings(): Settings { return migrateSettings(deepMerge(structuredClone(DEFAULT_SETTINGS), migrateSettings(settingsStore.get()))); }
 export function setSettings(patch: Partial<Settings>): Settings {
-  const next = deepMerge(getSettings(), patch);
+  const next = migrateSettings(deepMerge(getSettings(), migrateSettings(patch)));
   settingsStore.set(next);
   return next;
 }

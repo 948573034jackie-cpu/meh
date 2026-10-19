@@ -28,7 +28,7 @@ export function buildMenu(getWindow: () => BrowserWindow | null): Menu {
       { type: 'separator' }, { role: 'togglefullscreen' }, { role: 'toggleDevTools' },
     ] },
     { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [{ role: 'close' as const }])] },
-    { label: 'Help', submenu: [{ label: 'ReadAlong Help', click: () => shell.openExternal('https://github.com/948573034jackie-cpu/meh#readme') }] },
+    { label: 'Help', submenu: [{ label: 'Dream Read Help', click: () => shell.openExternal('https://github.com/948573034jackie-cpu/meh#readme') }] },
   ];
   return Menu.buildFromTemplate(template);
 }

@@ -35,6 +35,7 @@ const api: ReadAlongApi = {
   ttsSynthesize: (engine, text, voiceId, rate) => invoke('tts:synthesize', engine, text, voiceId, rate),
   getDiagnostics: () => invoke('app:diagnostics'),
   openExternal: (url) => invoke('app:openExternal', url),
+  exportText: (fileName, contents) => invoke('app:exportText', fileName, contents),
   onMenu: (cb) => {
     const handler = (_e: Electron.IpcRendererEvent, action: string) => cb(action);
     ipcRenderer.on('menu:action', handler);

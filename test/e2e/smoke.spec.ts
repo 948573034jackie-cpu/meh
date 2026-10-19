@@ -7,6 +7,6 @@ test('app launches, shows onboarding, then the library', async () => {
   await page.getByTestId('finish-onboarding').click();
   await expect(page.getByTestId('library')).toBeVisible();
   const diag = await app.evaluate(async ({ app }) => ({ name: app.getName(), version: app.getVersion() }));
-  expect(diag.name).toBe('ReadAlong');
+  expect(diag.name).toBe('Dream Read');
   await app.close();
 });

@@ -4,6 +4,7 @@ import type { PlaybackState } from '@core/listen/playback';
 import type { Settings, TtsEngineId } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
 import { ENGINE_LABELS, AVAILABLE_ENGINES } from '@core/tts/engine';
+import { Tip } from '../ui/Tip';
 
 interface Props {
   book: Book;
@@ -34,13 +35,13 @@ export function Transport(p: Props): JSX.Element {
   return (
     <div className="transport" data-testid="transport">
       <button className="icon" title="Previous sentence (←)" onClick={p.onPrev}>⏮</button>
-      <button className="primary icon" style={{ minWidth: 64 }} title="Play / pause (Space)" onClick={p.onPlayPause} data-testid="play">{playing ? '⏸' : '▶'}</button>
+      <Tip text="Play or pause (Space)"><button className="primary icon" style={{ minWidth: 64 }} title="Play / pause (Space)" onClick={p.onPlayPause} data-testid="play">{playing ? '⏸' : '▶'}</button></Tip>
       <button className="icon" title="Next sentence (→)" onClick={p.onNext}>⏭</button>
-      <button className={`listen-toggle ${p.listenOn ? 'on' : ''}`} title="Listening mode: stops at hard words and explains them (Q)" onClick={p.onToggleListen} data-testid="listen">
+      <Tip text="Listening mode: the reading stops at hard words and explains them (Q)"><button className={`listen-toggle ${p.listenOn ? 'on' : ''}`} title="Listening mode: stops at hard words and explains them (Q)" onClick={p.onToggleListen} data-testid="listen">
         {p.listenOn ? '● Listening mode' : '○ Listening mode'}
-      </button>
+      </button></Tip>
       {p.listenOn && p.stops !== null && <span className="pill live" title="Stops left in this chapter">{p.stops} stops</span>}
-      <button title="Explain the last part (Shift+E)" onClick={p.onExplainLast} data-testid="explain-last">↺ Explain last</button>
+      <Tip text="Explain what was just read (Shift+E)"><button title="Explain the last part (Shift+E)" onClick={p.onExplainLast} data-testid="explain-last">↺ Explain last</button></Tip>
       <select value={p.settings.listen.lastSecondsWindow} onChange={(e) => p.onWindow(Number(e.target.value) as never)} title="How far back">
         {[20, 30, 40, 60].map((s) => <option key={s} value={s}>{s} s</option>)}
       </select>
@@ -64,9 +65,9 @@ export function Transport(p: Props): JSX.Element {
       <select value={p.chapter} onChange={(e) => p.onChapter(Number(e.target.value))} title="Chapter">
         {p.book.chapters.map((c) => <option key={c.index} value={c.index}>{c.index + 1}. {c.title.slice(0, 40)}</option>)}
       </select>
-      <button className="icon" title="Page / scroll layout" onClick={p.onLayout}>{p.settings.appearance.layout === 'page' ? '📖' : '📜'}</button>
-      <button className={`icon ${p.settings.appearance.bandEnabled ? 'active' : ''}`} title="Subtitle band (B)" onClick={p.onBand}>▭</button>
-      <button className="icon" title="Explanations panel" onClick={p.onTranscript}>{p.transcriptOpen ? '▶|' : '|◀'}</button>
+      <Tip text="Pages or one long scroll"><button className="icon" title="Page / scroll layout" onClick={p.onLayout}>{p.settings.appearance.layout === 'page' ? '📖' : '📜'}</button></Tip>
+      <Tip text="Subtitle band at the bottom (B)"><button className={`icon ${p.settings.appearance.bandEnabled ? 'active' : ''}`} title="Subtitle band (B)" onClick={p.onBand}>▭</button></Tip>
+      <Tip text="Show or hide the explanations panel"><button className="icon" title="Explanations panel" onClick={p.onTranscript}>{p.transcriptOpen ? '▶|' : '|◀'}</button></Tip>
     </div>
   );
 }

@@ -5,6 +5,9 @@ import * as settings from './settings';
 import * as secrets from './secrets';
 import { registerAiHandlers } from './ai';
 import { registerTtsHandlers } from './tts';
+import { exportDir } from './paths';
+import { writeAtomic } from './storage';
+import path from 'node:path';
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('library:importDialog', () => library.importBookDialog(getWindow()));
@@ -30,6 +33,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('app:openExternal', (_e, url: string) => {
     if (/^https?:\/\//.test(url)) return shell.openExternal(url);
+  });
+  ipcMain.handle('app:exportText', (_e, fileName: string, contents: string) => {
+    const safe = String(fileName).replace(/[\\/:*?"<>|]+/g, '-').trim() || 'export.txt';
+    const file = path.join(exportDir(), safe);
+    writeAtomic(file, contents);
+    shell.showItemInFolder(file);
+    return file;
   });
   ipcMain.handle('app:diagnostics', async (): Promise<Diagnostics> => {
     let dictWords = 0;

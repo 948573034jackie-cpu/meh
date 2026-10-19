@@ -1,12 +1,12 @@
 {
-  "name": "readalong",
-  "productName": "ReadAlong",
+  "name": "dream-read",
+  "productName": "Dream Read",
   "version": "0.1.0",
-  "description": "Reading and listening app for English learners: read EPUB/PDF aloud with word highlighting, tap-to-translate, and AI explanations.",
+  "description": "Dream Read: a calm reading and listening app for English learners. Reads EPUB, PDF and pasted text aloud with word highlighting, tap-to-translate, and spoken AI explanations.",
   "main": "dist/main/index.js",
   "private": true,
   "license": "MIT",
-  "author": "ReadAlong",
+  "author": "Dream Read",
   "scripts": {
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
@@ -25,8 +25,10 @@
     "dompurify": "^3.4.17",
     "jszip": "^3.10.2",
     "msedge-tts": "^2.1.0",
+    "onnxruntime-node": "^1.30.0",
     "openai": "^7.38.0",
     "pdfjs-dist": "^6.4.299",
+    "phonemizer": "^1.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.15"
@@ -37,16 +39,16 @@
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
+    "electron": "^44.9.0",
     "electron-builder": "^26.17.0",
     "esbuild": "^0.25.12",
     "playwright": "^1.64.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7",
-    "electron": "^44.9.0"
+    "vitest": "^3.2.7"
   },
   "build": {
-    "appId": "app.readalong.desktop",
-    "productName": "ReadAlong",
+    "appId": "app.dreamread.desktop",
+    "productName": "Dream Read",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -77,11 +79,12 @@
       "minimumSystemVersion": "13.0.0",
       "darkModeSupport": true,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "ReadAlong uses the microphone only if you ask a question by voice."
+        "NSMicrophoneUsageDescription": "Dream Read uses the microphone only if you ask a question by voice."
       },
       "icon": "build/icon.png"
     },
     "npmRebuild": false,
-    "compression": "normal"
+    "compression": "normal",
+    "artifactName": "DreamRead-${version}-${arch}.${ext}"
   }
 }
