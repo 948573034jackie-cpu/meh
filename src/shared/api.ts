@@ -1,8 +1,87 @@
-import type { Book, Position } from '@core/model';
+import type { Book, Position, CefrLevel } from '@core/model';
 import type { Settings, VocabState, LibraryItem, WordStatus, MarkedRange, UsageRecord, TtsEngineId } from './settings';
 
 export interface DictData { w: Record<string, DictRaw>; f: Record<string, string> }
 export interface DictRaw { i: string; t: string; g: string; f: number; b: number; c: number; o: number; l: string; s: string }
+
+/* ------------------------------------------------------------------------------------------------
+ * My Vocabulary (src/main/vocabulary.ts): every word the learner had explained, with where it was met.
+ * ---------------------------------------------------------------------------------------------- */
+
+export type VocabEntryStatus = 'learning' | 'known';
+
+export interface VocabEntry {
+  /** dictionary lemma; the key of the entry and of VocabState.words */
+  lemma: string;
+  /** the word as it appeared in the text the first time */
+  word: string;
+  /** the sentence it was first met in (kept on later explanations) */
+  sentence: string;
+  /** the latest explanation */
+  explanation: string;
+  /** Chinese meaning (dictionary gloss or the explanation's Chinese line) */
+  chinese: string;
+  bookId: string;
+  bookTitle: string;
+  /** chapter title (or number) where the word was first met */
+  chapter: string;
+  position: Position | null;
+  createdAt: string;
+  lastSeenAt: string;
+  timesExplained: number;
+  status: VocabEntryStatus;
+  level?: CefrLevel;
+  /** how many times the learner said "I don't know" about this word */
+  again: number;
+}
+
+/** What the reader sends when a word was explained; counters and dates are filled in by the store. */
+export interface VocabEntryInput {
+  lemma: string;
+  word: string;
+  sentence: string;
+  explanation: string;
+  chinese?: string;
+  bookId: string;
+  bookTitle: string;
+  chapter: string;
+  position?: Position | null;
+  level?: CefrLevel;
+  /** true when this explanation was an "I don't know" (explain again) */
+  again?: boolean;
+}
+
+export interface LevelProgress {
+  level: CefrLevel;
+  /** words of this level (CEFR-tagged dictionary words) marked known */
+  known: number;
+  learning: number;
+  /** CEFR-tagged dictionary words of this level that are neither known nor learning (ignored words are left out) */
+  unknown: number;
+  /** CEFR-tagged dictionary words at this level */
+  total: number;
+}
+
+export interface VocabProgress {
+  levels: LevelProgress[];
+  totals: {
+    /** all words marked known (any level, tagged or not) */
+    known: number;
+    learning: number;
+    unknown: number;
+    /** entries in My Vocabulary */
+    entries: number;
+  };
+  /** entries added to My Vocabulary in the last 7 days */
+  learnedThisWeek: number;
+  /** days in a row (ending today or yesterday) with at least one word met or explained */
+  streakDays: number;
+  /** YYYY-MM-DD of the last day with activity, null when there is none */
+  lastActiveDay: string | null;
+}
+
+/** A dictionary word the learner does not know yet, for the Progress page. */
+export interface UnknownWord { word: string; zh: string; ipa: string; level: CefrLevel; frq: number }
 
 export type ExplainKind = 'word' | 'phrase' | 'sentence' | 'passage' | 'question';
 
@@ -97,6 +176,19 @@ export interface ReadAlongApi {
   getVocab(): Promise<VocabState>;
   setWordStatus(lemma: string, status: WordStatus | null): Promise<void>;
   setMarkedRanges(bookId: string, ranges: MarkedRange[]): Promise<void>;
+  // My Vocabulary (the explained-words list; keeps VocabState.words in sync)
+  vocabEntries(): Promise<VocabEntry[]>;
+  /** adds a word or merges into its entry: one more explanation, first sentence kept, latest explanation kept */
+  vocabUpsertEntry(entry: VocabEntryInput): Promise<VocabEntry>;
+  vocabSetEntryStatus(lemma: string, status: VocabEntryStatus): Promise<void>;
+  vocabDeleteEntry(lemma: string): Promise<void>;
+  /** writes ~/Documents/Dream Read/my-vocabulary.csv now, reveals it in Finder and resolves with the path */
+  vocabExportCsv(): Promise<string>;
+  /** where the CSV is written (it is also rewritten automatically after every change) */
+  vocabCsvPath(): Promise<string>;
+  vocabProgress(): Promise<VocabProgress>;
+  /** dictionary words of that CEFR level the learner has not marked yet, most frequent first */
+  vocabUnknownAtLevel(level: CefrLevel): Promise<UnknownWord[]>;
   // settings & secrets
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;

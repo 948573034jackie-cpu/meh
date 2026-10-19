@@ -1,8 +1,10 @@
 import { app, ipcMain, shell, BrowserWindow } from 'electron';
-import type { Diagnostics, SecretName } from '@shared/api';
+import type { Diagnostics, SecretName, VocabEntryInput, VocabEntryStatus } from '@shared/api';
+import type { CefrLevel } from '@core/model';
 import * as library from './library';
 import * as settings from './settings';
 import * as secrets from './secrets';
+import * as vocabulary from './vocabulary';
 import { registerAiHandlers } from './ai';
 import { registerTtsHandlers } from './tts';
 import { exportDir } from './paths';
@@ -23,6 +25,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('vocab:get', () => settings.getVocab());
   ipcMain.handle('vocab:setStatus', (_e, lemma: string, status) => settings.setWordStatus(lemma, status));
   ipcMain.handle('vocab:setMarked', (_e, bookId: string, ranges) => settings.setMarkedRanges(bookId, ranges));
+
+  // My Vocabulary (src/main/vocabulary.ts); the dictionary gives levels and the Progress counts
+  vocabulary.setDictionaryProvider(() => library.getDictData());
+  ipcMain.handle('vocab:entries', () => vocabulary.listEntries());
+  ipcMain.handle('vocab:upsertEntry', (_e, entry: VocabEntryInput) => vocabulary.upsertEntry(entry));
+  ipcMain.handle('vocab:setEntryStatus', (_e, lemma: string, status: VocabEntryStatus) => vocabulary.setEntryStatus(lemma, status));
+  ipcMain.handle('vocab:deleteEntry', (_e, lemma: string) => vocabulary.deleteEntry(lemma));
+  ipcMain.handle('vocab:exportCsv', () => {
+    const file = vocabulary.writeCsv();
+    shell.showItemInFolder(file);
+    return file;
+  });
+  ipcMain.handle('vocab:csvPath', () => vocabulary.csvPath());
+  ipcMain.handle('vocab:progress', () => vocabulary.getProgress());
+  ipcMain.handle('vocab:unknownAtLevel', (_e, level: CefrLevel) => vocabulary.getUnknownAtLevel(level));
 
   ipcMain.handle('settings:get', () => settings.getSettings());
   ipcMain.handle('settings:set', (_e, patch) => settings.setSettings(patch));
