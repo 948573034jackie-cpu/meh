@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Book } from '@core/model';
-import type { Settings, LibraryItem, VocabState } from '@shared/settings';
+import type { Settings, LibraryItem, VocabState, ReadMode } from '@shared/settings';
 import { DEFAULT_SETTINGS, isDarkTheme } from '@shared/settings';
 
 export type View = 'library' | 'reader' | 'settings' | 'diagnostics';
@@ -10,6 +10,8 @@ interface AppState {
   settings: Settings;
   library: LibraryItem[];
   book: Book | null;
+  /** the screen the open book is shown on; persisted per book (settings.bookModes) and as settings.lastMode */
+  mode: ReadMode;
   vocab: VocabState;
   toast: { text: string; action?: { label: string; run: () => void } } | null;
   setView(v: View): void;
@@ -18,8 +20,20 @@ interface AppState {
   refreshLibrary(): Promise<void>;
   openBook(id: string): Promise<void>;
   setBook(b: Book | null): void;
+  /** switches the screen of the open book and remembers it for the book and as the default for new books */
+  setMode(m: ReadMode): void;
   setVocab(v: VocabState): void;
   showToast(text: string, action?: { label: string; run: () => void }): void;
+}
+
+/** The screen a book opens on: the one used last for it, else the one used last at all. */
+export function modeForBook(settings: Settings, bookId: string): ReadMode {
+  return settings.bookModes?.[bookId] ?? settings.lastMode ?? 'reading';
+}
+
+/** Library items with the per-book screen filled in from settings, so the library can show it. */
+function withModes(items: LibraryItem[], settings: Settings): LibraryItem[] {
+  return items.map((it) => (settings.bookModes?.[it.id] ? { ...it, mode: settings.bookModes[it.id] } : it));
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -27,20 +41,29 @@ export const useApp = create<AppState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   library: [],
   book: null,
+  mode: 'reading',
   vocab: { words: {}, marked: {} },
   toast: null,
   setView: (view) => set({ view }),
-  setSettings: (settings) => set({ settings }),
+  setSettings: (settings) => set({ settings, library: withModes(get().library, settings) }),
   patchSettings: async (patch) => {
     const settings = await window.readalong.setSettings(patch);
-    set({ settings });
+    set({ settings, library: withModes(get().library, settings) });
   },
-  refreshLibrary: async () => set({ library: await window.readalong.listLibrary() }),
+  refreshLibrary: async () => set({ library: withModes(await window.readalong.listLibrary(), get().settings) }),
   openBook: async (id) => {
     const book = await window.readalong.loadBook(id);
-    if (book) set({ book, view: 'reader' });
+    if (book) set({ book, view: 'reader', mode: modeForBook(get().settings, book.id) });
   },
-  setBook: (book) => set({ book }),
+  setBook: (book) => set({ book, mode: book ? modeForBook(get().settings, book.id) : get().mode }),
+  setMode: (mode) => {
+    const { book, settings } = get();
+    if (get().mode === mode) return;
+    set({ mode });
+    const patch: Partial<Settings> = { lastMode: mode };
+    if (book) patch.bookModes = { ...(settings.bookModes ?? {}), [book.id]: mode };
+    void get().patchSettings(patch);
+  },
   setVocab: (vocab) => set({ vocab }),
   showToast: (text, action) => {
     set({ toast: { text, action } });
@@ -72,6 +95,8 @@ export function applyAppearance(s: Settings): void {
   root.style.setProperty('--max-line-listen', String(a.listenMaxLineChars ?? DEFAULT_SETTINGS.appearance.listenMaxLineChars));
   root.dataset.tips = a.showTips === false ? '0' : '1';
   root.dataset.underlineOnly = a.underlineOnly ? '1' : '0';
+  root.dataset.hints = a.showHints === false ? '0' : '1';
+  root.dataset.pageTurn = a.pageTurnAnimation === false ? '0' : '1';
 }
 
 function clamp(n: number, lo: number, hi: number): number { return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : 1; }

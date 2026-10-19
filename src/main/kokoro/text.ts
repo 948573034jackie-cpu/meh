@@ -47,8 +47,8 @@ export function splitPieces(text: string): Piece[] {
     const mapped = PUNCT_MAP[raw] ?? raw;
     if (mapped && VOCAB_PUNCT.has(mapped)) {
       const last = out[out.length - 1];
-      // collapse runs of punctuation ("?!", "...") into one token so the model sees a single pause
-      if (last && last.kind === 'punct' && last.charIndex + last.charLength === m.index) { last.charLength += raw.length; if (/[.!?]/.test(mapped) && !/[.!?]/.test(last.spoken)) last.spoken = mapped; continue; }
+      // collapse runs of sentence punctuation ("?!", "...") into one token so the model sees a single pause
+      if (last && last.kind === 'punct' && last.charIndex + last.charLength === m.index && /[.!?…]/.test(mapped) && /[.!?…]/.test(last.spoken)) { last.charLength += raw.length; if (mapped !== '.') last.spoken = mapped; continue; }
       out.push({ kind: 'punct', spoken: mapped, charIndex: m.index, charLength: raw.length });
     }
   }
@@ -62,7 +62,7 @@ export function normalizeWord(word: string, after = ''): string {
   if (TITLES[lower] && (lower !== 'st' || /^ [A-Z]/.test(after))) return TITLES[lower];
   if (/^[$£]/.test(w)) return money(w);
   if (/^\d+:\d\d$/.test(w)) return clock(w);
-  if (/^\d[\d,]*(?:\.\d+)?s?$/.test(w)) return number(w.replace(/,/g, ''));
+  if (/^\d[\d,]*(?:\.\d+)?s?$/.test(w)) return w.includes(',') ? w.replace(/,/g, '') : number(w);
   if (/^(?:[A-Za-z]\.)+[A-Za-z]\.?$/.test(w)) return w.replace(/\./g, ' ').trim().split(' ').join(' ');
   if (/^[A-Z]{2,5}$/.test(w) && !/^(?:OK|TV|UK|USA|US|UN|EU|NATO|NASA|BBC|CNN|DNA|FBI|CIA|GPS|PhD|AM|PM)$/.test(w)) return w.split('').join(' ');
   return w;

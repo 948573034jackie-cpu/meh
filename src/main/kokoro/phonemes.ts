@@ -110,24 +110,32 @@ async function phonemizeGroup(g: { words: Piece[]; punct: Piece | null }, lang: 
   const tokens: number[] = []; const owner: number[] = []; const words: Chunk['words'] = [];
   let phonemes = '';
   if (g.words.length) {
+    // the whole run of words goes to espeak in one call (context matters for stress and reductions); the
+    // model gets espeak's phonemes exactly as returned, ownership is computed on top
     const ph = fixPhonemes((await phonemize(g.words.map((w) => w.spoken).join(' '), lang)).join(' '), lang).trim();
-    const phGroups = ph.split(/\s+/).filter(Boolean);
-    let perWord: string[][];
-    if (phGroups.length === g.words.length) perWord = phGroups.map((p) => [p]);
-    else {
-      // counts differ (espeak merged or expanded words): split the phoneme string over the words in
-      // proportion to each word's own phoneme length
-      const singles = await Promise.all(g.words.map(async (w) => fixPhonemes((await phonemize(w.spoken, lang)).join(' '), lang).replace(/\s+/g, '')));
-      perWord = proportionalSplit(ph.replace(/\s+/g, ''), singles.map((s) => Math.max(1, s.length))).map((p) => [p]);
+    const ids = tokenize(ph);
+    for (const w of g.words) words.push({ charIndex: w.charIndex, charLength: w.charLength });
+    const groupCount = ids.reduce((n, t, i) => n + (t === SPACE_TOKEN && i > 0 && ids[i - 1] !== SPACE_TOKEN ? 1 : 0), 0) + 1;
+    let owners: number[];
+    if (groupCount === g.words.length) {
+      let gi = 0;
+      owners = ids.map((t, i) => { if (t === SPACE_TOKEN) { if (i > 0 && ids[i - 1] !== SPACE_TOKEN) gi++; return -1; } return gi; });
+    } else {
+      // espeak merged ("was the" -> "wʌzðə") or expanded ("1999" -> three groups) words, or a word was
+      // normalised into several: attribute the non-space tokens to the words in proportion to the length
+      // of each word phonemized on its own
+      const singles = await Promise.all(g.words.map(async (w) => tokenize(fixPhonemes((await phonemize(w.spoken, lang)).join(' '), lang)).filter((t) => t !== SPACE_TOKEN).length));
+      const counts = proportionalCounts(ids.filter((t) => t !== SPACE_TOKEN).length, singles.map((n) => Math.max(1, n)));
+      let wi = 0; let left = counts[0] ?? 0;
+      owners = ids.map((t) => {
+        if (t === SPACE_TOKEN) return -1;
+        while (left <= 0 && wi < counts.length - 1) { wi++; left = counts[wi]; }
+        left--;
+        return wi;
+      });
     }
-    perWord.forEach((parts, wi) => {
-      const w = g.words[wi];
-      const widx = words.push({ charIndex: w.charIndex, charLength: w.charLength }) - 1;
-      const ids = tokenize(parts.join(''));
-      if (tokens.length) { tokens.push(SPACE_TOKEN); owner.push(-1); phonemes += ' '; }
-      for (const id of ids) { tokens.push(id); owner.push(widx); }
-      phonemes += parts.join('');
-    });
+    tokens.push(...ids); owner.push(...owners);
+    phonemes += ph;
   }
   if (g.punct) {
     const ids = tokenize(g.punct.spoken);
@@ -138,19 +146,18 @@ async function phonemizeGroup(g: { words: Piece[]; punct: Piece | null }, lang: 
   return { tokens, owner, words, phonemes, sentenceEnd: !!g.punct && isBreak(g.punct) };
 }
 
-/** Splits `s` into pieces whose lengths follow `weights` proportionally (every piece at least 1 char when possible). */
-export function proportionalSplit(s: string, weights: number[]): string[] {
-  const chars = [...s];
-  const total = weights.reduce((a, b) => a + b, 0) || 1;
-  const out: string[] = [];
-  let pos = 0;
-  let acc = 0;
+/** Splits `total` items over `weights` proportionally; every part gets at least one item while items remain. */
+export function proportionalCounts(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const out: number[] = [];
+  let pos = 0; let acc = 0;
   for (let i = 0; i < weights.length; i++) {
     acc += weights[i];
-    let end = i === weights.length - 1 ? chars.length : Math.round((acc / total) * chars.length);
-    if (end <= pos && pos < chars.length) end = pos + 1;
-    out.push(chars.slice(pos, Math.max(pos, end)).join(''));
-    pos = Math.max(pos, end);
+    let end = i === weights.length - 1 ? total : Math.round((acc / sum) * total);
+    if (end <= pos && pos < total) end = pos + 1;
+    end = Math.max(pos, Math.min(total, end));
+    out.push(end - pos);
+    pos = end;
   }
   return out;
 }

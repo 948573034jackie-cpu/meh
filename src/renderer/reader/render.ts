@@ -2,6 +2,7 @@ import type { Book, Chapter, Paragraph, Sentence, CefrLevel } from '@core/model'
 import type { Dictionary } from '@core/dict/types';
 import type { VocabState, MarkedRange } from '@shared/settings';
 import { annotateSentence, type WordInfo } from '@core/vocab/analysis';
+import { hintFor } from './hints';
 
 export interface RenderOptions {
   dict: Dictionary;
@@ -9,6 +10,10 @@ export interface RenderOptions {
   learner: CefrLevel;
   vocab: VocabState['words'];
   marked: MarkedRange[];
+  /** Word Wise-style hints (a short Chinese meaning under hard words) as data-hint; default off */
+  hints?: boolean;
+  /** lemma -> hint text that replaces the dictionary one (a later AI job fills this) */
+  hintOverrides?: Record<string, string>;
 }
 
 export interface TokenMeta { lemma: string; level: CefrLevel | null; isName: boolean; inDict: boolean; ipa: string; zh: string }
@@ -76,7 +81,8 @@ export function renderSentence(para: Paragraph, s: Sentence, chapter: number, op
     if (t.kind === 'word' && info) {
       const cls = stateClass(info, opts.learner, opts.vocab);
       const inMark = marks.some((m) => t.start >= m.start && t.end <= m.end);
-      out.push(`<span class="w${cls ? ' ' + cls : ''}${inMark ? ' hl-marked' : ''}${info.isName ? ' name' : ''}" data-t="${i}" data-lemma="${esc(info.lemma)}"${info.level ? ` data-level="${info.level}"` : ''}>${esc(t.text)}</span>`);
+      const hint = opts.hints && phraseEnd < 0 ? hintFor(info, opts.learner, opts.vocab, opts.hintOverrides?.[info.lemma]) : '';
+      out.push(`<span class="w${cls ? ' ' + cls : ''}${inMark ? ' hl-marked' : ''}${info.isName ? ' name' : ''}" data-t="${i}" data-lemma="${esc(info.lemma)}"${info.level ? ` data-level="${info.level}"` : ''}${hint ? ` data-hint="${esc(hint)}"` : ''}>${esc(t.text)}</span>`);
       metas.push({ lemma: info.lemma, level: info.level, isName: info.isName, inDict: info.inDict, ipa: info.entry?.ipa ?? '', zh: info.entry?.zh ?? '' });
     } else {
       out.push(`<span class="w ${t.kind}" data-t="${i}">${esc(t.text)}</span>`);
@@ -91,15 +97,19 @@ export function renderSentence(para: Paragraph, s: Sentence, chapter: number, op
   return out.join('');
 }
 
-/** Updates the state class of every span for a lemma after the learner changed its status. */
-export function restyleLemma(root: HTMLElement, lemma: string, status: 'known' | 'learning' | 'ignored' | null, learner: CefrLevel): void {
+/**
+ * Updates the state class of every span for a lemma after the learner changed its status. A word that is
+ * known, learning or ignored loses its hint; a word back to "new" gets it again from `hint`.
+ */
+export function restyleLemma(root: HTMLElement, lemma: string, status: 'known' | 'learning' | 'ignored' | null, learner: CefrLevel, hint?: string): void {
   const els = root.querySelectorAll<HTMLElement>(`[data-lemma="${CSS.escape(lemma)}"]`);
   for (const el of els) {
     el.classList.remove('hl-unknown', 'hl-learning');
+    if (status) delete el.dataset.hint;
     if (status === 'learning') el.classList.add('hl-learning');
     else if (!status) {
       const level = el.dataset.level as CefrLevel | undefined;
-      if (level && above(level, learner) && !el.classList.contains('name')) el.classList.add('hl-unknown');
+      if (level && above(level, learner) && !el.classList.contains('name')) { el.classList.add('hl-unknown'); if (hint && el.classList.contains('w')) el.dataset.hint = hint; }
     }
   }
 }

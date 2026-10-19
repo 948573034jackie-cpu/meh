@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { splitPieces, normalizeWord } from '../../src/main/kokoro/text';
-import { textToChunks, tokenize, fixPhonemes, proportionalSplit, VOCAB, SPACE_TOKEN, type Phonemizer } from '../../src/main/kokoro/phonemes';
+import { textToChunks, tokenize, fixPhonemes, proportionalCounts, VOCAB, SPACE_TOKEN, type Phonemizer } from '../../src/main/kokoro/phonemes';
 import { wordTimes, trimRange } from '../../src/main/kokoro/align';
 import { encodeWav, decodeWav } from '../../src/main/kokoro/wav';
 import { parseNpy, readVoicesNpz } from '../../src/main/kokoro/npz';
@@ -24,7 +24,8 @@ describe('kokoro text pieces', () => {
   });
   it('normalises numbers, money, years and times', () => {
     expect(normalizeWord('1999')).toBe('19 99');
-    expect(normalizeWord('2005')).toBe('20 oh 5');
+    expect(normalizeWord('2005')).toBe('2005');
+    expect(normalizeWord('2024')).toBe('20 24');
     expect(normalizeWord('1800')).toBe('18 hundred');
     expect(normalizeWord('42')).toBe('42');
     expect(normalizeWord('1,250')).toBe('1250');
@@ -44,23 +45,21 @@ const fakePhonemize: Phonemizer = async (text) => [text.toLowerCase().replace(/w
 
 describe('kokoro chunks and token ownership', () => {
   it('maps every token to its word and inserts punctuation tokens', async () => {
-    const chunks = await textToChunks('Hi there, friend.', 'en', fakePhonemize);
+    const chunks = await textToChunks('Hi you, mate.', 'en', fakePhonemize);
     expect(chunks).toHaveLength(1);
     const c = chunks[0];
-    expect(c.words.map((w) => [w.charIndex, w.charLength])).toEqual([[0, 2], [3, 5], [10, 6]]);
-    expect(c.phonemes).toBe('hi there, friend.');
-    const ids = tokenize('hi there, friend.');
-    expect(c.tokens).toEqual(ids);
-    expect(c.owner).toEqual([0, 0, -1, 1, 1, 1, 1, 1, -1, -1, 2, 2, 2, 2, 2, 2, -1]);
+    expect(c.words.map((w) => [w.charIndex, w.charLength])).toEqual([[0, 2], [3, 3], [8, 4]]);
+    expect(c.phonemes).toBe('hi you, mate.');
+    expect(c.tokens).toEqual(tokenize('hi you, mate.'));
+    expect(c.owner).toEqual([0, 0, -1, 1, 1, 1, -1, -1, 2, 2, 2, 2, -1]);
   });
   it('splits merged phoneme groups over the words proportionally', async () => {
     const [c] = await textToChunks('It was the best', 'en', fakePhonemize);
     expect(c.words).toHaveLength(4);
-    // "wasthe" (6 chars) is split over "was" (3) and "the" (3)
-    const owners = c.owner.filter((o) => o >= 0);
-    expect(owners.filter((o) => o === 1)).toHaveLength(3);
-    expect(owners.filter((o) => o === 2)).toHaveLength(3);
-    expect(c.tokens.filter((t) => t === SPACE_TOKEN)).toHaveLength(3);
+    // the model input keeps espeak's own spacing ("it wasthe best"), ownership splits "wasthe" 3/3
+    expect(c.tokens).toEqual(tokenize('it wasthe best'));
+    expect(c.owner).toEqual([0, 0, -1, 1, 1, 1, 2, 2, 2, -1, 3, 3, 3, 3]);
+    expect(c.tokens.filter((t) => t === SPACE_TOKEN)).toHaveLength(2);
   });
   it('cuts long texts at sentence ends under the token limit', async () => {
     const sentence = 'word '.repeat(60).trim() + '. ';
@@ -70,9 +69,9 @@ describe('kokoro chunks and token ownership', () => {
     expect(chunks.reduce((n, c) => n + c.words.length, 0)).toBe(240);
   });
   it('proportionalSplit and fixPhonemes', () => {
-    expect(proportionalSplit('abcdef', [1, 1])).toEqual(['abc', 'def']);
-    expect(proportionalSplit('abcdefg', [1, 2, 4])).toEqual(['a', 'bc', 'defg']);
-    expect(proportionalSplit('ab', [1, 1, 1])).toEqual(['a', 'b', '']);
+    expect(proportionalCounts(6, [1, 1])).toEqual([3, 3]);
+    expect(proportionalCounts(7, [1, 2, 4])).toEqual([1, 2, 4]);
+    expect(proportionalCounts(2, [1, 1, 1])).toEqual([1, 1, 0]);
     expect(fixPhonemes('wˈɜːrld x ʲ', 'en')).toBe('wˈɜːɹld k j');
     expect(VOCAB.get('ˈ')).toBe(156);
     expect(tokenize('a?z')).toEqual([43, 6, 68]);
@@ -145,4 +144,32 @@ describe('kokoro model files', () => {
     expect(presentVariant(dir, 'int8')).toBe('fp16');
     fs.rmSync(dir, { recursive: true, force: true });
   });
+});
+
+// Real-model smoke test: runs only when KOKORO_MODEL_DIR holds the downloaded files (see scripts/kokoro-bench.mjs).
+const modelDir = process.env.KOKORO_MODEL_DIR ?? '';
+const haveModel = !!modelDir && presentVariant(modelDir, 'fp16') !== null;
+describe.skipIf(!haveModel)('kokoro engine (real model)', () => {
+  it('synthesizes a sentence with word timings and caches it on disk', async () => {
+    const { KokoroEngine } = await import('../../src/main/kokoro/engine');
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kokoro-cache-'));
+    const engine = new KokoroEngine({ modelDir, cacheDir, threads: 2, warmUp: false });
+    const text = 'Hello there, my friend.';
+    const r = await engine.synthesize(text, { voice: 'bf_emma' });
+    expect(r.sampleRate).toBe(24000);
+    expect(r.durationSec).toBeGreaterThan(0.8);
+    expect(r.durationSec).toBeLessThan(4);
+    expect(r.words.map((w) => text.slice(w.charIndex, w.charIndex + w.charLength))).toEqual(['Hello', 'there', 'my', 'friend']);
+    for (let i = 1; i < r.words.length; i++) expect(r.words[i].start).toBeGreaterThanOrEqual(r.words[i - 1].end - 1e-6);
+    expect(r.words[r.words.length - 1].end).toBeLessThanOrEqual(r.durationSec + 1e-6);
+    expect(r.fromCache).toBe(false);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(fs.existsSync(engine.wavPath(text, 'bf_emma', 1))).toBe(true);
+    engine.clearMemory();
+    const again = await engine.synthesize(text, { voice: 'bf_emma' });
+    expect(again.fromCache).toBe(true);
+    expect(again.words).toEqual(r.words);
+    await engine.release();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }, 120_000);
 });

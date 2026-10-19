@@ -9,6 +9,8 @@ export type ThemeId = 'night' | 'sepia' | 'light' | 'grey' | 'system';
 /** Themes that render dark; the others use the light highlight palette. */
 export const DARK_THEMES: readonly ThemeId[] = ['night', 'grey'];
 export type LayoutId = 'page' | 'scroll';
+/** The two screens of a book: Reading (Kindle-like pages) and Listening (karaoke lines). */
+export type ReadMode = 'reading' | 'listening';
 
 export interface HighlightColors {
   /** word above the learner's level (auto-explain candidate) */
@@ -105,8 +107,16 @@ export interface Settings {
     highlightsDark: HighlightColors;
     highlightsLight: HighlightColors;
     underlineOnly: boolean;
+    /** Word Wise-style hints: a small Chinese meaning under words above the learner's level */
+    showHints: boolean;
+    /** slide animation when a page turns in Reading mode */
+    pageTurnAnimation: boolean;
   };
   shortcuts: Record<string, string>;
+  /** the screen the learner used last (new books open in it) */
+  lastMode: ReadMode;
+  /** bookId -> the screen the learner used last for that book */
+  bookModes: Record<string, ReadMode>;
 }
 
 export const DEFAULT_INSTRUCTIONS = `I am a native Chinese speaker learning English at B2 level. Explain in simple, clear English. Keep it short because I will listen to it, not read it. Give the Chinese meaning of the word or phrase, but do not translate whole sentences into Chinese.`;
@@ -165,13 +175,18 @@ export const DEFAULT_SETTINGS: Settings = {
     highlightsDark: { unknown: '#59c7fa', learning: '#ffd666', sentence: '#ffffff', word: '#fb923c', marked: '#c084fc' },
     highlightsLight: { unknown: '#3b82f6', learning: '#eab308', sentence: '#f97316', word: '#ea580c', marked: '#9333ea' },
     underlineOnly: false,
+    showHints: true,
+    pageTurnAnimation: true,
   },
   shortcuts: {
     playPause: 'Space', prevSentence: 'ArrowLeft', nextSentence: 'ArrowRight', prevParagraph: 'Shift+ArrowLeft', nextParagraph: 'Shift+ArrowRight',
-    prevPage: 'PageUp', nextPage: 'PageDown', replaySentence: 'KeyR', explain: 'KeyE', explainLast: 'Shift+KeyE', markKnown: 'KeyK', markLearning: 'KeyL',
+    prevPage: 'PageUp', nextPage: 'PageDown', replaySentence: 'KeyR', explain: 'KeyE', explainLast: 'Shift+KeyE', markKnown: 'KeyK', markLearning: 'Shift+KeyL',
     ignore: 'KeyX', toggleListen: 'KeyQ', toggleBand: 'KeyB', sayWord: 'KeyS', speedUp: 'Equal', speedDown: 'Minus', speedReset: 'Digit0',
     nextHard: 'Tab', prevHard: 'Shift+Tab', closePopup: 'Escape', markPhrase: 'KeyH',
+    switchMode: 'KeyL', dontKnow: 'KeyD', help: 'Shift+Slash', toggleHints: 'KeyW', goTo: 'KeyG',
   },
+  lastMode: 'reading',
+  bookModes: {},
 };
 
 /**
@@ -207,6 +222,8 @@ export interface LibraryItem {
   position: Position | null;
   percent: number;
   words: number;
+  /** the screen the learner used last for this book (filled in from settings.bookModes by the renderer) */
+  mode?: ReadMode;
 }
 
 export interface UsageRecord { date: string; provider: AiProviderId; model: string; inputTokens: number; outputTokens: number; cachedTokens: number; usd: number }

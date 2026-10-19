@@ -52,6 +52,10 @@ export interface KokoroEngineOptions {
   memoryEntries?: number;
   /** disk cache size cap in bytes (oldest files pruned); default 300 MB */
   diskBytes?: number;
+  /** write/read the disk cache (default true); false keeps results in memory only */
+  persist?: boolean;
+  /** run a short warm-up inference after loading so the first real sentence is not the slow cold one (default true) */
+  warmUp?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -80,6 +84,8 @@ export class KokoroEngine {
   private memory = new Map<string, SynthesisResult>();
   private memoryEntries: number;
   private diskBytes: number;
+  private persist: boolean;
+  private warmUp: boolean;
   private queue: Job[] = [];
   private inflight = new Map<string, Promise<SynthesisResult>>();
   private running = false;
@@ -96,6 +102,8 @@ export class KokoroEngine {
     this.phonemizer = opts.phonemizer ?? null;
     this.memoryEntries = opts.memoryEntries ?? 48;
     this.diskBytes = opts.diskBytes ?? 300 * 1024 * 1024;
+    this.persist = opts.persist ?? true;
+    this.warmUp = opts.warmUp ?? true;
     this.log = opts.log ?? (() => undefined);
   }
 
@@ -154,6 +162,7 @@ export class KokoroEngine {
       this.session = session; this.voices = voices; this.phonemizer = phonemizer;
       this.lastError = null;
       this.log(`kokoro: ${variant} model loaded in ${Date.now() - t0} ms (${this.threads} threads, ${voices.size} voices)`);
+      if (this.warmUp) { const t1 = Date.now(); await this.run('Hello.', DEFAULT_VOICE, 1); this.log(`kokoro: warm-up in ${Date.now() - t1} ms`); }
       this.emit();
     })().catch((e) => { this.lastError = (e as Error).message; this.readyPromise = null; this.emit(); throw e; });
     return this.readyPromise;
@@ -215,13 +224,16 @@ export class KokoroEngine {
     } finally { this.running = false; }
   }
 
+  /** Forgets every synthesized sentence held in memory (the disk cache stays). */
+  clearMemory(): void { this.memory.clear(); }
+
   private async produce(job: Job): Promise<SynthesisResult> {
-    const disk = await this.readDisk(job.key);
+    const disk = this.persist ? await this.readDisk(job.key) : null;
     if (disk) { this.remember(job.key, disk); return disk; }
     await this.ensureReady();
     const res = await this.run(job.text, job.voice, job.speed);
     this.remember(job.key, res);
-    this.writeDisk(job.key, res).catch((e) => this.log(`kokoro: cache write failed: ${(e as Error).message}`));
+    if (this.persist) this.writeDisk(job.key, res).catch((e) => this.log(`kokoro: cache write failed: ${(e as Error).message}`));
     return res;
   }
 

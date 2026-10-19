@@ -2,7 +2,9 @@
 // downloads the model into KOKORO_MODEL_DIR (default ~/.cache/readalong/kokoro) if missing, synthesizes three
 // sentences and prints the real-time factor (synthesis seconds / audio seconds), first-sentence latency and
 // the word timings of the first sentence. WAV files are written to KOKORO_BENCH_OUT (default: the model dir).
-//   node scripts/kokoro-bench.mjs [--variant fp16|fp32|int8] [--threads N] [--voice bf_emma] [--runs 2]
+//   node scripts/kokoro-bench.mjs [--variant fp16|fp32|int8] [--threads N] [--voice bf_emma] [--runs 2] [--warm-up]
+// (--warm-up runs the engine's warm-up inference after loading, as the app does; without it the first
+//  sentence shows the cold-start cost)
 import * as esbuild from 'esbuild';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,8 +33,7 @@ const cpu = os.cpus()[0]?.model ?? 'unknown CPU';
 console.log(`CPU: ${cpu} x${os.cpus().length} (${os.arch()}, ${os.platform()}), Node ${process.version}`);
 console.log(`model: ${variant}, threads: ${threads}, voice: ${voice}, model dir: ${modelDir}`);
 
-const engine = new KokoroEngine({ modelDir, cacheDir: path.join(os.tmpdir(), 'kokoro-bench-cache'), variant, threads, log: (m) => console.log(m) });
-fs.rmSync(path.join(os.tmpdir(), 'kokoro-bench-cache'), { recursive: true, force: true });
+const engine = new KokoroEngine({ modelDir, cacheDir: path.join(os.tmpdir(), 'kokoro-bench-cache'), variant, threads, persist: false, warmUp: process.argv.includes('--warm-up'), log: (m) => console.log(m) });
 let lastPct = -1;
 engine.onStatus = (s) => {
   if (s.state === 'downloading' && s.progress) {
@@ -60,20 +61,17 @@ for (let r = 0; r < runs; r++) {
     t = Date.now();
     const res = await engine.synthesize(text, { voice, speed: 1 });
     const ms = Date.now() - t;
-    if (res.fromCache) { fs.rmSync(path.join(os.tmpdir(), 'kokoro-bench-cache'), { recursive: true, force: true }); r--; break; }
     if (first === null) first = ms;
     rows.push({ run: r + 1, sentence: i + 1, words: res.words.length, audioSec: +res.durationSec.toFixed(2), synthMs: ms, rtf: +(ms / 1000 / res.durationSec).toFixed(3) });
     if (r === 0) fs.writeFileSync(path.join(outDir, `bench-${i + 1}-${voice}.wav`), res.wav);
     if (r === 0 && i === 0) console.log('words:', res.words.map((w) => `${text.slice(w.charIndex, w.charIndex + w.charLength)}@${w.start.toFixed(2)}-${w.end.toFixed(2)}`).join(' '));
     if (r === 0 && i === 2) console.log('phonemes (3):', res.phonemes);
-    // fresh synthesis every time: forget the memory and disk cache entry
-    engine['memory'].clear();
-    fs.rmSync(path.join(os.tmpdir(), 'kokoro-bench-cache'), { recursive: true, force: true });
+    engine.clearMemory(); // fresh synthesis every time
   }
 }
 console.table(rows);
 const best = rows.slice(-sentences.length);
 const rtf = best.reduce((s, r) => s + r.synthMs, 0) / 1000 / best.reduce((s, r) => s + r.audioSec, 0);
-console.log(`first-sentence latency (after load, cold ORT): ${first} ms; model load ${loadMs} ms`);
+console.log(`first-sentence latency (after load${process.argv.includes('--warm-up') ? ', warmed up' : ', cold ORT'}): ${first} ms; model load ${loadMs} ms`);
 console.log(`overall RTF (last run): ${rtf.toFixed(3)}  (${rtf < 1 ? (1 / rtf).toFixed(1) + 'x faster than real time' : 'SLOWER than real time'})`);
 await engine.release();
