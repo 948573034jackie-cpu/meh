@@ -81,6 +81,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 /* App shell */
 .app { display: flex; flex-direction: column; height: 100%; }
 .titlebar { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 84px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg-elevated) 82%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); flex: none; zoom: var(--ui-scale); }
+:root:not([data-platform="mac"]) .titlebar { padding-left: 16px; }
 .titlebar .title { font-weight: 500; font-size: 13px; color: var(--fg-muted); letter-spacing: 0.01em; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar .title.app-name { font-weight: 500; letter-spacing: 0.04em; }
 .titlebar button { background: transparent; border-color: transparent; color: var(--fg-muted); padding: 5px 10px; font-size: 13px; }
@@ -89,7 +90,7 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 .content { flex: 1; min-height: 0; position: relative; }
 
 /* Library */
-.library { padding: 36px 40px 48px; overflow: auto; height: 100%; zoom: var(--ui-scale); }
+.library { padding: 36px 40px 48px; overflow: auto; height: 100%; position: relative; zoom: var(--ui-scale); }
 .library.drag-over::after { content: 'Drop to add to your library'; position: absolute; inset: 12px; border: 2px dashed var(--accent); border-radius: 16px; display: flex; align-items: center; justify-content: center; color: var(--accent); background: color-mix(in srgb, var(--bg) 70%, transparent); font-size: 16px; pointer-events: none; }
 .library h1 { font-size: 26px; margin: 0 0 4px; }
 .library .lead { color: var(--fg-muted); margin: 0 0 20px; }
@@ -192,8 +193,12 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
 
 /* Tips: "tap anything to see how it works". Hidden when appearance.showTips is off (html[data-tips="0"]). */
 .tip-wrap { position: relative; display: inline-flex; }
-.tip-wrap > .tip { position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%) translateY(2px); background: color-mix(in srgb, var(--fg) 92%, var(--bg)); color: var(--bg); font-size: 12px; line-height: 1.35; padding: 6px 10px; border-radius: 8px; white-space: nowrap; max-width: 280px; pointer-events: none; opacity: 0; transition: opacity 120ms ease 350ms, transform 120ms ease 350ms; z-index: 70; box-shadow: var(--shadow-sm); font-family: var(--font-sans); font-weight: 400; }
-.tip-wrap > .tip.wrap { white-space: normal; width: max-content; }
+.tip-wrap > .tip { position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%) translateY(2px); visibility: hidden; background: color-mix(in srgb, var(--fg) 92%, var(--bg)); color: var(--bg); font-size: 12px; line-height: 1.35; padding: 6px 10px; border-radius: 8px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 120ms ease 350ms, transform 120ms ease 350ms, visibility 0s linear 350ms; z-index: 70; box-shadow: var(--shadow-sm); font-family: var(--font-sans); font-weight: 400; }
+.tip-wrap > .tip.wrap { white-space: normal; width: max-content; max-width: 280px; }
 .tip-wrap > .tip.below { bottom: auto; top: calc(100% + 8px); transform: translateX(-50%) translateY(-2px); }
-.tip-wrap:hover > .tip, .tip-wrap:focus-within > .tip { opacity: 1; transform: translateX(-50%) translateY(0); }
+.tip-wrap > .tip.start { left: 0; transform: translateY(2px); }
+.tip-wrap > .tip.end { left: auto; right: 0; transform: translateY(2px); }
+.tip-wrap > .tip.below.start, .tip-wrap > .tip.below.end { transform: translateY(-2px); }
+.tip-wrap:hover > .tip, .tip-wrap:focus-within > .tip { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); }
+.tip-wrap:hover > .tip.start, .tip-wrap:focus-within > .tip.start, .tip-wrap:hover > .tip.end, .tip-wrap:focus-within > .tip.end { transform: translateY(0); }
 :root[data-tips="0"] .tip-wrap > .tip { display: none; }

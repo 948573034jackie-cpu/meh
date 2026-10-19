@@ -48,9 +48,9 @@ export function App(): JSX.Element {
       <div className="titlebar drag">
         <span className={`title ${view === 'reader' && book ? '' : 'app-name'}`}>{view === 'reader' && book ? book.title : 'Dream Read'}</span>
         <div className="row no-drag">
-          {view !== 'library' && <Tip text="Your books (Cmd+L)" below><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>}
-          {view !== 'reader' && book && <Tip text="Back to where you stopped" below><button className="quiet" onClick={() => useApp.getState().setView('reader')}>Continue reading</button></Tip>}
-          {view !== 'settings' && <Tip text="Look, voice, AI and level (Cmd+,)" below><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>}
+          {view !== 'library' && <Tip text="Your books (Cmd+L)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>}
+          {view !== 'reader' && book && <Tip text="Back to where you stopped" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('reader')}>Continue reading</button></Tip>}
+          {view !== 'settings' && <Tip text="Look, voice, AI and level (Cmd+,)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>}
         </div>
       </div>
       <div className="content">

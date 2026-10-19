@@ -35,7 +35,7 @@ export function Transport(p: Props): JSX.Element {
   return (
     <div className="transport" data-testid="transport">
       <button className="icon" title="Previous sentence (←)" onClick={p.onPrev}>⏮</button>
-      <Tip text="Play or pause (Space)"><button className="primary icon" style={{ minWidth: 64 }} title="Play / pause (Space)" onClick={p.onPlayPause} data-testid="play">{playing ? '⏸' : '▶'}</button></Tip>
+      <Tip text="Play or pause (Space)" align="start"><button className="primary icon" style={{ minWidth: 64 }} title="Play / pause (Space)" onClick={p.onPlayPause} data-testid="play">{playing ? '⏸' : '▶'}</button></Tip>
       <button className="icon" title="Next sentence (→)" onClick={p.onNext}>⏭</button>
       <Tip text="Listening mode: the reading stops at hard words and explains them (Q)"><button className={`listen-toggle ${p.listenOn ? 'on' : ''}`} title="Listening mode: stops at hard words and explains them (Q)" onClick={p.onToggleListen} data-testid="listen">
         {p.listenOn ? '● Listening mode' : '○ Listening mode'}
@@ -66,8 +66,8 @@ export function Transport(p: Props): JSX.Element {
         {p.book.chapters.map((c) => <option key={c.index} value={c.index}>{c.index + 1}. {c.title.slice(0, 40)}</option>)}
       </select>
       <Tip text="Pages or one long scroll"><button className="icon" title="Page / scroll layout" onClick={p.onLayout}>{p.settings.appearance.layout === 'page' ? '📖' : '📜'}</button></Tip>
-      <Tip text="Subtitle band at the bottom (B)"><button className={`icon ${p.settings.appearance.bandEnabled ? 'active' : ''}`} title="Subtitle band (B)" onClick={p.onBand}>▭</button></Tip>
-      <Tip text="Show or hide the explanations panel"><button className="icon" title="Explanations panel" onClick={p.onTranscript}>{p.transcriptOpen ? '▶|' : '|◀'}</button></Tip>
+      <Tip text="Subtitle band at the bottom (B)" align="end"><button className={`icon ${p.settings.appearance.bandEnabled ? 'active' : ''}`} title="Subtitle band (B)" onClick={p.onBand}>▭</button></Tip>
+      <Tip text="Show or hide the explanations panel" align="end"><button className="icon" title="Explanations panel" onClick={p.onTranscript}>{p.transcriptOpen ? '▶|' : '|◀'}</button></Tip>
     </div>
   );
 }

@@ -3,9 +3,10 @@
 .reader-doc { flex: 1; min-width: 0; position: relative; overflow: hidden; }
 .reader-doc.scroll { overflow-y: auto; }
 .pages { height: 100%; column-fill: auto; transition: transform 160ms ease-out; will-change: transform; }
-.doc-inner { font-family: var(--reader-font); font-size: var(--reader-size); line-height: var(--reader-lh); color: var(--fg); padding: 24px var(--reader-margin); max-width: 100%; }
+/* the reading column is at most --max-line characters wide and centred on the page; the side margins never go below --reader-margin */
+.doc-inner { font-family: var(--reader-font); font-size: var(--reader-size); line-height: var(--reader-lh); color: var(--fg); padding: 24px max(var(--reader-margin), calc((100% - var(--max-line) * 1ch) / 2)); max-width: 100%; }
 .reader-doc.scroll .doc-inner { max-width: min(820px, calc(var(--max-line) * 1ch + 2 * var(--reader-margin))); margin: 0 auto; padding-bottom: 40vh; }
-.para { margin: 0 0 0.9em; text-align: left; hyphens: auto; -webkit-hyphens: auto; break-inside: auto; max-width: calc(var(--max-line) * 1ch); }
+.para { margin: 0 0 0.9em; text-align: left; hyphens: auto; -webkit-hyphens: auto; break-inside: auto; }
 .para.k-h1 { font-size: 1.6em; line-height: 1.3; margin: 0.6em 0 0.8em; font-weight: 700; }
 .para.k-h2 { font-size: 1.3em; line-height: 1.3; margin: 0.8em 0 0.6em; font-weight: 700; }
 .para.k-h3 { font-size: 1.1em; margin: 0.8em 0 0.4em; font-weight: 700; }

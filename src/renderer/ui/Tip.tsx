@@ -5,11 +5,11 @@ import React from 'react';
  * on hover or keyboard focus. Hidden app-wide when Settings → Reading look → Tips is off (html[data-tips="0"],
  * set by applyAppearance from appearance.showTips).
  */
-export function Tip({ text, children, below, wrap }: { text: string; children: React.ReactNode; below?: boolean; wrap?: boolean }): JSX.Element {
+export function Tip({ text, children, below, wrap, align }: { text: string; children: React.ReactNode; below?: boolean; wrap?: boolean; /** keep the tip inside the window near an edge: 'start' hangs right from the button, 'end' hangs left */ align?: 'start' | 'end' }): JSX.Element {
   return (
     <span className="tip-wrap">
       {children}
-      <span className={`tip${below ? ' below' : ''}${wrap ? ' wrap' : ''}`} role="tooltip">{text}</span>
+      <span className={`tip${below ? ' below' : ''}${wrap ? ' wrap' : ''}${align ? ` ${align}` : ''}`} role="tooltip">{text}</span>
     </span>
   );
 }

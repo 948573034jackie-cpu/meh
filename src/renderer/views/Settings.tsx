@@ -187,9 +187,9 @@ export function SettingsView(): JSX.Element {
               <div className="field">
                 <label>Buttons and menus <span className="value">{Math.round(S.appearance.uiScale * 100)}%</span></label>
                 <input type="range" min={0.9} max={1.3} step={0.05} value={S.appearance.uiScale} onChange={(e) => setA({ uiScale: Number(e.target.value) })} data-testid="size-ui" />
-                <div className="hint">The size of everything that is not book text.</div>
+                <div className="hint">The size of everything that is not book text: this page changes with it.</div>
               </div>
-              <div className="sample ui" style={{ zoom: S.appearance.uiScale }}><button className="primary">Continue</button><button>Settings</button><span className="muted">Library · 3 books</span></div>
+              <div className="sample ui"><button className="primary">Continue</button><button>Settings</button><span className="muted">Library · 3 books</span></div>
             </div>
           </div>
 

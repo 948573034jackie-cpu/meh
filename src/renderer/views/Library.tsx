@@ -85,8 +85,8 @@ export function Library(): JSX.Element {
       <h1>Your books</h1>
       <p className="lead">{library.length === 0 ? 'A quiet place for the books you are reading.' : `${library.length} ${library.length === 1 ? 'book' : 'books'} · drop a file anywhere to add one`}</p>
       <div className="actions">
-        <Tip text="Choose an EPUB, PDF or text file from your Mac" below><button className="primary" onClick={() => Library.openDialog()} data-testid="open-book">Open a book…</button></Tip>
-        <Tip text="Paste an article or a chapter and read it like a book" below><button onClick={() => _setPasteOpen(true)} data-testid="paste-text">Paste text…</button></Tip>
+        <Tip text="Choose an EPUB, PDF or text file from your Mac" below align="start"><button className="primary" onClick={() => Library.openDialog()} data-testid="open-book">Open a book…</button></Tip>
+        <Tip text="Paste an article or a chapter and read it like a book" below align="start"><button onClick={() => _setPasteOpen(true)} data-testid="paste-text">Paste text…</button></Tip>
         {busy && <span className="muted">Importing…</span>}
       </div>
       {library.length === 0 && !busy && (
