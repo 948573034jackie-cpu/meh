@@ -166,17 +166,101 @@ function toIpa(i: string): string {
   return s ? `/${s}/` : '';
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Phrase list hygiene
+ * ---------------------------------------------------------------------------------------------- */
+
+/** Placeholder slots in a headword ("pick sth up", "tell sb off"): never literal text, so never matchable. */
+const PLACEHOLDER_RE = /(?:^| )(?:sth|sb)(?: |$)/;
+
+/** Gloss markers that make a two-word entry an idiom rather than a free combination ("high ground": phr.). */
+const IDIOM_MARKER_RE = /phr\.|习语|成语|俗语|谚|喻/;
+
+/**
+ * Comparatives/superlatives whose lemma is a different word ("better" -> "good"). Lemmatising them inside a
+ * phrase would turn "better for" into the entry "good for", so they only ever match as written.
+ */
+const SUPPLETIVE = new Set(['better', 'best', 'worse', 'worst', 'more', 'most', 'less', 'least', 'further', 'furthest', 'farther', 'farthest']);
+
+const EASY: ReadonlySet<string> = new Set(['A1', 'A2']);
+
+/** CJK characters too common in glosses to show that a translation is built from a word's own gloss. */
+const GLOSS_STOP = new Set('的地得之一个人者性化物有于为在了是等或与和及其用'.split(''));
+
+function glossChars(t: string | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const g of parseGloss(t ?? '')) for (const ch of g.zh) if (/\p{Script=Han}/u.test(ch) && !GLOSS_STOP.has(ch)) out.add(ch);
+  return out;
+}
+
+const shares = (a: Set<string>, b: Set<string>): boolean => { for (const x of a) if (b.has(x)) return true; return false; };
+
+function posTags(t: string | undefined): Set<string> {
+  const out = new Set<string>();
+  for (const g of parseGloss(t ?? '')) for (const p of g.pos.split('&')) if (p) out.add(p);
+  return out;
+}
+
+export type PhraseClass = 'ok' | 'placeholder' | 'free-combination';
+
+/**
+ * Whether a multi-word headword is a learnable phrase. ECDICT lists many transparent compounds ("old man",
+ * "old lady", "big city") whose level is only *estimated* (C1 by default for a phrase with no Collins rating),
+ * which made the reader flag them as advanced phrases. Rule — a free combination, not offered as a phrase, is:
+ *   - a phrase whose level does not come from a CEFR list (source 'est'),
+ *   - of exactly two words, adjective (not also a preposition: "in case", "on board") + noun,
+ *   - both words themselves A1-A2,
+ *   - with no idiom marker in its gloss, and
+ *   - whose Chinese gloss is built from the two words' own glosses ("old man" 老头儿/丈夫 from old 老的 and
+ *     man 丈夫; "big city" 大城市): the meaning is the sum of the parts. Idioms whose translation shares
+ *     nothing with a part ("red tape" 官样文章, "big deal", "small print") are kept.
+ * Entries with a placeholder slot ("pick sth up") can never match running text and are skipped too.
+ * Single-word lookups are unaffected.
+ */
+export function classifyPhrase(key: string, w: ReadonlyMap<string, DictRaw>): PhraseClass {
+  if (PLACEHOLDER_RE.test(key)) return 'placeholder';
+  const raw = w.get(key);
+  if (!raw || raw.s === 'cefrj' || raw.s === 'oct') return 'ok';
+  if (IDIOM_MARKER_RE.test(raw.t ?? '')) return 'ok';
+  const parts = key.split(' ');
+  if (parts.length !== 2) return 'ok';
+  const a = w.get(parts[0]);
+  const n = w.get(parts[1]);
+  if (!a || !n || !EASY.has(a.l) || !EASY.has(n.l)) return 'ok';
+  const aPos = posTags(a.t);
+  if (!aPos.has('a.') && !aPos.has('adj.') || aPos.has('prep.')) return 'ok';
+  if (!posTags(n.t).has('n.')) return 'ok';
+  const own = glossChars(raw.t);
+  return shares(own, glossChars(a.t)) && shares(own, glossChars(n.t)) ? 'free-combination' : 'ok';
+}
+
+/** The multi-word headwords dropped from phrase matching, with the reason (for reporting and tests). */
+export function droppedPhrases(data: DictData): { key: string; reason: Exclude<PhraseClass, 'ok'> }[] {
+  const w = new Map<string, DictRaw>(Object.entries(data.w));
+  const out: { key: string; reason: Exclude<PhraseClass, 'ok'> }[] = [];
+  for (const k of w.keys()) {
+    if (!k.includes(' ')) continue;
+    const c = classifyPhrase(k, w);
+    if (c !== 'ok') out.push({ key: k, reason: c });
+  }
+  return out;
+}
+
 export function createDictionary(data: DictData): Dictionary {
   // Maps rather than the raw objects: no prototype keys ("constructor" is a real headword, "__proto__" must not be)
   // and predictable hash performance for 50k keys.
   const words = new Map<string, DictRaw>(Object.entries(data.w));
   const forms = new Map<string, string>(Object.entries(data.f));
   const entries = new Map<string, DictEntry>();
-  // First words of multi-word headwords, so phrase scans over ordinary prose can fail fast.
+  // Learnable multi-word headwords (see classifyPhrase), and their first words so phrase scans over
+  // ordinary prose can fail fast.
+  const phrases = new Set<string>();
   const phraseStarts = new Set<string>();
   for (const key of words.keys()) {
     const sp = key.indexOf(' ');
-    if (sp > 0) phraseStarts.add(key.slice(0, sp));
+    if (sp <= 0 || classifyPhrase(key, words) !== 'ok') continue;
+    phrases.add(key);
+    phraseStarts.add(key.slice(0, sp));
   }
 
   const entry = (headword: string): DictEntry => {
@@ -256,19 +340,32 @@ export function createDictionary(data: DictData): Dictionary {
     return stripPossessive(t) ?? t;
   };
 
+  /**
+   * Phrase lookup is token-for-token: the n words given must spell an n-word headword, so a phrase is never
+   * matched with extra words around it. Lemmatisation is allowed only where an inflected entry form is
+   * plausible: the first word (the verb of "gave up", "looking forward to") and the last word (the plural of
+   * "human beings"), never a middle word and never a suppletive comparative ("better for" is not "good for").
+   */
   const lookupPhrase = (ws: string[]): LookupResult | null => {
     if (ws.length < 2 || ws.length > MAX_PHRASE_WORDS) return null;
     const norm = ws.map(normalizeToken);
     if (norm.some((x) => !x || x.includes(' '))) return null;
     const first = norm[0];
-    if (!phraseStarts.has(first) && !phraseStarts.has(foldAccents(first)) && !phraseStarts.has(lemmaOf(first))) return null;
+    const lemFirst = SUPPLETIVE.has(first) ? first : lemmaOf(first);
+    if (!phraseStarts.has(first) && !phraseStarts.has(foldAccents(first)) && !phraseStarts.has(lemFirst)) return null;
     const exact = norm.join(' ');
-    if (words.has(exact)) return { entry: entry(exact), lemma: exact, via: 'exact' };
-    const folded = norm.map(foldAccents).join(' ');
-    if (folded !== exact && words.has(folded)) return { entry: entry(folded), lemma: folded, via: 'fold' };
-    // "looking forward to" -> "look forward to", "gave up" -> "give up"
-    const lemmatised = norm.map(lemmaOf).join(' ');
-    if (lemmatised !== exact && words.has(lemmatised)) return { entry: entry(lemmatised), lemma: lemmatised, via: 'form' };
+    if (phrases.has(exact)) return { entry: entry(exact), lemma: exact, via: 'exact' };
+    const foldedWs = norm.map(foldAccents);
+    const folded = foldedWs.join(' ');
+    if (folded !== exact && phrases.has(folded)) return { entry: entry(folded), lemma: folded, via: 'fold' };
+    const lastIdx = foldedWs.length - 1;
+    const last = foldedWs[lastIdx];
+    const lemLast = SUPPLETIVE.has(last) ? last : lemmaOf(last);
+    const middle = foldedWs.slice(1, lastIdx);
+    for (const [a, b] of [[lemFirst, last], [foldedWs[0], lemLast], [lemFirst, lemLast]]) {
+      const cand = [a, ...middle, b].join(' ');
+      if (cand !== folded && phrases.has(cand)) return { entry: entry(cand), lemma: cand, via: 'form' };
+    }
     return null;
   };
 

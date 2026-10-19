@@ -7,6 +7,7 @@ import type { Book, Chapter, Paragraph, ParagraphKind, Sentence, Token } from '@
 import { createDictionary } from '@core/dict/dictionary';
 import { detectNames, nameKey } from '@core/dict/names';
 import { analyzeToken, isAboveLevel, findPhrases, annotateSentence, type WordInfo } from '@core/vocab/analysis';
+import { createSegmenter } from '@core/segment';
 
 const DATA_PATH = fileURLToPath(new URL('../../resources/dict/dict.json.gz', import.meta.url));
 const data = JSON.parse(gunzipSync(readFileSync(DATA_PATH)).toString('utf8')) as DictData;
@@ -331,5 +332,43 @@ describe('annotateSentence', () => {
     expect(a.infos.every((x) => x === null)).toBe(true);
     expect(a.phrases).toEqual([]);
     expect(a.hardTokens).toEqual([]);
+  });
+});
+
+describe('phrase spans on real segmenter output (no whitespace tokens)', () => {
+  const seg = createSegmenter();
+  const realPara = (text: string): Paragraph => ({ index: 0, kind: 'p', text, sentences: seg.segmentParagraph(text) });
+  const spans = (text: string, learner: 'A1' | 'B1' | 'B2' | 'C1' = 'B2') => {
+    const p = realPara(text);
+    return p.sentences.flatMap((s) => annotateSentence(p, s, dict, new Set(), learner).phrases.map((ph) => ({
+      lemma: ph.result.lemma,
+      above: ph.above,
+      // `end` is exclusive: the covered text runs from tokens[start] to tokens[end - 1]
+      text: p.text.slice(s.tokens[ph.start].start, s.tokens[ph.end - 1].end),
+    })));
+  };
+
+  it('finds no phrase in the Old Man and the Sea sentences ("old man" is a free combination)', () => {
+    expect(spans('He was an old man who fished alone in a skiff in the Gulf Stream and he had gone eighty-four days now without taking a fish.', 'A1')).toEqual([]);
+    expect(spans("In the first forty days a boy had been with him. But after forty days without a fish the boy's parents had told him that the old man was now definitely and finally salao.", 'A1')).toEqual([]);
+  });
+
+  it('covers exactly the phrase words, never the following token', () => {
+    const found = spans('In spite of the storm, he paid lip service to the rules and spoke of red tape.');
+    expect(found.map((f) => f.text)).toEqual(['In spite of', 'lip service', 'red tape']);
+    expect(found.every((f) => f.above)).toBe(true);   // all estimated C1, above a B2 learner
+    // 'look forward to' is B1: found, but not above a B1 learner
+    expect(spans('We look forward to it.', 'B1')).toEqual([{ lemma: 'look forward to', above: false, text: 'look forward to' }]);
+    expect(spans('We look forward to it.', 'A1')[0].above).toBe(true);
+  });
+
+  it('genuine phrases above B2 match; ones absent from the data do not', () => {
+    // 'give up on' and 'take (sth) for granted' are not in this data set
+    expect(data.w['give up on']).toBeUndefined();
+    expect(data.w['take for granted']).toBeUndefined();
+    expect(spans('Never give up on it; we take nothing for granted.')).toEqual([]);
+    expect(spans('In spite of everything, his frame of mind improved.').map((f) => [f.lemma, f.above])).toEqual([['in spite of', true], ['frame of mind', true]]);
+    expect(spans('It was a bona fide offer.', 'C1').map((f) => [f.lemma, f.above])).toEqual([['bona fide', true]]);   // C2 (Octanove)
+    expect(spans('In spite of everything.', 'C1')[0].above).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { DictData, DictRaw } from '@shared/api';
 import {
   createDictionary, normalizeToken, foldAccents, stripPossessive, suffixCandidates, parseGloss, firstGloss,
+  classifyPhrase, droppedPhrases,
 } from '@core/dict/dictionary';
 import type { DictEntry } from '@core/dict/types';
 
@@ -175,6 +176,27 @@ describe('createDictionary with synthetic data (spelling rules in isolation)', (
     expect(d.lookupPhrase(['look', '', 'to'])).toBeNull();
   });
 
+  it('lookupPhrase never lemmatises a middle word', () => {
+    const d2 = createDictionary(synth({ take: null, part: null, of: null, 'take part of': null }, { parts: 'part', took: 'take' }));
+    expect(d2.lookupPhrase(['took', 'part', 'of'])).toMatchObject({ lemma: 'take part of', via: 'form' });
+    expect(d2.lookupPhrase(['take', 'parts', 'of'])).toBeNull();
+  });
+
+  it('classifyPhrase keeps CEFR-listed and idiomatic entries', () => {
+    const raw = (l: string, s: string, t: string): DictRaw => ({ i: '', t, g: '', f: 0, b: 0, c: 1, o: 0, l, s });
+    const w = new Map<string, DictRaw>(Object.entries({
+      old: raw('A1', 'cefrj', 'a. 老的'), man: raw('A1', 'cefrj', 'n. 男人, 丈夫'),
+      'old man': raw('C1', 'est', 'n. 老头儿; 丈夫'), 'old hat': raw('C1', 'est', 'a. 过时的, 陈旧的'),
+      hat: raw('A1', 'cefrj', 'n. 帽子'), 'old school': raw('B2', 'cefrj', 'n. 老派'), school: raw('A1', 'cefrj', 'n. 学校'),
+      'old flame': raw('C1', 'est', 'phr. 旧情人'), flame: raw('A2', 'cefrj', 'n. 火焰, 情人'),
+    }));
+    expect(classifyPhrase('old man', w)).toBe('free-combination');
+    expect(classifyPhrase('old hat', w)).toBe('ok');           // idiom: 过时的 is not built from 老的 + 帽子
+    expect(classifyPhrase('old school', w)).toBe('ok');        // level from CEFR-J
+    expect(classifyPhrase('old flame', w)).toBe('ok');         // idiom marker in the gloss
+    expect(classifyPhrase('pick sth up', w)).toBe('placeholder');
+  });
+
   it('size counts headwords including phrases', () => {
     expect(d.size).toBe(Object.keys(synthData.w).length);
     expect(d.size).toBeGreaterThan(40);
@@ -264,8 +286,41 @@ describe('createDictionary with real data', () => {
     expect(dict.lookupPhrase(['according', 'to'])).toMatchObject({ lemma: 'according to' });
     expect(dict.lookupPhrase(['the', 'house'])).toBeNull();
     expect(dict.lookupPhrase(['green', 'house', 'door'])).toBeNull();
-    // every phrase key in the data is found by its own words
-    for (const k of phraseKeys.slice(0, 200)) expect(dict.lookupPhrase(k.split(' '))?.lemma).toBe(k);
+    // every learnable phrase key in the data is found by its own words; dropped ones never are
+    const dropped = new Set(droppedPhrases(data).map((x) => x.key));
+    for (const k of phraseKeys) {
+      if (dropped.has(k)) expect(dict.lookupPhrase(k.split(' '))).toBeNull();
+      else expect(dict.lookupPhrase(k.split(' '))?.lemma).toBe(k);
+    }
+  });
+
+  it('drops free adjective+noun combinations and placeholder entries from phrase matching', () => {
+    const dropped = droppedPhrases(data);
+    const keys = new Set(dropped.map((x) => x.key));
+    // "old man" is an estimated-C1 ECDICT entry; "old" and "man" are both A1 and the gloss is theirs
+    expect(data.w['old man']).toMatchObject({ l: 'C1', s: 'est' });
+    for (const k of ['old man', 'old lady', 'big city', 'fresh air', 'short story']) expect(keys.has(k)).toBe(true);
+    for (const k of ['pick sth up', 'put sth on']) expect(dropped.find((x) => x.key === k)?.reason).toBe('placeholder');
+    // idioms, prepositional phrases, phrasal verbs and CEFR-listed compounds are kept
+    for (const k of ['red tape', 'big deal', 'lip service', 'in spite of', 'in case', 'on purpose', 'look forward to', 'fast food', 'ice cream', 'high ground'])
+      expect(keys.has(k)).toBe(false);
+    expect(dropped.length).toBe(95);   // of 888 phrase headwords: 87 free combinations + 8 placeholders
+    expect(dict.lookupPhrase(['old', 'man'])).toBeNull();
+    expect(dict.lookupPhrase(['old', 'men'])).toBeNull();
+    expect(dict.lookup('old')).not.toBeNull();   // single-word lookups are unaffected
+  });
+
+  it('matches phrases token for token, lemmatising only the first and last word', () => {
+    expect(dict.lookupPhrase(['old', 'man', 'who'])).toBeNull();
+    expect(dict.lookupPhrase(['old', 'man', 'was'])).toBeNull();
+    expect(dict.lookupPhrase(['in', 'spite', 'of', 'the'])).toBeNull();
+    expect(dict.lookupPhrase(['In', 'spite'])).toBeNull();
+    expect(dict.lookupPhrase(['took', 'part'])).toMatchObject({ lemma: 'take part', via: 'form' });
+    expect(dict.lookupPhrase(['takes', 'advantage', 'of'])).toMatchObject({ lemma: 'take advantage of', via: 'form' });
+    expect(dict.lookupPhrase(['human', 'beings'])).toMatchObject({ lemma: 'human being', via: 'form' });
+    // a suppletive comparative is never lemmatised: "better for" is not the entry "good for"
+    expect(data.w['good for']).toBeDefined();
+    expect(dict.lookupPhrase(['better', 'for'])).toBeNull();
   });
 
   it('is fast enough for whole-book analysis', () => {

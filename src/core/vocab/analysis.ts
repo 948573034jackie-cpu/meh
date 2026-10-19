@@ -19,7 +19,11 @@ export interface WordInfo {
   entry: DictEntry | null;
 }
 
-/** A dictionary phrase found in a token list; `start`/`end` are token indices, end exclusive. */
+/**
+ * A dictionary phrase found in a token list. `start`/`end` are token indices with `end` EXCLUSIVE (like
+ * Token.start/end): the phrase's last word is `tokens[end - 1]`. The segmenter emits no whitespace tokens, so
+ * `tokens[end]` is the word or punctuation AFTER the phrase ("who" in "old man who") and must not be included.
+ */
 export interface PhraseSpan { start: number; end: number; words: number; result: LookupResult }
 
 export interface SentenceAnnotation {
@@ -68,7 +72,9 @@ export function isAboveLevel(info: WordInfo, learner: CefrLevel): boolean {
 
 /**
  * Longest-match, non-overlapping scan for dictionary phrases ("look forward to", "in spite of") over runs of
- * word tokens separated only by spaces. Windows of MAX_PHRASE_WORDS down to 2 are tried at each word.
+ * word tokens separated only by spaces. Windows of MAX_PHRASE_WORDS down to 2 are tried at each word; a window
+ * matches only when its n words spell an n-word phrase headword (see Dictionary.lookupPhrase), so a span never
+ * carries a word beyond the phrase.
  */
 export function findPhrases(tokens: Token[], dict: Dictionary): PhraseSpan[] {
   const out: PhraseSpan[] = [];
