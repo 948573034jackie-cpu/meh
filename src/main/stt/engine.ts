@@ -170,7 +170,7 @@ export class SttEngine extends Emitter<SttEngineEvents> {
       if (!variant) throw new Error('Speech model files are missing.');
       this.emitStatus();
       const t0 = Date.now();
-      const sherpa = await import('sherpa-onnx-node');
+      const sherpa = await loadSherpa();
       this.sherpa = sherpa;
       const [recognizer, vad] = await Promise.all([
         sherpa.OfflineRecognizer.createAsync(this.recognizerConfig(variant)),
@@ -362,6 +362,17 @@ export class SttEngine extends Emitter<SttEngineEvents> {
     const r = await this.decodeSamples(samples, sampleRate);
     return { text: r.text.trim(), confidence: r.confidence, durationSec: samples.length / sampleRate, decodeMs: Date.now() - t0 };
   }
+}
+
+type Sherpa = typeof import('sherpa-onnx-node');
+
+/**
+ * sherpa-onnx-node is CommonJS (`module.exports = { OfflineRecognizer : ... }`); Node's named-export detection
+ * misses that shape, so a dynamic import yields only `default`. Accept both.
+ */
+async function loadSherpa(): Promise<Sherpa> {
+  const mod = (await import('sherpa-onnx-node')) as unknown as Sherpa & { default?: Sherpa };
+  return typeof mod.OfflineRecognizer === 'function' ? mod : mod.default!;
 }
 
 /** Mean token probability (exp of the mean log-prob) for transducer models; undefined when the model gives none. */
