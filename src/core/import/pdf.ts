@@ -11,7 +11,18 @@ import type { ImportContext, Importer } from './types';
  * the pdf.js glue, `pdfImporter` the combination).
  *
  *  1. Runs -> lines. Within a page, runs are grouped by baseline (transform[5]) within half a font
- *     size and ordered by x; a space is inserted between runs separated by more than 0.12 em.
+ *     size and ordered by x. Between two runs the horizontal gap (next x minus the previous run's
+ *     x + width, in units of the line's font size) decides the spacing: below 0.15 em the runs are one
+ *     word (kerning, a font change inside a word, a ligature drawn as its own glyph run), from 0.25 em
+ *     on they are separated by a space, and in between a space is assumed unless a ligature glyph is
+ *     involved. Ligature glyphs (U+FB00-FB06) are what pdf.js hands us when a font draws "fi" as one
+ *     glyph; their advance is often misreported, so pdf.js itself splits "fi ght" with a space and a
+ *     following run looks far away. A run ending in fi/fl/ffi/ffl/ft/st (no English word ends with
+ *     these) is therefore joined to a following lowercase run across gaps up to 0.75 em, and a run
+ *     starting with ff/ffi/ffl/ft/st (no English word starts with these) to a preceding letter; the
+ *     same two rules remove spaces pdf.js put inside one run. A run that pdf.js marks `hasEOL` ends
+ *     a line, so a run after it on the same baseline always gets a space. Afterwards the ligatures are
+ *     NFKC-normalised to plain letters and soft hyphens (U+00AD) inside a line are removed.
  *     Two-column pages are detected from a clear vertical gap in the x coverage of the runs: the page
  *     is then read left column top-to-bottom, then right column; a full-width line (a title spanning
  *     both columns) splits the columns into bands that are read one after the other.
@@ -108,7 +119,9 @@ const MIN_CHARS_PER_PAGE = 40;
 const FOREIGN_TOKEN_RATIO = 0.4;
 const MIN_COMMON_WORD_RATIO = 0.08;
 const BASELINE_TOLERANCE = 0.5; // x font size
-const WORD_GAP_EM = 0.12;
+const TIGHT_GAP_EM = 0.15; // below: runs are one word
+const WORD_GAP_EM = 0.25; // from here on: a space between the runs
+const LIGATURE_GAP_EM = 0.75; // a ligature glyph with a misreported advance leaves a gap up to this
 const HEADING_SIZE_RATIO = 1.25;
 const PARAGRAPH_GAP_RATIO = 1.4; // x body size
 const LEADING_GAP_RATIO = 1.15; // x typical leading
@@ -155,6 +168,15 @@ const TERMINAL_END = /[.!?…:]["”’'»)\]]*$/u;
 const BULLET_START = /^(?:[•·▪◦‣⁃■□●○*]|[-–—](?=\s))/u;
 const LABEL_ONLY = /^(?:[•·▪◦‣⁃■□●○*\-–—]|\(?\d{1,3}[.)]?|\(?[a-z][.)]|\(?[ivx]{1,5}[.)])$/i;
 const PAGE_NUMBER = /^[\s\-–—(\[|]*(?:(?:page|p\.?|pg\.?)\s*)?(?:\d{1,4}|[ivxlcdm]{1,8})(?:\s*(?:of|\/|-|–)\s*\d{1,4})?[\s\-–—)\]|]*$/i;
+const PRIVATE_USE = /\p{Co}/u;
+/** Ligature glyphs as pdf.js reports them: ff fi fl ffi ffl ft st (U+FB00-FB06). */
+const LIGATURE = /[\uFB00-\uFB06]/u;
+/** Ligatures no English word ends with (fi fl ffi ffl ft st): a space after one is a split word. */
+const WORD_END_LIGATURE = /[\uFB01-\uFB06]/u;
+/** Ligatures no English word starts with (ff ffi ffl ft st): a space before one is a split word. */
+const WORD_START_LIGATURE = /[\uFB00\uFB03-\uFB06]/u;
+const SPLIT_AFTER_LIGATURE = /([\uFB01-\uFB06])\s+(?=\p{Ll})/gu;
+const SPLIT_BEFORE_LIGATURE = /(\p{L})\s+(?=[\uFB00\uFB03-\uFB06])/gu;
 
 // ------------------------------------------------------------------------------------------------
 // Internal data model
@@ -168,6 +190,8 @@ interface Run {
   width: number;
   height: number;
   blank: boolean;
+  /** pdf.js saw a line break after this run */
+  hasEOL: boolean;
   /** structure element ordinal (document-wide) or null for untagged content */
   elem: number | null;
   /** content-stream order, used as a tie breaker */
@@ -300,14 +324,21 @@ function collectRuns(raw: RawPage, state: DocState): { runs: Run[]; chars: numbe
     } else {
       elem = innermostElem();
       // BDC path: a new block that starts on the same baseline as the previous text continues the same
-      // paragraph ("/P ... /Link ... /P ..." is how some producers tag a paragraph with a link in it).
-      if (elem !== null && lastRun && lastRun.elem !== null && lastRun.elem !== elem && !blank &&
-        Math.abs(lastRun.y - t[5]) <= BASELINE_TOLERANCE * Math.max(it.height, lastRun.height)) {
-        for (let i = stack.length - 1; i >= 0; i--) if (stack[i].elem === elem) { stack[i].elem = lastRun.elem; break; }
-        elem = lastRun.elem;
+      // paragraph ("/P ... /Link ... /P ..." is how some producers tag a paragraph with a link in it),
+      // and so does an inline sequence without a block tag of its own (the /Link in the middle).
+      const prevOnLine = lastRun !== null && lastRun.elem !== null && !blank &&
+        Math.abs(lastRun.y - t[5]) <= BASELINE_TOLERANCE * Math.max(it.height, lastRun.height) ? lastRun : null;
+      if (prevOnLine && elem === null && stack.length > 0) {
+        stack[stack.length - 1].elem = prevOnLine.elem;
+        elem = prevOnLine.elem;
+      } else if (prevOnLine && elem !== null && prevOnLine.elem !== elem) {
+        for (let i = stack.length - 1; i >= 0; i--) if (stack[i].elem === elem) { stack[i].elem = prevOnLine.elem; break; }
+        elem = prevOnLine.elem;
       }
     }
-    const run: Run = { text, x: t[4], y: t[5], width: it.width, height: blank ? 0 : it.height, blank, elem, order: runs.length };
+    const run: Run = {
+      text, x: t[4], y: t[5], width: it.width, height: blank ? 0 : it.height, blank, hasEOL: it.hasEOL === true, elem, order: runs.length,
+    };
     runs.push(run);
     if (!blank) lastRun = run;
   }
@@ -348,17 +379,51 @@ function clusterBaselines(runs: Run[]): BaselineCluster[] {
   return lines;
 }
 
+/** Removes the spaces pdf.js puts inside a run when a ligature glyph's advance is misreported ("fi ght", "o ffer"). */
+export function joinSplitLigatures(text: string): string {
+  if (!LIGATURE.test(text)) return text;
+  return text.replace(SPLIT_AFTER_LIGATURE, '$1').replace(SPLIT_BEFORE_LIGATURE, '$1');
+}
+
+/**
+ * Does a space belong between the text so far (ending in `before`) and a run starting with `after`,
+ * `gap` points apart on a line of font size `em`? See the module comment, stage 1.
+ */
+export function needsSpace(before: string, after: string, gap: number, em: number, prevEOL = false): boolean {
+  if (prevEOL) return true;
+  const a = before[before.length - 1] ?? '';
+  const b = after[0] ?? '';
+  if (/\p{L}/u.test(a) && /\p{L}/u.test(b) && gap < LIGATURE_GAP_EM * em) {
+    if (WORD_END_LIGATURE.test(a) && /\p{Ll}/u.test(b)) return false;
+    if (WORD_START_LIGATURE.test(b)) return false;
+  }
+  if (gap < TIGHT_GAP_EM * em) return false;
+  if (gap >= WORD_GAP_EM * em) return true;
+  // Ambiguous zone: a squeezed space in justified text, unless a ligature glyph sits on the boundary.
+  return !(LIGATURE.test(a) || LIGATURE.test(b));
+}
+
+/** Ligature glyphs become plain letters; soft hyphens inside a line vanish (a trailing one is for the line join). */
+function normaliseLineText(text: string): string {
+  const t = text.replace(/[\uFB00-\uFB06]/g, (c) => c.normalize('NFKC')).replace(/\s+/g, ' ').trim();
+  return t.replace(/\u00AD+(?!$)/g, '');
+}
+
 /** Joins the runs of one baseline into text, inserting spaces where the geometry shows a word gap. */
 function joinRuns(cluster: BaselineCluster): string {
   const runs = cluster.runs.slice().sort((a, b) => a.x - b.x || a.order - b.order);
+  const em = cluster.size || 1;
   let text = '';
   let end = -Infinity;
+  let prev: Run | null = null; // the last run that contributed text
   for (const r of runs) {
-    if (text.length > 0 && !/\s$/.test(text) && !/^\s/.test(r.text) && r.x - end > WORD_GAP_EM * cluster.size) text += ' ';
-    text += r.text;
+    const str = joinSplitLigatures(r.text);
+    if (prev && str.length > 0 && !/\s$/.test(text) && !/^\s/.test(str) && needsSpace(text, str, r.x - end, em, prev.hasEOL)) text += ' ';
+    text += str;
     if (r.x + r.width > end) end = r.x + r.width;
+    if (!r.blank) prev = r;
   }
-  return text.replace(/\s+/g, ' ').trim();
+  return normaliseLineText(text);
 }
 
 function formLines(runs: Run[], page: number, block: number, state: DocState): Line[] {
@@ -503,7 +568,7 @@ export function checkTextLayer(text: string): void {
   let foreign = 0;
   let common = 0;
   for (const tok of text.split(/\s+/)) {
-    if (!HAS_LETTER.test(tok)) continue;
+    if (!HAS_LETTER.test(tok) && !PRIVATE_USE.test(tok)) continue;
     alphabetic++;
     if (!LATIN_TOKEN.test(tok)) foreign++;
     const word = tok.toLowerCase().replace(/^[^\p{L}]+|[^\p{L}']+$/gu, '').replace(/[’]/g, "'");

@@ -2,7 +2,9 @@ import { ipcMain, BrowserWindow } from 'electron';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { SECRET_NAMES, SECRET_LABELS, type ExplainRequest, type AiEvent, type AiErrorCode, type SecretName, type ProviderTestResult } from '@shared/api';
-import { buildPrompt } from '@core/ai/prompts';
+import { buildPrompt, buildStyledPrompt } from '@core/ai/prompts';
+import { resolveStyle } from '@shared/styles';
+import type { StyleId } from '@shared/styles';
 import { getSettings, addUsage, getUsage, usdSpent } from './settings';
 import { getSecret, hasSecret, formatWarning, getAzureCredentials } from './secrets';
 
@@ -57,8 +59,11 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
   // Everything is inside the try: the renderer waits for a 'done' or 'error' event and nothing else may end the stream.
   try {
     const s = getSettings();
-    const provider = s.ai.provider;
-    const model = provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel;
+    // word/phrase/sentence explanations use the active explanation style (its own prompt, provider and model)
+    const styled = req.kind === 'word' || req.kind === 'phrase' || req.kind === 'sentence';
+    const style = styled ? resolveStyle((req.styleId as StyleId) ?? s.ai.activeStyle, s.ai.styles) : null;
+    const provider = style?.provider ?? s.ai.provider;
+    const model = style?.model ?? (provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel);
     const key = getSecret(provider);
     if (!key) { send({ type: 'error', streamId, message: provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.', code: 'no_key' }); return; }
     const monthly = usdSpent(periodStarts().month);
@@ -66,7 +71,9 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
       send({ type: 'error', streamId, message: `Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in Settings to continue.`, code: 'budget' });
       return;
     }
-    const prompt = buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength });
+    const prompt = style
+      ? buildStyledPrompt(req, { style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
+      : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength });
     const result = provider === 'anthropic'
       ? await streamAnthropic(key, model, prompt, ctrl.signal, (t) => send({ type: 'delta', streamId, text: t }))
       : await streamOpenAI(key, model, prompt, ctrl.signal, (t) => send({ type: 'delta', streamId, text: t }));

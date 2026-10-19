@@ -4,13 +4,24 @@ import type { VocabState, MarkedRange, Settings } from '@shared/settings';
 import type { ExplainRequest, ExplainKind } from '@shared/api';
 import type { TtsEngine } from '@core/tts/engine';
 import { samePosition } from '@core/model';
-import { getSentence, nextPosition, prevPosition, comparePositions } from '@core/nav';
+import { getSentence, nextPosition, prevPosition, comparePositions, contextAround } from '@core/nav';
 import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
+import { resolveStyle } from '@shared/styles';
 import type { Playback } from './playback';
-import { wordScript, sentenceScript, plainScript, aiSteps, type ScriptStep, type ScriptSettings } from './script';
+import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
 
 function scriptSettings(s: Settings): ScriptSettings { return { ...s.listen, speakChinese: s.ai.speakChinese }; }
+
+/** Reading mode stops after an explanation and waits; Listening mode pauses briefly and carries on. */
+export type ReadMode = 'reading' | 'listening';
+
+function scriptFor(kind: ExplainKind, target: string, sentence: string, s: Settings): ScriptStep[] {
+  const shape = resolveStyle(s.ai.activeStyle, s.ai.styles).shape;
+  if (kind === 'word') return styledWordScript(target, sentence, shape);
+  if (kind === 'phrase' || kind === 'sentence') return styledSentenceScript(sentence, shape);
+  return plainScript();
+}
 
 export interface TranscriptEntry {
   id: number;
@@ -42,6 +53,10 @@ export interface ListenDeps {
   onTranscript: (entry: TranscriptEntry) => void;
   onMarkLearning: (lemma: string) => void;
   onBudget?: (daily: number, monthly: number) => void;
+  /** which screen the learner is on; default 'listening' */
+  mode?: () => ReadMode;
+  /** called while the script waits for the learner (quiz question); true = waiting */
+  onWaiting?: (waiting: boolean) => void;
 }
 
 interface Trigger { kind: 'word' | 'phrase' | 'sentence'; token: number; end: number; target: string; lemma?: string; dict?: ExplainRequest['dict'] }
@@ -142,13 +157,33 @@ export class ListenController {
     const ordered = [...triggers.filter((t) => t.kind === 'word'), ...triggers.filter((t) => t.kind !== 'word')];
     for (const t of ordered) {
       if (t.lemma && (this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known')) continue; // tapped away meanwhile
-      const script = t.kind === 'word' ? wordScript(t.target, cur.text, scriptSettings(s)) : sentenceScript(cur.text, scriptSettings(s));
+      const script = scriptFor(t.kind, t.target, cur.text, s);
       const res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, script, t.lemma);
       if (res === 'aborted') return 'stop'; // the learner paused, seeked or stopped: the reading loop that asked is stale
       if (this.skipRequested) break;
     }
+    return this.afterExplanation();
+  }
+
+  /** Listening: a short silence, then the book continues. Reading: stop and wait for the learner. */
+  private async afterExplanation(): Promise<'next' | 'stop'> {
+    if ((this.deps.mode?.() ?? 'listening') === 'reading') return 'stop';
+    const ms = this.deps.settings().listen.pauseAfterExplainMs;
+    if (ms > 0 && !this.skipRequested) {
+      const startState = this.playback.state;
+      let changed = false;
+      const off = this.playback.on('state', (st) => { if (st !== startState) changed = true; });
+      await new Promise<void>((r) => { const t = setTimeout(r, ms); this.wakeAfter = () => { clearTimeout(t); r(); }; });
+      this.wakeAfter = null; off();
+      if (changed || this.playback.state === 'idle') return 'stop';
+    }
     return 'next';
   }
+
+  /** Ends the current wait (the pause after an explanation, or a quiz wait) without cancelling anything. */
+  continueNow(): void { this.wakeAfter?.(); this.wakeWait?.(); }
+  private wakeAfter: (() => void) | null = null;
+  private wakeWait: (() => void) | null = null;
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
   async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean): Promise<void> {
@@ -157,10 +192,12 @@ export class ListenController {
     const cur = getSentence(this.deps.book, pos);
     const sentence = cur?.text ?? target;
     const s = this.deps.settings();
-    const script = kind === 'word' ? wordScript(target, sentence, scriptSettings(s)) : kind === 'phrase' || kind === 'sentence' ? sentenceScript(sentence, scriptSettings(s)) : plainScript();
+    const script = scriptFor(kind, target, sentence, s);
     const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question);
     const readOn = kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
-    this.endManual(wasPlaying, res, resumeAt, readOn);
+    // Reading mode: stop and wait. Listening mode: the pause, then on with the book.
+    const resume = wasPlaying && (this.deps.mode?.() ?? 'listening') === 'listening' && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');
+    this.endManual(resume, res, resumeAt, readOn);
   }
 
   /** "Explain the last N seconds": the sentences spoken recently, extended to whole sentences. */
@@ -220,14 +257,15 @@ export class ListenController {
     if (this.historyChapter !== pos.chapter) { this.history = []; this.historyChapter = pos.chapter; }
     const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking' };
     this.deps.onTranscript({ ...entry });
-    const before = prevPosition(this.deps.book, pos);
-    const after = nextPosition(this.deps.book, pos);
+    const s0 = this.deps.settings();
+    const ctx = contextAround(this.deps.book, pos, s0.ai.contextWordsBefore, s0.ai.contextWordsAfter);
     const req: ExplainRequest = {
       kind, target, sentence,
-      before: before ? getSentence(this.deps.book, before)?.text ?? '' : '',
-      after: after ? getSentence(this.deps.book, after)?.text ?? '' : '',
+      before: ctx.before, after: ctx.after,
       book: { title: this.deps.book.title, chapter: this.deps.book.chapters[pos.chapter]?.title ?? '' },
       dict: dict ?? undefined, question, history: this.history,
+      position: { chapter: pos.chapter, paragraph: pos.paragraph, sentence: pos.sentence },
+      styleId: s0.ai.activeStyle,
     };
     let cancelled = false;
     let aborted = false;
@@ -261,16 +299,25 @@ export class ListenController {
     };
     const pause = (ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); wake = () => { clearTimeout(t); r(); }; });
     let aiParts: ExplanationParts | null = null;
-    const runSteps = async (steps: ScriptStep[]): Promise<boolean> => {
+    const wait = async (): Promise<void> => {
+      // quiz: give the learner time to answer (voice chat or the typed box ends it early via continueNow)
+      this.deps.onWaiting?.(true);
+      await new Promise<void>((r) => { const t = setTimeout(r, s.listen.quizWaitMs); this.wakeWait = () => { clearTimeout(t); r(); }; wake = this.wakeWait; });
+      this.wakeWait = null; wake = null;
+      this.deps.onWaiting?.(false);
+    };
+    const prose = kind === 'word' || kind === 'phrase' || kind === 'sentence';
+    const runSteps = async (steps: AnyStep[]): Promise<boolean> => {
       for (const st of steps) {
         if (cancelled) return false;
+        if (st.type === 'wait') { await wait(); continue; }
         if (st.type === 'pause') { await pause(st.ms); continue; }
         if (st.type === 'say') { if (!(await say(st.text, st.lang, st.role))) return false; continue; }
         // AI step: wait for the reply (it was started before the script began)
         try {
           const res = await ai.done;
           entry.text = res.text; entry.usd = res.usage.usd;
-          aiParts = parseExplanation(res.text, kind);
+          aiParts = prose ? { free: res.text } : parseExplanation(res.text, kind);
           entry.parts = aiParts; entry.status = 'speaking';
           this.deps.onTranscript({ ...entry });
           this.history.push({ role: 'user', text: `${kind}: ${target}` }, { role: 'assistant', text: res.text });
@@ -286,7 +333,8 @@ export class ListenController {
           }
           return false;
         }
-        if (!(await runSteps(aiSteps(aiParts!, scriptSettings(s), !!this.deps.zhVoiceId())))) return false;
+        const spoken = prose ? proseSteps(aiParts!.free ?? '', { zh: dict?.zh, speakChinese: s.ai.speakChinese, zhAvailable: !!this.deps.zhVoiceId() }) : aiSteps(aiParts!, scriptSettings(s), !!this.deps.zhVoiceId());
+        if (!(await runSteps(spoken))) return false;
       }
       return true;
     };

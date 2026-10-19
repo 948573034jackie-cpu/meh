@@ -1,8 +1,13 @@
 import type { CefrLevel, Position } from '@core/model';
+import type { StyleId, StyleOverride } from './styles';
+import { DEFAULT_CONTEXT_RULES } from './styles';
 
 export type AiProviderId = 'anthropic' | 'openai';
 export type TtsEngineId = 'webspeech' | 'edge' | 'openai' | 'elevenlabs' | 'kokoro';
-export type ThemeId = 'dark' | 'light' | 'sepia' | 'system';
+/** night (warm dark, default), sepia, light, grey; 'system' follows macOS (night or light). The old 'dark' is read as 'night'. */
+export type ThemeId = 'night' | 'sepia' | 'light' | 'grey' | 'system';
+/** Themes that render dark; the others use the light highlight palette. */
+export const DARK_THEMES: readonly ThemeId[] = ['night', 'grey'];
 export type LayoutId = 'page' | 'scroll';
 
 export interface HighlightColors {
@@ -34,6 +39,16 @@ export interface Settings {
     speakChinese: boolean;
     dailyWarnUsd: number;
     monthlyStopUsd: number;
+    /** explanation style used for word/phrase/sentence explanations */
+    activeStyle: StyleId;
+    /** learner edits per style (prompts, shape, model), merged over the defaults */
+    styles: Partial<Record<StyleId, StyleOverride>>;
+    /** shared rules sent with every style (system prompt); editable, reset to DEFAULT_CONTEXT_RULES */
+    contextRules: string;
+    contextWordsBefore: number;
+    contextWordsAfter: number;
+    /** Picture style: also generate an image of the scene (OpenAI key, costs money) */
+    generateScenePicture: boolean;
   };
   voice: {
     engine: TtsEngineId;
@@ -57,13 +72,26 @@ export interface Settings {
     lastSecondsWindow: 20 | 30 | 40 | 60;
     /** in listening mode, a single tap on a highlighted word cancels it instead of opening the popup */
     tapHighlightCancels: boolean;
+    /** listening mode: silence after an explanation before the book continues */
+    pauseAfterExplainMs: number;
+    /** quiz style: how long to wait for the learner's answer before giving it */
+    quizWaitMs: number;
   };
   appearance: {
     theme: ThemeId;
     layout: LayoutId;
     fontFamily: 'serif' | 'sans' | 'dyslexic';
+    /** book text size */
     fontSizePx: number;
+    /** listening subtitles (the band) */
+    subtitleSizePx: number;
+    /** explanation panel / transcript text */
+    explainSizePx: number;
+    /** whole-UI scale, 0.9 .. 1.3 */
+    uiScale: number;
     lineHeight: number;
+    /** maximum line length of the reading column, in characters (ch) */
+    maxLineChars: number;
     marginPx: number;
     bandEnabled: boolean;
     bandHeightPct: number; // 20..45
@@ -90,6 +118,12 @@ export const DEFAULT_SETTINGS: Settings = {
     speakChinese: true,
     dailyWarnUsd: 1,
     monthlyStopUsd: 10,
+    activeStyle: 'custom',
+    styles: {},
+    contextRules: DEFAULT_CONTEXT_RULES,
+    contextWordsBefore: 500,
+    contextWordsAfter: 200,
+    generateScenePicture: false,
   },
   voice: { engine: 'webspeech', voiceId: '', explainEngine: null, explainVoiceId: null, rate: 1.0, pauseBetweenSentencesMs: 250 },
   listen: {
@@ -102,13 +136,19 @@ export const DEFAULT_SETTINGS: Settings = {
     sentenceRepeatsForPhrase: 2,
     lastSecondsWindow: 30,
     tapHighlightCancels: true,
+    pauseAfterExplainMs: 7000,
+    quizWaitMs: 7000,
   },
   appearance: {
-    theme: 'dark',
+    theme: 'night',
     layout: 'page',
     fontFamily: 'serif',
     fontSizePx: 20,
+    subtitleSizePx: 22,
+    explainSizePx: 15,
+    uiScale: 1,
     lineHeight: 1.6,
+    maxLineChars: 70,
     marginPx: 48,
     bandEnabled: true,
     bandHeightPct: 30,
@@ -123,6 +163,18 @@ export const DEFAULT_SETTINGS: Settings = {
     nextHard: 'Tab', prevHard: 'Shift+Tab', closePopup: 'Escape', markPhrase: 'KeyH',
   },
 };
+
+/**
+ * Brings a stored settings object up to date in place and returns it: the v1 theme 'dark' became 'night'.
+ * Safe to call on partial objects (patches) and on the defaults.
+ */
+export function migrateSettings<T extends { appearance?: { theme?: string } }>(s: T): T {
+  const theme = s?.appearance?.theme as string | undefined;
+  if (theme === 'dark') s.appearance!.theme = 'night';
+  return s;
+}
+
+export function isDarkTheme(theme: ThemeId): boolean { return DARK_THEMES.includes(theme); }
 
 export type WordStatus = 'known' | 'learning' | 'ignored';
 

@@ -1,6 +1,9 @@
 // NOTE: the it.skip() cases below describe paragraph-reconstruction behaviour the importer does not
-// implement yet (heading-size chapters, 15-page chunking, two-column order, tagged-PDF structure).
-// They are kept as the specification for a later version.
+// implement yet. They are kept as the specification for a later version. Each one is blocked by a rule
+// the importer applies on purpose: the running-line detection drops body lines that repeat at the same
+// height on several synthetic pages (long.pdf, chapter-per-heading, 15-page chunking, tagged paragraph
+// across pages), a 12 pt heading is below the 1.25 x body-size threshold (h3 case), and the short-line
+// rule measures a column by its own runs (two-column order).
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +15,7 @@ import type { ImportContext } from '@core/import/types';
 import type { Book } from '@core/model';
 import {
   pdfImporter, buildBook, cleanMetaTitle, cleanMetaAuthor, isPageNumberLine, joinLineTexts, keepHyphen, checkTextLayer,
-  SCANNED_ERROR, GARBAGE_ERROR,
+  needsSpace, joinSplitLigatures, SCANNED_ERROR, GARBAGE_ERROR,
 } from '@core/import/pdf';
 import type { RawItem, RawPage, PdfInput } from '@core/import/pdf';
 
@@ -167,7 +170,7 @@ describe('pdfImporter on generated PDFs', () => {
     expect(allText(book)).not.toMatch(/The Rising River|Page \d+ of 30/);
   });
 
-  it.skip('tagged.pdf: uses the structure tree for paragraphs, headings and artifacts', async () => {
+  it('tagged.pdf: uses the structure tree for paragraphs, headings and artifacts', async () => {
     const book = await importFixture('tagged.pdf');
     checkBook(book);
     expect(book.title).toBe('Tagged Book');
@@ -203,8 +206,20 @@ describe('pdfImporter on generated PDFs', () => {
 
 const CHAR = 0.5; // synthetic glyph advance, in em
 
-function item(text: string, x: number, y: number, size = 11, width = text.length * size * CHAR): RawItem {
-  return { str: text, transform: [size, 0, 0, size, x, y], width, height: size, hasEOL: false, fontName: 'f1' };
+function item(text: string, x: number, y: number, size = 11, width = text.length * size * CHAR, hasEOL = false): RawItem {
+  return { str: text, transform: [size, 0, 0, size, x, y], width, height: size, hasEOL, fontName: 'f1' };
+}
+/** Lays runs on one baseline: each run follows the previous one after `gapEm` x 11 pt; `width` overrides the advance. */
+function runs(y: number, specs: { t: string; gapEm?: number; width?: number; eol?: boolean }[], x0 = 72): RawItem[] {
+  const out: RawItem[] = [];
+  let x = x0;
+  for (const s of specs) {
+    x += (s.gapEm ?? 0) * 11;
+    const width = s.width ?? s.t.length * 11 * CHAR;
+    out.push(item(s.t, x, y, 11, width, s.eol ?? false));
+    x += width;
+  }
+  return out;
 }
 function page(items: RawItem[], extra: Partial<RawPage> = {}): RawPage {
   return { width: 612, height: 792, items, ...extra };
@@ -326,11 +341,12 @@ describe('buildBook: paragraph reconstruction', () => {
     expect(kinds(book)[3]).toBe('li');
   });
 
-  it.skip('inserts spaces between runs by geometry and keeps runs of one baseline in x order', () => {
+  it('inserts spaces between runs by geometry and keeps runs of one baseline in x order', () => {
+    const w = (s: string): number => s.length * 11 * CHAR;
     const items: RawItem[] = [
-      item('world.', 72 + 6 * 11 * CHAR, 700), item('Hello', 72, 700), // out of order in the stream
-      item('Kerned', 72, 686), item('pair', 72 + 'Kerned'.length * 11 * CHAR + 0.3, 686), // 0.3 pt apart: no space
-      ...layout([FULL, FULL2, FULL3], 672),
+      item('world.', 72 + w('Hello '), 700), item('Hello', 72, 700), // out of order in the stream; 0.5 em apart
+      item('pair', 72 + w('Hello world. Kerned') + 0.3, 700), item('Kerned', 72 + w('Hello world. '), 700), // 0.3 pt apart: no space
+      ...layout([FULL, FULL2, FULL3], 686),
     ];
     const book = build([page(items)]);
     expect(texts(book)[0].startsWith('Hello world. Kernedpair ')).toBe(true);
@@ -340,6 +356,63 @@ describe('buildBook: paragraph reconstruction', () => {
     const watermark: RawItem = { str: 'DRAFT', transform: [20, 20, -20, 20, 200, 300], width: 100, height: 28 };
     const book = build([page([watermark, ...layout([FULL, FULL2, FULL3])])]);
     expect(allText(book)).not.toContain('DRAFT');
+  });
+});
+
+describe('buildBook: word spacing, ligatures and hyphens', () => {
+  it('joins ligature glyph runs to their neighbours and normalises them to plain letters', () => {
+    const line = runs(700, [
+      { t: 'The' }, { t: 'ﬁ', gapEm: 0.3 }, { t: 'ght' }, // the ligature is its own run (a font change), tight to the rest
+      { t: 'in', gapEm: 0.3 }, { t: 'the', gapEm: 0.3 },
+      { t: 'of', gapEm: 0.3 }, { t: 'ﬁce', gapEm: 0.02 }, // "of" + "fice": tight, so one word
+      { t: 'and', gapEm: 0.3 }, { t: 'ﬂ', gapEm: 0.3, width: 2 }, { t: 'ower', gapEm: 0.5 }, // misreported advance: a 0.5 em hole
+      { t: 'beds', gapEm: 0.3 }, { t: 'were', gapEm: 0.3 },
+      { t: 'e', gapEm: 0.3 }, { t: 'ﬃ' }, { t: 'cient', gapEm: 0.1 },
+      { t: 'at', gapEm: 0.3 }, { t: 'ﬁrst', gapEm: 0.3 }, // a real space before a word starting with fi
+      { t: 'with', gapEm: 0.3 }, { t: 'stuﬀ', gapEm: 0.3 }, { t: 'like', gapEm: 0.3 }, // a real space after a word ending in ff
+      { t: 'that.', gapEm: 0.3 },
+    ]);
+    const book = build([page([...line, ...layout([FULL, FULL2, FULL3], 686)])]);
+    const all = allText(book);
+    expect(all).toContain('The fight in the office and flower beds were efficient at first with stuff like that.');
+    expect(all).not.toMatch(/[\uFB00-\uFB06]/);
+  });
+
+  it('removes the spaces pdf.js puts inside a run around a ligature glyph', () => {
+    // "ﬀ" can end a word ("stuﬀ like"), so a space after it is left alone: "o ﬀ ers" only becomes "off ers".
+    const book = build([page([item('A di ﬃ cult ﬁ ght with ﬂ owers and stuﬀ like o ﬀ ers here.', 72, 700), ...layout([FULL, FULL2, FULL3], 686)])]);
+    expect(allText(book)).toContain('A difficult fight with flowers and stuff like off ers here.');
+  });
+
+  it('uses the gap thresholds: under 0.15 em joins, 0.25 em and more separates, in between is a squeezed space', () => {
+    const line = runs(700, [
+      { t: 'tight' }, { t: 'join', gapEm: 0.1 }, { t: 'wide', gapEm: 0.3 }, { t: 'mid', gapEm: 0.2 },
+      { t: 'sci-ﬁ', gapEm: 0.3 }, { t: 'movie', gapEm: 0.8 }, // too far for the ligature rule
+    ]);
+    const book = build([page([...line, ...layout([FULL, FULL2, FULL3], 686)])]);
+    expect(allText(book)).toContain('tightjoin wide mid sci-fi movie');
+  });
+
+  it('treats a run that pdf.js marks hasEOL as the end of a word', () => {
+    const withEol = runs(700, [{ t: 'A line that ends', eol: true }, { t: 'Next one', gapEm: 0.05 }]);
+    const without = runs(686, [{ t: 'A line that ends', eol: false }, { t: 'Next one', gapEm: 0.05 }]);
+    const book = build([page([...withEol, ...without, ...layout([FULL, FULL2, FULL3], 672)])]);
+    const all = allText(book);
+    expect(all).toContain('A line that ends Next one');
+    expect(all).toContain('A line that endsNext one');
+  });
+
+  it('joins hyphenated line ends when the closed form occurs elsewhere, keeps compounds, drops soft hyphens', () => {
+    const book = build([page(layout([
+      'The inter-',
+      'national team was well-',
+      'known, and the international press had in\u00ADvisible ink; a soft\u00AD',
+      'hyphen vanished, and the well-known team won.',
+      FULL, FULL2, FULL3,
+    ]))]);
+    expect(texts(book)[0]).toBe(
+      'The international team was well-known, and the international press had invisible ink; a softhyphen vanished, and the well-known team won.',
+    );
   });
 });
 
@@ -437,7 +510,7 @@ describe('buildBook: marked content without a structure tree', () => {
   const begin = (tag: string, id: string | null = null): RawItem => ({ type: 'beginMarkedContentProps', tag, id });
   const end = (): RawItem => ({ type: 'endMarkedContent' });
 
-  it.skip('uses P tags for paragraph boundaries, drops artifacts, and keeps a P/Link/P line together', () => {
+  it('uses P tags for paragraph boundaries, drops artifacts, and keeps a P/Link/P line together', () => {
     const items: RawItem[] = [
       begin('Artifact'), item('Running head', 72, 760, 9), end(),
       begin('H1', 'mc0'), item('Heading', 72, 700), end(),
@@ -523,7 +596,7 @@ describe('buildBook: rejected documents', () => {
     expect(() => build([])).toThrow(/no pages/);
   });
 
-  it.skip('rejects private-use and non-Latin text layers', () => {
+  it('rejects private-use and non-Latin text layers', () => {
     const pua = Array.from({ length: 30 }, (_, i) => String.fromCharCode(0xe000 + 0x41 + (i % 20))).join(' ');
     expect(() => checkTextLayer(pua)).toThrow(/text layer/);
     const zh = Array.from({ length: 30 }, () => '这是一本中文的书').join(' ');
@@ -560,6 +633,27 @@ describe('helpers', () => {
     expect(joinLineTexts(['ends with a hyphen-', '"quoted"'], ev)).toBe('ends with a hyphen- "quoted"');
     expect(joinLineTexts(['one', 'two', 'three'], ev)).toBe('one two three');
     expect(joinLineTexts([], ev)).toBe('');
+  });
+
+  it('needsSpace follows the gap thresholds and the ligature rules', () => {
+    expect(needsSpace('word', 'next', 1, 11)).toBe(false); // 0.09 em: kerning
+    expect(needsSpace('word', 'next', 2.2, 11)).toBe(true); // 0.2 em: a squeezed space
+    expect(needsSpace('word', 'next', 3.3, 11)).toBe(true);
+    expect(needsSpace('ﬁ', 'ght', 6, 11)).toBe(false); // 0.55 em after a ligature no word ends with
+    expect(needsSpace('ﬁ', 'Ght', 6, 11)).toBe(true);
+    expect(needsSpace('ﬁ', 'ght', 9, 11)).toBe(true); // 0.82 em: too far for a misreported advance
+    expect(needsSpace('o', 'ﬀer', 6, 11)).toBe(false); // no word starts with ff
+    expect(needsSpace('stuﬀ', 'like', 3.3, 11)).toBe(true); // words do end in ff
+    expect(needsSpace('the', 'ﬁrst', 3.3, 11)).toBe(true);
+    expect(needsSpace('the', 'ﬁrst', 2, 11)).toBe(false); // ambiguous zone with a ligature on the boundary
+    expect(needsSpace('end', 'Next', 0, 11, true)).toBe(true); // hasEOL
+    expect(needsSpace('', 'x', 0, 11)).toBe(false);
+  });
+
+  it('joinSplitLigatures removes the spaces pdf.js inserts around ligature glyphs', () => {
+    expect(joinSplitLigatures('a di ﬃ cult ﬁ ght with ﬂ owers')).toBe('a diﬃcult ﬁght with ﬂowers');
+    expect(joinSplitLigatures('stuﬀ like the ﬁrst o ﬀer')).toBe('stuﬀ like the ﬁrst oﬀer');
+    expect(joinSplitLigatures('plain text')).toBe('plain text');
   });
 
   it('keepHyphen follows the documented evidence rules', () => {
@@ -850,9 +944,10 @@ def build_tagged(path):
     ops1 += mc('H1', 0, (72, 700, 'Part One'))
     ops1 += mc('P', 1, (72, 686, 'The first paragraph of the tagged book is written on'),
                (72, 672, 'two lines with nothing but a tag between them.'))
+    # x positions follow the Helvetica advance widths (146.75 and 59.3 pt) plus a 0.3 em word space
     ops1 += mc('P', 2, (72, 658, 'The second paragraph has an'))
-    ops1 += mc('Span', 3, (214, 658, 'emphasised'))
-    ops1 += mc('P', 4, (270, 658, 'phrase inside it, and it also'), (72, 644, 'continues on a second line.'))
+    ops1 += mc('Span', 3, (222, 658, 'emphasised'))
+    ops1 += mc('P', 4, (285, 658, 'phrase inside it, and it also'), (72, 644, 'continues on a second line.'))
     ops1 += mc('P', 5, (72, 630, 'The third paragraph starts at the bottom of page one and'))
     ops1.append('ET')
     ops2 = ['BT'] + artifact_ops(2)

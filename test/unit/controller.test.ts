@@ -39,11 +39,14 @@ async function until(cond: () => boolean, ms = 3000): Promise<void> {
   while (!cond()) { if (Date.now() - t0 > ms) throw new Error('timeout waiting for condition'); await sleep(5); }
 }
 
+let mode: 'reading' | 'listening' = 'listening';
 function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
   const book = makeBook([{ title: 'One', paragraphs }]);
   const settings: Settings = structuredClone(DEFAULT_SETTINGS);
   settings.voice.pauseBetweenSentencesMs = 0;
-  Object.assign(settings.listen, { wordRepeats: 1, sentenceRepeatsAfterWord: 1 }, patch);
+  settings.ai.styles = { custom: { shape: { wordBefore: 1, wordAfter: 1, sentenceAfterWord: 1, sentenceBefore: 1, sentenceAfter: 1 } } };
+  Object.assign(settings.listen, { pauseAfterExplainMs: 0, quizWaitMs: 40 }, patch);
+  mode = 'listening';
   const vocab: VocabState = { words: {}, marked: {} };
   const reader = new FakeTtsEngine(1);
   const explainer = new FakeTtsEngine(1);
@@ -56,7 +59,7 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
     settings: () => settings, vocab: () => vocab, marked: () => [],
     engine: () => reader, explainEngine: () => explainer, zhEngine: () => zh,
     voice: () => ({ voiceId: 'fake-gb', rate: 1 }), explainVoice: () => ({ voiceId: 'fake-gb', rate: 1 }), zhVoiceId: () => 'fake-zh',
-    explain: ai.explain, onTranscript: () => undefined, onMarkLearning: (l) => learning.push(l),
+    explain: ai.explain, onTranscript: () => undefined, onMarkLearning: (l) => learning.push(l), mode: () => mode,
   });
   controller.enabled = true;
   const states: string[] = [];
@@ -64,7 +67,7 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
   return { book, settings, vocab, reader, explainer, zh, ai, learning, playback, controller, states };
 }
 
-const REPLY = 'DEFINITION: Sanguine means hopeful.\nIN THIS SENTENCE: He stays cheerful.\nCHINESE: 乐观的';
+const REPLY = 'Sanguine means hopeful.\n\nIn this sentence he stays cheerful.';
 
 describe('ListenController', () => {
   it('runs the word script at a stop, even when the hard word ends the sentence, then continues reading', async () => {
@@ -72,10 +75,10 @@ describe('ListenController', () => {
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
     await until(() => t.ai.calls.length === 1);
-    expect(t.ai.calls[0].req).toMatchObject({ kind: 'word', target: 'sanguine', sentence: 'He was sanguine.' });
+    expect(t.ai.calls[0].req).toMatchObject({ kind: 'word', target: 'sanguine', sentence: 'He was sanguine.', styleId: 'custom', position: { chapter: 0, paragraph: 0, sentence: 0 }, before: '', after: 'Then he left.' });
     t.ai.calls[0].resolve(REPLY);
     await finished;
-    expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Sanguine means hopeful.', 'In this sentence: He stays cheerful.']);
+    expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Sanguine means hopeful.', 'In this sentence he stays cheerful.']);
     expect(t.zh.spoken.map((s) => s.text)).toEqual(['乐观的']);
     expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'He was sanguine.', 'Then he left.']);
     expect(t.learning).toEqual(['sanguine']);
@@ -189,6 +192,48 @@ describe('ListenController', () => {
     await finished;
     expect(t.ai.calls.length).toBe(1);
     expect(t.learning).toEqual([]);
+  });
+
+  it('listening mode: silence after the explanation, then the book continues', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 120 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.reader.spoken.length === 4); // sentence, word, word, sentence
+    const t0 = Date.now();
+    await finished;
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(100);
+    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+  });
+
+  it('reading mode: stops after the explanation and waits', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.']);
+    mode = 'reading';
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.playback.state === 'paused');
+    await sleep(60);
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'He was sanguine.']);
+    expect(t.playback.state).toBe('paused');
+  });
+
+  it('quiz style: waits at [PAUSE] for the learner, continueNow ends the wait early', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { quizWaitMs: 5000 });
+    t.settings.ai.activeStyle = 'quiz';
+    t.settings.ai.styles.quiz = { shape: { wordBefore: 1, wordAfter: 1, sentenceAfterWord: 1, sentenceBefore: 1, sentenceAfter: 1 } };
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req.styleId).toBe('quiz');
+    t.ai.calls[0].resolve('Was he happy or sad?\n[PAUSE]\nHe was happy.');
+    await until(() => t.explainer.spoken.length === 1);
+    await sleep(40);
+    expect(t.explainer.spoken.length).toBe(1); // waiting for the answer
+    t.controller.continueNow();
+    await finished;
+    expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Was he happy or sad?', 'He was happy.']);
   });
 
   it('explains a lemma once per sentence even when it appears twice', () => {
