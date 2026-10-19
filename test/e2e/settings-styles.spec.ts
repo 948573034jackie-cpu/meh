@@ -57,7 +57,6 @@ test.describe('explanation styles editor', () => {
 
     // shared context rules
     await page.getByTestId('context-before').fill('350');
-    await page.getByTestId('scene-picture').check();
     await expect.poll(() => page.evaluate(() => window.readalong.getSettings().then((s) => s.ai.contextWordsBefore))).toBe(350);
 
     // reload the renderer: settings come back from disk through the main process
@@ -73,7 +72,6 @@ test.describe('explanation styles editor', () => {
     expect(saved.ai.styles['my-teacher-style-1']?.shape?.wordAfter).toBe(1);
     expect(saved.ai.contextWordsBefore).toBe(350);
     expect(saved.ai.contextWordsAfter).toBe(200);
-    expect(saved.ai.generateScenePicture).toBe(true);
 
     // and the UI shows the same after the reload
     await page.getByTestId('nav-ai').click();

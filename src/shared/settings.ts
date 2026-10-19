@@ -59,6 +59,7 @@ export interface Settings {
     contextWordsBefore: number;
     contextWordsAfter: number;
     /** Picture style: also generate an image of the scene (OpenAI key, costs money) */
+    /** @deprecated no images are made; the tutor paints the scene with words (kept so old settings files load) */
     generateScenePicture: boolean;
   };
   voice: {

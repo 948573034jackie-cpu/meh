@@ -52,7 +52,7 @@ Your API keys are now stored encrypted inside the app's own folder, so they are 
 - **Progress**: how many words you know at each level; tap a level to see only the unknown words.
 
 ## 8. Make it yours
-- Settings → AI → **Explanation styles**: 10 teaching styles (your own, Teacher, Picture, Chunk, Word Parts, Story, Quiz, Philosopher, Poetry, Lyrics). Each can be edited, copied, hidden, given its own personality, length and AI model. **Preview** shows exactly what is sent to the AI.
+- Settings → AI → **Explanation styles**: 10 teaching styles (your own, Teacher, Imagination, Chunk, Word Parts, Story, Quiz, Philosopher, Poetry, Lyrics). Each can be edited, copied, hidden, given its own personality, length and AI model. **Preview** shows exactly what is sent to the AI.
 - Settings → **Skip**: like Speechify, skip page numbers, footnotes, brackets, citations, web links and more.
 - Settings → Voice: free voices, or paid Azure, Google, OpenAI, ElevenLabs voices (price per hour shown).
 - Press **?** in a book to see every shortcut.

@@ -356,15 +356,6 @@ export function StylesEditor({ settings, patch, models }: { settings: Settings; 
             <label>Words of text after</label>
             <Tip text="How much of the book after the sentence the AI reads" wrap below align="start"><input type="number" min={0} max={3000} step={50} value={ai.contextWordsAfter} onChange={(e) => { const n = Number(e.target.value); if (!Number.isNaN(n) && n >= 0) patchAi({ contextWordsAfter: Math.round(n) }); }} data-testid="context-after" style={{ width: 110 }} /></Tip>
           </div>
-          <div className="field" style={{ flex: 1, minWidth: 240 }}>
-            <label>Scene picture</label>
-            <Tip text="Draws the scene the Picture style describes" wrap below align="start">
-              <label className="row" style={{ gap: 8, fontWeight: 400 }}>
-                <input type="checkbox" checked={ai.generateScenePicture} onChange={(e) => patchAi({ generateScenePicture: e.target.checked })} data-testid="scene-picture" /> Also make a picture of the scene
-              </label>
-            </Tip>
-            <div className="hint">Picture style only; uses your OpenAI key, about 1 to 4 cents per picture.</div>
-          </div>
         </div>
         <div className="hint">Defaults: 500 words before, 200 after.</div>
       </div>
