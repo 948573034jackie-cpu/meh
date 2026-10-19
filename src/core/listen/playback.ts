@@ -3,6 +3,7 @@ import { sentenceKey } from '@core/model';
 import type { TtsEngine, SpeakHandle } from '@core/tts/engine';
 import { getSentence, nextPosition, prevPosition, paragraphStart, firstPosition } from '@core/nav';
 import { tokenIndexAtChar } from '@core/tts/timing';
+import { toOriginalRange, type StrippedText } from '@core/import/skip';
 
 export type PlaybackState = 'idle' | 'playing' | 'paused' | 'explaining';
 
@@ -48,7 +49,13 @@ export class Playback {
 
   constructor(
     private book: Book,
-    private deps: { engine: () => TtsEngine; voice: () => { voiceId: string; rate: number }; pauseMs: () => number },
+    private deps: {
+      engine: () => TtsEngine; voice: () => { voiceId: string; rate: number }; pauseMs: () => number;
+      /** Skip panel: sentences that are never read aloud (page numbers, footnotes, …) */
+      shouldSkip?: (pos: Position) => boolean;
+      /** Skip panel: removes brackets, citations, URLs … from the spoken text (offset map back to the page text) */
+      strip?: (text: string) => StrippedText | null;
+    },
     start?: Position,
   ) {
     this._pos = start ?? firstPosition(book) ?? { chapter: 0, paragraph: 0, sentence: 0 };
@@ -152,7 +159,14 @@ export class Playback {
         if (!alt || !cur) { this.setState('idle'); this.emit('finished'); return; }
         pos = alt; this._pos = alt;
       }
-      const text = cur.text;
+      if (this.deps.shouldSkip?.(pos)) {
+        const n = nextPosition(this.book, pos);
+        if (!n) { this.setState('idle'); this.emit('finished'); return; }
+        this._pos = n;
+        continue;
+      }
+      const st = this.deps.strip?.(cur.text) ?? null;
+      const text = st ? st.text : cur.text;
       this.emit('sentence', pos);
       const stopAt = this.hooks.stopAt?.(pos) ?? null;
       const engine = this.deps.engine();
@@ -169,7 +183,8 @@ export class Playback {
           rate: voice.rate,
           onWord: (charIndex) => {
             if (gen !== this.gen) return;
-            const idx = tokenIndexAtChar(cur.sentence, charIndex);
+            const orig = st ? toOriginalRange(st, charIndex, 1).charIndex : charIndex;
+            const idx = tokenIndexAtChar(cur.sentence, orig);
             if (idx === lastToken) return;
             lastToken = idx;
             if (typeof stopAt === 'number' && idx > stopAt && cur.sentence.tokens.slice(stopAt + 1, idx + 1).some((t) => t.kind === 'word')) {
@@ -223,8 +238,10 @@ export class Playback {
     for (let i = 0; i < 2 && p; i++) {
       p = nextPosition(this.book, p);
       if (!p) break;
+      if (this.deps.shouldSkip?.(p)) { i--; continue; }
       const s = getSentence(this.book, p);
-      if (s?.text.trim()) engine.prefetch(s.text, voice.voiceId, voice.rate);
+      const t = s ? (this.deps.strip?.(s.text)?.text ?? s.text) : '';
+      if (t.trim()) engine.prefetch(t, voice.voiceId, voice.rate);
     }
   }
 }

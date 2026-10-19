@@ -218,3 +218,22 @@ describe('Playback regressions', () => {
     expect(finished).toBe(true);
   });
 });
+
+import { sentenceKey } from '@core/model';
+import { stripInline, DEFAULT_SKIP, skippedSentences } from '@core/import/skip';
+describe('Playback skip panel', () => {
+  it('skips whole sentences and speaks stripped text', async () => {
+    const book = makeBook([{ title: 'One', paragraphs: ['Hello there (Smith, 2020).', '12', 'The end.'] }]);
+    const engine = new FakeTtsEngine(0);
+    const settings = { ...DEFAULT_SKIP, citations: true };
+    const skipped = skippedSentences(book, settings);
+    const pb = new Playback(book, {
+      engine: () => engine, voice: () => ({ voiceId: 'fake-gb', rate: 1 }), pauseMs: () => 0,
+      shouldSkip: (p) => skipped.has(sentenceKey(p)), strip: (t) => stripInline(t, settings),
+    });
+    const done = new Promise<void>((r) => pb.on('finished', r));
+    pb.play();
+    await done;
+    expect(engine.spoken.map((s) => s.text)).toEqual(['Hello there.', 'The end.']);
+  });
+});
