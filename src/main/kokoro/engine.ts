@@ -80,6 +80,8 @@ interface Job {
   seq: number;
   /** synthesize() callers waiting for this result: such a job is never dropped, only demoted */
   waiters: number;
+  /** a prepare(..., { wait }) caller is told when it is ready: a read-ahead list does not lower its priority */
+  held: boolean;
   promise: Promise<SynthesisResult>;
   resolve: (r: SynthesisResult) => void; reject: (e: Error) => void;
 }
@@ -94,15 +96,17 @@ interface Inference {
 }
 
 /**
- * ORT intra-op threads: the physical cores, at most 4, at least 2. Intel Macs report two logical CPUs per core
- * (Hyper-Threading): a 4-core i5/i7 reports 8, and running 7 threads on 4 cores is slower than 4. Apple Silicon
- * and most Linux boxes report real cores; one is left for the UI there when there are only a few.
+ * ORT intra-op threads: physical cores minus one, at least 2, at most 4. Intel Macs report two logical CPUs per
+ * core (Hyper-Threading): a 4-core i5/i7 reports 8, which the old "cores - 1, at most 4" turned into 4 threads on
+ * 4 physical cores, leaving nothing for the renderer and the main process. Apple Silicon reports real cores.
  */
 export function defaultThreads(cpus = os.cpus().length, arch: string = process.arch, platform: string = process.platform): number {
   const env = Number(process.env.KOKORO_THREADS);
   if (Number.isInteger(env) && env > 0) return env;
   const physical = arch === 'x64' && platform === 'darwin' && cpus >= 4 ? Math.floor(cpus / 2) : cpus;
-  const n = physical >= 8 ? 4 : arch === 'x64' && platform === 'darwin' ? physical : physical - 1;
+  // one core is left for the app (renderer, audio, the main process); measured on a 4-core x86: 3 threads RTF 0.50,
+  // 4 threads RTF 0.61 (the threads fight with everything else)
+  const n = physical >= 8 ? 4 : physical - 1;
   return Math.max(2, Math.min(4, n));
 }
 
@@ -308,9 +312,10 @@ export class KokoroEngine {
    * Queues texts to synthesize in the background (long ones as segments), highest `priority` first, then in
    * order; later synthesize() calls hit the cache. With `replace`, this list replaces the previous read-ahead:
    * queued jobs that no synthesize() call waits for and that are not in this list are dropped (their prepare
-   * promises reject with DroppedError). Resolves when every item is synthesized.
+   * promises reject with DroppedError). Resolves when every item is synthesized. With `wait`, the caller wants to
+   * know when they are ready: later read-ahead lists keep their priority (but may still drop them).
    */
-  prepare(items: PrepareItem[], opts: { replace?: boolean } = {}): Promise<void> {
+  prepare(items: PrepareItem[], opts: { replace?: boolean; wait?: boolean } = {}): Promise<void> {
     const keys = new Set<string>();
     const all: Promise<SynthesisResult>[] = [];
     for (const it of items) {
@@ -319,7 +324,7 @@ export class KokoroEngine {
       const priority = Math.min(PRIORITY.now - 1, it.priority ?? PRIORITY.background);
       for (const seg of synthesisSegments(it.text)) {
         keys.add(this.cacheKey(seg.text, voice, speed));
-        all.push(this.enqueue(seg.text, voice, speed, priority, false, opts.replace));
+        all.push(this.enqueue(seg.text, voice, speed, priority, false, opts.replace, opts.wait));
       }
     }
     if (opts.replace) this.dropExcept(keys);
@@ -338,7 +343,7 @@ export class KokoroEngine {
    * the requests that follow, and the next replace/clear may drop them.
    */
   releaseWaiters(): void {
-    for (const j of this.queue) if (j.waiters > 0 || j.priority >= PRIORITY.now) { j.waiters = 0; j.priority = Math.min(j.priority, PRIORITY.background); }
+    for (const j of this.queue) if (j.waiters > 0 || j.priority >= PRIORITY.now) { j.waiters = 0; j.held = false; j.priority = Math.min(j.priority, PRIORITY.background); }
     this.sortQueue();
   }
 
@@ -358,17 +363,18 @@ export class KokoroEngine {
     return hit;
   }
 
-  private enqueue(text: string, voice: string, speed: number, priority: number, waiter: boolean, rerank = false): Promise<SynthesisResult> {
+  private enqueue(text: string, voice: string, speed: number, priority: number, waiter: boolean, rerank = false, hold = false): Promise<SynthesisResult> {
     const key = this.cacheKey(text, voice, speed);
     const hit = this.memoryHit(key);
     if (hit) return Promise.resolve(hit);
     const job = this.jobs.get(key);
     if (job) {
       if (waiter) job.waiters++;
+      if (hold) job.held = true;
       if (job !== this.running) {
         // a request at a higher level joins at the back of that level; a read-ahead list re-ranks what nobody waits for
         if (priority > job.priority) { job.priority = priority; job.seq = ++this.jobSeq; }
-        else if (rerank && job.waiters === 0 && priority !== job.priority) { job.priority = priority; job.seq = ++this.jobSeq; }
+        else if (rerank && job.waiters === 0 && !job.held && priority !== job.priority) { job.priority = priority; job.seq = ++this.jobSeq; }
         this.sortQueue();
       }
       return job.promise;
@@ -376,7 +382,7 @@ export class KokoroEngine {
     let resolve!: (r: SynthesisResult) => void; let reject!: (e: Error) => void;
     const promise = new Promise<SynthesisResult>((res, rej) => { resolve = res; reject = rej; });
     promise.catch(() => undefined); // a dropped read-ahead job may have no listener
-    const j: Job = { key, text, voice, speed, priority, seq: ++this.jobSeq, waiters: waiter ? 1 : 0, promise, resolve, reject };
+    const j: Job = { key, text, voice, speed, priority, seq: ++this.jobSeq, waiters: waiter ? 1 : 0, held: hold, promise, resolve, reject };
     this.jobs.set(key, j);
     this.queue.push(j);
     this.sortQueue();

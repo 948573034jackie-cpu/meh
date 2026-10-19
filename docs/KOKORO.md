@@ -1,7 +1,8 @@
 # Kokoro: the local neural voice
 
-Kokoro-82M (Apache-2.0, hexgrad) runs inside the Electron main process through `onnxruntime-node`, with
-espeak-ng (WebAssembly, the `phonemizer` package) for grapheme-to-phoneme. The model's own duration
+Kokoro-82M (Apache-2.0, hexgrad) runs in a worker thread of the Electron main process through
+`onnxruntime-node`, with espeak-ng (WebAssembly, the `phonemizer` package, in the same worker) for
+grapheme-to-phoneme. The model's own duration
 predictor gives one frame count per phoneme token, which we turn into per-word start/end times for the
 karaoke highlight. Code: `src/main/kokoro/` (engine, download, G2P, alignment, IPC), `src/core/tts/kokoro.ts`
 (renderer engine, plays the WAV through the same path as the cloud voices).
@@ -27,7 +28,8 @@ than fp32 on a 4-core x86 (RTF 2.1 vs 0.36). fp16 is the same speed as fp32 on t
 are cast to fp32 at load) at half the download, so it is the default. `KOKORO_VARIANT=fp32|int8` overrides.
 
 Synthesized sentences are cached as WAV + JSON (word times) under `<userData>/cache/tts/`, keyed by
-sha1(model version, voice, speed, text), capped at 300 MB (LRU by mtime), plus a 48-entry memory LRU.
+sha1(model version, voice, speed, text), capped at 300 MB (LRU by mtime), plus a 96-entry memory LRU.
+Long texts are cached per clause segment (see "Smooth playback" below).
 
 ## Speed (scripts/kokoro-bench.mjs)
 
@@ -41,7 +43,7 @@ onnxruntime-node 1.30.0, voice bf_emma, three sentences of 5–8 s each:
 | fp32 | 4 | 0.38–0.53 | same as fp16 |
 | int8 | 4 | 2.1–2.7 | slower than real time: do not ship |
 
-Model load: 1.7–2.5 s (fp16), warm-up inference 0.5 s. First-sentence latency after load: ~2.1 s for a
+Model load: 1.7–2.5 s (fp16; up to 25 s on a cold disk), warm-up inference 0.5 s. First-sentence latency after load: ~2.1 s for a
 5.4 s sentence when warmed up, 5.7 s cold (the first ORT run and the espeak WASM start are slow), which is
 why the engine runs a warm-up at load and why the renderer should call `prepare()` for the next sentences.
 
@@ -104,14 +106,81 @@ RTF ~0.1–0.2). The CoreML execution provider is available in onnxruntime-node 
    (keeping 50 ms) and the tail (keeping 120 ms), and emits `{charIndex, charLength, start, end}` per word.
 5. `ipc.ts` returns a WAV (16-bit) plus timings; the renderer's `AudioTtsEngine` plays it and fires `onWord`.
 
+## Smooth playback (no silence between sentences)
+
+The learner (4-core Intel MacBook Pro) heard "a few sentences, then a few seconds of silence, then it goes on".
+Causes found, and what fixed them:
+
+1. **Inference blocked the Electron main process.** onnxruntime-node's `session.run()` and
+   `InferenceSession.create()` are synchronous native calls (the JS wrapper only defers them with
+   `setImmediate`), so each sentence froze the main thread for its whole synthesis (2.5–3.7 s for a normal
+   sentence, 10 s for a long one, 2–25 s at model load). Every IPC reply waited behind it, including the reply
+   for a sentence that was already synthesized and cached. Fix: the ONNX session and espeak run in a worker
+   thread (`WORKER_SOURCE` in `engine.ts`, plain CommonJS evaluated from a string so no extra bundle entry is
+   needed). Worst main-thread stall during reading: 13 s → 40 ms. If the worker cannot start (e.g. a packaged
+   build where the worker cannot load onnxruntime-node from the asar), the engine logs it and falls back to the
+   old inline mode; `KOKORO_INFERENCE=inline` forces it.
+2. **The sentence needed now queued behind prefetches.** The renderer prefetched n+1 and n+2 through
+   `tts:synthesize`, the same priority as the sentence to play, and *before* asking for it; the main queue was
+   FIFO within a priority, so sentence n waited for n+1 and n+2 (first audio 12.9 s instead of ~3 s; after a
+   seek or an explanation the same). Fix: one priority queue in the main process
+   (`src/core/tts/segments.ts` `PRIORITY`): `now` (a speak() waiting: reading or an explanation) > `next` (the
+   sentence after the one playing) > read-ahead (`ahead − distance`) > plain `prepare()` (ReaderView). Playback
+   asks for the current sentence first; read-ahead goes through `kokoro:prepare` with priorities, and the next
+   sentence is requested with `wait: true` (the call resolves when it is ready, then the renderer fetches it from
+   the memory cache), so it never competes as `now` with an explanation. Requests are deduped (one job per cache
+   key, every caller gets the result, a later request raises the priority).
+3. **Long sentences took long to synthesize, and a running job cannot be interrupted.** Texts over 180 characters
+   are split into clause segments of ≤ 150 characters (`synthesisSegments`: sentence ends, then ; : —, then
+   commas; never after "Mr."). The renderer plays them back to back with word timings shifted to the sentence
+   (one sentence for the highlighter); the main process uses the same split for `prepare()`/`synthesize()` of
+   whole texts, so both share one cache entry per segment. A 398-character sentence: first audio 11.1 s → 3.0–3.4 s.
+   Small jobs also bound how long a `now` request can wait behind read-ahead (one segment).
+4. **Read-ahead was too short.** Two sentences (renderer) + five (ReaderView), only when a sentence started.
+   Now Playback hands the engine up to 8 sentences / ~60 s of speech; the Kokoro engine queues all of them (each
+   call replaces the previous list, so a seek drops stale work) and pause/stop clears the queue
+   (`stopReadAhead`). Cloud voices still fetch only two ahead (they cost money).
+5. **Decode/setup per sentence.** The next sentence's audio element is created and `load()`ed while the current
+   one plays, so its start is just `play()` (`AudioTtsEngine.lastStartDelayMs` records it). HTMLAudio is kept
+   rather than Web Audio buffers because `playbackRate` on an `AudioBufferSourceNode` changes the pitch.
+6. **Threads.** The old default `min(4, cores − 1)` counted Hyper-Threading cores: 4 threads on a 4-core/8-thread
+   Intel Mac, leaving nothing for the renderer and the main process. Now `defaultThreads()`: physical cores − 1,
+   2..4 (3 on that Mac; `KOKORO_THREADS` overrides). On the 4-core bench box: 2 threads RTF 0.52, 3 → 0.50,
+   4 → 0.61.
+7. **Model load at first play.** The model loads and warms up in the background 1.5 s after start-up when the
+   Dream voice is chosen and on disk (`warmUpKokoro`, `src/main/tts.ts`), so the first sentence does not pay the
+   ~3–6 s load.
+
+The Mac voice path (`webspeech.ts`) had one way to go silent: when Chromium loses an utterance's `onend`, the
+end watchdog only fires after twice the expected duration + 5 s. An idle check now ends the utterance 1.5 s
+after the synthesizer reports nothing speaking or queued (and at least half the expected time has passed).
+The 250 ms pause between sentences is the `pauseBetweenSentencesMs` setting, intended.
+
+### Measured (scripts/kokoro-bench.mjs, 4-vCPU Xeon @ 2.8 GHz, fp16, bf_emma)
+
+`--sim` reads the first 10 sentences of Pride and Prejudice in real time (two long ones of 257 and 398
+characters, three very short ones) with the app's request pattern, and reports silence beyond the 250 ms pauses.
+
+| | before | after |
+| --- | --- | --- |
+| time to first audio (first sentence, model loaded) | 12.9 s | 3.2–3.6 s |
+| gaps > 300 ms in 10 sentences | one of 7.2 s (sentence 6) | none |
+| worst main-thread stall while reading | 13.2 s (11 stalls > 300 ms) | 40 ms |
+| long sentence (398 chars), time to first audio | 11.1 s | 3.0–3.4 s |
+| model load main-thread stall | 2–21 s | < 0.1 s |
+| `--threads 1` (a much slower CPU): first audio / gaps | — | 6.8 s / none |
+
+`--policy legacy` replays the old renderer request pattern on the new engine: first audio is still 12.1 s,
+which isolates the renderer-side priority inversion (fixed in Playback/AudioTtsEngine).
+
 ## IPC
 
 `kokoro:status`, `kokoro:download`, `kokoro:cancelDownload`, `kokoro:voices`,
 `kokoro:synthesize(text, voice, speed, {asFile?})`, `kokoro:prepare(items)`; events on `kokoro:progress`.
-The existing `tts:synthesize` / `tts:voices` channels accept engine `'kokoro'` as well, which is what the
-renderer engine uses today. The preload bridge (`src/preload/index.ts`) and `ReadAlongApi`
-(`src/shared/api.ts`) still need entries for the `kokoro:*` channels before Settings can show download
-progress and the reader can call `prepare()`.
+The existing `tts:synthesize` / `tts:voices` channels accept engine `'kokoro'` as well; that is what
+`speak()` uses (priority `now`). `kokoro:prepare` items may carry `priority` and `wait`, plus the control items
+`{ text: '', replace: true }` (replace the read-ahead) and `{ text: '', release: true }` (the renderer cancelled
+its speech: its waiting requests become ordinary read-ahead); see `src/main/kokoro/ipc.ts` and `ipc-prepare.ts`.
 
 ## Voices
 

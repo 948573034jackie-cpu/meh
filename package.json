@@ -64,6 +64,8 @@
     ],
     "asarUnpack": [
       "node_modules/onnxruntime-node/**",
+      "node_modules/onnxruntime-common/**",
+      "node_modules/phonemizer/**",
       "node_modules/sherpa-onnx-node/**",
       "node_modules/sherpa-onnx-darwin-*/**"
     ],

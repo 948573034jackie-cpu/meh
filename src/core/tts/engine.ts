@@ -44,6 +44,14 @@ export interface TtsEngine {
   speak(text: string, opts: SpeakOptions): SpeakHandle;
   /** optional: synthesize ahead of time so the next sentence starts without delay */
   prefetch?(text: string, voiceId: string, rate: number): void;
+  /**
+   * optional, preferred over prefetch: the sentences after the one being spoken, nearest first (up to about a
+   * minute of speech). Each call replaces the previous list; the engine decides how far to go (cloud voices cost
+   * money, the local voice reads ahead as far as the CPU allows) and pre-decodes the next one.
+   */
+  readAhead?(texts: string[], voiceId: string, rate: number): void;
+  /** optional: playback paused or stopped, drop the read-ahead */
+  stopReadAhead?(): void;
   pause(): void;
   resume(): void;
   cancelAll(): void;

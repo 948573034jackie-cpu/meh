@@ -1,7 +1,8 @@
 import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
-import { KokoroEngine, DroppedError, type EngineStatus, type SynthesisResult } from './engine';
+import { KokoroEngine, type EngineStatus, type SynthesisResult } from './engine';
+import { handlePrepare, type KokoroPrepareItem } from './ipc-prepare';
 import { KOKORO_VOICES, DEFAULT_VOICE } from './voices';
 
 /**
@@ -92,23 +93,4 @@ export function registerKokoroIpc(): void {
     };
   });
   ipcMain.handle('kokoro:prepare', (_e, items: KokoroPrepareItem[]): Promise<boolean> | void => handlePrepare(kokoroEngine(), items));
-}
-
-/** an item of kokoro:prepare (see the channel list above) */
-export interface KokoroPrepareItem { text: string; voice?: string; speed?: number; priority?: number; wait?: boolean; replace?: boolean; release?: boolean }
-
-/**
- * Applies one kokoro:prepare call. With `wait` items it resolves true once they are synthesized, or false when they
- * were dropped from the queue before (a later replace or clear): the renderer then no longer needs them.
- */
-export function handlePrepare(eng: Pick<KokoroEngine, 'prepare' | 'releaseWaiters'>, items: KokoroPrepareItem[]): Promise<boolean> | void {
-  if (!Array.isArray(items)) return;
-  const replace = items.some((i) => i?.replace === true);
-  if (items.some((i) => i?.release === true)) eng.releaseWaiters();
-  const jobs = items.filter((i) => i && typeof i.text === 'string' && i.text.trim());
-  const waited = jobs.filter((i) => i.wait === true);
-  const rest = jobs.filter((i) => i.wait !== true);
-  // a replacing call keeps its own waited items
-  if (rest.length || replace) void eng.prepare(replace ? [...rest, ...waited] : rest, { replace }).catch(() => undefined);
-  if (waited.length) return eng.prepare(waited).then(() => true, (e: Error) => (e instanceof DroppedError ? false : Promise.reject(e)));
 }

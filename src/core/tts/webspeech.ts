@@ -8,6 +8,14 @@ export const START_TIMEOUT_NEW_VOICE_MS = 8000;
 export const END_TIMEOUT_EXTRA_MS = 5000;
 /** Chromium pauses long utterances on some versions; a resume() tick while speaking is the usual workaround */
 export const RESUME_TICK_MS = 10_000;
+/**
+ * the synthesizer reports nothing speaking or queued and no word boundary came for this long (and at least half
+ * of the expected duration has passed): the utterance is over even though onend never arrived. Without this a
+ * lost onend left the learner in silence until the end watchdog (twice the expected duration + 5 s).
+ */
+export const IDLE_END_MS = 1500;
+/** how often the idle check runs while speaking */
+const IDLE_POLL_MS = 500;
 /** a "Test voice" probe must start within this long */
 export const PROBE_TIMEOUT_MS = 5000;
 /** words per minute at rate 1, used to estimate how long an utterance should take */
@@ -103,11 +111,17 @@ export class WebSpeechEngine implements TtsEngine {
     let utterance: SpeechSynthesisUtterance | null = null;
     let timers: ReturnType<typeof setTimeout>[] = [];
     let resumeTick: ReturnType<typeof setInterval> | null = null;
+    let idlePoll: ReturnType<typeof setInterval> | null = null;
     const clearTimers = () => {
       for (const t of timers) clearTimeout(t);
       timers = [];
       if (resumeTick) { clearInterval(resumeTick); resumeTick = null; }
+      if (idlePoll) { clearInterval(idlePoll); idlePoll = null; }
     };
+    const words = Math.max(1, text.split(/\s+/).filter(Boolean).length);
+    const expectedMs = (words / (WORDS_PER_MINUTE * clampRate(opts.rate))) * 60_000;
+    let startedAt = 0;
+    let lastActivity = 0;
     /** stops routing engine events of the current utterance (a cancelled/abandoned one still emits 'canceled') */
     const detach = () => { if (utterance) utterance.onstart = utterance.onend = utterance.onerror = utterance.onboundary = null; };
     job.finish = (o) => {
@@ -132,8 +146,6 @@ export class WebSpeechEngine implements TtsEngine {
     this.inflight.add(job);
 
     const armEndWatchdog = () => {
-      const words = Math.max(1, text.split(/\s+/).filter(Boolean).length);
-      const expectedMs = (words / (WORDS_PER_MINUTE * clampRate(opts.rate))) * 60_000;
       const ms = expectedMs * 2 + END_TIMEOUT_EXTRA_MS;
       const arm = () => timers.push(setTimeout(() => {
         if (job.finished) return;
@@ -183,10 +195,19 @@ export class WebSpeechEngine implements TtsEngine {
         clearTimers();
         armEndWatchdog();
         resumeTick = setInterval(() => { if (speechSynthesis.speaking && !this._paused) safe(() => speechSynthesis.resume()); }, RESUME_TICK_MS);
+        startedAt = lastActivity = Date.now();
+        idlePoll = setInterval(() => {
+          if (job.finished || this._paused) { lastActivity = Date.now(); return; }
+          // still talking (or queued): the idle time counts from when it stops
+          if (speechSynthesis.speaking || speechSynthesis.pending) { lastActivity = Date.now(); return; }
+          const now = Date.now();
+          if (now - lastActivity >= IDLE_END_MS && now - startedAt >= expectedMs / 2) job.finish('ended');
+        }, IDLE_POLL_MS);
         opts.onStart?.();
       };
       u.onboundary = (e) => {
         if (e.name !== 'word') return;
+        lastActivity = Date.now();
         if (e.charIndex < lastIndex) return; // guard against engines that shuffle ranges
         lastIndex = e.charIndex;
         opts.onWord?.(e.charIndex, e.charLength ?? wordLengthAt(text, e.charIndex));

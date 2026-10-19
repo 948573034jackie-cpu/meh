@@ -87,6 +87,7 @@ export class Playback {
     if (this._state === 'idle') return;
     this.gen++;
     this.cancelCurrent();
+    this.deps.engine().stopReadAhead?.();
     this.setState('paused');
   }
 
@@ -95,6 +96,7 @@ export class Playback {
   stop(): void {
     this.gen++;
     this.cancelCurrent();
+    this.deps.engine().stopReadAhead?.();
     this.setState('idle');
   }
 
@@ -171,12 +173,12 @@ export class Playback {
       const stopAt = this.hooks.stopAt?.(pos) ?? null;
       const engine = this.deps.engine();
       const voice = this.deps.voice();
-      this.prefetchAhead(engine, voice);
       this.speaking = { pos, start: performance.now(), end: 0 };
       let stoppedAtToken: number | null = null;
       let lastToken = -1;
       let outcome: 'ended' | 'cancelled' | 'error' = 'ended';
       let handle: SpeakHandle | null = null;
+      if (!text.trim()) this.prefetchAhead(engine, voice);
       if (text.trim()) {
         handle = engine.speak(text, {
           voiceId: voice.voiceId,
@@ -197,6 +199,8 @@ export class Playback {
           },
         });
         this.handle = handle;
+        // after speak(): the sentence needed now is requested before the read-ahead
+        this.prefetchAhead(engine, voice);
         outcome = await handle.done;
         if (this.handle === handle) this.handle = null;
       }
@@ -232,18 +236,36 @@ export class Playback {
     }
   }
 
+  /**
+   * Hands the engine the sentences after the current one: up to READ_AHEAD_SENTENCES or about READ_AHEAD_SECONDS
+   * of speech, Skip-panel sentences left out, stripped text. Engines with readAhead() decide how far to go (the
+   * local voice synthesizes all of them in the background, cloud voices only the next two); others get the next
+   * two through prefetch().
+   */
   private prefetchAhead(engine: TtsEngine, voice: { voiceId: string; rate: number }): void {
-    if (!engine.prefetch) return;
+    if (!engine.readAhead && !engine.prefetch) return;
+    const texts: string[] = [];
+    let seconds = 0;
     let p: Position | null = this._pos;
-    for (let i = 0; i < 2 && p; i++) {
+    for (let guard = 0; p && texts.length < READ_AHEAD_SENTENCES && seconds < READ_AHEAD_SECONDS && guard < 200; guard++) {
       p = nextPosition(this.book, p);
       if (!p) break;
-      if (this.deps.shouldSkip?.(p)) { i--; continue; }
+      if (this.deps.shouldSkip?.(p)) continue;
       const s = getSentence(this.book, p);
       const t = s ? (this.deps.strip?.(s.text)?.text ?? s.text) : '';
-      if (t.trim()) engine.prefetch(t, voice.voiceId, voice.rate);
+      if (!t.trim()) continue;
+      texts.push(t);
+      seconds += t.length / CHARS_PER_SECOND;
     }
+    if (engine.readAhead) engine.readAhead(texts, voice.voiceId, voice.rate);
+    else for (const t of texts.slice(0, 2)) engine.prefetch!(t, voice.voiceId, voice.rate);
   }
 }
+
+/** read-ahead limits: about a minute of speech, at most this many sentences */
+export const READ_AHEAD_SENTENCES = 8;
+export const READ_AHEAD_SECONDS = 60;
+/** speech at rate 1 is about 15 characters a second (150 words a minute) */
+const CHARS_PER_SECOND = 15;
 
 function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)); }
