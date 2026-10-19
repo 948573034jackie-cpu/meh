@@ -130,6 +130,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const voiceRef = useRef<VoiceChat | null>(null);
   const [voiceSnap, setVoiceSnap] = useState<VoiceSnapshot | null>(null);
   const [voicePop, setVoicePop] = useState(false);
+  const savedEntriesRef = useRef(new Set<number>());
   const [heard, setHeard] = useState<{ text: string; command: 'know' | 'dont_know' | 'bye' } | null>(null);
   /** the AI's chapter hints (lemma -> [meaning as used here, other meaning]); null until the job has run */
   const [hints, setHints] = useState<HintMap | null>(null);
@@ -196,6 +197,15 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         setBusy(controller.busy);
         voiceRef.current?.setTutorState(!controller.busy ? 'idle' : entry.status === 'thinking' ? 'thinking' : 'speaking');
         if (entry.kind === 'question' && entry.status === 'thinking') setHeard(null);
+        // every explained word or phrase goes into My Vocabulary (and the CSV), with its sentence and explanation
+        if (entry.lemma && (entry.kind === 'word' || entry.kind === 'phrase') && entry.status === 'done' && entry.text && !savedEntriesRef.current.has(entry.id)) {
+          savedEntriesRef.current.add(entry.id);
+          const ch = book.chapters[entry.position?.chapter ?? 0];
+          void window.readalong.vocabUpsertEntry({
+            lemma: entry.lemma, word: entry.target, sentence: entry.sentence, explanation: entry.text, chinese: entry.chinese ?? '',
+            bookId: book.id, bookTitle: book.title, chapter: ch?.title ?? '', position: entry.position, level: entry.level as never, again: entry.again,
+          }).catch(() => undefined);
+        }
         followEntry(entry);
       },
       onMarkLearning: (lemma) => { if (!vocabRef.current.words[lemma]) void changeStatus(lemma, 'learning', false); },
@@ -405,6 +415,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     if (status) words[lemma] = status; else delete words[lemma];
     useApp.getState().setVocab({ ...vocabRef.current, words });
     await window.readalong.setWordStatus(lemma, status);
+    // keep the My Vocabulary entry (if the word has one) in step: known words are saved as known
+    if (status === 'known' || status === 'learning') void window.readalong.vocabSetEntryStatus(lemma, status).catch(() => undefined);
     const hint = !status && dict && settingsRef.current.appearance.showHints !== false ? (hintsRef.current?.[lemma]?.[0] || hintText(dict.lookup(lemma)?.entry.zh ?? '')) : undefined;
     if (docRef.current) restyleLemma(docRef.current, lemma, status, settingsRef.current.learnerLevel, hint);
     if (toast && status === 'known') showToast(`“${lemma}” marked known`, { label: 'Undo', run: () => void changeStatus(lemma, prev ?? null, false) });

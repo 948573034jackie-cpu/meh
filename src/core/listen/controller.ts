@@ -39,6 +39,13 @@ export interface TranscriptEntry {
   question?: string;
   /** kind 'question': the learner spoke it (voice chat) rather than typed it */
   spoken?: boolean;
+  /** word/phrase explanations: what to save in My Vocabulary */
+  lemma?: string;
+  position?: Position;
+  chinese?: string;
+  level?: string;
+  /** the second, deeper explanation after "I don't know" */
+  again?: boolean;
 }
 
 export interface ListenDeps {
@@ -382,7 +389,7 @@ export class ListenController {
    */
   private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string, again?: boolean, spoken?: boolean): Promise<'done' | 'skipped' | 'aborted'> {
     if (this.historyChapter !== pos.chapter) { this.history = []; this.historyChapter = pos.chapter; }
-    const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking', ...(kind === 'question' ? { question, spoken } : {}) };
+    const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking', ...(kind === 'question' ? { question, spoken } : {}), ...(lemma ? { lemma, position: { chapter: pos.chapter, paragraph: pos.paragraph, sentence: pos.sentence }, chinese: dict?.zh ?? undefined, level: dict?.level ?? undefined, again: !!again } : {}) };
     this.deps.onTranscript({ ...entry });
     const s0 = this.deps.settings();
     const ctx = contextAround(this.deps.book, pos, s0.ai.contextWordsBefore, s0.ai.contextWordsAfter);
