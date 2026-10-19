@@ -14,14 +14,15 @@ Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.co
 
 **Popup settings:** replay on/off, **text size slider (1–10 in quarter steps, 6 = medium, 10 = the biggest)**, send the transcript on/off, “let's go” voice command on/off.
 
-## My tutor (v3.0): Dream Read's teacher, with your own API key
+## My tutor (v3.1): your own AI teacher, with your own API key
 The **My tutor** button on the video bar turns it on (Claude / ChatGPT turns off: one voice at a time).
-1. Click the extension icon → **Dream Tutor settings** → paste your Claude (Anthropic) or OpenAI API key → **Save** → **Test**.
-2. Open a YouTube video with subtitles. The subtitles appear on the right in Dream Read's look; hard words are highlighted with a Chinese hint.
-3. Right after a hard word the video stops, the card opens and the word is said 3 times. Then say (or press):
-   **"I know"** (K) · **"I don't know"** (D) · **"Go on"** (Esc). Silence = the explanation comes.
-4. After the explanation the video goes back to the start of the sentence and plays on.
-5. Tap a word = explain it · double tap = known · 📒 = My Vocabulary (CSV, progress) · ⚙ = all settings.
+1. Click ⚙ on the Dream panel (or the extension icon → Dream Tutor settings) → API keys: paste your Claude and/or
+   OpenAI key → Save. (OpenAI gives the natural voice and the live voice call.)
+2. Open a YouTube video with subtitles. The AI first makes complete sentences and marks what is hard for you.
+3. At a hard word, phrase or sentence the video stops, the page shows the last 30 s, the word is said 3 times.
+   Say **"I know"** (K) or **"I don't know"** (D); silence = it explains. Then a moment to ask; quiet = on.
+4. Pause = the part again + explained. ← = the last sentence. "bye bye" / Esc = stop the AI, play again.
+   Space = pause the teacher. Shift+T = talk. Shift+L = listening mode. [ ] = text size.
 
 ## Install
 1. Download and unzip https://github.com/948573034jackie-cpu/meh/releases/download/claudesnap-latest/YouTube-to-Claude.zip

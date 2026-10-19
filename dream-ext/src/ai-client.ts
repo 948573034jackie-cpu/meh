@@ -30,6 +30,29 @@ export function explain(req: ExplainRequest, onDelta: (full: string) => void): {
   return { done, cancel: () => fail('cancelled', 'cancelled') };
 }
 
+/** A completion with the cheap model whose text arrives piece by piece (live Chinese translation). */
+export function completeStream(prompt: PromptBundle, onDelta: (full: string) => void): { done: Promise<string>; cancel(): void } {
+  let port: chrome.runtime.Port | null = null;
+  let full = '';
+  let settled = false;
+  let resolve!: (t: string) => void, reject!: (e: Error) => void;
+  const done = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+  done.catch(() => undefined);
+  const end = (fn: () => void) => { if (settled) return; settled = true; fn(); try { port?.disconnect(); } catch { /* gone */ } };
+  try {
+    port = chrome.runtime.connect({ name: 'dream-ai' });
+    port.onMessage.addListener((m: { type: string; text?: string; message?: string; code?: string }) => {
+      if (settled) return;
+      if (m.type === 'delta') { full += m.text ?? ''; onDelta(full); }
+      else if (m.type === 'done') end(() => resolve(m.text ?? full));
+      else end(() => reject(Object.assign(new Error(m.message ?? 'AI error'), { code: m.code })));
+    });
+    port.onDisconnect.addListener(() => end(() => reject(new Error('The extension stopped.'))));
+    port.postMessage({ type: 'complete', prompt, stream: true });
+  } catch (e) { end(() => reject(e as Error)); }
+  return { done, cancel: () => end(() => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))) };
+}
+
 /** One background completion with the cheap hints model (Chinese meanings, phrases). */
 export function complete(prompt: PromptBundle): Promise<string> {
   return new Promise((resolve, reject) => {

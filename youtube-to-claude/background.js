@@ -328,24 +328,37 @@ async function diagnose() {
     else {
       if (!r.video) problems.push('No video found on the YouTube page.');
       if (r.subtitles && /^none|error/.test(r.subtitles)) problems.push('No subtitles for this video: ' + r.subtitles);
-      if (!r.settings.sendOn) problems.push('ChatGPT and Claude are both OFF (red). Press Claude under the video so it turns green.');
+      const tutorOn = !!(st.drExtras && st.drExtras.tutorOn);
+      if (!r.settings.sendOn && !tutorOn) problems.push(self.__ytcSafari ? 'ChatGPT and Claude are both OFF (red). Press Claude under the video so it turns green.' : 'Everything is OFF (red). Under the video press My tutor (your own API key) or Claude / ChatGPT (the website) so it turns green.');
+      if (r.tutor && r.tutor.problem) problems.push(r.tutor.problem);
       if (r.muted) problems.push('The video is MUTED. Tap the speaker icon in the player.');
       if (r.settings.voiceOn && r.touch) problems.push('Voice commands are ON: the YouTube page uses the microphone, so the Claude voice call may lose it and the video sound gets quiet. Turn "Voice commands" off.');
     }
   }
 
+  // My tutor (Chrome): on / off, which keys are saved (never the keys themselves), the voice and the AI it uses
+  if (!self.__ytcSafari) {
+    const ex = st.drExtras || {}, ds = st.drSettings || {}, ks = st.drKeys || {};
+    const saved = Object.keys(ks).filter((k) => ks[k]);
+    add('My tutor', { on: !!ex.tutorOn, keys: saved.length ? saved : 'none saved', ai: ds.ai ? (ds.ai.provider + ' ' + (ds.ai.provider === 'openai' ? ds.ai.openaiModel : ds.ai.anthropicModel)) : 'default', level: ds.learnerLevel || 'B2', voice: ex.voice || 'auto', liveTalk: ks.openai ? 'real time (OpenAI)' : 'slower (no OpenAI key)' });
+    if (ex.tutorOn && !saved.length) problems.push('My tutor is ON but no API key is saved. Click the extension icon → Dream Tutor settings → paste your key → Save → Test.');
+    if (ex.tutorOn && ex.voice === 'openai' && !ks.openai) problems.push('The OpenAI voice is chosen but no OpenAI API key is saved (Dream Tutor settings). The Mac voice is used until then.');
+    if (ex.tutorOn && ex.voice === 'elevenlabs' && !ks.elevenlabs) problems.push('The ElevenLabs voice is chosen but no ElevenLabs key is saved (Dream Tutor settings). The Mac voice is used until then.');
+  }
+
   const T = await getTarget();
   const chats = tabs.filter((t) => (t.url || '').startsWith(T.url.replace('*', '')));
-  if (!chats.length) problems.push('No ' + T.name + ' tab found. Open ' + T.name + ' (' + T.url.replace('/*', '') + ') in a second Safari window next to YouTube.');
+  const tutorOnly = !self.__ytcSafari && st.drExtras && st.drExtras.tutorOn && !st.sendOn;
+  if (!chats.length && !tutorOnly) problems.push('No ' + T.name + ' tab found. Open ' + T.name + ' (' + T.url.replace('/*', '') + ')' + (self.__ytcSafari ? ' in a second Safari window next to YouTube.' : ' in another tab.'));
   for (const t of chats.slice(0, 2)) {
     const r = await within(chrome.tabs.sendMessage(t.id, { type: 'chat-diag' }).catch((e) => ({ error: e.message })), 3000);
     add(T.name + ' tab', r || 'no answer');
-    if (!r || r.error) problems.push('The ' + T.name + ' page does not answer. Reload it, and allow the extension on ' + T.url.replace('https://', '').replace('/*', '') + '. Keep it on screen (Split View): Safari stops pages you cannot see.');
+    if (!r || r.error) problems.push('The ' + T.name + ' page does not answer. Reload it' + (self.__ytcSafari ? ', and allow the extension on ' + T.url.replace('https://', '').replace('/*', '') + '. Keep it on screen (Split View): Safari stops pages you cannot see.' : '.'));
     else {
       if (r.voiceSession && !r.endButton) problems.push(T.name + ' is in a voice session and its End button was not found (needed to send). Buttons seen: ' + (r.buttons || []).slice(0, 8).join(' / '));
       if (!r.imageInput) problems.push('The ' + T.name + ' page has no picture upload, so pictures cannot be sent.');
       if (!r.composer && !r.voiceSession) problems.push('No message box found on the ' + T.name + ' page. Open a chat there.');
-      if (r.visible === 'hidden') problems.push('The ' + T.name + ' page is not on screen. Put it next to YouTube (Split View), otherwise Safari pauses it.');
+      if (r.visible === 'hidden' && self.__ytcSafari) problems.push('The ' + T.name + ' page is not on screen. Put it next to YouTube (Split View), otherwise Safari pauses it.');
     }
   }
   const head = problems.length ? 'PROBLEMS FOUND (' + problems.length + '):\n' + problems.map((p, i) => (i + 1) + '. ' + p).join('\n') : 'No problems found ✓';

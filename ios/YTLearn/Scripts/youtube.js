@@ -1021,7 +1021,7 @@
         volume: video ? video.volume : null, time: video ? +video.currentTime.toFixed(1) : null, subtitles: subState, lastSend, lastHeard,
         waiting: !!pending, replaying: !!replaying, touchArea: !!tapLayer, bar: !!bar,
         settings: { sendOn: settings.sendOn, target: settings.target, picOnly: settings.picOnly, replayOn: settings.replayOn, voiceOn: settings.voiceOn, tapOn: settings.tapOn, textLevel: settings.textLevel },
-        safari: !!window.__ytcSafari, touch: TOUCH });
+        safari: !!window.__ytcSafari, touch: TOUCH, tutor: window.__ytcDream && window.__ytcDream.diag ? window.__ytcDream.diag() : null });
       return;
     }
     if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false, msg.key); // used by tests / other parts of the extension

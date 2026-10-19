@@ -10,7 +10,7 @@ import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
 import { resolveStyle } from '@shared/styles';
 import type { Playback } from './playback';
-import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, splitByScript, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
+import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, splitByScript, twoMeanings, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
 import { StreamSentenceSplitter } from './sentences';
 import { cleanSpokenProse } from '@core/ai/prompts';
 
@@ -31,9 +31,13 @@ function scriptFor(kind: ExplainKind, target: string, sentence: string, s: Setti
  * window, so the script starts with the explanation (the style may still add the word / sentence after it).
  * Marked phrases and sentences (no lemma) keep their sentence script.
  */
-function listenScriptFor(kind: ExplainKind, target: string, sentence: string, s: Settings, lemma: string | undefined): ScriptStep[] {
+function listenScriptFor(kind: ExplainKind, target: string, sentence: string, s: Settings, lemma: string | undefined, phraseAsSentence = false): ScriptStep[] {
+  // (YouTube) a hard sentence was just played once before the commands window: the explanation, then the sentence again
+  if (lemma && kind === 'sentence') return styledSentenceScript(sentence, { ...resolveStyle(s.ai.activeStyle, s.ai.styles).shape, sentenceBefore: 0 });
   if (!lemma || (kind !== 'word' && kind !== 'phrase')) return scriptFor(kind, target, sentence, s);
   const shape = resolveStyle(s.ai.activeStyle, s.ai.styles).shape;
+  // (YouTube) a phrase is taught like a sentence: no word repeats after it, the sentence `sentenceAfter` times
+  if (kind === 'phrase' && phraseAsSentence) return styledWordScript(target, sentence, { ...shape, wordBefore: 0, wordAfter: 0, sentenceAfterWord: shape.sentenceAfter });
   return styledWordScript(target, sentence, { ...shape, wordBefore: 0 });
 }
 
@@ -109,6 +113,15 @@ export interface ListenDeps {
   onCommandWindow?: (w: CommandWindow | null) => void;
   /** above-level phrases of the sentence found by the chapter phrase job (none when absent) */
   chapterPhrases?: (pos: Position) => ChapterPhrase[] | null | undefined;
+  /** (YouTube) prose explanations are spoken sentence by sentence while the reply streams in, like questions */
+  streamProse?: () => boolean;
+  /** (YouTube) a phrase stop ends like a sentence (the sentence again), not with the word repeats */
+  phraseAsSentence?: () => boolean;
+  /**
+   * (YouTube) a whole sentence too hard for the learner (found by the AI): it stops at its end like a word
+   * (played once, the commands window, the explanation); `lemma` is its key in the vocabulary ("I know" = known).
+   */
+  sentenceTrigger?: (pos: Position) => { lemma: string } | null;
 }
 
 /** The last word/phrase/sentence explanation (what "I know" and "I don't know" refer to). */
@@ -197,6 +210,13 @@ export class ListenController {
       // the chapter job's other phrases (idioms, phrasal verbs, slang): they stop exactly like words
       for (const h of ann.aiPhrases) addPhrase(h.lemma, h.start, h.end, h.above, h.zh ?? '', h.level);
     }
+    const hs = this.deps.sentenceTrigger?.(pos);
+    if (hs && hs.lemma) {
+      const status = vocab[hs.lemma];
+      if (status !== 'known' && status !== 'ignored' && !this.dismissed.has(hs.lemma) && !recently(hs.lemma)) {
+        out.push({ kind: 'sentence', token: 0, end: cur.sentence.tokens.length - 1, target: cur.text, lemma: hs.lemma });
+      }
+    }
     for (const m of this.deps.marked()) {
       if (m.chapter === pos.chapter && m.paragraph === pos.paragraph && m.sentence === pos.sentence) {
         const whole = m.start <= cur.sentence.start && m.end >= cur.sentence.end;
@@ -281,7 +301,8 @@ export class ListenController {
         // The 5-second window only listens for the three commands; nothing the learner says is sent to the AI.
         let deeper = false;
         if (t.lemma) {
-          const said = await this.sayTarget(t.target, t.lemma, Math.max(0, s.listen.wordRepeats));
+          // a hard sentence is played once (from the video), a word or phrase is said wordRepeats times
+          const said = await this.sayTarget(t.target, t.lemma, t.kind === 'sentence' ? 1 : Math.max(0, s.listen.wordRepeats));
           if (over()) break;
           if (said === 'skipped') continue; // tapped away (known) while it was said
           const a = await this.commandWindow('before', t);
@@ -291,14 +312,14 @@ export class ListenController {
           if (a === 'bye') { if (!this.dismissed.has(t.lemma) && this.deps.vocab().words[t.lemma] !== 'known') this.deps.onMarkLearning(t.lemma); continue; }
           if (a === 'dont_know') deeper = true; // "I don't know" straight away: the fuller explanation at once
         }
-        let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, undefined, deeper);
+        let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma, this.deps.phraseAsSentence?.() ?? false), t.lemma, undefined, deeper);
         if (res === 'aborted' || over()) break;
         if (res === 'skipped') continue;
         for (;;) {
           const a = await this.commandWindow('after', t);
           if (a === 'aborted' || over()) break;
           if (a === 'dont_know') {
-            res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, undefined, true);
+            res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma, this.deps.phraseAsSentence?.() ?? false), t.lemma, undefined, true);
             if (res !== 'done' || over()) break;
             continue;
           }
@@ -601,12 +622,14 @@ export class ListenController {
     let activeHandle: { cancel(): void } | null = null;
     // questions (typed or spoken) are answered sentence by sentence as the reply streams in
     const streamed = kind === 'question';
+    // (YouTube) a prose reply is spoken while it streams in; the script's steps around the AI step stay
+    const proseStream = !streamed && (kind === 'word' || kind === 'phrase' || kind === 'sentence' || kind === 'passage') && !!this.deps.streamProse?.();
     const splitter = new StreamSentenceSplitter();
     const ready: string[] = [];
     let notify: (() => void) | null = null;
     const ai = this.deps.explain(req, (full) => {
       entry.text = full; this.deps.onTranscript({ ...entry });
-      if (streamed) { const got = splitter.push(full); if (got.length) { ready.push(...got); notify?.(); } }
+      if (streamed || proseStream) { const got = splitter.push(full); if (got.length) { ready.push(...got); notify?.(); } }
     });
     ai.done.catch(() => undefined); // a cancelled reply may never be awaited (interrupted before the AI step)
     let wake: (() => void) | null = null;
@@ -662,6 +685,16 @@ export class ListenController {
         if (st.type === 'wait') { await wait(); continue; }
         if (st.type === 'pause') { await pause(st.ms); continue; }
         if (st.type === 'say') { if (!(await say(st.text, st.lang, st.role))) return false; continue; }
+        if (proseStream) {
+          // spoken as it arrives; then the two Chinese meanings at the end, as proseSteps does
+          if (!(await runStreamed())) return false;
+          aiParts = { free: entry.text };
+          entry.parts = aiParts;
+          const zhRaw = (lemma ? this.deps.contextZh?.(lemma)?.filter(Boolean).join('，') : undefined) || dict?.zh;
+          const zh = zhRaw ? twoMeanings(zhRaw) : '';
+          if (s.ai.speakChinese && this.deps.zhVoiceId() && zh) { await pause(300); if (!(await say(zh, 'zh', 'chinese'))) return false; }
+          continue;
+        }
         // AI step: wait for the reply (it was started before the script began)
         try {
           const res = await ai.done;
@@ -702,7 +735,7 @@ export class ListenController {
         if (cancelled) return false;
         const next = ready.shift();
         if (next !== undefined) {
-          const text = cleanSpokenProse(next);
+          const text = cleanSpokenProse(next).replace(/\[PAUSE\]/gi, ' ').trim();
           if (entry.status === 'thinking') { entry.status = 'speaking'; this.deps.onTranscript({ ...entry }); }
           if (text && !(await say(text, 'en', 'explanation'))) return false;
           continue;

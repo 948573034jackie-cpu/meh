@@ -36,6 +36,12 @@ export class VideoEngine implements TtsEngine {
   target: Position | null = null;
   /** the learner pressed play or jumped: start where the video is, not at the sentence start */
   resumeHere = false;
+  /** the teacher plays the sentence again: always from its start (even right after it ended) */
+  forceStart = false;
+  /** the teacher just played this sentence to its end: when the reading resumes on it, it goes on after it */
+  private teacherPlayed: string | null = null;
+  /** called when the teacher's play of the target sentence ended */
+  markTeacherPlayed(): void { const p = this.target; this.teacherPlayed = p ? `${p.chapter}.${p.paragraph}.${p.sentence}` : null; }
   private current: { finish: (o: SpeakOutcome) => void } | null = null;
   private lastEnded = 0;
   private own: Record<'play' | 'pause' | 'seek', number> = { play: 0, pause: 0, seek: 0 };
@@ -48,7 +54,7 @@ export class VideoEngine implements TtsEngine {
   /** true when a video event of this kind was caused by the engine itself a moment ago */
   isOwn(kind: 'play' | 'pause' | 'seek'): boolean { return this.now() - this.own[kind] < OWN_EVENT_MS; }
   /** the caller is about to play / pause / seek the video itself: its event is not the learner's */
-  markOwn(kind: 'play' | 'pause' | 'seek'): void { this.own[kind] = this.now(); }
+  markOwn(kind: 'play' | 'pause' | 'seek'): void { this.own[kind] = this.now(); if (kind === 'play') this.holdPending = false; }
   /** pause the video as part of the reading (a stop at a hard word, an explanation) */
   hold(): void { this.holdPending = false; const v = this.getVideo(); if (v && !v.paused) { this.own.pause = this.now(); v.pause(); } }
   /** pause after a cancel, unless Playback goes straight on with another sentence (it cancels before every play
@@ -85,11 +91,23 @@ export class VideoEngine implements TtsEngine {
     const mine = { finish };
     this.current = mine;
     if (!video || !timing) { setTimeout(() => finish(video ? 'ended' : 'error', video ? undefined : new Error('No video on this page')), 0); return handle; }
+    const key = pos ? `${pos.chapter}.${pos.paragraph}.${pos.sentence}` : '';
+    const heard = this.teacherPlayed === key && !this.forceStart && !this.resumeHere;
+    this.teacherPlayed = null;
+    if (heard) {
+      // heard a moment ago (the teacher played it after the explanation): the reading goes on after it
+      this.own.seek = this.now();
+      if (video.currentTime < timing.end - 0.05 || video.currentTime > timing.end + 0.5) video.currentTime = timing.end;
+      setTimeout(() => finish('ended'), 0);
+      return handle;
+    }
     const ct = video.currentTime;
     const continuing = this.now() - this.lastEnded < CONTINUE_WINDOW_MS && ct <= timing.end + 0.3;
     const here = this.resumeHere;
+    const fromStart = this.forceStart;
     this.resumeHere = false;
-    if (!continuing && !here) { this.own.seek = this.now(); video.currentTime = Math.max(0, timing.start - LEAD_IN_SEC); }
+    this.forceStart = false;
+    if ((!continuing && !here) || fromStart) { this.own.seek = this.now(); video.currentTime = Math.max(0, timing.start - LEAD_IN_SEC); }
     if (video.paused) {
       this.own.play = this.now();
       video.play().catch((e: unknown) => finish('error', new Error(`The video could not start (${(e as Error)?.message ?? 'blocked'}). Press play on the video.`)));

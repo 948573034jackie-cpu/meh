@@ -8,7 +8,7 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.0) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
+| **Chrome extension** (v3.1) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
 | **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
 
@@ -133,34 +133,45 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
-## 7. My tutor (Chrome only, v3.0): Dream Read's teacher on YouTube
+## 7. My tutor (Chrome only, v3.1): your own AI teacher on YouTube
 
 Two ways to learn, never at the same time (turning one on turns the other off):
 
 - **Claude / ChatGPT** (the website call): everything above.
-- **My tutor** (your own API key): Dream Read's listening teacher, on YouTube.
+- **My tutor** (your own API key): Dream Read's teacher, on YouTube.
 
-How My tutor works:
+Before you watch, the AI reads the video:
+- it rebuilds YouTube's broken subtitle lines into complete, punctuated sentences;
+- it marks what is above your level: words, phrases and whole hard sentences (with short Chinese hints).
 
-- The video's subtitles become a book in Dream Read's look (the right side, where related videos were).
-  Words above your level are highlighted, with a short Chinese meaning under them (the AI's meaning for this video,
-  the dictionary's until it is ready).
-- The video is the reading voice. Right after a hard word, phrase or slang, the video stops. The dictionary card
-  opens and the word is said 3 times.
-- Then 5 seconds for a command (nothing you say then goes to the AI):
-  "I know" / K = known, no explanation · "Go on" / "bye bye" / Esc = no explanation, saved as learning ·
-  "I don't know" / D = the fuller explanation at once · silence = the explanation when the time is up.
-- The explanation is easy spoken English about this exact moment in the video (about 500 words before, 200 after),
-  with the two Chinese meanings that fit at the end (a Chinese voice; 中文 on/off).
-- Then one more window: "I don't know" = explained again, deeper; "I know" = known; nothing = stays learning.
-- The video goes back to the start of the sentence and plays on. The same word does not stop again within 500 words.
-- Tap a word = explain it here. Double tap = known. Tap a sentence = jump there.
-- You pause the video yourself = the last part is explained, then it plays on (can be turned off).
-- Type or say a question (🎙) any time.
-- 📒 My Vocabulary: every explained word with its sentence, explanation, Chinese and a link to that moment in the
-  video. CSV download. Progress per level (A1 to C2).
-- ⚙ Settings: API key (Claude or OpenAI) with a Test button, model, money limits, your level, the stop rules,
-  the 10 Dream Read explanation styles (editable), the context rules, voices, sizes, hints, panel / band.
+At every automatic stop:
+1. The page shows the last 30 seconds (20 / 30 / 40 / 60) over the whole screen, big and clear.
+2. A word is said 3 times (a hard sentence is played once from the video).
+3. 5 seconds: **I know** (K) = unhighlighted, no explanation, the sentence plays again, on.
+   **I don't know** (D), silence or anything else = explained; it stays highlighted and is explained again next time.
+4. The explanation starts at once (the AI already wrote it while you waited), with **your own teacher rules**
+   (RULE ONE for words, RULE TWO for sentences), in a natural voice, Chinese at the end.
+5. The word 10 times, the sentence from the video.
+6. A moment to ask by voice (live call). Quiet for 3 seconds = the video goes on.
+
+Your commands:
+- **Pause** the video: the part plays again on the page, the teacher breaks it down in very easy English, you can
+  ask, then the video goes back to the start of the part.
+- **←** (left arrow): the last sentence is played, explained and played again.
+- **"bye bye"** (or Esc): the AI stops at once and the video plays again from the start of what was explained.
+- **Space** while the teacher talks: pause the teacher and ask.
+- **📞 Talk** (Shift+T): a live voice call with the tutor about what is on the screen (real time, you can interrupt).
+- **Shift+L**: listening mode (all subtitles over the screen, the playing line near the middle) / normal video.
+- **[ ]**: smaller / bigger text; **Shift+C**: Chinese under every line (live AI translation). All keys can be changed.
+
+Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (OpenAI marin /
+cedar…, ElevenLabs, Mac), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
+instructions (write anything), how many repeats, the API keys and the shortcuts.
+
+📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the
+video; CSV download; progress per level (A1 to C2).
+
+Keys: Claude (explanations) and/or OpenAI (the voice, the live call, or everything). One key is enough to start.
 
 ---
 

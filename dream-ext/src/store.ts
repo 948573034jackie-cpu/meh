@@ -3,9 +3,10 @@
  * Dream Read settings (same shape and defaults as the Mac app), the YouTube extras, the word statuses and
  * My Vocabulary, AI usage for the budget, and the API keys. Survives restarts and extension updates.
  */
-import { DEFAULT_SETTINGS, migrateSettings, type Settings, type VocabState, type WordStatus, type UsageRecord, type AiProviderId } from '@shared/settings';
+import { DEFAULT_SETTINGS, migrateSettings, type Settings, type VocabState, type WordStatus, type UsageRecord } from '@shared/settings';
 import type { VocabEntry, VocabEntryInput } from '@shared/api';
 import { mergeEntry } from './vocab';
+import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 
 /** YouTube-only choices (not in the Mac app). */
 export interface YtExtras {
@@ -21,13 +22,56 @@ export interface YtExtras {
   band: 'auto' | 'on' | 'off';
   /** hide YouTube's own captions while the Dream subtitles show (no double text) */
   hideYtCaptions: boolean;
+  /** the tutor's voice: 'auto' = the OpenAI voice when an OpenAI key is saved, else the Mac voice */
+  voice: VoiceChoice;
+  /** OpenAI voice (gpt-4o-mini-tts and the live call): marin, cedar, … */
+  openaiVoice: string;
+  /** ElevenLabs voice id */
+  elevenVoice: string;
+  /** after each explanation the talk opens (real time with an OpenAI key; else speech recognition + the tutor) */
+  talkAfterExplain: boolean;
+  /** quiet seconds in the talk before the video goes on by itself; 0 = wait for me ("go on", Enter or play) */
+  talkSilenceSec: number;
+  /** the talk is a live voice call (real time, needs an OpenAI key); off = speech recognition + the tutor's voice */
+  liveOn: boolean;
+  /** the OpenAI realtime model of the live talk */
+  liveModel: string;
+  /** microphone of the live talk: 1 normal, 2 sensitive, 3 very sensitive */
+  micLevel: 1 | 2 | 3;
+  /** 'listening' = Dream Read's page with all the subtitles over the whole screen; 'normal' = the video */
+  view: 'normal' | 'listening';
+  /** where the playing line stays on the page and in the panel, % from the top */
+  followAt: number;
+  /** the full-screen reading page at every stop */
+  stageOn: boolean;
+  /** when you pause: play the part (complete sentences) again on the reading page before the explanation */
+  replayPart: boolean;
+  /** text size on the reading page, px */
+  stageSizePx: number;
+  /** the AI's Chinese translation under each line of the reading page */
+  zhLines: boolean;
+  /** the AI finds the complete sentences in the subtitles first (cheap model, once per video) */
+  aiSentences: boolean;
+  /** stop after sentences the AI finds too hard for your level (played, explained, played again) */
+  stopSentences: boolean;
+  /** the learner's own words: how the teacher should teach (sent with every explanation and to the live talk) */
+  teacher: string;
+  /** keyboard shortcuts: action id -> key combination ("Shift+KeyE") */
+  shortcuts: Record<string, string>;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
 
-export const DEFAULT_EXTRAS: YtExtras = { tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true };
+export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
 
-export interface Keys { anthropic?: string; openai?: string }
+export const DEFAULT_EXTRAS: YtExtras = {
+  tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: true, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
+  stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
+};
+
+export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string }
+export type KeyName = keyof Keys;
 
 const K = { settings: 'drSettings', extras: 'drExtras', vocab: 'drVocab', entries: 'drEntries', usage: 'drUsage', keys: 'drKeys' } as const;
 
@@ -45,6 +89,9 @@ export function mergeSettings(stored: Partial<Settings> | undefined | null): Set
     else if (v !== undefined) out[k] = v;
   }
   const merged = migrateSettings(out as unknown as Settings);
+  // YouTube: "My Custom Style" starts as the learner's own teacher rules (until they edit it)
+  const storedStyles = (s.ai as { styles?: Record<string, unknown> } | undefined)?.styles;
+  if (!storedStyles || !storedStyles.custom) merged.ai = { ...merged.ai, styles: { ...merged.ai.styles, custom: MY_TEACHER_STYLE } };
   // only the Mac voices (and the video itself) exist in Chrome; the Dream voice (Kokoro) needs the Mac app
   merged.voice = { ...merged.voice, engine: 'webspeech', explainEngine: null, voiceId: merged.voice.engine === 'webspeech' ? merged.voice.voiceId : '' };
   return merged;
@@ -128,7 +175,7 @@ export async function getKeys(): Promise<Keys> {
   const o = await area().get(K.keys);
   return { ...((o[K.keys] as Keys | undefined) ?? {}) };
 }
-export async function setKey(provider: AiProviderId, key: string): Promise<void> {
+export async function setKey(provider: KeyName, key: string): Promise<void> {
   const keys = await getKeys();
   const k = key.trim();
   if (k) keys[provider] = k; else delete keys[provider];
@@ -147,3 +194,30 @@ export async function getVideoHints(videoId: string): Promise<VideoHints | null>
 export async function setVideoHints(videoId: string, h: VideoHints): Promise<void> { await area().set({ [`drHints:${videoId}`]: h }); }
 
 export const STORAGE_KEYS = K;
+
+/** Per-video caches (the AI's complete sentences, the Chinese lines); the oldest are removed after 80 videos. */
+async function remember(prefix: string, videoId: string): Promise<void> {
+  const idxKey = `${prefix}Index`;
+  const o = await area().get(idxKey);
+  const list = ((o[idxKey] as string[] | undefined) ?? []).filter((x) => x !== videoId);
+  list.push(videoId);
+  const drop = list.splice(0, Math.max(0, list.length - 80));
+  await area().set({ [idxKey]: list });
+  if (drop.length) await area().remove(drop.map((id) => `${prefix}:${id}`));
+}
+
+/** The AI's sentence split of a video: where each sentence ends (word number) and its punctuated text. */
+export interface VideoSplit { version: number; words: number; ends: number[]; texts: string[] }
+export async function getSplit(videoId: string, version: number): Promise<VideoSplit | null> {
+  const k = `drSent:${videoId}`;
+  const v = (await area().get(k))[k] as VideoSplit | undefined;
+  return v && v.version === version ? v : null;
+}
+export async function setSplit(videoId: string, v: VideoSplit): Promise<void> { await area().set({ [`drSent:${videoId}`]: v }); await remember('drSent', videoId); }
+
+/** Chinese translation of each sentence of a video (by its text, so a new split keeps what still fits). */
+export async function getZh(videoId: string): Promise<Record<string, string>> {
+  const k = `drZh:${videoId}`;
+  return { ...(((await area().get(k))[k] as Record<string, string> | undefined) ?? {}) };
+}
+export async function setZh(videoId: string, zh: Record<string, string>): Promise<void> { await area().set({ [`drZh:${videoId}`]: zh }); await remember('drZh', videoId); }

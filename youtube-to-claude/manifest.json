@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "3.0",
-  "description": "YouTube English: send the video and the part you paused at to Claude / ChatGPT, or learn with the Dream Tutor (your own API key): stops at hard words, explains them in easy English with Chinese meanings, saves your vocabulary.",
+  "version": "3.1",
+  "description": "YouTube English: learn with your own AI tutor (stops at hard words, phrases and sentences, a natural voice, live voice call, Chinese) or send the part you paused at to Claude / ChatGPT.",
   "permissions": [
     "tabs",
     "scripting",
@@ -16,7 +16,8 @@
     "https://claude.ai/*",
     "https://chatgpt.com/*",
     "https://api.anthropic.com/*",
-    "https://api.openai.com/*"
+    "https://api.openai.com/*",
+    "https://api.elevenlabs.io/*"
   ],
   "background": {
     "service_worker": "background.js"
