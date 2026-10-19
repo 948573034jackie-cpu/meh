@@ -4,8 +4,8 @@ import { contextAround } from '@core/nav';
 import { makeBook } from './helpers';
 
 describe('explanation styles', () => {
-  it('has seven styles with word and sentence prompts', () => {
-    expect(DEFAULT_STYLES.map((s) => s.id)).toEqual(['custom', 'teacher', 'picture', 'chunks', 'wordparts', 'story', 'quiz']);
+  it('has ten styles with word and sentence prompts', () => {
+    expect(DEFAULT_STYLES.map((s) => s.id)).toEqual(['custom', 'teacher', 'picture', 'chunks', 'wordparts', 'story', 'quiz', 'philosopher', 'poetry', 'lyrics']);
     for (const s of DEFAULT_STYLES) {
       expect(s.wordPrompt).toContain('{{word}}');
       expect(s.wordPrompt).toContain('{{sentence}}');
@@ -24,7 +24,20 @@ describe('explanation styles', () => {
     expect(t.shape.wordAfter).toBe(7);
     expect(t.shape.wordBefore).toBe(3);
     expect(t.wordPrompt).toBe(DEFAULT_STYLES[1].wordPrompt);
-    expect(all).toHaveLength(7);
+    expect(all).toHaveLength(10);
+  });
+  it('supports learner-made styles, hiding, and knob sentences', () => {
+    const all = resolveStyles({ 'my-1': { userMade: true, name: 'Mine', wordPrompt: 'Explain {{word}}.', length: 'short', personality: 'strict' }, teacher: { hidden: true } });
+    expect(all).toHaveLength(11);
+    const mine = all.find((s) => s.id === 'my-1')!;
+    expect(mine.name).toBe('Mine');
+    expect(mine.sentencePrompt).toBe(DEFAULT_STYLES[0].sentencePrompt);
+    expect(all.find((s) => s.id === 'teacher')!.hidden).toBe(true);
+    const p = buildStyledPrompt({ kind: 'word', target: 'x', sentence: 'x y.', before: '', after: '', book: { title: 'T', chapter: '' }, history: [] }, { style: mine, contextRules: '', level: 'B2', native: 'Chinese' });
+    expect(p.user).toContain('about fifty words');
+    expect(p.user).toContain('strict but fair coach');
+    expect(p.user).toContain('Only explain');
+    expect(DEFAULT_CONTEXT_RULES).toContain('what kind of text this is');
   });
   it('fills placeholders and leaves unknown ones', () => {
     const out = fillTemplate('Word {{word}} in {{title}} {{nope}} {{dict}}', { word: 'flinch', title: 'Emma' });
