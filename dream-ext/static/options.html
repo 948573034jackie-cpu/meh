@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Tutor settings</title><link rel="stylesheet" href="pages.css"></head>
+<body><main>
+<h1>Dream Tutor</h1>
+<p class="lead">Dream Read's teacher for YouTube. Press <b>My tutor</b> under a video: it stops at words above your level, explains them in easy English with their Chinese meaning, and saves them in My Vocabulary. Everything here is saved in this browser.</p>
+
+<section id="keys"><h2>Your AI (own API key)</h2>
+  <div class="field"><label for="provider">AI</label><select id="provider"><option value="anthropic">Claude (Anthropic)</option><option value="openai">ChatGPT (OpenAI)</option></select></div>
+  <div class="field"><label for="key-anthropic">Anthropic API key</label><div class="row"><input id="key-anthropic" type="password" placeholder="sk-ant-…" autocomplete="off"><button data-save="anthropic" class="primary">Save</button><button data-test="anthropic">Test</button><span class="msg" id="msg-anthropic"></span></div><div class="hint">From console.anthropic.com → API keys. Pay as you go; a Claude Pro subscription does not include the API.</div></div>
+  <div class="field"><label for="anthropicModel">Claude model</label><select id="anthropicModel"><option value="claude-opus-5-5">Claude Opus 5.5 (default, best explanations)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5 (cheaper)</option><option value="claude-haiku-5-5">Claude Haiku 5.5 (cheapest, fastest)</option><option value="claude-fable-5-1">Claude Fable 5.1 (most capable, most expensive)</option></select></div>
+  <div class="field"><label for="key-openai">OpenAI API key</label><div class="row"><input id="key-openai" type="password" placeholder="sk-…" autocomplete="off"><button data-save="openai" class="primary">Save</button><button data-test="openai">Test</button><span class="msg" id="msg-openai"></span></div></div>
+  <div class="field"><label for="openaiModel">OpenAI model</label><input id="openaiModel" type="text"></div>
+  <div class="field"><label for="hintsModel">Model for Chinese meanings under words</label><input id="hintsModel" type="text" placeholder="automatic: Claude Haiku 5.5"><div class="hint">A cheap background job, once per video: the Chinese meaning of each hard word in this video, and the idioms, phrasal verbs and slang above your level.</div></div>
+  <div class="field"><label for="dailyWarnUsd">Warn me when today's AI cost reaches ($)</label><input id="dailyWarnUsd" type="number" min="0" step="0.5"></div>
+  <div class="field"><label for="monthlyStopUsd">Stop the AI when this month reaches ($)</label><div class="row"><input id="monthlyStopUsd" type="number" min="0" step="1"><span class="muted" id="spent"></span></div></div>
+</section>
+
+<section><h2>You</h2>
+  <div class="field"><label for="learnerLevel">My English level</label><select id="learnerLevel"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select><div class="hint">Words, phrases and slang above this level are highlighted, get a Chinese hint, and make the video stop.</div></div>
+</section>
+
+<section><h2>Stopping at hard words (like Dream Read's Listening mode)</h2>
+  <label class="check"><input type="checkbox" id="autoExplainWords"> Stop at every word above my level (and every yellow "learning" word)</label>
+  <label class="check"><input type="checkbox" id="autoExplainPhrases"> Stop at phrases, idioms and slang above my level (2 to 5 words)</label>
+  <div class="field"><label for="wordRepeats">Say the word</label><div class="row"><input id="wordRepeats" type="number" min="0" max="5"> times before the 5-second window</div></div>
+  <div class="field"><label for="commandWindowMs">Commands window</label><div class="row"><input id="commandWindowMs" type="number" min="2" max="15" step="1"> seconds (I know / I don't know / Go on; what you say there is never sent to the AI)</div></div>
+  <div class="field"><label for="repeatWindowWords">Do not stop again for the same word within</label><div class="row"><input id="repeatWindowWords" type="number" min="0" step="50"> words</div></div>
+  <div class="field"><label for="maxStopsPer10Min">At most</label><div class="row"><input id="maxStopsPer10Min" type="number" min="0"> stops every 10 minutes (0 = no limit)</div></div>
+  <label class="check"><input type="checkbox" id="explainOnStop"> When I stop the video myself (pause, Space, a click, or "hi bro"): explain the last part</label>
+  <div class="field"><label for="lastSecondsWindow">"The last part" is</label><select id="lastSecondsWindow"><option value="20">20 seconds</option><option value="30">30 seconds</option><option value="40">40 seconds</option><option value="60">60 seconds</option></select></div>
+  <label class="check"><input type="checkbox" id="stopInCall"> Also stop at hard words while ChatGPT / Claude (the website call) is on: the card shows silently and the word is sent to the call</label>
+</section>
+
+<section><h2>Explanations</h2>
+  <label class="check"><input type="checkbox" id="speakChinese"> 中文: say the two Chinese meanings at the end, with a Chinese voice</label>
+  <div class="styles"><div class="style-list" id="style-list"></div><div id="style-edit"></div></div>
+  <div class="field" style="margin-top:14px"><label for="contextRules">Rules sent with every explanation</label><div><textarea id="contextRules"></textarea><div class="row"><button id="reset-rules">Reset to Dream Read's rules</button></div></div></div>
+</section>
+
+<section><h2>Voices and look</h2>
+  <div class="field"><label for="voiceId">English voice</label><div class="row"><select id="voiceId"></select><button id="test-voice">Test</button></div><div class="hint">Mac voices. For the nicest British voices download "Enhanced" or "Premium" ones in System Settings → Accessibility → Spoken Content. The Dream voice (Kokoro) needs the Mac app.</div></div>
+  <div class="field"><label>Chinese voice</label><span id="zh-voice" class="muted"></span></div>
+  <div class="field"><label for="rate">Speed of the tutor</label><div class="row"><input id="rate" type="range" min="0.5" max="2" step="0.05" style="width:220px"><span id="rate-val"></span></div></div>
+  <div class="field"><label for="fontSizePx">Text size in the panel</label><input id="fontSizePx" type="number" min="14" max="28"></div>
+  <div class="field"><label for="subtitleSizePx">Size of the sentence being spoken</label><input id="subtitleSizePx" type="number" min="18" max="40"></div>
+  <label class="check"><input type="checkbox" id="showHints"> Chinese meaning under hard words</label>
+  <label class="check"><input type="checkbox" id="panel"> Show the Dream panel next to the video (in place of the related videos)</label>
+  <div class="field"><label for="band">Big Dream subtitles on the video</label><select id="band"><option value="auto">In full screen and theater mode</option><option value="on">Always</option><option value="off">Never</option></select></div>
+  <label class="check"><input type="checkbox" id="hideYtCaptions"> Hide YouTube's own captions while the Dream subtitles show</label>
+</section>
+<p class="muted">Saved automatically. <a href="vocab.html" style="color:var(--accent)">My Vocabulary →</a></p>
+</main><script src="options.js"></script></body></html>

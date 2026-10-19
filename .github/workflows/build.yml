@@ -197,6 +197,33 @@ jobs:
         if: always()
         run: node tests/mic-mix-test.js
 
+  dream-tutor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Dream Tutor - type check, unit tests, build (the built files in the extension must match the source)
+        working-directory: dream-ext
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          node build.mjs
+          git diff --exit-code -- ../youtube-to-claude/dream || { echo "youtube-to-claude/dream is out of date: run node build.mjs in dream-ext and commit"; exit 1; }
+      - name: Install Playwright + Chromium
+        run: |
+          npm init -y >/dev/null
+          npm i playwright@1.56.1 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: The real extension in Chrome - the Dream Tutor on a test YouTube page with a test AI
+        run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/dream-e2e.js
+      - name: The real extension in Chrome - the website-call (Claude / ChatGPT) flow
+        if: always()
+        run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/extension-e2e.js
+
   real-sites:
     runs-on: ubuntu-latest
     timeout-minutes: 10

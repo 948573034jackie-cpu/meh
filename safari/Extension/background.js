@@ -7,6 +7,7 @@
     }
   } catch (e) { /* ignore */ }
 })();
+
 // Popup button → read the YouTube video (link + transcript) → type it into your claude.ai chat.
 
 const YT_WATCH = 'https://www.youtube.com/watch';

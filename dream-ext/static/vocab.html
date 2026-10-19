@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Vocabulary</title><link rel="stylesheet" href="pages.css"></head>
+<body><main>
+<h1>My Vocabulary</h1>
+<p class="lead" id="summary"></p>
+<div class="tabs"><button data-tab="words" class="sel">Words</button><button data-tab="progress">Progress</button><span class="grow" style="flex:1"></span><button id="csv" class="primary">Download CSV</button><a href="options.html" style="color:var(--accent);align-self:center;margin-left:10px">Settings</a></div>
+<section id="tab-words">
+  <div class="row" style="margin-bottom:10px"><input id="q" type="text" placeholder="Search"><select id="filter"><option value="all">All</option><option value="learning">Learning</option><option value="known">Known</option></select></div>
+  <table><thead><tr><th>Word</th><th>中文</th><th>Sentence and explanation</th><th>Video</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+  <p class="muted" id="empty" hidden>No words yet. Turn on <b>My tutor</b> under a YouTube video: every word it explains is saved here.</p>
+</section>
+<section id="tab-progress" hidden>
+  <div class="levels" id="levels"></div>
+  <h2 style="margin-top:16px" id="unknown-title"></h2>
+  <table><tbody id="unknown"></tbody></table>
+</section>
+</main><script src="vocab-page.js"></script></body></html>

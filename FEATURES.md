@@ -8,7 +8,7 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v2.9) | Mac / computer | YouTube in Google Chrome |
+| **Chrome extension** (v3.0) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
 | **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
 
@@ -133,7 +133,38 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
-## 7. Downloads
+## 7. My tutor (Chrome only, v3.0): Dream Read's teacher on YouTube
+
+Two ways to learn, never at the same time (turning one on turns the other off):
+
+- **Claude / ChatGPT** (the website call): everything above.
+- **My tutor** (your own API key): Dream Read's listening teacher, on YouTube.
+
+How My tutor works:
+
+- The video's subtitles become a book in Dream Read's look (the right side, where related videos were).
+  Words above your level are highlighted, with a short Chinese meaning under them (the AI's meaning for this video,
+  the dictionary's until it is ready).
+- The video is the reading voice. Right after a hard word, phrase or slang, the video stops. The dictionary card
+  opens and the word is said 3 times.
+- Then 5 seconds for a command (nothing you say then goes to the AI):
+  "I know" / K = known, no explanation · "Go on" / "bye bye" / Esc = no explanation, saved as learning ·
+  "I don't know" / D = the fuller explanation at once · silence = the explanation when the time is up.
+- The explanation is easy spoken English about this exact moment in the video (about 500 words before, 200 after),
+  with the two Chinese meanings that fit at the end (a Chinese voice; 中文 on/off).
+- Then one more window: "I don't know" = explained again, deeper; "I know" = known; nothing = stays learning.
+- The video goes back to the start of the sentence and plays on. The same word does not stop again within 500 words.
+- Tap a word = explain it here. Double tap = known. Tap a sentence = jump there.
+- You pause the video yourself = the last part is explained, then it plays on (can be turned off).
+- Type or say a question (🎙) any time.
+- 📒 My Vocabulary: every explained word with its sentence, explanation, Chinese and a link to that moment in the
+  video. CSV download. Progress per level (A1 to C2).
+- ⚙ Settings: API key (Claude or OpenAI) with a Test button, model, money limits, your level, the stop rules,
+  the 10 Dream Read explanation styles (editable), the context rules, voices, sizes, hints, panel / band.
+
+---
+
+## 8. Downloads
 
 https://github.com/948573034jackie-cpu/meh/releases/tag/claudesnap-latest
 

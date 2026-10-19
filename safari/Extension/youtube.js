@@ -309,6 +309,14 @@
     return true;
   });
 
+  // the Dream Tutor (dream/dream-yt.js, same isolated world) reads the video and its subtitles through this
+  window.__ytcApi = {
+    loadTranscript, videoId, isAd: () => isAd(), video: () => video || document.querySelector('video'),
+    settings: () => ({ sendOn: settings.sendOn, target: settings.target, voiceOn: settings.voiceOn }),
+    buildSentences: (cues) => buildSentences(cues, { words: true }),
+    setBarStatus: (text, bad) => setBarStatus(text, bad),
+  };
+
   window.__ytcDebug = {
     load: () => loadTranscript().then((d) => ({ title: d.title, lines: d.lines, sentences: d.sentences.length, source: d.source, errors: d.errors, first: d.sentences[0] && d.sentences[0].text, lastStart: d.cues.reduce((m, c) => Math.max(m, c.start), 0) }))
   };
@@ -600,6 +608,7 @@
     e.preventDefault();
     e.stopPropagation();
     if (!video) return;
+    if (dreamOwns()) { if (video.paused) video.play().catch(() => {}); else video.pause(); return; } // the tutor decides what a stop means
     if (pending) { continueFromStart(); return; }      // touching the stopped part = "let's go"
     if (replaying) { const seg = replaying.seg; cancelReplay(); beginWaiting(seg); runDeferredSend(); continueFromStart(); return; } // touch during the replay: send it, play on from its start
     if (video.paused) { video.play().catch(() => {}); return; }
@@ -634,6 +643,7 @@
         }
         settings.target = t; settings.sendOn = true; // red -> green (the other one turns red)
         chrome.storage.local.set({ target: t, sendOn: true });
+        try { if (window.__ytcDream) window.__ytcDream.callChanged(); } catch (e) { /* ignore */ }
         updateBar();
         const name = t === 'chatgpt' ? 'ChatGPT' : 'Claude';
         status.textContent = 'Sending the full transcript to ' + name + '…';
@@ -662,6 +672,7 @@
       check.title = 'Find out what is not working (you can copy the report)';
       check.onclick = () => showReport();
       bar.append(gpt, claude, size('yt2c-b-smaller', 'A−', -0.5), size('yt2c-b-bigger', 'A+', 0.5), check, status);
+      try { if (window.__ytcDream) window.__ytcDream.decorateBar(bar); } catch (e) { /* ignore */ }
     }
     for (const id of ['chatgpt', 'claude']) {
       const b = bar.querySelector('#yt2c-b-' + id);
@@ -779,7 +790,11 @@
   for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => setTimeout(updateTapLayer, 50));
   window.addEventListener('scroll', updateTapLayer, true);
 
+  // the Dream Tutor ("My tutor" on the bar) reads the video itself: this script leaves pauses, plays and voice commands to it
+  function dreamOwns() { try { return !!(window.__ytcDream && window.__ytcDream.owns()); } catch (e) { return false; } }
+
   function onPlay() {
+    if (dreamOwns()) { ourPlay = false; return; }
     if (ourPlay) { ourPlay = false; return; } // "shut up": keep playing from here
     if (replaying) return;
     if (pending) { continueFromStart(); return; } // Space, the play arrow or a click on the video = "let's go"
@@ -788,6 +803,7 @@
   }
 
   function onPause() {
+    if (dreamOwns()) { ourPause = false; return; }
     if (ourPause) { ourPause = false; return; }
     lastUserPause = Date.now();
     if (replaying) { // you paused during the replay: leave it there and send now
@@ -829,7 +845,7 @@
 
   if (ALWAYS_LISTEN) {
     setInterval(() => {
-      const want = settings.voiceOn && settings.sendOn && location.pathname === '/watch' && !!video; // off (red) = no microphone
+      const want = settings.voiceOn && (settings.sendOn || dreamOwns()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
     }, 1500);
@@ -921,8 +937,13 @@
   }
 
   function onHeard(text, isFinal, key) {
-    if (!settings.sendOn) return; // both buttons red: no voice commands
     text = String(text || '');
+    if (dreamOwns()) { // the tutor's commands (I know / I don't know / go on, hi bro, shut up)
+      if (HI_BRO.test(text) && videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
+      try { window.__ytcDream.heard(text, isFinal, key); } catch (e) { /* ignore */ }
+      return;
+    }
+    if (!settings.sendOn) return; // both buttons red: no voice commands
     if (SHUT_UP.test(text)) { if (once('shut', key)) shutUp(); return; }
     if (HI_BRO.test(text)) {
       if (!video || videoIsSaying(/\bbro\b|\bbruh\b/i)) return;

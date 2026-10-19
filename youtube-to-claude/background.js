@@ -1,3 +1,6 @@
+// The Dream Tutor's AI (your own API key), its jobs and the settings / vocabulary pages: dream/dream-bg.js (built from dream-ext/).
+if (typeof importScripts === 'function') { try { importScripts('dream/dream-bg.js'); } catch (e) { console.error('Dream Tutor background failed to load', e); } }
+
 // Popup button → read the YouTube video (link + transcript) → type it into your claude.ai chat.
 
 const YT_WATCH = 'https://www.youtube.com/watch';

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "2.9",
-  "description": "Safari (iPhone/iPad): One click sends the YouTube video link and its full transcript to your claude.ai chat, so Claude knows what you are watching.",
+  "version": "3.0",
+  "description": "Safari (iPhone/iPad): YouTube English: send the video and the part you paused at to Claude / ChatGPT, with subtitles, replay and your voice.",
   "permissions": [
     "tabs",
     "scripting",

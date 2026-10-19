@@ -14,6 +14,15 @@ Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.co
 
 **Popup settings:** replay on/off, **text size slider (1–10 in quarter steps, 6 = medium, 10 = the biggest)**, send the transcript on/off, “let's go” voice command on/off.
 
+## My tutor (v3.0): Dream Read's teacher, with your own API key
+The **My tutor** button on the video bar turns it on (Claude / ChatGPT turns off: one voice at a time).
+1. Click the extension icon → **Dream Tutor settings** → paste your Claude (Anthropic) or OpenAI API key → **Save** → **Test**.
+2. Open a YouTube video with subtitles. The subtitles appear on the right in Dream Read's look; hard words are highlighted with a Chinese hint.
+3. Right after a hard word the video stops, the card opens and the word is said 3 times. Then say (or press):
+   **"I know"** (K) · **"I don't know"** (D) · **"Go on"** (Esc). Silence = the explanation comes.
+4. After the explanation the video goes back to the start of the sentence and plays on.
+5. Tap a word = explain it · double tap = known · 📒 = My Vocabulary (CSV, progress) · ⚙ = all settings.
+
 ## Install
 1. Download and unzip https://github.com/948573034jackie-cpu/meh/releases/download/claudesnap-latest/YouTube-to-Claude.zip
 2. `chrome://extensions` → Developer mode → Load unpacked → choose the unzipped folder. (Updating: copy the new files over the old folder, then press the reload arrow.)

@@ -323,13 +323,20 @@
 
   // Cues -> complete sentences [{start, end, text}]. Uses punctuation when the captions have it,
   // otherwise pauses between words, and never cuts after a word like "the", "and", "to", "because".
-  function buildSentences(cues) {
+  // opts.words: also keep each word with its time ({ w, t, e }), for the Dream Tutor (karaoke + stopping after a hard word)
+  function buildSentences(cues, opts) {
     const words = toWords(cues);
     if (!words.length) return [];
+    const withWords = !!(opts && opts.words);
     const punct = words.filter((x) => endsSentence(x.w)).length / words.length > 0.02;
     const out = [];
     let cur = [];
-    const push = (ws) => { if (ws.length) out.push({ start: ws[0].t, end: ws[ws.length - 1].e, text: tidy(ws) }); };
+    const push = (ws) => {
+      if (!ws.length) return;
+      const s = { start: ws[0].t, end: ws[ws.length - 1].e, text: tidy(ws) };
+      if (withWords) s.words = ws.map((x) => ({ w: x.w, t: x.t, e: x.e }));
+      out.push(s);
+    };
 
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
