@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { WordStatus, MarkedRange, TtsEngineId, ReadMode } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
+import type { HintMap } from '@shared/api';
 import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
@@ -117,6 +118,10 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const [waiting, setWaiting] = useState(false);
   const [autoStop, setAutoStop] = useState(true);
   const [popover, setPopover] = useState<ReadingPopover>(null);
+  /** the AI's chapter hints (lemma -> [meaning as used here, other meaning]); null until the job has run */
+  const [hints, setHints] = useState<HintMap | null>(null);
+  const hintsRef = useRef<HintMap | null>(null); hintsRef.current = hints;
+  const hintOverrides = useMemo(() => { const out: Record<string, string> = {}; for (const [lemma, pair] of Object.entries(hints ?? {})) if (pair?.[0]) out[lemma] = pair[0]; return out; }, [hints]);
 
   const names = useMemo(() => new Set(book.names), [book]);
   const index = useMemo(() => indexBook(book), [book]);
@@ -239,11 +244,27 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     if (items.length) void window.readalong.kokoroPrepare(items).catch(() => undefined);
   }
 
+  // ---- chapter hints: cached by the main process; this chapter and the next are requested when missing ------
+  useEffect(() => {
+    const api = window.readalong;
+    if (E2E || typeof api.hintsGet !== 'function') return;
+    let on = true;
+    setHints(null);
+    const fetch = () => api.hintsGet(book.id, chapter).then((m) => { if (on) setHints(m); return m; }).catch(() => null);
+    void fetch().then((m) => {
+      if (!on) return;
+      if (!m) void api.hintsRequest(book.id, chapter).catch(() => undefined);
+      if (book.chapters[chapter + 1]) void api.hintsRequest(book.id, chapter + 1).catch(() => undefined);
+    });
+    const off = api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.chapter === chapter && ev.state === 'done') void fetch(); });
+    return () => { on = false; off(); };
+  }, [book, chapter]);
+
   // the controller stops at hard words only on the Listening screen (and only while auto-stop is on)
   useEffect(() => { const c = controllerRef.current; if (c) c.enabled = mode === 'listening' && autoStop; }, [mode, autoStop, ready]);
 
   // ---- rendering the chapter ------------------------------------------------------------------
-  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false }), [dict, names]);
+  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false, hintOverrides }), [dict, names, hintOverrides]);
 
   const html = useMemo(() => {
     if (!dict) return '';
@@ -301,7 +322,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     if (status) words[lemma] = status; else delete words[lemma];
     useApp.getState().setVocab({ ...vocabRef.current, words });
     await window.readalong.setWordStatus(lemma, status);
-    const hint = !status && dict && settingsRef.current.appearance.showHints !== false ? hintText(dict.lookup(lemma)?.entry.zh ?? '') : undefined;
+    const hint = !status && dict && settingsRef.current.appearance.showHints !== false ? (hintsRef.current?.[lemma]?.[0] || hintText(dict.lookup(lemma)?.entry.zh ?? '')) : undefined;
     if (docRef.current) restyleLemma(docRef.current, lemma, status, settingsRef.current.learnerLevel, hint);
     if (toast && status === 'known') showToast(`“${lemma}” marked known`, { label: 'Undo', run: () => void changeStatus(lemma, prev ?? null, false) });
   }
@@ -335,8 +356,9 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const meta = metaFor(pos, ti); if (!meta) return null;
     const container = rootRef.current!.getBoundingClientRect();
     const r = wordEl.getBoundingClientRect();
-    const above = container.bottom - r.bottom < 230;
-    return { word: wordEl.firstChild?.textContent ?? wordEl.textContent ?? '', lemma: meta.lemma, ipa: meta.ipa, zh: meta.zh, level: meta.level, isName: meta.isName, status: vocabRef.current.words[meta.lemma], x: r.left - container.left + r.width / 2, y: (above ? r.top : r.bottom) - container.top, above, explain: { status: 'idle', text: '' }, pos, tokenIndex: ti, entryId: null };
+    const above = container.bottom - r.bottom < (modeRef.current === 'listening' ? 300 : 230);
+    const pair = hintsRef.current?.[meta.lemma];
+    return { word: wordEl.firstChild?.textContent ?? wordEl.textContent ?? '', lemma: meta.lemma, ipa: meta.ipa, zh: meta.zh, here: pair?.[0] || undefined, other: pair?.[1] || undefined, level: meta.level, isName: meta.isName, status: vocabRef.current.words[meta.lemma], x: r.left - container.left + r.width / 2, y: (above ? r.top : r.bottom) - container.top, above, explain: { status: 'idle', text: '' }, pos, tokenIndex: ti, entryId: null };
   }
   /** A tap on a word: the card opens and the explanation starts at once (Reading mode: the audio stays paused after). */
   function tapWord(wordEl: HTMLElement, explain = true): void {

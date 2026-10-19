@@ -60,10 +60,10 @@
 .bar .page-count { font-variant-numeric: tabular-nums; }
 
 .page-view { position: absolute; inset: 0; overflow: hidden; user-select: text; }
-.pages { height: 100%; column-fill: auto; transition: transform 180ms ease-out; will-change: transform; }
+.pages { height: 100%; box-sizing: border-box; padding: 54px 0 46px; column-fill: auto; transition: transform 180ms ease-out; will-change: transform; }
 .pages.no-anim, :root[data-page-turn="0"] .pages { transition: none; }
 /* the reading column is at most --max-line characters wide and centred on the page; the side margins never go below --reader-margin */
-.pages .doc-inner { padding: 56px max(var(--reader-margin), calc((100% - var(--max-line) * 1ch) / 2)) 48px; max-width: 100%; }
+.pages .doc-inner { padding: 0 max(var(--reader-margin), calc((100% - var(--max-line) * 1ch) / 2)); max-width: 100%; }
 .page-view .zone { position: absolute; top: 44px; bottom: 38px; width: 20%; pointer-events: none; }
 .page-view .zone.left { left: 0; } .page-view .zone.right { right: 0; }
 /* the current sentence glows only while the voice reads it */
@@ -153,6 +153,8 @@
 .card-word .hw .say { padding: 2px 7px; min-width: 0; font-size: 11px; }
 .card-word .lvl { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); }
 .card-word .zh { font-family: var(--font-zh); line-height: 1.5; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.card-word .zh.here { color: var(--fg); font-weight: 600; }
+.card-word .zh.here .muted { font-weight: 400; }
 .card-word .zh .pos { color: var(--fg-muted); font-size: 12px; margin-right: 5px; font-family: var(--font-sans); }
 .card-word .en { color: var(--fg-muted); font-size: 12.5px; line-height: 1.45; display: flex; align-items: center; gap: 6px; min-height: 18px; }
 .card-word .en.error { color: var(--danger); }

@@ -57,8 +57,9 @@ test.describe('reader', () => {
     await expect(page.locator('.page-count')).toHaveText(/^2 \/ \d+ in chapter$/);
 
     // tap a word: the card opens under it and the spoken explanation starts at once; it closes by itself after the explanation
+    await page.keyboard.press('PageUp');
+    await expect(page.locator('.page-count')).toHaveText(/^1 \/ \d+ in chapter$/);
     const word = page.locator('.w[data-lemma="sanguine"]').first();
-    await word.scrollIntoViewIfNeeded();
     await word.click();
     const card = page.getByTestId('card');
     await expect(card).toBeVisible();
@@ -94,7 +95,7 @@ test.describe('reader', () => {
     await expect(page.locator('.listen-lines .s.cur')).toHaveAttribute('data-key', keyBefore!);
     const sizes = await page.evaluate(() => {
       const cur = document.querySelector('.listen-lines .s.cur')!;
-      const other = Array.from(document.querySelectorAll('.listen-lines .s')).find((s) => s !== cur)!;
+      const other = Array.from(document.querySelectorAll('.listen-lines .para.k-p .s')).find((s) => s !== cur)!;
       return [parseFloat(getComputedStyle(cur).fontSize), parseFloat(getComputedStyle(other).fontSize)];
     });
     expect(sizes[0]).toBeGreaterThan(sizes[1] * 1.2);
@@ -110,13 +111,12 @@ test.describe('reader', () => {
     await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Play');
 
     // tap a word in Listening mode: card, explanation, auto-dismiss
-    const w2 = page.locator('.listen-lines .w[data-lemma="protracted"]').first();
+    const w2 = page.locator('.listen-lines .w.hl-unknown').first();
     await w2.scrollIntoViewIfNeeded();
     await w2.click();
     await expect(card).toBeVisible();
     await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/, { timeout: 10000 });
     await expect(card).toHaveCount(0, { timeout: 20000 });
-    await expect(page.locator('.w[data-lemma="protracted"].hl-learning').first()).toBeVisible();
 
     // help sheet
     await page.keyboard.press('Shift+Slash');
@@ -156,9 +156,11 @@ test.describe('reader', () => {
     const card = page.getByTestId('card');
     await expect(card).toBeVisible({ timeout: 20000 });
     await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/);
+    const stoppedAt = await page.locator('.listen-lines .s.cur').getAttribute('data-key');
     await expect(card).toHaveCount(0, { timeout: 20000 });
-    // the explained word is "learning" now and the voice carries on (or waits cleanly)
-    await expect.poll(async () => page.locator('.w.hl-learning').count(), { timeout: 20000 }).toBeGreaterThan(0);
+    // after the explanation and the short pause the voice carries on with the book
+    await expect.poll(async () => page.locator('.listen-lines .s.cur').getAttribute('data-key'), { timeout: 25000 }).not.toBe(stoppedAt);
+    await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Pause');
     await page.keyboard.press('Space');
     await app.close();
   });

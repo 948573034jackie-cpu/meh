@@ -30,8 +30,9 @@ const main = {
   entryPoints: [path.join(root, 'src/main/index.ts')],
   outfile: path.join(dist, 'main/index.js'),
   platform: 'node', format: 'cjs', target: 'node22',
-  // onnxruntime-node is a native addon (loads its .node binding and libonnxruntime next to itself): keep it external
-  external: ['electron', 'onnxruntime-node'],
+  // onnxruntime-node and sherpa-onnx-node are native addons (they load their .node binding and
+  // libonnxruntime / libsherpa-onnx-c-api next to themselves): keep them external
+  external: ['electron', 'onnxruntime-node', 'sherpa-onnx-node'],
 };
 const preload = {
   ...common,

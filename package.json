@@ -58,10 +58,13 @@
     "files": [
       "dist/**/*",
       "package.json",
-      "!node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**"
+      "!node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**",
+      "!node_modules/sherpa-onnx-{linux,win}-*/**"
     ],
     "asarUnpack": [
-      "node_modules/onnxruntime-node/**"
+      "node_modules/onnxruntime-node/**",
+      "node_modules/sherpa-onnx-node/**",
+      "node_modules/sherpa-onnx-darwin-*/**"
     ],
     "extraResources": [
       {

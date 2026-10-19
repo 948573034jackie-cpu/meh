@@ -10,6 +10,9 @@ export interface CardData {
   lemma: string;
   ipa: string;
   zh: string;
+  /** the AI's meaning of the word as used in this chapter, and another common meaning (chapter hints job) */
+  here?: string;
+  other?: string;
   level: CefrLevel | null;
   isName: boolean;
   status: WordStatus | undefined;
@@ -47,8 +50,9 @@ export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore }
         {data.isName && <span className="lvl">name</span>}
         {data.lemma !== data.word.toLowerCase() && !data.isName && <span className="lemma">{data.lemma}</span>}
       </div>
+      {data.here && <div className="zh here" data-testid="card-here"><span className="pos">here</span>{data.here}{data.other && <span className="muted"> · {data.other}</span>}</div>}
       {glosses.length > 0 ? (
-        <div className="zh">{glosses.map((g, i) => <span key={i}>{g.pos && <span className="pos">{g.pos}</span>}{g.zh}</span>)}</div>
+        <div className="zh">{glosses.slice(0, data.here ? 1 : 2).map((g, i) => <span key={i}>{g.pos && <span className="pos">{g.pos}</span>}{g.zh}</span>)}</div>
       ) : data.isName ? <div className="muted small">A name.</div> : <div className="muted small">Not in the offline dictionary.</div>}
       <div className={`en ${ex.status}`} data-testid="card-explain">
         {ex.status === 'thinking' && !english && <span className="muted">Explaining…</span>}
