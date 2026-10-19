@@ -9,7 +9,9 @@ import { launchApp } from './helpers';
  */
 async function openLevelTest(page: import('@playwright/test').Page): Promise<void> {
   // Settings → Level & stops → "Test my level" (first start opens the test directly when no level is saved)
-  await page.getByRole('button', { name: 'Settings' }).click();
+  // a fresh app already sits on the settings tour; otherwise open Settings from the title bar
+  const settingsButton = page.getByRole('button', { name: 'Settings', exact: true });
+  if (await settingsButton.count()) await settingsButton.click();
   await page.getByRole('button', { name: 'Level & stops' }).click();
   await page.getByTestId('level-take').click();
 }

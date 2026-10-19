@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { launchApp } from './helpers';
 
 test('app launches, shows the level test, then onboarding, then the library', async () => {
-  const { app, page } = await launchApp();
+  const { app, page } = await launchApp({ levelTest: true });
   await expect(page.getByTestId('level-intro')).toBeVisible();
   await page.getByTestId('level-skip').click();
   await expect(page.getByTestId('settings')).toBeVisible();
