@@ -70,3 +70,29 @@ export function percentAt(book: Book, pos: Position): number {
   }
   return total ? (before / total) * 100 : 0;
 }
+
+/**
+ * Text around a position for the AI: about `wordsBefore` words of preceding text and `wordsAfter` words of
+ * following text, whole sentences only, within the current chapter, paragraph breaks kept as blank lines.
+ */
+export function contextAround(book: Book, pos: Position, wordsBefore: number, wordsAfter: number): { before: string; after: string } {
+  const count = (s: Sentence) => s.tokens.filter((t) => t.kind === 'word').length;
+  const collect = (dir: 1 | -1, limit: number): string => {
+    const chunks: string[] = [];
+    let n = 0;
+    let cur: Position | null = pos;
+    let lastPara = pos.paragraph;
+    while (n < limit) {
+      cur = dir === 1 ? nextPosition(book, cur) : prevPosition(book, cur);
+      if (!cur || cur.chapter !== pos.chapter) break;
+      const got = getSentence(book, cur);
+      if (!got) break;
+      const sep = cur.paragraph !== lastPara ? '\n\n' : ' ';
+      lastPara = cur.paragraph;
+      if (dir === 1) chunks.push(sep, got.text); else chunks.unshift(got.text, sep);
+      n += count(got.sentence);
+    }
+    return chunks.join('').trim();
+  };
+  return { before: collect(-1, wordsBefore), after: collect(1, wordsAfter) };
+}

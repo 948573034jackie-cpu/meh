@@ -167,3 +167,61 @@ export function spokenChinese(parts: ExplanationParts): string[] {
   if (parts.hardWords?.length) out.push(...parts.hardWords.filter((h) => h.zh).map((h) => `${h.word}, ${h.zh}`));
   return out;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Style-based prompts (Dream Read): plain prose replies, long context, learner-editable templates.
+
+import { fillTemplate, type ExplanationStyle } from '@shared/styles';
+
+export interface StyledPromptOpts {
+  style: ExplanationStyle;
+  /** shared rules (DEFAULT_CONTEXT_RULES or the learner's edited version) */
+  contextRules: string;
+  level: CefrLevel;
+  /** learner's first language, as a word for the AI: 'Chinese' */
+  native: string;
+}
+
+/**
+ * Builds the system + user messages for a word/phrase/sentence explanation in a given style.
+ * The system part (rules + learner facts) is stable within a session and cacheable; the user part carries
+ * the book context (title, chapter, ~500 words before, the sentence, ~200 words after) and the filled template.
+ */
+export function buildStyledPrompt(req: ExplainRequest, opts: StyledPromptOpts): PromptBundle {
+  const values = {
+    word: req.target,
+    sentence: req.sentence,
+    before: req.before,
+    after: req.after,
+    title: req.book.title,
+    chapter: req.book.chapter,
+    level: opts.level,
+    native: opts.native,
+    dict: req.dict ? `Dictionary hint for the word: ${[req.dict.ipa ? `pronunciation ${req.dict.ipa}` : '', req.dict.zh ? `${opts.native} meaning ${req.dict.zh}` : '', req.dict.level ? `CEFR level ${req.dict.level}` : ''].filter(Boolean).join(', ')}.` : '',
+  };
+  const system = fillTemplate(opts.contextRules, values);
+  const ctx = [
+    `Book: ${req.book.title || 'Untitled'}`,
+    req.book.chapter ? `Chapter: ${req.book.chapter}` : '',
+    req.position ? `Place in the book: chapter ${req.position.chapter + 1}, paragraph ${req.position.paragraph + 1}, sentence ${req.position.sentence + 1}.` : '',
+    req.before ? `Text before the sentence:\n${req.before}` : '',
+    `The sentence being read now:\n${req.sentence}`,
+    req.after ? `Text after the sentence:\n${req.after}` : '',
+  ].filter(Boolean).join('\n\n');
+  const template = req.kind === 'sentence' ? opts.style.sentencePrompt : opts.style.wordPrompt;
+  const task = fillTemplate(template, values);
+  const history = req.history.length ? `Earlier in this chapter:\n${req.history.slice(-4).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 300)}`).join('\n')}\n\n` : '';
+  return { system, user: `${history}${ctx}\n\n${task}`, maxTokens: opts.style.maxTokens };
+}
+
+/** Strips anything a model might still add that a voice should not read: markdown, labels, list markers. */
+export function cleanSpokenProse(text: string): string {
+  return text
+    .replace(/\*\*|__|`/g, '')
+    .replace(/^#+[ \t]*/gm, '')
+    .replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]+/gm, '')
+    .replace(/^(?:DEFINITION|IN THIS SENTENCE|EXAMPLE|MEANING|SUMMARY|SCENE|CONTEXT|STEP \d+)[ \t]*[:：][ \t]*/gim, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
