@@ -143,14 +143,9 @@ export function ListeningScreen(p: Props): JSX.Element {
               })}
             </select>
             <Tip text="Show or hide the written explanations" align="end"><button className={`icon ${p.transcriptOpen ? 'active' : ''}`} onClick={p.onTranscript} aria-label="Explanations" data-testid="transcript-toggle">≡</button></Tip>
-            <Tip text="Voice chat comes in the next update" align="end"><button className="icon mic" disabled data-testid="mic" aria-label="Microphone (coming soon)" title="Voice chat comes in the next update"><MicIcon /></button></Tip>
           </div>
         </div>
       </div>
     </div>
   );
-}
-
-function MicIcon(): JSX.Element {
-  return <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>;
 }

@@ -2,12 +2,14 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { WordStatus, MarkedRange, TtsEngineId, ReadMode } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
-import type { HintMap } from '@shared/api';
+import type { HintMap, ExplainRequest } from '@shared/api';
 import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
 import { explain as aiExplain } from '@core/ai/client';
 import { firstPosition, getSentence, percentAt, nextPosition, prevPosition } from '@core/nav';
+import { skippedSentences, stripInline } from '@core/import/skip';
+import { sentenceKey } from '@core/model';
 import { useApp } from '../state/store';
 import { useDictionary } from './useDictionary';
 import { renderChapter, renderSentence, restyleLemma, type TokenMeta } from './render';
@@ -18,11 +20,17 @@ import { HelpSheet } from './HelpSheet';
 import { ReadingScreen, type ReadingPopover } from './ReadingScreen';
 import { ListeningScreen } from './ListeningScreen';
 import { Transcript } from './Transcript';
-import { matchesShortcut, isTypingTarget, LISTEN_KEYS } from './shortcuts';
+import { matchesShortcut, isTypingTarget, LISTEN_KEYS, shortcutLabel } from './shortcuts';
+import { VoiceChat, type VoiceSnapshot } from '../voice/VoiceChat';
+import { VoiceChatUI, type VoiceExchange } from '../voice/VoiceChatUI';
+import { MicCapture, SilentMic } from '../voice/mic';
+import { sttBridge, e2eSttBridge, installE2eHooks } from '../voice/bridge';
 import { Tip } from '../ui/Tip';
 
 const E2E = typeof location !== 'undefined' && new URLSearchParams(location.search).has('e2e');
 if (E2E) useFakeEngine(2);
+/** e2e: every AI request the reader sent (the spec checks kinds, questions and "again") */
+const e2eRequests: ExplainRequest[] = [];
 
 export const keyOf = (p: Position) => `${p.chapter}.${p.paragraph}.${p.sentence}`;
 
@@ -118,12 +126,20 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const [waiting, setWaiting] = useState(false);
   const [autoStop, setAutoStop] = useState(true);
   const [popover, setPopover] = useState<ReadingPopover>(null);
+  // ---- voice chat ----
+  const voiceRef = useRef<VoiceChat | null>(null);
+  const [voiceSnap, setVoiceSnap] = useState<VoiceSnapshot | null>(null);
+  const [voicePop, setVoicePop] = useState(false);
+  const [heard, setHeard] = useState<{ text: string; command: 'know' | 'dont_know' | 'bye' } | null>(null);
   /** the AI's chapter hints (lemma -> [meaning as used here, other meaning]); null until the job has run */
   const [hints, setHints] = useState<HintMap | null>(null);
   const hintsRef = useRef<HintMap | null>(null); hintsRef.current = hints;
   const hintOverrides = useMemo(() => { const out: Record<string, string> = {}; for (const [lemma, pair] of Object.entries(hints ?? {})) if (pair?.[0]) out[lemma] = pair[0]; return out; }, [hints]);
 
   const names = useMemo(() => new Set(book.names), [book]);
+  /** sentences the voice leaves out (Skip settings: footnotes, captions, ...) */
+  const skippedRef = useRef(new Set<string>());
+  useEffect(() => { skippedRef.current = skippedSentences(book, settings.skip); }, [book, settings.skip]);
   const index = useMemo(() => indexBook(book), [book]);
   const playing = playState === 'playing' || playState === 'explaining';
   const wpm = wordsPerMinute(mode, settings.voice.rate, playing);
@@ -157,6 +173,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       engine: () => getEngine(readEngineId()),
       voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
       pauseMs: () => settingsRef.current.voice.pauseBetweenSentencesMs,
+      shouldSkip: (p) => skippedRef.current.has(sentenceKey(p)),
+      strip: (t) => stripInline(t, settingsRef.current.skip),
     }, start);
     const controller = new ListenController(playback, {
       book, dict, names,
@@ -169,12 +187,15 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
       explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(settingsRef.current.voice.rate, 1.2) }; },
       zhVoiceId: () => (settingsRef.current.ai.speakChinese ? zhVoiceRef.current : null),
-      explain: (req, onDelta) => { const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
+      explain: (req, onDelta) => { if (E2E) e2eRequests.push(structuredClone(req)); const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
       mode: () => modeRef.current,
       onWaiting: (w) => setWaiting(w),
+      onPauseWindow: (open) => voiceRef.current?.pauseWindow(open),
       onTranscript: (entry) => {
         setTranscript((prev) => (prev.some((e) => e.id === entry.id) ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev.slice(-40), entry]));
         setBusy(controller.busy);
+        voiceRef.current?.setTutorState(!controller.busy ? 'idle' : entry.status === 'thinking' ? 'thinking' : 'speaking');
+        if (entry.kind === 'question' && entry.status === 'thinking') setHeard(null);
         followEntry(entry);
       },
       onMarkLearning: (lemma) => { if (!vocabRef.current.words[lemma]) void changeStatus(lemma, 'learning', false); },
@@ -188,7 +209,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const offs = [
       playback.on('sentence', (pos) => { posRef.current = pos; setPosition(pos); setChapter((c) => (c === pos.chapter ? c : pos.chapter)); highlightSentence(pos); scheduleSave(pos); prepareAhead(pos); }),
       playback.on('word', (pos, ti) => highlightWord(pos, ti)),
-      playback.on('state', (st) => { setPlayState(st); setBusy(controller.busy); }),
+      playback.on('state', (st) => { setPlayState(st); setBusy(controller.busy); if (!controller.busy) voiceRef.current?.setTutorState('idle'); }),
       playback.on('finished', () => showToast('End of the book.')),
       playback.on('error', (e) => {
         const eng = readEngineId();
@@ -202,6 +223,56 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     return () => { offs.forEach((f) => f()); controller.skip(); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dict, book]);
+
+  // ---- voice chat: the learner talks with the tutor (mic -> local speech-to-text -> questions / commands) ----------
+  useEffect(() => {
+    if (!ready) return;
+    const chat = new VoiceChat({
+      stt: E2E ? e2eSttBridge() : sttBridge(),
+      mic: E2E ? new SilentMic() : new MicCapture(),
+      alwaysOn: settingsRef.current.voiceChat?.alwaysOn ?? false,
+      tutor: {
+        know: () => {
+          const c = ctl(); if (!c) return;
+          const l = c.lastExplained;
+          if (l?.lemma) { c.markKnown(l.lemma); void changeStatus(l.lemma, 'known'); if (cardRef.current?.lemma === l.lemma) closeCard(); }
+          c.continueNow();
+        },
+        dontKnow: () => {
+          const c = ctl(); if (!c) return;
+          const l = c.lastExplained;
+          if (l?.lemma) void changeStatus(l.lemma, 'learning', false);
+          void c.explainAgain();
+        },
+        ask: (text, spoken) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, text, undefined, undefined, spoken); },
+        hold: () => { ctl()?.hold(); },
+        release: () => ctl()?.release(modeRef.current === 'listening'),
+        keepWaiting: () => ctl()?.keepWaiting(),
+        continueBook: () => { if (modeRef.current === 'listening') ctl()?.continueNow(); },
+      },
+    });
+    voiceRef.current = chat;
+    setVoiceSnap(chat.snapshot);
+    const offs = [
+      chat.on('change', (snap) => setVoiceSnap(snap)),
+      chat.on('heard', (h) => setHeard(h.command ? { text: h.text, command: h.command } : null)),
+    ];
+    const uninstall = E2E ? installE2eHooks(chat, e2eRequests) : () => undefined;
+    return () => { offs.forEach((f) => f()); uninstall(); chat.dispose(); if (voiceRef.current === chat) voiceRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, book]);
+  // the consent card and errors live in the popover: show it
+  useEffect(() => { if (voiceSnap?.consent || voiceSnap?.error) setVoicePop(true); }, [voiceSnap?.consent, voiceSnap?.error]);
+  const setAlwaysOn = (on: boolean) => {
+    voiceRef.current?.setAlwaysOn(on);
+    void useApp.getState().patchSettings({ voiceChat: { ...settingsRef.current.voiceChat, alwaysOn: on } });
+  };
+  /** what the popover shows: the last question and its answer, or the last command heard */
+  const voiceLast: VoiceExchange | null = useMemo(() => {
+    if (heard) return { you: heard.text, tutor: heard.command === 'know' ? 'Good, marked as known.' : heard.command === 'dont_know' ? 'Let me explain it again.' : 'Bye bye! Talk to me any time.', status: 'done' };
+    const q = [...transcript].reverse().find((e) => e.kind === 'question');
+    return q ? { you: q.question ?? '', tutor: q.parts?.free ?? q.text, status: q.status, error: q.error } : null;
+  }, [heard, transcript]);
 
   // ---- the Dream voice (Kokoro): download on first use, read with a Mac voice meanwhile --------------
   useEffect(() => {
@@ -501,7 +572,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       const sc = settingsRef.current.shortcuts;
       const is = (name: string) => matchesShortcut(e, sc[name]);
       const listening = modeRef.current === 'listening';
-      if (is('help')) { e.preventDefault(); setHelp(true); }
+      if (matchesShortcut(e, settingsRef.current.voiceChat?.pushToTalkKey || 'KeyM')) { e.preventDefault(); voiceRef.current?.toggle(); }
+      else if (is('help')) { e.preventDefault(); setHelp(true); }
       else if (is('switchMode')) { e.preventDefault(); switchMode(); }
       else if (is('playPause')) { e.preventDefault(); playPause(); }
       else if (is('closePopup')) { if (cardRef.current) closeCard(); else if (selBar) setSelBar(null); else if (popover) setPopover(null); else ctl()?.skip(); }
@@ -559,7 +631,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
           waiting={waiting} onContinue={() => ctl()?.continueNow()}
           onVoice={(engine, voiceId) => void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine, voiceId } })}
           onWindow={(w) => void useApp.getState().patchSettings({ listen: { ...settingsRef.current.listen, lastSecondsWindow: w } })}
-          transcript={transcriptOpen ? <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} /> : null} />
+          transcript={transcriptOpen ? <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { if (voiceRef.current) { voiceRef.current.askTyped(q); return; } const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} /> : null} />
       )}
       {card && (
         <WordCard data={card} onClose={closeCard} onSay={sayCard}
@@ -573,7 +645,13 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
           <button className="quiet" onClick={() => { void navigator.clipboard.writeText(selBar.text); setSelBar(null); }}>Copy</button>
         </div>
       )}
-      {help && <HelpSheet shortcuts={settings.shortcuts} mode={mode} onClose={() => setHelp(false)} />}
+      {voiceSnap && (
+        <VoiceChatUI snap={voiceSnap} last={voiceLast} popover={voicePop} onPopover={setVoicePop}
+          onToggle={() => voiceRef.current?.toggle()} onAlwaysOn={setAlwaysOn} onAsk={(t) => voiceRef.current?.askTyped(t)}
+          onAcceptDownload={() => voiceRef.current?.acceptDownload()} onDeclineDownload={() => voiceRef.current?.declineDownload()} onDismissError={() => voiceRef.current?.dismissError()}
+          keyLabel={shortcutLabel(settings.voiceChat?.pushToTalkKey || 'KeyM')} shifted={mode === 'listening' && transcriptOpen} />
+      )}
+      {help && <HelpSheet shortcuts={{ ...settings.shortcuts, pushToTalk: settings.voiceChat?.pushToTalkKey || 'KeyM' }} mode={mode} onClose={() => setHelp(false)} />}
       {!ready && <div className="reader-preparing">Preparing…</div>}
     </div>
   );

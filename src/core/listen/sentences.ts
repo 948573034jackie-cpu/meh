@@ -32,13 +32,14 @@ export function findSentenceEnd(text: string, from: number, final = false): numb
     while (j < text.length && END.includes(text[j])) j++;
     while (j < text.length && CLOSERS.includes(text[j])) j++;
     if (j >= text.length) return final ? j : -1; // more punctuation or a closing quote may follow
+    if ('。！？'.includes(c)) return j; // Chinese punctuation needs no space after it
     if (!/\s/.test(text[j])) continue; // "3.5", "U.S.", "word.word"
     if (c === '.' && j === i + 1 && !isSentenceDot(text, from, i)) continue;
     // the next word: a lower-case start means the sentence goes on ("e.g. this", "... and then")
     let k = j;
     while (k < text.length && /\s/.test(text[k])) { if (text[k] === '\n') return j; k++; }
     if (k >= text.length) return final ? j : -1;
-    if (/[a-z]/.test(text[k]) && (c === '.' || c === '…') ) continue;
+    if (/[a-z]/.test(text[k])) continue;
     return j;
   }
   return final && text.slice(from).trim() ? text.length : -1;
@@ -103,13 +104,13 @@ export class StreamSentenceSplitter {
     const out: string[] = [];
     for (;;) {
       let end = findSentenceEnd(this.text, this.consumed, final);
-      if (end < 0) end = softBreak(this.text, this.consumed, this.maxChars);
+      if (end < 0 || end - this.consumed > this.maxChars) { const soft = softBreak(this.text, this.consumed, this.maxChars); if (soft > 0) end = soft; }
       if (end < 0) break;
       const piece = this.text.slice(this.consumed, end).replace(/\s+/g, ' ').trim();
       this.consumed = end;
       if (!piece) continue;
       const joined = this.carry ? `${this.carry} ${piece}` : piece;
-      if (joined.replace(/[^\p{L}\p{N}]/gu, '').length < this.minChars && !final) { this.carry = joined; continue; }
+      if (joined.replace(/[^\p{L}\p{N}]/gu, '').length < this.minChars) { this.carry = joined; continue; }
       this.carry = '';
       out.push(joined);
     }

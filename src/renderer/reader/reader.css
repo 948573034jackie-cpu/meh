@@ -128,7 +128,6 @@
 .controls .speed input[type="range"] { width: 100px; margin: 0; }
 .controls .speed .val { font-size: 12px; color: var(--fg-muted); min-width: 34px; font-variant-numeric: tabular-nums; }
 .controls select { padding: 5px 8px; font-size: 12.5px; max-width: 220px; }
-.controls .mic:disabled { opacity: 0.4; }
 .timeline { display: flex; align-items: center; gap: 10px; height: 22px; }
 .timeline .t { font-size: 11.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; min-width: 52px; }
 .timeline .t.total { text-align: right; }

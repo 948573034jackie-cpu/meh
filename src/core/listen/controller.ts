@@ -253,11 +253,15 @@ export class ListenController {
   }
   private heldResume = false;
 
-  /** The learner said nothing after all (noise) or ended the call: the reading resumes when `resume` is true. */
-  release(resume: boolean): void {
+  /**
+   * The learner said nothing after all (noise) or ended the call: the reading resumes if it was going when
+   * hold() paused it and `resume` allows it (Listening yes, Reading no).
+   */
+  release(resume = true): void {
     if (!this.held) return;
+    const was = this.heldResume;
     this.held = false; this.heldResume = false;
-    if (!resume || this.current) return;
+    if (!resume || !was || this.current) return;
     const st = this.playback.state;
     if (st === 'playing' || st === 'explaining') return;
     this.playback.play();
@@ -282,7 +286,10 @@ export class ListenController {
     // Reading mode: stop and wait. Listening mode: the pause, then on with the book.
     const listening = (this.deps.mode?.() ?? 'listening') === 'listening';
     const resume = wasPlaying && listening && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');
-    if (res === 'done' && !this.current && (!wasPlaying || !listening)) this.readingWindow();
+    // nothing to resume (Reading, or the book was not playing): the learner may still answer for a moment
+    // ('aborted' with an idle playback = the book was never started, e.g. a word tapped before pressing play)
+    const finished = res === 'done' || (res === 'aborted' && !wasPlaying && this.playback.state === 'idle');
+    if (finished && !this.current && (!wasPlaying || !listening)) this.readingWindow();
     this.endManual(resume, res, resumeAt, readOn);
   }
 

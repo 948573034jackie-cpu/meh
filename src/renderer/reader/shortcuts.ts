@@ -60,6 +60,9 @@ export const SHORTCUT_HELP: { group: string; items: { id: string; text: string; 
     { id: '_listenBack', text: 'Back 30 seconds' },
     { id: '_listenFwd', text: 'Forward 30 seconds' },
   ] },
+  { group: 'Voice chat', items: [
+    { id: 'pushToTalk', text: 'Talk with the tutor: open or close the voice line (the mic button on the right)' },
+  ] },
   { group: 'Help', items: [{ id: 'help', text: 'This sheet' }] },
 ];
 
