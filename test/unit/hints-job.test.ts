@@ -17,6 +17,8 @@ const dict = createDictionary({ w: { the: raw('这', 'A1', 1), house: raw('房�
 const book = makeBook([{ title: 'One', paragraphs: ['The house was serene.'] }, { title: 'Two', paragraphs: ['He was reluctant.'] }, { title: 'Three', paragraphs: ['The house.'] }]);
 book.id = 'book1';
 
+const isPhrasePrompt = (user: string): boolean => user.startsWith('Phrases.');
+
 function setup(over: Partial<HintsJobDeps> = {}, settings: Partial<Settings['ai']> = {}) {
   const events: HintsProgress[] = [];
   const usage: UsageRecord[] = [];
@@ -26,6 +28,7 @@ function setup(over: Partial<HintsJobDeps> = {}, settings: Partial<Settings['ai'
   const deps: HintsJobDeps = {
     complete: async (provider, model, prompt) => {
       calls.push({ provider, model, user: prompt.user });
+      if (isPhrasePrompt(prompt.user)) return { text: '{"phrases":[]}', inputTokens: 500, outputTokens: 10, cachedTokens: 0 };
       const text = prompt.user.includes('"serene"') ? '```json\n{"serene": ["宁静的", "安详的"]}\n```' : '{"reluctant": ["不情愿的", ""]}';
       return { text, inputTokens: 300, outputTokens: 40, cachedTokens: 0 };
     },
@@ -50,13 +53,16 @@ describe('HintsJob', () => {
     await job.idle();
     expect(events.map((e) => e.state)).toEqual(['queued', 'running', 'done']);
     expect(job.get('book1', 0)).toEqual({ serene: ['宁静的', '安详的'] });
-    expect(calls).toHaveLength(1);
+    // one hints request and one phrases request, both recorded
+    expect(calls).toHaveLength(2);
+    expect(calls.filter((c) => isPhrasePrompt(c.user))).toHaveLength(1);
     expect(calls[0]).toMatchObject({ provider: 'anthropic', model: 'claude-haiku-5-5' });
-    expect(usage).toHaveLength(1);
+    expect(usage).toHaveLength(2);
     expect(usage[0]).toMatchObject({ provider: 'anthropic', model: 'claude-haiku-5-5', inputTokens: 300, outputTokens: 40 });
     expect(usage[0].usd).toBeCloseTo((300 * 0.10 + 40 * 0.50) / 1_000_000, 10);
     const file = path.join(dir, 'book1.json');
-    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ version: HINTS_CACHE_VERSION, chapters: { '0': { serene: ['宁静的', '安详的'] } } });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ version: HINTS_CACHE_VERSION, chapters: { '0': { serene: ['宁静的', '安详的'] } }, phrases: { '0': {} } });
+    expect(job.phrases('book1', 0)).toEqual({});
     // a fresh job reads the file back; a cached chapter is not requested again
     const again = setup({ dir: () => dir });
     expect(again.job.get('book1', 0)).toEqual({ serene: ['宁静的', '安详的'] });
@@ -74,7 +80,7 @@ describe('HintsJob', () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => { release = r; });
     const order: string[] = [];
-    const { job } = setup({ complete: async (_p, _m, prompt) => { order.push(prompt.user.split('\n')[0]); await gate; return { text: '{}', inputTokens: 1, outputTokens: 1, cachedTokens: 0 }; } });
+    const { job } = setup({ complete: async (_p, _m, prompt) => { if (!isPhrasePrompt(prompt.user)) order.push(prompt.user.split('\n')[0]); await gate; return { text: '{}', inputTokens: 1, outputTokens: 1, cachedTokens: 0 }; } });
     job.request('book1', 2); // first request starts immediately
     job.request('book1', 0);
     job.request('book1', 1);
@@ -88,11 +94,11 @@ describe('HintsJob', () => {
     expect(job.get('book1', 2)).toEqual({});
   });
 
-  it('stores an empty map for a chapter without hard words and never calls the model', async () => {
+  it('stores an empty map for a chapter without hard words and never asks the model for word hints', async () => {
     const { job, calls } = setup();
     job.request('book1', 2);
     await job.idle();
-    expect(calls).toHaveLength(0);
+    expect(calls.filter((c) => !isPhrasePrompt(c.user))).toHaveLength(0);
     expect(job.get('book1', 2)).toEqual({});
   });
 

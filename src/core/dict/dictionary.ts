@@ -234,6 +234,31 @@ export function classifyPhrase(key: string, w: ReadonlyMap<string, DictRaw>): Ph
   return shares(own, glossChars(a.t)) && shares(own, glossChars(n.t)) ? 'free-combination' : 'ok';
 }
 
+/** Only the grammatical particles; a model's short gloss ("老人") must be allowed to share 人 with "man". */
+const LIGHT_STOP = new Set('的地得之了是'.split(''));
+
+/**
+ * Whether a phrase the AI proposed looks like a free combination (the same rule as classifyPhrase, applied to
+ * the AI's own Chinese meaning): two words, an A1-A2 adjective (not also a preposition) + an A1-A2 noun, and a
+ * meaning built from both words' glosses ("old man" 老人 from 老的 + 男人). "red tape" 官僚作风 is kept.
+ */
+export function looksLikeFreeCombination(dict: Dictionary, words: string[], zh: string): boolean {
+  if (words.length !== 2) return false;
+  const a = dict.lookup(words[0]);
+  const n = dict.lookup(words[1]);
+  if (!a || !n || !EASY.has(a.entry.level) || !EASY.has(n.entry.level)) return false;
+  const aPos = posTags(a.entry.zh);
+  if ((!aPos.has('a.') && !aPos.has('adj.')) || aPos.has('prep.')) return false;
+  if (!posTags(n.entry.zh).has('n.')) return false;
+  const chars = (t: string): Set<string> => {
+    const out = new Set<string>();
+    for (const g of parseGloss(t)) for (const ch of g.zh) if (/\p{Script=Han}/u.test(ch) && !LIGHT_STOP.has(ch)) out.add(ch);
+    return out;
+  };
+  const own = chars(zh);
+  return own.size > 0 && shares(own, chars(a.entry.zh)) && shares(own, chars(n.entry.zh));
+}
+
 /** The multi-word headwords dropped from phrase matching, with the reason (for reporting and tests). */
 export function droppedPhrases(data: DictData): { key: string; reason: Exclude<PhraseClass, 'ok'> }[] {
   const w = new Map<string, DictRaw>(Object.entries(data.w));

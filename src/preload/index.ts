@@ -40,6 +40,7 @@ const api: ReadAlongApi = {
   },
   getUsage: () => invoke('ai:usage'),
   hintsGet: (bookId, chapter) => invoke('hints:get', bookId, chapter),
+  hintsPhrases: (bookId, chapter) => invoke('hints:phrases', bookId, chapter),
   hintsRequest: (bookId, chapter) => invoke('hints:request', bookId, chapter),
   hintsClear: (bookId) => invoke('hints:clear', bookId),
   onHintsProgress: (cb) => {

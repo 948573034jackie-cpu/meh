@@ -1,8 +1,8 @@
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { Settings, VocabState, LibraryItem, WordStatus, MarkedRange, UsageRecord, TtsEngineId } from './settings';
-import type { HintMap } from '@core/ai/hints';
+import type { HintMap, PhraseMap } from '@core/ai/hints';
 
-export type { HintMap, HintPair } from '@core/ai/hints';
+export type { HintMap, HintPair, PhraseHit, PhraseMap } from '@core/ai/hints';
 
 /** Progress of the background chapter-hints job (src/main/hints.ts), broadcast as 'hints:progress'. */
 export interface HintsProgress {
@@ -241,6 +241,12 @@ export interface ReadAlongApi {
   // chapter hints (Chinese meaning under hard words, chosen by the AI for the chapter; see src/main/hints.ts)
   /** cached hints of a chapter (lemma -> [meaning here, other meaning]) or null when the job has not run yet */
   hintsGet(bookId: string, chapter: number): Promise<HintMap | null>;
+  /**
+   * cached phrases of a chapter found by the same job: sentenceKey ("c.p.s") -> PhraseHit[] (token span with
+   * INCLUSIVE end, lemma, the model's CEFR level, Chinese meaning), or null when the job has not run yet.
+   * Refetch on the 'done' hints:progress event. Pass map[sentenceKey] to annotateSentence(…, hits).
+   */
+  hintsPhrases(bookId: string, chapter: number): Promise<PhraseMap | null>;
   /** queues the chapter (no-op when cached or already queued); progress arrives through onHintsProgress */
   hintsRequest(bookId: string, chapter: number): Promise<void>;
   /** forgets the cached hints of a book (next request recomputes them) */

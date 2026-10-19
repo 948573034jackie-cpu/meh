@@ -1,6 +1,7 @@
 import type { CefrLevel, Paragraph, Sentence, Token } from '@core/model';
-import { levelIndex } from '@core/model';
+import { levelIndex, CEFR_LEVELS } from '@core/model';
 import type { Dictionary, DictEntry, LookupResult } from '@core/dict/types';
+import type { PhraseHit } from '@core/ai/hints';
 import { MAX_PHRASE_WORDS } from '@core/dict/dictionary';
 import { nameKey } from '@core/dict/names';
 
@@ -29,8 +30,17 @@ export interface PhraseSpan { start: number; end: number; words: number; result:
 export interface SentenceAnnotation {
   /** one entry per token; null for space/punct/number tokens */
   infos: (WordInfo | null)[];
-  /** dictionary phrases, with `above` = the phrase itself is above the learner's level */
-  phrases: (PhraseSpan & { above: boolean })[];
+  /**
+   * dictionary phrases, with `level` = the level used (see phraseLevel; the chapter job's level when it
+   * confirmed the phrase), `confirmed` = the chapter job found the same phrase here, `above` = that level is
+   * above the learner's
+   */
+  phrases: (PhraseSpan & { above: boolean; level: CefrLevel; confirmed: boolean })[];
+  /**
+   * the chapter job's phrases in this sentence (PhraseHit, `end` INCLUSIVE) that are not already a dictionary
+   * phrase over the same tokens, with `above` = the model's level is above the learner's
+   */
+  aiPhrases: (PhraseHit & { above: boolean })[];
   /** token indices above the learner's level (names excluded; words inside an above-level phrase are left to the phrase) */
   hardTokens: number[];
 }
@@ -107,8 +117,22 @@ export function findPhrases(tokens: Token[], dict: Dictionary): PhraseSpan[] {
   return out;
 }
 
-function phraseInfo(result: LookupResult): WordInfo {
-  return { lemma: result.lemma, level: result.entry.level, levelSource: result.entry.levelSource, isName: false, inDict: true, entry: result.entry };
+/**
+ * The level a dictionary phrase is judged at. A level from a CEFR list (cefrj/oct) is used as is. An estimated
+ * one ('est': C1 by default for any phrase without a Collins rating) is not trusted: it is replaced by the
+ * level of the phrase's hardest word, at least B1 (a listed multi-word headword is an idiom or a fixed
+ * expression, and an idiom-marked gloss says so outright), and never above the estimate ("look forward to"
+ * stays B1, "lip service" becomes B1, "in spite of" B2 from "spite").
+ */
+export function phraseLevel(result: LookupResult, dict: Dictionary): CefrLevel {
+  const e = result.entry;
+  if (e.levelSource !== 'est') return e.level;
+  let lvl = levelIndex('B1');
+  for (const w of result.lemma.split(' ')) {
+    const r = dict.lookup(w);
+    if (r) lvl = Math.max(lvl, levelIndex(r.entry.level));
+  }
+  return CEFR_LEVELS[Math.min(lvl, levelIndex(e.level))];
 }
 
 /**
@@ -121,19 +145,32 @@ export function annotateSentence(
   dict: Dictionary,
   names: Set<string>,
   learner: CefrLevel,
+  /** the chapter job's phrases of THIS sentence (hintsPhrases(bookId, chapter)[sentenceKey]), when available */
+  hits: readonly PhraseHit[] = [],
 ): SentenceAnnotation {
   void para;
   const tokens = s.tokens;
   const firstWord = tokens.findIndex((t) => t.kind === 'word');
   const infos = tokens.map((t, i) => (t.kind === 'word' ? analyzeToken(t, i === firstWord, dict, names) : null));
-  const phrases = findPhrases(tokens, dict).map((p) => ({ ...p, above: isAboveLevel(phraseInfo(p.result), learner) }));
+  const above = (l: CefrLevel): boolean => levelIndex(l) > levelIndex(learner);
+  const overlaps = (h: PhraseHit, start: number, endExcl: number): boolean => h.start < endExcl && h.end >= start;
+  const phrases = findPhrases(tokens, dict).map((p) => {
+    // confirmed: the chapter job found this phrase here (same tokens, or the same lemma over overlapping tokens)
+    const hit = hits.find((h) => (h.start === p.start && h.end === p.end - 1) || (h.lemma === p.result.lemma && overlaps(h, p.start, p.end)));
+    const level = hit ? hit.level : phraseLevel(p.result, dict);
+    return { ...p, level, confirmed: hit !== undefined, above: above(level) };
+  });
+  const aiPhrases = hits
+    .filter((h) => !phrases.some((p) => h.start === p.start && h.end === p.end - 1))
+    .map((h) => ({ ...h, above: above(h.level) }));
 
   const coveredByHardPhrase = new Set<number>();
   for (const p of phrases) if (p.above) for (let i = p.start; i < p.end; i++) coveredByHardPhrase.add(i);
+  for (const h of aiPhrases) if (h.above) for (let i = h.start; i <= h.end; i++) coveredByHardPhrase.add(i);
 
   const hardTokens: number[] = [];
   infos.forEach((info, i) => {
     if (info && !coveredByHardPhrase.has(i) && isAboveLevel(info, learner)) hardTokens.push(i);
   });
-  return { infos, phrases, hardTokens };
+  return { infos, phrases, aiPhrases, hardTokens };
 }

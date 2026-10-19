@@ -80,6 +80,8 @@ export const webApiImpl = {
   getUsage: () => settings.getUsage(),
   // chapter hints
   hintsGet: (bookId, chapter) => hintsJob.get(String(bookId), Number(chapter)),
+  // the web hints job (./hints) does not find phrases yet: the reader falls back to dictionary phrases
+  hintsPhrases: async () => null,
   hintsRequest: (bookId, chapter) => hintsJob.request(String(bookId), Number(chapter)),
   hintsClear: (bookId) => hintsJob.clear(String(bookId)),
   onHintsProgress: (cb) => onHintsProgress(cb),

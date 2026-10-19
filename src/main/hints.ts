@@ -3,10 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Book } from '@core/model';
 import type { Dictionary } from '@core/dict/types';
-import type { HintMap, HintsProgress } from '@shared/api';
+import type { HintMap, HintsProgress, PhraseMap } from '@shared/api';
 import type { Settings, UsageRecord, VocabState, AiProviderId } from '@shared/settings';
 import type { PromptBundle } from '@core/ai/prompts';
-import { collectHardWords, batchHardWords, buildHintsPrompt, parseHints } from '@core/ai/hints';
+import { collectHardWords, batchHardWords, buildHintsPrompt, parseHints, chunkChapter, phraseQuota, buildPhrasesPrompt, parsePhrases, validatePhrases, mapPhraseHits, chapterText, PHRASES_PER_CHAPTER } from '@core/ai/hints';
+import type { RawPhrase } from '@core/ai/hints';
+import { looksLikeFreeCombination } from '@core/dict/dictionary';
 import { runCompletion, estimateUsd, periodStarts, classifyError } from './ai';
 import type { StreamResult } from './ai';
 import { getSettings, getVocab, addUsage, usdSpent } from './settings';
@@ -21,16 +23,22 @@ import { dataDir, writeAtomic, readJsonFile } from './storage';
  * Cost: a chapter of ~80 hard words is ~80 × 15 tokens in + ~80 × 12 tokens out ≈ 2k tokens ≈ $0.0005 with
  * Claude Haiku 5.5 (the default when the provider is Anthropic). A 60-chapter novel is a few cents.
  *
- * Cache file: <userData>/data/hints/<bookId>.json = { version, chapters: { [index]: { [lemma]: [zh1, zh2] } } }.
+ * The same job finds the chapter's phrases (idioms, phrasal verbs, fixed expressions; docs/RULES.md "Phrases"):
+ * one more request per chunk of ~18k characters (most chapters: one) ≈ $0.0012, each phrase with the model's CEFR
+ * level, validated against the chapter text and mapped to token spans of its sentences (PhraseHit).
+ *
+ * Cache file: <userData>/data/hints/<bookId>.json =
+ *   { version, chapters: { [index]: { [lemma]: [zh1, zh2] } }, phrases: { [index]: { [sentenceKey]: PhraseHit[] } } }.
+ * A chapter is done when both are stored; a cache of an older version is dropped and recomputed on request.
  */
 
-export const HINTS_CACHE_VERSION = 1;
+export const HINTS_CACHE_VERSION = 2;
 /** The default hints model for an Anthropic key: the cheapest current Claude. */
 export const DEFAULT_ANTHROPIC_HINTS_MODEL = 'claude-haiku-5-5';
 /** A failed chapter is not retried automatically for this long (the learner's key or budget will not change in seconds). */
 const RETRY_AFTER_MS = 2 * 60_000;
 
-export interface HintsCache { version: number; chapters: Record<string, HintMap> }
+export interface HintsCache { version: number; chapters: Record<string, HintMap>; phrases: Record<string, PhraseMap> }
 
 /** Everything the job touches outside itself, so tests can run it without Electron, the network or the real stores. */
 export interface HintsJobDeps {
@@ -71,6 +79,11 @@ export class HintsJob {
     return this.cache(bookId).chapters[String(chapter)] ?? null;
   }
 
+  /** Cached phrase hits of a chapter (sentenceKey -> hits), or null when the job has not produced them yet. */
+  phrases(bookId: string, chapter: number): PhraseMap | null {
+    return this.cache(bookId).phrases[String(chapter)] ?? null;
+  }
+
   /** Queues a chapter. Cached, queued, running and recently failed chapters are left alone. */
   request(bookId: string, chapter: number): void {
     if (!bookId || !Number.isInteger(chapter) || chapter < 0) return;
@@ -106,15 +119,17 @@ export class HintsJob {
     let c = this.caches.get(bookId);
     if (!c) {
       const stored = readJsonFile<HintsCache>(this.file(bookId));
-      c = stored && stored.version === HINTS_CACHE_VERSION && stored.chapters && typeof stored.chapters === 'object' ? stored : { version: HINTS_CACHE_VERSION, chapters: {} };
+      c = stored && stored.version === HINTS_CACHE_VERSION && stored.chapters && typeof stored.chapters === 'object' ? stored : { version: HINTS_CACHE_VERSION, chapters: {}, phrases: {} };
+      if (!c.phrases || typeof c.phrases !== 'object') c.phrases = {};
       this.caches.set(bookId, c);
     }
     return c;
   }
 
-  private store(bookId: string, chapter: number, hints: HintMap): void {
+  private store(bookId: string, chapter: number, hints: HintMap, phrases: PhraseMap): void {
     const c = this.cache(bookId);
     c.chapters[String(chapter)] = hints;
+    c.phrases[String(chapter)] = phrases;
     fs.mkdirSync(this.deps.dir(), { recursive: true });
     writeAtomic(this.file(bookId), JSON.stringify(c));
   }
@@ -167,23 +182,40 @@ export class HintsJob {
       const words = collectHardWords(book, chapter, dict, s.learnerLevel, new Set(book.names), known);
       const hints: HintMap = {};
       const title = book.chapters[chapter].title;
-      for (const batch of batchHardWords(words)) {
+      /** one budget-checked, usage-recorded request */
+      const ask = async (prompt: PromptBundle): Promise<string> => {
         const monthly = this.deps.usdSpent(periodStarts().month);
         if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) {
           throw Object.assign(new Error(`Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in Settings to continue.`), { code: 'budget' });
         }
-        const prompt = buildHintsPrompt(batch, { title: book.title, chapter: title, level: s.learnerLevel });
         const result = await this.deps.complete(provider, model, prompt);
         const usd = estimateUsd(model, result.inputTokens, result.outputTokens, result.cachedTokens);
         try { this.deps.addUsage({ date: new Date().toISOString(), provider, model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd }); } catch (e) { console.error('hints usage not recorded', e); }
-        const parsed = parseHints(result.text);
+        return result.text;
+      };
+      for (const batch of batchHardWords(words)) {
+        const prompt = buildHintsPrompt(batch, { title: book.title, chapter: title, level: s.learnerLevel });
+        const parsed = parseHints(await ask(prompt));
         // keep only the words we asked about, under the lemma we asked with
         for (const w of batch) {
           const pair = parsed[w.lemma] ?? parsed[w.lemma.toLowerCase()];
           if (pair) hints[w.lemma] = pair;
         }
       }
-      this.store(bookId, chapter, hints);
+      // phrases of the chapter, each with the model's level, kept only when they literally appear
+      const chunks = chunkChapter(book, chapter);
+      const quota = phraseQuota(chunks);
+      const raw: RawPhrase[] = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const prompt = buildPhrasesPrompt(chunks[i], { title: book.title, chapter: title, level: s.learnerLevel, max: quota[i], part: [i + 1, chunks.length] });
+        raw.push(...parsePhrases(await ask(prompt)));
+      }
+      const items = validatePhrases(raw, chapterText(book, chapter), {
+        max: PHRASES_PER_CHAPTER * Math.max(1, chunks.length),
+        isFree: (ws, zh) => looksLikeFreeCombination(dict, ws, zh),
+      });
+      const phrases = mapPhraseHits(book, chapter, items, (w) => dict.lemmaOf(w));
+      this.store(bookId, chapter, hints, phrases);
       this.failed.delete(key(bookId, chapter));
       send({ state: 'done' });
     } catch (e) {
@@ -230,6 +262,7 @@ export function getHintsJob(getWindow: () => BrowserWindow | null): HintsJob {
 export function registerHintsHandlers(getWindow: () => BrowserWindow | null): void {
   const j = getHintsJob(getWindow);
   ipcMain.handle('hints:get', (_e, bookId: string, chapter: number) => j.get(String(bookId), Number(chapter)));
+  ipcMain.handle('hints:phrases', (_e, bookId: string, chapter: number) => j.phrases(String(bookId), Number(chapter)));
   ipcMain.handle('hints:request', (_e, bookId: string, chapter: number) => { j.request(String(bookId), Number(chapter)); });
   ipcMain.handle('hints:clear', (_e, bookId: string) => { j.clear(String(bookId)); });
 }

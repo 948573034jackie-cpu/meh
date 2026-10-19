@@ -301,7 +301,10 @@ describe('annotateSentence', () => {
     const byLemma = Object.fromEntries(a.phrases.map((x) => [x.result.lemma, x]));
     expect(byLemma['in spite of']).toBeDefined();
     expect(byLemma['look forward to']).toBeDefined();
-    expect(byLemma['in spite of'].above).toBe(data.w['in spite of'].l === 'C1' || data.w['in spite of'].l === 'C2');
+    // 'in spite of' is an estimated C1 in the data; its level is derived from its hardest word ('spite' B2)
+    expect(data.w['in spite of'].s).toBe('est');
+    expect(byLemma['in spite of'].level).toBe('B2');
+    expect(byLemma['in spite of'].above).toBe(false);
     expect(byLemma['look forward to'].above).toBe(false);   // B1 in the data
     // words inside an above-level phrase are left to the phrase; words inside an easy phrase keep their own flag
     for (const ph of a.phrases) {
@@ -356,7 +359,10 @@ describe('phrase spans on real segmenter output (no whitespace tokens)', () => {
   it('covers exactly the phrase words, never the following token', () => {
     const found = spans('In spite of the storm, he paid lip service to the rules and spoke of red tape.');
     expect(found.map((f) => f.text)).toEqual(['In spite of', 'lip service', 'red tape']);
-    expect(found.every((f) => f.above)).toBe(true);   // all estimated C1, above a B2 learner
+    // all estimated C1 in the data; judged at their derived levels (in spite of B2, lip service B1, red tape B1)
+    expect(found.every((f) => !f.above)).toBe(true);
+    expect(spans('In spite of the storm, he paid lip service to the rules and spoke of red tape.', 'B1').map((f) => [f.lemma, f.above]))
+      .toEqual([['in spite of', true], ['lip service', false], ['red tape', false]]);
     // 'look forward to' is B1: found, but not above a B1 learner
     expect(spans('We look forward to it.', 'B1')).toEqual([{ lemma: 'look forward to', above: false, text: 'look forward to' }]);
     expect(spans('We look forward to it.', 'A1')[0].above).toBe(true);
@@ -367,7 +373,7 @@ describe('phrase spans on real segmenter output (no whitespace tokens)', () => {
     expect(data.w['give up on']).toBeUndefined();
     expect(data.w['take for granted']).toBeUndefined();
     expect(spans('Never give up on it; we take nothing for granted.')).toEqual([]);
-    expect(spans('In spite of everything, his frame of mind improved.').map((f) => [f.lemma, f.above])).toEqual([['in spite of', true], ['frame of mind', true]]);
+    expect(spans('In spite of everything, his frame of mind improved.', 'B1').map((f) => [f.lemma, f.above])).toEqual([['in spite of', true], ['frame of mind', false]]);
     expect(spans('It was a bona fide offer.', 'C1').map((f) => [f.lemma, f.above])).toEqual([['bona fide', true]]);   // C2 (Octanove)
     expect(spans('In spite of everything.', 'C1')[0].above).toBe(false);
   });
