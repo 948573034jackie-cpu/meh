@@ -320,7 +320,7 @@ export function StylesEditor({ settings, patch, models }: { settings: Settings; 
 
         <div className="field prompt-preview">
           <div className="row">
-            <Tip text="See the exact text that will be sent to the AI, for a sample sentence" wrap below align="start"><button onClick={() => setPreviewOpen((o) => !o)} data-testid="style-preview" aria-expanded={previewOpen}>{previewOpen ? 'Hide preview' : 'Preview the prompt'}</button></Tip>
+            <Tip text="See the exact text that will be sent to the AI, for a sample sentence" wrap below align="start"><button onClick={(e) => { setPreviewOpen((o) => !o); e.currentTarget.blur(); }} data-testid="style-preview" aria-expanded={previewOpen}>{previewOpen ? 'Hide preview' : 'Preview the prompt'}</button></Tip>
             {previewOpen && (
               <div className="seg" role="radiogroup" aria-label="Preview for">
                 <Tip text="Preview the prompt for a word" below><button className={previewKind === 'word' ? 'on' : ''} onClick={() => setPreviewKind('word')} data-testid="preview-word">A word</button></Tip>
