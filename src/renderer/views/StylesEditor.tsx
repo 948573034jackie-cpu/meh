@@ -275,7 +275,7 @@ export function StylesEditor({ settings, patch, models }: { settings: Settings; 
           <div className="placeholder-legend" aria-label="Placeholders you can use">
             <span className="lead">You can write these in a prompt:</span>
             {PLACEHOLDERS.map((p) => <span key={p}><code>{`{{${p}}}`}</code> {PLACEHOLDER_MEANINGS[p]}</span>)}
-            <span><code>[PAUSE]</code> on its own line in the reply: the voice stops and waits for you</span>
+            <span><code>[PAUSE]</code> on its own line in the reply: the voice pauses and waits for you</span>
           </div>
           {builtin && (
             <div className="hint">

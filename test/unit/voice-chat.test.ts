@@ -213,4 +213,31 @@ describe('VoiceChat state machine', () => {
     t.chat.inject({ type: 'final', text: 'I know', segmentId: 's1' });
     expect(t.tutorCalls).toEqual(['know']);
   });
+  it('a window that closes and opens again while the speech model is still loading still gets a microphone', async () => {
+    const gates: (() => void)[] = [];
+    const listeners = new Set<(e: SttEngineEvent) => void>();
+    let started = 0, stopped = 0;
+    const stt: SttBridge = {
+      status: async () => status('ready'), download: async () => status('ready'), cancelDownload: async () => undefined,
+      start: () => { started++; return new Promise((r) => gates.push(() => r(status('ready')))); },
+      push: async () => undefined, stop: async () => { stopped++; },
+      onEvent: (cb) => { listeners.add(cb); return () => listeners.delete(cb); }, onProgress: () => () => undefined,
+    };
+    const mic = new SilentMic();
+    const noop = () => undefined;
+    const chat = new VoiceChat({ stt, mic, tutor: { know: noop, dontKnow: noop, ask: noop, hold: noop, release: noop, keepWaiting: noop, continueBook: noop }, listener: { debounceMs: 0 } });
+    await flush();
+    chat.pauseWindow(true); // the first session starts loading the model
+    chat.pauseWindow(false); // the learner tapped another word: the window closes...
+    chat.pauseWindow(true); // ...and opens again when that explanation ends
+    expect(started).toBe(1);
+    gates.shift()!(); await flush(); await flush();
+    expect(stopped).toBeGreaterThanOrEqual(1); // the stale session is closed
+    expect(started).toBe(2); // and a fresh one is opened for the new window
+    gates.shift()!(); await flush(); await flush();
+    expect(chat.snapshot.line).toBe('window');
+    expect(chat.sessionId).not.toBeNull();
+    expect(mic.active).toBe(true);
+    chat.dispose();
+  });
 });

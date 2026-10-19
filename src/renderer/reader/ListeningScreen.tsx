@@ -126,7 +126,7 @@ export function ListeningScreen(p: Props): JSX.Element {
             <select value={settings.listen.lastSecondsWindow} onChange={(e) => p.onWindow(Number(e.target.value) as never)} aria-label="How far back" data-testid="window">
               {[20, 30, 40, 60].map((s) => <option key={s} value={s}>{s} s</option>)}
             </select>
-            <Tip text={p.autoStop ? 'Auto-stop at hard words is on (Q)' : 'Auto-stop at hard words is off (Q)'}><button className={`icon ${p.autoStop ? 'active' : ''}`} onClick={p.onAutoStop} aria-label="Auto-stop at hard words" data-testid="autostop">{p.autoStop ? '◉' : '○'}</button></Tip>
+            <Tip text={p.autoStop ? 'Pause at hard words is on (Q)' : 'Pause at hard words is off (Q)'}><button className={`icon ${p.autoStop ? 'active' : ''}`} onClick={p.onAutoStop} aria-label="Pause at hard words" data-testid="autostop">{p.autoStop ? '◉' : '○'}</button></Tip>
           </div>
           <span className="grow" />
           <div className="group right">

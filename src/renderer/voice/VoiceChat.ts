@@ -366,7 +366,14 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
   }
 
   private async openMic(): Promise<void> {
-    if (this.sid || this.opening) return this.opening ?? undefined;
+    if (this.opening) {
+      // a session is still starting (the model may take seconds to load); if the line was closed and opened
+      // again meanwhile, that one gives up when it is ready, so a fresh one is opened after it
+      await this.opening;
+      if (this.sid || this.disposed || this.line === 'closed') return;
+      return this.openMic();
+    }
+    if (this.sid) return;
     const sid = `voice-${Date.now().toString(36)}-${++nextSession}`;
     this.opening = (async () => {
       try {

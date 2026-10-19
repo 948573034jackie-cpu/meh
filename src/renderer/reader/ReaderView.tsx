@@ -213,14 +213,20 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       playback.on('finished', () => showToast('End of the book.')),
       playback.on('error', (e) => {
         const eng = readEngineId();
-        if (eng !== 'webspeech') {
-          showToast(`${eng === 'edge' ? 'Microsoft' : eng === 'openai' ? 'OpenAI' : eng === 'kokoro' ? 'Kokoro' : 'ElevenLabs'} voice failed (${e.message}). Switching to the Mac voice.`);
+        if (eng === 'kokoro') {
+          // the Dream voice failed: read on with a Mac voice; the choice in Settings stays, it is tried again when it reports ready
+          kokoroReadyRef.current = false;
+          showToast(`The Dream voice failed (${e.message}). Using a Mac voice for now.`);
+          playback.play();
+        } else if (eng !== 'webspeech') {
+          const names: Partial<Record<TtsEngineId, string>> = { edge: 'Microsoft', openai: 'OpenAI', elevenlabs: 'ElevenLabs', azure: 'Azure', google: 'Google' };
+          showToast(`${names[eng] ?? 'The'} voice failed (${e.message}). Switching to the Mac voice.`);
           void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine: 'webspeech', voiceId: '' } }).then(async () => { voiceIdRef.current = await defaultVoiceFor('webspeech'); playback.play(); });
         } else showToast(`Voice error: ${e.message}`);
       }),
     ];
     setReady(true);
-    return () => { offs.forEach((f) => f()); controller.skip(); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
+    return () => { offs.forEach((f) => f()); controller.dispose(); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dict, book]);
 
@@ -276,7 +282,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
 
   // ---- the Dream voice (Kokoro): download on first use, read with a Mac voice meanwhile --------------
   useEffect(() => {
-    if (E2E || settings.voice.engine !== 'kokoro' || typeof window.readalong.kokoroStatus !== 'function') return;
+    if (E2E || (settings.voice.engine !== 'kokoro' && settings.voice.explainEngine !== 'kokoro') || typeof window.readalong.kokoroStatus !== 'function') return;
     let on = true;
     let announced = false;
     const apply = (st: { state: string; error: string | null }) => {
@@ -300,17 +306,23 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     }).catch(() => undefined);
     return () => { on = false; off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.voice.engine]);
+  }, [settings.voice.engine, settings.voice.explainEngine]);
 
   /** While Kokoro reads, the next five sentences are synthesized ahead so each one starts without a wait. */
   function prepareAhead(pos: Position): void {
     if (readEngineId() !== 'kokoro' || typeof window.readalong.kokoroPrepare !== 'function') return;
+    // exactly what Playback will ask for: Skip-panel sentences left out, the stripped text, speed 1 (the main
+    // process always synthesizes Kokoro at speed 1; the rate is applied on playback), so the cache key matches
     const items: { text: string; voice?: string; speed?: number }[] = [];
     let p: Position | null = pos;
-    for (let i = 0; i < 5 && p; i++) {
+    for (let i = 0; i < 5 && p; ) {
       p = nextPosition(book, p);
-      const s = p ? getSentence(book, p) : null;
-      if (s?.text.trim()) items.push({ text: s.text, voice: voiceIdRef.current, speed: settingsRef.current.voice.rate });
+      if (!p) break;
+      if (skippedRef.current.has(sentenceKey(p))) continue;
+      i++;
+      const s = getSentence(book, p);
+      const text = s ? (stripInline(s.text, settingsRef.current.skip)?.text ?? s.text) : '';
+      if (text.trim()) items.push({ text, voice: readVoiceId() || undefined, speed: 1 });
     }
     if (items.length) void window.readalong.kokoroPrepare(items).catch(() => undefined);
   }
@@ -541,7 +553,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const hard = docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(posRef.current)}"] .w.hl-unknown, .s[data-key="${keyOf(posRef.current)}"] .w.hl-learning`);
     if (hard) tapWord(hard); else if (!c.busy && transcript.length && transcript[transcript.length - 1].status !== 'thinking') void c.explainAgain(); else explainCurrentSentence();
   };
-  const sayCard = () => { const c = cardRef.current; if (!c) return; ctl()?.skip(); const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(c.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
+  const sayCard = () => { const c = cardRef.current; if (!c) return; ctl()?.skip(); const e = getEngine(readEngineId()); e.cancelAll(); e.speak(c.word, { voiceId: readVoiceId(), rate: 0.8 }); };
   const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in Listening mode'); };
   const setRate = (r: number) => { void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate: clampRate(r) } }).then(() => pb()?.rateChanged()); };
   const seekSeconds = (delta: number) => {
@@ -593,7 +605,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       else if (is('markKnown')) { if (cardRef.current) cardStatus('known'); }
       else if (is('markLearning')) { if (cardRef.current) cardStatus('learning'); }
       else if (is('ignore')) { if (cardRef.current) cardStatus('ignored'); }
-      else if (is('toggleListen')) { if (listening) { setAutoStop((v) => { showToast(v ? 'Auto-stop at hard words off.' : 'Auto-stop at hard words on.'); return !v; }); } }
+      else if (is('toggleListen')) { if (listening) { setAutoStop((v) => { showToast(v ? 'Pause at hard words: off.' : 'Pause at hard words: on.'); return !v; }); } }
       else if (is('toggleHints')) void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, showHints: settingsRef.current.appearance.showHints === false } });
       else if (is('goTo')) { if (!listening) setPopover((p) => (p === 'goto' ? null : 'goto')); }
       else if (is('sayWord')) sayCard();

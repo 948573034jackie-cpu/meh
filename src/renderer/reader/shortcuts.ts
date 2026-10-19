@@ -41,7 +41,7 @@ export const SHORTCUT_HELP: { group: string; items: { id: string; text: string; 
     { id: 'explain', text: 'Explain the word on the card, the selection, or the current sentence' },
     { id: 'explainLast', text: 'Explain what was just read (the last 20–60 seconds)' },
     { id: 'dontKnow', text: '"I don\'t know": hear the last explanation again, deeper' },
-    { id: 'toggleListen', text: 'Auto-stop at hard words on/off (Listening mode)', modes: ['listening'] },
+    { id: 'toggleListen', text: 'Pause at hard words on/off (Listening mode)', modes: ['listening'] },
     { id: 'closePopup', text: 'Close the card, or skip the explanation being spoken' },
     { id: 'nextHard', text: 'Jump to the next hard word' },
     { id: 'prevHard', text: 'Jump to the previous hard word' },

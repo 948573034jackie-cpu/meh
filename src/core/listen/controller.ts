@@ -196,10 +196,12 @@ export class ListenController {
     if (ms > 0 && !this.skipRequested) {
       const startState = this.playback.state;
       let changed = false;
-      const off = this.playback.on('state', (st) => { if (st !== startState) changed = true; });
-      this.deps.onPauseWindow?.(true);
       let wakeMine: (() => void) | null = null;
       let extendMine: ((more: number) => void) | null = null;
+      // pause, seek, a chapter change or play from elsewhere ends the pause at once: the reading that waits here is
+      // stale, and the voice window must not stay open (listening to the book) while the new reading goes on
+      const off = this.playback.on('state', (st) => { if (st !== startState) { changed = true; (wakeMine as (() => void) | null)?.(); } });
+      this.deps.onPauseWindow?.(true);
       await new Promise<void>((r) => {
         let t = setTimeout(r, ms);
         wakeMine = this.wakeAfter = () => { clearTimeout(t); r(); };
@@ -210,6 +212,8 @@ export class ListenController {
       off();
       this.deps.onPauseWindow?.(false);
       if (changed || this.playback.state === 'idle') return 'stop';
+      // the learner switched to Reading during the pause: Reading stays where it is
+      if ((this.deps.mode?.() ?? 'listening') === 'reading') return 'stop';
     }
     return 'next';
   }
@@ -217,11 +221,25 @@ export class ListenController {
   /** Reading mode: no pause (the book stays stopped), but the learner may still answer for a moment. */
   private readingWindow(): void {
     const ms = this.deps.settings().listen.pauseAfterExplainMs;
-    if (!this.deps.onPauseWindow || ms <= 0) return;
+    if (!this.deps.onPauseWindow || ms <= 0 || this.disposed) return;
     if (this.readingWindowTimer) clearTimeout(this.readingWindowTimer); else this.deps.onPauseWindow(true);
     this.readingWindowTimer = setTimeout(() => { this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); }, ms);
   }
   private readingWindowTimer: ReturnType<typeof setTimeout> | null = null;
+  private disposed = false;
+
+  /**
+   * The reader closed (or the book changed): the running explanation is cancelled and every wait (the pause after
+   * an explanation, a quiz wait, the Reading answer window) ends now, so no timer fires into a closed screen.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.skip();
+    this.wakeAfter?.(); this.wakeWait?.();
+    if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); }
+    this.disposed = true;
+    this.held = false; this.heldResume = false; this.pendingResume = false;
+  }
 
   /** Ends the current wait (the pause after an explanation, or a quiz wait) without cancelling anything. */
   continueNow(): void { this.wakeAfter?.(); this.wakeWait?.(); this.closeReadingWindow(); }
@@ -261,7 +279,7 @@ export class ListenController {
     if (!this.held) return;
     const was = this.heldResume;
     this.held = false; this.heldResume = false;
-    if (!resume || !was || this.current) return;
+    if (!resume || !was || this.current || this.disposed) return;
     const st = this.playback.state;
     if (st === 'playing' || st === 'explaining') return;
     this.playback.play();
@@ -321,7 +339,7 @@ export class ListenController {
   }
 
   private endManual(wasPlaying: boolean, res: 'done' | 'skipped' | 'aborted', resumeAt: Position, readOn: Position): void {
-    if (this.current) return; // a newer explanation took over and resumes the reading when it ends
+    if (this.current || this.disposed) return; // a newer explanation took over and resumes the reading when it ends
     if (this.held) { this.heldResume = this.heldResume || wasPlaying; this.pendingResume = false; return; } // the learner is talking: their question decides
     this.pendingResume = false;
     // Resume only if the learner did not meanwhile navigate (seek) or start playing by other means.

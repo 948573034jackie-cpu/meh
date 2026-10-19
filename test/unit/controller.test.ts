@@ -53,6 +53,7 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
   const zh = new FakeTtsEngine(1);
   const ai = fakeAi();
   const learning: string[] = [];
+  const windows: boolean[] = [];
   const playback = new Playback(book, { engine: () => reader, voice: () => ({ voiceId: 'fake-gb', rate: 1 }), pauseMs: () => 0 });
   const controller = new ListenController(playback, {
     book, dict, names: new Set(),
@@ -60,11 +61,12 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
     engine: () => reader, explainEngine: () => explainer, zhEngine: () => zh,
     voice: () => ({ voiceId: 'fake-gb', rate: 1 }), explainVoice: () => ({ voiceId: 'fake-gb', rate: 1 }), zhVoiceId: () => 'fake-zh',
     explain: ai.explain, onTranscript: () => undefined, onMarkLearning: (l) => learning.push(l), mode: () => mode,
+    onPauseWindow: (open) => windows.push(open),
   });
   controller.enabled = true;
   const states: string[] = [];
   playback.on('state', (s) => states.push(s));
-  return { book, settings, vocab, reader, explainer, zh, ai, learning, playback, controller, states };
+  return { book, settings, vocab, reader, explainer, zh, ai, learning, playback, controller, states, windows };
 }
 
 const REPLY = 'Sanguine means hopeful.\n\nIn this sentence he stays cheerful.';
@@ -205,6 +207,48 @@ describe('ListenController', () => {
     await finished;
     expect(Date.now() - t0).toBeGreaterThanOrEqual(100);
     expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+  });
+
+  it('listening mode: moving to another sentence during the pause closes the voice window at once', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.', 'The end.'], { pauseAfterExplainMs: 5000 });
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 1);
+    expect(t.windows).toEqual([true]);
+    t.controller.skip();
+    t.playback.seek({ chapter: 0, paragraph: 2, sentence: 0 }); // e.g. a chapter change from the menu
+    await until(() => t.windows.length === 2, 500);
+    expect(t.windows).toEqual([true, false]);
+    await until(() => t.reader.spoken.some((s) => s.text === 'The end.'));
+    expect(t.reader.spoken.map((s) => s.text)).not.toContain('Then he left.');
+  });
+
+  it('listening mode: switching to Reading during the pause keeps the book paused', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 150 });
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 1);
+    mode = 'reading';
+    await until(() => t.playback.state === 'paused');
+    await sleep(60);
+    expect(t.reader.spoken.map((s) => s.text)).not.toContain('Then he left.');
+  });
+
+  it('dispose ends the Reading answer window and every wait without resuming anything', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 5000 });
+    mode = 'reading';
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.playback.state === 'paused' && t.windows.length === 1);
+    t.controller.dispose();
+    t.playback.stop();
+    expect(t.windows).toEqual([true, false]);
+    t.controller.release();
+    await sleep(30);
+    expect(t.playback.state).toBe('idle');
   });
 
   it('reading mode: stops after the explanation and waits', async () => {

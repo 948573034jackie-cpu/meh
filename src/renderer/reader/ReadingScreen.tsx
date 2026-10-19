@@ -189,7 +189,7 @@ export function ReadingScreen({ shared, settings, popover, setPopover }: Props):
         <div className="row no-drag">
           <Tip text="Text size, spacing, theme and margins" below><button className={`quiet ${popover === 'aa' ? 'active' : ''}`} onClick={() => setPopover(popover === 'aa' ? null : 'aa')} data-testid="aa"><span className="aa">Aa</span></button></Tip>
           <Tip text="Chapter, page or percent (G)" below><button className={`quiet ${popover === 'goto' ? 'active' : ''}`} onClick={() => setPopover(popover === 'goto' ? null : 'goto')} data-testid="goto">Go to</button></Tip>
-          <Tip text="Listening mode: large lines, the voice stops at hard words and explains them (L)" below align="end"><button className="primary switch" onClick={shared.switchMode} data-testid="switch-mode"><HeadphonesIcon /> Listen</button></Tip>
+          <Tip text="Listening mode: large lines, the voice pauses at hard words and explains them (L)" below align="end"><button className="primary switch" onClick={shared.switchMode} data-testid="switch-mode"><HeadphonesIcon /> Listen</button></Tip>
           <Tip text="Your books" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>
           <Tip text="Look, voice, AI and level" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>
           <Tip text="All keyboard shortcuts (?)" below align="end"><button className="quiet icon" onClick={shared.openHelp} aria-label="Shortcuts">?</button></Tip>

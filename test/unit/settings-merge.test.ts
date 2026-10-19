@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DEFAULT_SETTINGS, migrateSettings, isDarkTheme } from '@shared/settings';
+import { resolveStyle, resolveStyles } from '@shared/styles';
 import type { Settings } from '@shared/settings';
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp/dream-read-settings-test' }, safeStorage: { isEncryptionAvailable: () => false } }));
 import { deepMerge } from '../../src/main/settings';
@@ -70,5 +71,34 @@ describe('settings merge and migration', () => {
     expect(isDarkTheme('grey')).toBe(true);
     expect(isDarkTheme('sepia')).toBe(false);
     expect(isDarkTheme('light')).toBe(false);
+  });
+  it('minimal nested patches (StylesEditor), full-section patches and null style resets all merge correctly', () => {
+    let s = load({});
+    const set = (patch: object) => { s = migrateSettings(deepMerge(s, migrateSettings(structuredClone(patch) as never))); s = load(JSON.parse(JSON.stringify(s))); };
+    set({ ai: { styles: { teacher: { wordPrompt: 'P1', shape: { wordBefore: 4 } } } } });
+    set({ ai: { styles: { teacher: { shape: { wordAfter: 5 } } } } }); // a second knob: the first edit stays
+    expect(s.ai.styles.teacher).toMatchObject({ wordPrompt: 'P1', shape: { wordBefore: 4, wordAfter: 5 } });
+    set({ ai: { ...s.ai, monthlyStopUsd: 7 } }); // Settings.tsx patches the whole section
+    expect(s.ai.monthlyStopUsd).toBe(7);
+    expect(s.ai.styles.teacher?.wordPrompt).toBe('P1');
+    set({ ai: { styles: { 'my-x-1': { userMade: true, name: 'Mine' } } } });
+    expect(resolveStyles(s.ai.styles).some((st) => st.id === 'my-x-1')).toBe(true);
+    set({ ai: { styles: { teacher: null, 'my-x-1': null } } }); // reset / delete
+    expect(resolveStyle('teacher', s.ai.styles).wordPrompt).not.toBe('P1');
+    expect(resolveStyles(s.ai.styles).some((st) => st.id === 'my-x-1')).toBe(false);
+    // other new fields: contextRules, skip, voiceChat, bookModes, lastMode, hintsModel, level
+    set({ ai: { contextRules: 'R', hintsModel: 'claude-haiku-5-5' }, skip: { ...s.skip }, voiceChat: { alwaysOn: true }, bookModes: { b1: 'listening' }, lastMode: 'listening' });
+    set({ bookModes: { ...s.bookModes, b2: 'reading' } });
+    expect(s.ai.contextRules).toBe('R');
+    expect(s.ai.hintsModel).toBe('claude-haiku-5-5');
+    expect(s.voiceChat).toMatchObject({ alwaysOn: true, model: DEFAULT_SETTINGS.voiceChat.model, pushToTalkKey: 'KeyM' });
+    expect(s.bookModes).toEqual({ b1: 'listening', b2: 'reading' });
+    expect(s.lastMode).toBe('listening');
+    set({ ai: { hintsModel: null } });
+    expect(s.ai.hintsModel).toBeNull();
+    // arrays are replaced, never merged index by index
+    set({ level: { model: { version: 1, alpha: [1, 2, 3], beta: [1, 2, 3], falseAlarmRate: 0, seen: ['a', 'b'], updatedAt: null, testedAt: null } } });
+    set({ level: { model: { version: 1, alpha: [9], beta: [9], falseAlarmRate: 0, seen: [], updatedAt: null, testedAt: null } } });
+    expect(s.level.model).toMatchObject({ alpha: [9], beta: [9], seen: [] });
   });
 });
