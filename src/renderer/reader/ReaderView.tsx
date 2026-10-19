@@ -1,37 +1,88 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Book, Position, CefrLevel } from '@core/model';
-import type { WordStatus, MarkedRange, TtsEngineId } from '@shared/settings';
+import type { WordStatus, MarkedRange, TtsEngineId, ReadMode } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
 import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
 import { explain as aiExplain } from '@core/ai/client';
-import { firstPosition, getSentence, percentAt } from '@core/nav';
+import { firstPosition, getSentence, percentAt, nextPosition, prevPosition } from '@core/nav';
 import { useApp } from '../state/store';
 import { useDictionary } from './useDictionary';
 import { renderChapter, renderSentence, restyleLemma, type TokenMeta } from './render';
-import { Popup, type PopupData } from './Popup';
-import { Transport } from './Transport';
+import { hintText } from './hints';
+import { indexBook, positionAtTime, timeAt, wordsPerMinute, clampRate, type BookIndex } from './progress';
+import { WordCard, type CardData } from './WordCard';
+import { HelpSheet } from './HelpSheet';
+import { ReadingScreen, type ReadingPopover } from './ReadingScreen';
+import { ListeningScreen } from './ListeningScreen';
 import { Transcript } from './Transcript';
-import { matchesShortcut, isTypingTarget } from './shortcuts';
+import { matchesShortcut, isTypingTarget, LISTEN_KEYS } from './shortcuts';
+import { Tip } from '../ui/Tip';
 
 const E2E = typeof location !== 'undefined' && new URLSearchParams(location.search).has('e2e');
 if (E2E) useFakeEngine(2);
 
-const keyOf = (p: Position) => `${p.chapter}.${p.paragraph}.${p.sentence}`;
+export const keyOf = (p: Position) => `${p.chapter}.${p.paragraph}.${p.sentence}`;
+
+/** How long the word card stays after its explanation ended. */
+const CARD_LINGER_MS = 1500;
+
+export type Card = CardData & { pos: Position; tokenIndex: number; entryId: number | null };
+export interface SelBar { x: number; y: number; text: string; kind: 'word' | 'phrase' | 'sentence' | 'passage'; ranges: MarkedRange[]; pos: Position }
+
+/** What both screens get from the reader: the rendered chapter, the shared position and the shared actions. */
+export interface ScreenShared {
+  book: Book;
+  index: BookIndex;
+  chapter: number;
+  position: Position;
+  playState: PlaybackState;
+  /** the chapter's HTML (word spans, hints); the screen injects it and calls onRendered */
+  html: string;
+  docRef: React.MutableRefObject<HTMLDivElement | null>;
+  /** the screen registers how it brings a sentence into view */
+  ensureRef: React.MutableRefObject<(pos: Position, force?: boolean) => void>;
+  onRendered: () => void;
+  /** a tap on a word: opens the card and starts the spoken explanation */
+  tapWord: (el: HTMLElement) => void;
+  /** a tap on a sentence (not a word): the reading moves there */
+  tapSentence: (el: Element) => boolean;
+  /** closes the card / selection bar if one is open; true when something was closed (the tap is used up) */
+  closeOverlays: () => boolean;
+  onDoubleClick: (e: React.MouseEvent) => void;
+  onMouseUp: () => void;
+  posOf: (el: Element) => Position | null;
+  playPause: () => void;
+  prev: () => void;
+  next: () => void;
+  seek: (pos: Position) => void;
+  goToChapter: (i: number) => void;
+  setRate: (r: number) => void;
+  switchMode: () => void;
+  explainLast: () => void;
+  dontKnow: () => void;
+  explainSentenceAt: (pos: Position) => void;
+  seekSeconds: (delta: number) => void;
+  openHelp: () => void;
+  wpm: number;
+  busy: boolean;
+}
 
 export function ReaderView({ book }: { book: Book }): JSX.Element {
   const dict = useDictionary();
   const settings = useApp((s) => s.settings);
   const vocab = useApp((s) => s.vocab);
   const library = useApp((s) => s.library);
+  const mode = useApp((s) => s.mode);
   const showToast = useApp((s) => s.showToast);
 
-  const docRef = useRef<HTMLDivElement>(null);
-  const pagesRef = useRef<HTMLDivElement>(null);
-  const bandRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const docRef = useRef<HTMLDivElement | null>(null);
+  const ensureRef = useRef<(pos: Position, force?: boolean) => void>(() => undefined);
   const settingsRef = useRef(settings); settingsRef.current = settings;
   const vocabRef = useRef(vocab); vocabRef.current = vocab;
+  const modeRef = useRef<ReadMode>(mode); modeRef.current = mode;
   const metaRef = useRef(new Map<string, (TokenMeta | null)[]>());
   const playbackRef = useRef<Playback | null>(null);
   const controllerRef = useRef<ListenController | null>(null);
@@ -42,23 +93,35 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const warnedRef = useRef<string>('');
   const posRef = useRef<Position>(firstPosition(book) ?? { chapter: 0, paragraph: 0, sentence: 0 });
   const currentWordRef = useRef<HTMLElement[]>([]);
-  const resumeAfterPopupRef = useRef(false);
+  const cardRef = useRef<Card | null>(null);
+  const cardCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** the Dream voice (Kokoro) is downloaded and loaded; until then a Mac voice reads */
+  const kokoroReadyRef = useRef(false);
+  const macVoiceIdRef = useRef<string>('');
+  /** The engine that actually reads: Kokoro only once its model is ready (tests always use the fake Mac voice). */
+  const readEngineId = (): TtsEngineId => { const id = settingsRef.current.voice.engine; return id === 'kokoro' && (E2E || !kokoroReadyRef.current) ? 'webspeech' : id; };
+  const readVoiceId = (): string => (readEngineId() === settingsRef.current.voice.engine ? voiceIdRef.current : macVoiceIdRef.current);
 
   const [chapter, setChapter] = useState<number>(() => (library.find((b) => b.id === book.id)?.position ?? firstPosition(book))?.chapter ?? 0);
   const [position, setPosition] = useState<Position>(posRef.current);
   const [playState, setPlayState] = useState<PlaybackState>('idle');
-  const [listenOn, setListenOn] = useState(false);
-  const [popup, setPopup] = useState<PopupData & { pos: Position; tokenIndex: number } | null>(null);
+  const [card, _setCard] = useState<Card | null>(null);
+  const setCard = (c: Card | null) => { cardRef.current = c; _setCard(c); };
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
-  const [page, setPage] = useState({ index: 0, count: 1 });
-  const [stops, setStops] = useState<number | null>(null);
-  const [selBar, setSelBar] = useState<{ x: number; y: number; text: string; kind: 'word' | 'phrase' | 'sentence' | 'passage'; ranges: MarkedRange[]; pos: Position } | null>(null);
+  const [selBar, setSelBar] = useState<SelBar | null>(null);
   const [ready, setReady] = useState(false);
+  const [help, setHelp] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [autoStop, setAutoStop] = useState(true);
+  const [popover, setPopover] = useState<ReadingPopover>(null);
 
   const names = useMemo(() => new Set(book.names), [book]);
-  const isPage = settings.appearance.layout === 'page';
+  const index = useMemo(() => indexBook(book), [book]);
+  const playing = playState === 'playing' || playState === 'explaining';
+  const wpm = wordsPerMinute(mode, settings.voice.rate, playing);
 
   // ---- voices ---------------------------------------------------------------------------------
   useEffect(() => {
@@ -66,6 +129,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     (async () => {
       const s = settingsRef.current;
       voiceIdRef.current = s.voice.voiceId || (await defaultVoiceFor(s.voice.engine));
+      macVoiceIdRef.current = await defaultVoiceFor('webspeech');
       const ee = s.voice.explainEngine ?? s.voice.engine;
       explainVoiceIdRef.current = s.voice.explainVoiceId || (ee === s.voice.engine ? voiceIdRef.current : await defaultVoiceFor(ee));
       zhVoiceRef.current = await chineseVoiceId();
@@ -79,14 +143,14 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     return () => { on = false; };
   }, [settings.voice.engine, settings.voice.voiceId, settings.voice.explainEngine, settings.voice.explainVoiceId]);
 
-  // ---- playback + listening controller --------------------------------------------------------
+  // ---- playback + listening controller (shared by both screens) ---------------------------------
   useEffect(() => {
     if (!dict) return;
     const start = library.find((b) => b.id === book.id)?.position ?? firstPosition(book) ?? { chapter: 0, paragraph: 0, sentence: 0 };
     posRef.current = start; setPosition(start); setChapter(start.chapter);
     const playback = new Playback(book, {
-      engine: () => getEngine(settingsRef.current.voice.engine),
-      voice: () => ({ voiceId: voiceIdRef.current, rate: settingsRef.current.voice.rate }),
+      engine: () => getEngine(readEngineId()),
+      voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
       pauseMs: () => settingsRef.current.voice.pauseBetweenSentencesMs,
     }, start);
     const controller = new ListenController(playback, {
@@ -94,16 +158,19 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       settings: () => settingsRef.current,
       vocab: () => vocabRef.current,
       marked: () => markedRef.current,
-      engine: () => getEngine(settingsRef.current.voice.engine),
-      explainEngine: () => getEngine(settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine),
+      engine: () => getEngine(readEngineId()),
+      explainEngine: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; return getEngine(ee === 'kokoro' && (E2E || !kokoroReadyRef.current) ? 'webspeech' : ee); },
       zhEngine: () => getEngine('webspeech'),
-      voice: () => ({ voiceId: voiceIdRef.current, rate: settingsRef.current.voice.rate }),
-      explainVoice: () => ({ voiceId: explainVoiceIdRef.current, rate: Math.min(settingsRef.current.voice.rate, 1.2) }),
+      voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
+      explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(settingsRef.current.voice.rate, 1.2) }; },
       zhVoiceId: () => (settingsRef.current.ai.speakChinese ? zhVoiceRef.current : null),
       explain: (req, onDelta) => { const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
+      mode: () => modeRef.current,
+      onWaiting: (w) => setWaiting(w),
       onTranscript: (entry) => {
         setTranscript((prev) => (prev.some((e) => e.id === entry.id) ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev.slice(-40), entry]));
-        setTranscriptOpen(true);
+        setBusy(controller.busy);
+        followEntry(entry);
       },
       onMarkLearning: (lemma) => { if (!vocabRef.current.words[lemma]) void changeStatus(lemma, 'learning', false); },
       onBudget: (daily, monthly) => {
@@ -111,16 +178,17 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         if (s.ai.dailyWarnUsd > 0 && daily >= s.ai.dailyWarnUsd && warnedRef.current !== today) { warnedRef.current = today; showToast(`AI spending today: $${daily.toFixed(2)} (monthly $${monthly.toFixed(2)})`); }
       },
     });
+    controller.enabled = modeRef.current === 'listening';
     playbackRef.current = playback; controllerRef.current = controller;
     const offs = [
-      playback.on('sentence', (pos) => { posRef.current = pos; setPosition(pos); setChapter((c) => (c === pos.chapter ? c : pos.chapter)); highlightSentence(pos); scheduleSave(pos); }),
+      playback.on('sentence', (pos) => { posRef.current = pos; setPosition(pos); setChapter((c) => (c === pos.chapter ? c : pos.chapter)); highlightSentence(pos); scheduleSave(pos); prepareAhead(pos); }),
       playback.on('word', (pos, ti) => highlightWord(pos, ti)),
-      playback.on('state', (st) => setPlayState(st)),
+      playback.on('state', (st) => { setPlayState(st); setBusy(controller.busy); }),
       playback.on('finished', () => showToast('End of the book.')),
       playback.on('error', (e) => {
-        const eng = settingsRef.current.voice.engine;
+        const eng = readEngineId();
         if (eng !== 'webspeech') {
-          showToast(`${eng === 'edge' ? 'Microsoft' : eng === 'openai' ? 'OpenAI' : 'ElevenLabs'} voice failed (${e.message}). Switching to the Mac voice.`);
+          showToast(`${eng === 'edge' ? 'Microsoft' : eng === 'openai' ? 'OpenAI' : eng === 'kokoro' ? 'Kokoro' : 'ElevenLabs'} voice failed (${e.message}). Switching to the Mac voice.`);
           void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine: 'webspeech', voiceId: '' } }).then(async () => { voiceIdRef.current = await defaultVoiceFor('webspeech'); playback.play(); });
         } else showToast(`Voice error: ${e.message}`);
       }),
@@ -130,101 +198,92 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dict, book]);
 
-  // ---- rendering the chapter ------------------------------------------------------------------
-  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current }), [dict, names]);
+  // ---- the Dream voice (Kokoro): download on first use, read with a Mac voice meanwhile --------------
+  useEffect(() => {
+    if (E2E || settings.voice.engine !== 'kokoro' || typeof window.readalong.kokoroStatus !== 'function') return;
+    let on = true;
+    let announced = false;
+    const apply = (st: { state: string; error: string | null }) => {
+      if (!on) return;
+      const ready = st.state === 'ready';
+      if (ready !== kokoroReadyRef.current) {
+        kokoroReadyRef.current = ready; // the next sentence is read with the new engine
+        if (ready && announced) showToast('The Dream voice is ready.');
+      }
+      if (st.state === 'error' && st.error && !announced) { announced = true; showToast(`The Dream voice could not be downloaded (${st.error}). Using a Mac voice.`); }
+    };
+    const off = window.readalong.onKokoroProgress(apply);
+    void window.readalong.kokoroStatus().then((st) => {
+      if (!on) return;
+      apply(st);
+      if (st.state === 'missing' || st.state === 'error') {
+        announced = true;
+        showToast('Downloading the Dream voice (192 MB)… using a Mac voice meanwhile');
+        void window.readalong.kokoroDownload().then(apply).catch((e: Error) => showToast(`The Dream voice could not be downloaded (${e.message}). Using a Mac voice.`));
+      }
+    }).catch(() => undefined);
+    return () => { on = false; off(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.voice.engine]);
 
-  const renderCurrentChapter = useCallback(() => {
-    if (!dict || !pagesRef.current) return;
+  /** While Kokoro reads, the next five sentences are synthesized ahead so each one starts without a wait. */
+  function prepareAhead(pos: Position): void {
+    if (readEngineId() !== 'kokoro' || typeof window.readalong.kokoroPrepare !== 'function') return;
+    const items: { text: string; voice?: string; speed?: number }[] = [];
+    let p: Position | null = pos;
+    for (let i = 0; i < 5 && p; i++) {
+      p = nextPosition(book, p);
+      const s = p ? getSentence(book, p) : null;
+      if (s?.text.trim()) items.push({ text: s.text, voice: voiceIdRef.current, speed: settingsRef.current.voice.rate });
+    }
+    if (items.length) void window.readalong.kokoroPrepare(items).catch(() => undefined);
+  }
+
+  // the controller stops at hard words only on the Listening screen (and only while auto-stop is on)
+  useEffect(() => { const c = controllerRef.current; if (c) c.enabled = mode === 'listening' && autoStop; }, [mode, autoStop, ready]);
+
+  // ---- rendering the chapter ------------------------------------------------------------------
+  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false }), [dict, names]);
+
+  const html = useMemo(() => {
+    if (!dict) return '';
     const ch = book.chapters[chapter];
-    if (!ch) return;
+    if (!ch) return '';
     const { html, meta } = renderChapter(ch, renderOpts());
     metaRef.current = meta;
-    pagesRef.current.innerHTML = `<div class="doc-inner"><div class="chapter-title">${ch.title.replace(/</g, '&lt;')}</div>${html}</div>`;
-    layoutPages();
-    highlightSentence(posRef.current);
-    requestAnimationFrame(() => ensureVisible(posRef.current, true));
+    // the small chapter label is for chapters whose text does not start with its own heading
+    const label = ch.paragraphs[0]?.kind.startsWith('h') ? '' : `<div class="chapter-title">${ch.title.replace(/</g, '&lt;')}</div>`;
+    return `<div class="doc-inner">${label}${html}</div>`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dict, chapter, book, renderOpts, settings.appearance.layout, settings.learnerLevel]);
-
-  useEffect(() => { renderCurrentChapter(); }, [renderCurrentChapter]);
+  }, [dict, chapter, book, renderOpts, settings.learnerLevel, settings.appearance.showHints, vocab.marked]);
   useEffect(() => { markedRef.current = vocab.marked[book.id] ?? []; }, [vocab.marked, book.id]);
 
-  // band content for the current paragraph
-  const bandHtml = useMemo(() => {
-    if (!dict) return '';
-    const para = book.chapters[position.chapter]?.paragraphs[position.paragraph];
-    if (!para) return '';
-    return para.sentences.map((s) => renderSentence(para, s, position.chapter, renderOpts())).join(' ');
+  /** the screen injected the chapter: put the highlight back and bring the sentence into view */
+  const onRendered = useCallback(() => {
+    highlightSentence(posRef.current);
+    requestAnimationFrame(() => ensureRef.current(posRef.current, true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dict, book, position.chapter, position.paragraph, vocab.words, settings.learnerLevel, vocab.marked]);
-  useEffect(() => { if (bandRef.current) { bandRef.current.innerHTML = bandHtml; highlightSentence(posRef.current); } }, [bandHtml]);
-
-  // ---- layout: pages ------------------------------------------------------------------------------
-  const pageStep = useRef({ w: 0, gap: 48 });
-  const layoutPages = useCallback(() => {
-    const doc = docRef.current, pages = pagesRef.current;
-    if (!doc || !pages) return;
-    if (settingsRef.current.appearance.layout !== 'page') { pages.style.cssText = ''; setPage({ index: 0, count: 1 }); return; }
-    const w = doc.clientWidth, h = doc.clientHeight, gap = Math.max(32, settingsRef.current.appearance.marginPx);
-    pageStep.current = { w, gap };
-    pages.style.cssText = `width:${w}px;height:${h}px;column-width:${w}px;column-gap:${gap}px;`;
-    const count = Math.max(1, Math.round((pages.scrollWidth + gap) / (w + gap)));
-    setPage((p) => ({ index: Math.min(p.index, count - 1), count }));
   }, []);
-  useEffect(() => {
-    const doc = docRef.current; if (!doc) return;
-    const ro = new ResizeObserver(() => { layoutPages(); requestAnimationFrame(() => ensureVisible(posRef.current, true)); });
-    ro.observe(doc);
-    return () => ro.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layoutPages]);
-  useEffect(() => {
-    const pages = pagesRef.current; if (!pages) return;
-    pages.style.transform = isPage ? `translateX(${-page.index * (pageStep.current.w + pageStep.current.gap)}px)` : '';
-  }, [page, isPage]);
-
-  function pageOfElement(el: Element): number {
-    const rect = el.getClientRects()[0] ?? el.getBoundingClientRect();
-    const docRect = docRef.current!.getBoundingClientRect();
-    const step = pageStep.current.w + pageStep.current.gap;
-    const abs = rect.left - docRect.left + page.index * step;
-    return Math.max(0, Math.floor((abs + 2) / step));
-  }
-  const pageRef = useRef(page); pageRef.current = page;
-  function ensureVisible(pos: Position, force = false): void {
-    const el = docRef.current?.querySelector(`.s[data-key="${keyOf(pos)}"]`);
-    if (!el) return;
-    if (settingsRef.current.appearance.layout === 'page') {
-      const rect = el.getClientRects()[0] ?? el.getBoundingClientRect();
-      const docRect = docRef.current!.getBoundingClientRect();
-      const step = pageStep.current.w + pageStep.current.gap;
-      const abs = rect.left - docRect.left + pageRef.current.index * step;
-      const target = Math.max(0, Math.floor((abs + 2) / step));
-      if (target !== pageRef.current.index || force) setPage((p) => ({ ...p, index: Math.min(target, p.count - 1) }));
-    } else {
-      const r = el.getBoundingClientRect(); const d = docRef.current!.getBoundingClientRect();
-      if (force || r.top < d.top + 40 || r.bottom > d.bottom - 40) (el as HTMLElement).scrollIntoView({ block: 'center', behavior: force ? 'auto' : 'smooth' });
-    }
-  }
 
   // ---- highlighting -------------------------------------------------------------------------------
   function highlightSentence(pos: Position): void {
-    for (const root of [docRef.current, bandRef.current]) {
-      if (!root) continue;
-      root.querySelectorAll('.s.cur').forEach((e) => e.classList.remove('cur'));
-      root.querySelector(`.s[data-key="${keyOf(pos)}"]`)?.classList.add('cur');
+    const root = docRef.current; if (!root) return;
+    root.querySelectorAll('.s.cur').forEach((e) => e.classList.remove('cur'));
+    root.querySelectorAll('.s.past').forEach((e) => e.classList.remove('past'));
+    const el = root.querySelector(`.s[data-key="${keyOf(pos)}"]`);
+    el?.classList.add('cur');
+    if (modeRef.current === 'listening' && el) {
+      // lines before the current one are dimmed more than the ones to come
+      for (const s of root.querySelectorAll('.s')) { if (s === el) break; s.classList.add('past'); }
     }
     clearWord();
-    ensureVisible(pos);
-    bandRef.current?.querySelector('.s.cur')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    ensureRef.current(pos);
   }
   function clearWord(): void { for (const el of currentWordRef.current) el.classList.remove('cur-w'); currentWordRef.current = []; }
   function highlightWord(pos: Position, tokenIndex: number): void {
     clearWord();
-    for (const root of [docRef.current, bandRef.current]) {
-      const el = root?.querySelector<HTMLElement>(`.s[data-key="${keyOf(pos)}"] .w[data-t="${tokenIndex}"]`);
-      if (el) { el.classList.add('cur-w'); currentWordRef.current.push(el); }
-    }
+    const el = docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(pos)}"] .w[data-t="${tokenIndex}"]`);
+    if (el) { el.classList.add('cur-w'); currentWordRef.current.push(el); }
   }
 
   // ---- progress -----------------------------------------------------------------------------------
@@ -242,26 +301,24 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     if (status) words[lemma] = status; else delete words[lemma];
     useApp.getState().setVocab({ ...vocabRef.current, words });
     await window.readalong.setWordStatus(lemma, status);
-    for (const root of [docRef.current, bandRef.current]) if (root) restyleLemma(root, lemma, status, settingsRef.current.learnerLevel);
+    const hint = !status && dict && settingsRef.current.appearance.showHints !== false ? hintText(dict.lookup(lemma)?.entry.zh ?? '') : undefined;
+    if (docRef.current) restyleLemma(docRef.current, lemma, status, settingsRef.current.learnerLevel, hint);
     if (toast && status === 'known') showToast(`“${lemma}” marked known`, { label: 'Undo', run: () => void changeStatus(lemma, prev ?? null, false) });
-    if (listenOn) setStops(controllerRef.current?.countStops(chapter) ?? null);
   }
 
   async function setMarked(ranges: MarkedRange[]): Promise<void> {
     markedRef.current = ranges;
     useApp.getState().setVocab({ ...vocabRef.current, marked: { ...vocabRef.current.marked, [book.id]: ranges } });
     await window.readalong.setMarkedRanges(book.id, ranges);
-    renderCurrentChapter();
   }
 
-  // ---- clicks -------------------------------------------------------------------------------------
+  // ---- the word card ------------------------------------------------------------------------------
   function metaFor(pos: Position, tokenIndex: number): TokenMeta | null {
     const list = metaRef.current.get(keyOf(pos));
     if (list) return list[tokenIndex] ?? null;
     const cur = getSentence(book, pos);
     if (!cur || !dict) return null;
-    const html = renderSentence(cur.para, cur.sentence, pos.chapter, renderOpts(), metaRef.current);
-    void html;
+    renderSentence(cur.para, cur.sentence, pos.chapter, renderOpts(), metaRef.current);
     return metaRef.current.get(keyOf(pos))?.[tokenIndex] ?? null;
   }
   function posOf(el: Element): Position | null {
@@ -269,51 +326,82 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const [c, p, sIdx] = s.dataset.key.split('.').map(Number);
     return { chapter: c, paragraph: p, sentence: sIdx };
   }
-  function openPopupFor(wordEl: HTMLElement): void {
-    const pos = posOf(wordEl); if (!pos) return;
+  function cancelCardClose(): void { if (cardCloseTimer.current) { clearTimeout(cardCloseTimer.current); cardCloseTimer.current = null; } }
+  function closeCard(): void { cancelCardClose(); setCard(null); }
+  /** Builds the card for a word span (anchored under it) without starting anything. */
+  function cardFor(wordEl: HTMLElement): Card | null {
+    const pos = posOf(wordEl); if (!pos) return null;
     const ti = Number(wordEl.dataset.t);
-    const meta = metaFor(pos, ti); if (!meta) return;
-    const container = docRef.current!.parentElement!.getBoundingClientRect();
+    const meta = metaFor(pos, ti); if (!meta) return null;
+    const container = rootRef.current!.getBoundingClientRect();
     const r = wordEl.getBoundingClientRect();
-    const placeBelow = r.top - container.top < 240;
-    setPopup({ word: wordEl.textContent ?? '', lemma: meta.lemma, ipa: meta.ipa, zh: meta.zh, level: meta.level, isName: meta.isName, status: vocabRef.current.words[meta.lemma], x: r.left - container.left + r.width / 2, y: (placeBelow ? r.bottom : r.top) - container.top, placeBelow, pos, tokenIndex: ti });
-    setSelBar(null);
+    const above = container.bottom - r.bottom < 230;
+    return { word: wordEl.firstChild?.textContent ?? wordEl.textContent ?? '', lemma: meta.lemma, ipa: meta.ipa, zh: meta.zh, level: meta.level, isName: meta.isName, status: vocabRef.current.words[meta.lemma], x: r.left - container.left + r.width / 2, y: (above ? r.top : r.bottom) - container.top, above, explain: { status: 'idle', text: '' }, pos, tokenIndex: ti, entryId: null };
   }
-  const onDocClick = (e: React.MouseEvent) => {
-    const target = e.target as HTMLElement;
-    const w = target.closest<HTMLElement>('.w');
-    if (w && w.dataset.lemma) {
-      if (e.detail === 2) { e.preventDefault(); return; }
-      const playing = playState === 'playing' || playState === 'explaining';
-      if (listenOn && playing && settingsRef.current.listen.tapHighlightCancels && (w.classList.contains('hl-unknown') || w.classList.contains('hl-learning'))) {
-        void changeStatus(w.dataset.lemma, 'known');
-        controllerRef.current?.dismiss(w.dataset.lemma);
-        return;
-      }
-      // looking a word up pauses the reading; closing the popup resumes it
-      if (playing && !ctl()?.busy) { playbackRef.current?.pause(); resumeAfterPopupRef.current = true; }
-      openPopupFor(w);
-      return;
+  /** A tap on a word: the card opens and the explanation starts at once (Reading mode: the audio stays paused after). */
+  function tapWord(wordEl: HTMLElement, explain = true): void {
+    const c = cardFor(wordEl); if (!c) return;
+    cancelCardClose();
+    setCard(c); setSelBar(null);
+    if (!explain) return;
+    const d = c.zh || c.ipa ? { ipa: c.ipa, zh: c.zh.split('\n')[0], level: c.level ?? undefined } : null;
+    void ctl()?.explainNow('word', c.word, c.pos, d, c.isName ? undefined : c.lemma);
+  }
+  /** Keeps the card in step with the explanation it belongs to; opens one when listening stopped on a hard word. */
+  function followEntry(entry: TranscriptEntry): void {
+    let c = cardRef.current;
+    const isWordish = entry.kind === 'word' || entry.kind === 'phrase';
+    if (!c && isWordish && entry.status === 'thinking' && docRef.current) {
+      // an automatic stop (or an explanation started from elsewhere): anchor a card to the word in the current sentence
+      const cur = docRef.current.querySelector(`.s[data-key="${keyOf(posRef.current)}"]`) ?? docRef.current.querySelector('.s.cur');
+      const spans = Array.from(cur?.querySelectorAll<HTMLElement>(entry.kind === 'word' ? '.w[data-lemma]' : '.ph') ?? []);
+      const el = spans.find((w) => (w.firstChild?.textContent ?? w.textContent ?? '').trim() === entry.target) ?? spans.find((w) => (w.textContent ?? '').trim().toLowerCase() === entry.target.toLowerCase());
+      const wordEl = el?.classList.contains('w') ? el : el?.querySelector<HTMLElement>('.w') ?? null;
+      if (!wordEl) return;
+      c = cardFor(wordEl); if (!c) return;
+      cancelCardClose();
     }
-    const pos = posOf(target);
-    if (pos && !target.closest('.popup')) { closePopup(false); nav((p) => p.seek(pos)); if (playbackRef.current?.state === 'idle') { posRef.current = pos; setPosition(pos); highlightSentence(pos); } }
-    else closePopup();
-  };
-  const onDocDoubleClick = (e: React.MouseEvent) => {
+    if (!c) return;
+    if (c.entryId === null) {
+      if (!(isWordish && entry.status === 'thinking' && entry.target.toLowerCase() === c.word.toLowerCase())) return;
+      cancelCardClose();
+    } else if (c.entryId !== entry.id) {
+      // a newer explanation of the same word ("I don't know") takes over the card
+      if (!(isWordish && entry.status === 'thinking' && entry.target.toLowerCase() === c.word.toLowerCase())) return;
+      cancelCardClose();
+    }
+    const next: Card = { ...c, entryId: entry.id, explain: { status: entry.status, text: entry.parts?.free ?? entry.text, error: entry.error } };
+    setCard(next);
+    if (entry.status === 'done' || entry.status === 'skipped' || entry.status === 'error') {
+      cancelCardClose();
+      cardCloseTimer.current = setTimeout(() => { if (cardRef.current?.entryId === entry.id) setCard(null); cardCloseTimer.current = null; }, CARD_LINGER_MS);
+    }
+  }
+  useEffect(() => () => cancelCardClose(), []);
+
+  /** A tap on a sentence (not on a word): the reading moves there. */
+  function tapSentence(el: Element): boolean {
+    const pos = posOf(el); if (!pos) return false;
+    closeCard(); setSelBar(null);
+    seek(pos);
+    return true;
+  }
+  const onDoubleClick = (e: React.MouseEvent) => {
     const w = (e.target as HTMLElement).closest<HTMLElement>('.w');
-    if (w?.dataset.lemma && (w.classList.contains('hl-unknown') || w.classList.contains('hl-learning'))) { setPopup(null); void changeStatus(w.dataset.lemma, 'known'); }
+    if (w?.dataset.lemma && !w.classList.contains('name')) { e.preventDefault(); window.getSelection()?.removeAllRanges(); closeCard(); setSelBar(null); ctl()?.markKnown(w.dataset.lemma); void changeStatus(w.dataset.lemma, 'known'); }
   };
   const onMouseUp = () => {
     setTimeout(() => {
       const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || !docRef.current || !sel.anchorNode || !docRef.current.contains(sel.anchorNode)) { setSelBar(null); return; }
+      const root = docRef.current;
+      if (!sel || sel.isCollapsed || !root || !sel.anchorNode || !root.contains(sel.anchorNode)) { setSelBar(null); return; }
       const text = sel.toString().replace(/\s+/g, ' ').trim();
       if (!text || text.length > 2000) { setSelBar(null); return; }
       const a = (sel.anchorNode.parentElement)?.closest('.s'), f = (sel.focusNode?.parentElement)?.closest('.s');
       const posA = a ? posOf(a) : null, posF = f ? posOf(f) : null;
-      const rect = sel.getRangeAt(0).getBoundingClientRect(); const c = docRef.current.parentElement!.getBoundingClientRect();
+      const rect = sel.getRangeAt(0).getBoundingClientRect(); const c = rootRef.current!.getBoundingClientRect();
       const words = text.split(/\s+/).length;
-      let kind: 'word' | 'phrase' | 'sentence' | 'passage' = 'phrase';
+      let kind: SelBar['kind'] = 'phrase';
       const ranges: MarkedRange[] = [];
       if (posA && posF && keyOf(posA) === keyOf(posF)) {
         const cur = getSentence(book, posA)!;
@@ -327,13 +415,13 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         let p: Position | null = from;
         while (p && (p.chapter < to.chapter || p.paragraph < to.paragraph || (p.paragraph === to.paragraph && p.sentence <= to.sentence))) {
           const cur = getSentence(book, p); if (cur) ranges.push({ ...p, start: cur.sentence.start, end: cur.sentence.end, text: cur.text });
-          const next: Position | null = getSentence(book, { ...p, sentence: p.sentence + 1 }) ? { ...p, sentence: p.sentence + 1 } : book.chapters[p.chapter]?.paragraphs[p.paragraph + 1] ? { chapter: p.chapter, paragraph: p.paragraph + 1, sentence: 0 } : null;
-          p = next;
+          p = nextPosition(book, p);
           if (ranges.length > 40) break;
         }
       }
+      if (words === 1) return; // a single word: the tap already opened its card
       setSelBar({ x: rect.left - c.left + rect.width / 2, y: rect.top - c.top, text, kind, ranges, pos: posA ?? posRef.current });
-      setPopup(null);
+      closeCard();
     }, 0);
   };
 
@@ -341,36 +429,34 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const pb = () => playbackRef.current;
   const ctl = () => controllerRef.current;
   /** navigation always interrupts a running explanation first */
-  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; resumeAfterPopupRef.current = false; ctl()?.skip(); fn(p); };
-  const closePopup = (resume = true) => {
-    setPopup(null);
-    if (resume && resumeAfterPopupRef.current) { resumeAfterPopupRef.current = false; pb()?.play(); }
-    else resumeAfterPopupRef.current = false;
-  };
+  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; ctl()?.skip(); fn(p); };
+  const seek = (pos: Position) => { posRef.current = pos; setPosition(pos); setChapter(pos.chapter); nav((p) => p.seek(pos)); if (pb()?.state === 'idle') { highlightSentence(pos); scheduleSave(pos); } };
   const playPause = () => {
     const p = pb(); if (!p) return;
-    resumeAfterPopupRef.current = false;
     if (ctl()?.busy) { ctl()!.skip(); return; }
     if (p.state === 'playing' || p.state === 'explaining') p.pause(); else p.play(p.state === 'idle' ? posRef.current : undefined);
   };
-  const toggleListen = () => {
-    const on = !listenOn; setListenOn(on);
-    if (ctl()) { ctl()!.enabled = on; setStops(on ? ctl()!.countStops(chapter) : null); }
-    showToast(on ? 'Listening mode on: hard words will be explained automatically.' : 'Listening mode off.');
-  };
-  useEffect(() => { if (listenOn) setStops(ctl()?.countStops(chapter) ?? null); }, [listenOn, chapter, vocab.words, settings.learnerLevel, settings.listen]);
-  const explainPopupWord = () => {
-    if (!popup) return;
-    const d = popup.zh || popup.ipa ? { ipa: popup.ipa, zh: popup.zh.split('\n')[0], level: popup.level ?? undefined } : null;
-    const resume = resumeAfterPopupRef.current; resumeAfterPopupRef.current = false;
-    void ctl()?.explainNow('word', popup.word, popup.pos, d, popup.isName ? undefined : popup.lemma, undefined, resume);
-    setPopup(null);
-  };
+  const switchMode = () => { closeCard(); setSelBar(null); setPopover(null); useApp.getState().setMode(modeRef.current === 'reading' ? 'listening' : 'reading'); };
+  const explainSentenceAt = (pos: Position) => { const cur = getSentence(book, pos); if (cur) void ctl()?.explainNow('sentence', cur.text, pos, null, undefined, undefined, true); };
   const explainCurrentSentence = () => { const cur = getSentence(book, posRef.current); if (cur) void ctl()?.explainNow('sentence', cur.text, posRef.current, null); };
   const explainLast = () => void ctl()?.explainLast(settingsRef.current.listen.lastSecondsWindow);
-  const sayPopup = () => { if (!popup) return; ctl()?.skip(); const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(popup.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
-  const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in listening mode'); };
-  const setRate = (r: number) => { void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate: Math.round(r * 10) / 10 } }).then(() => pb()?.rateChanged()); };
+  /** "I don't know": the last explanation again, deeper; else the first hard word of the sentence, else the sentence. */
+  const dontKnow = () => {
+    const c = ctl(); if (!c) return;
+    const open = cardRef.current;
+    if (open) { void changeStatus(open.lemma, 'learning', false); if (!c.busy) void c.explainAgain(); return; }
+    const hard = docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(posRef.current)}"] .w.hl-unknown, .s[data-key="${keyOf(posRef.current)}"] .w.hl-learning`);
+    if (hard) tapWord(hard); else if (!c.busy && transcript.length && transcript[transcript.length - 1].status !== 'thinking') void c.explainAgain(); else explainCurrentSentence();
+  };
+  const sayCard = () => { const c = cardRef.current; if (!c) return; ctl()?.skip(); const e = getEngine(settingsRef.current.voice.engine); e.cancelAll(); e.speak(c.word, { voiceId: voiceIdRef.current, rate: 0.8 }); };
+  const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in Listening mode'); };
+  const setRate = (r: number) => { void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate: clampRate(r) } }).then(() => pb()?.rateChanged()); };
+  const seekSeconds = (delta: number) => {
+    const w = wordsPerMinute(modeRef.current, settingsRef.current.voice.rate, true);
+    const target = positionAtTime(index, timeAt(index, posRef.current, w) + delta, w);
+    if (target) seek(target);
+  };
+  const goToChapter = (i: number) => { const ch = book.chapters[i]; if (!ch) return; const p = { chapter: i, paragraph: 0, sentence: 0 }; const real = getSentence(book, p) ? p : nextPosition(book, { ...p, sentence: -1 }) ?? p; seek(real); };
   const jumpHard = (dir: 1 | -1) => {
     const all = Array.from(docRef.current?.querySelectorAll<HTMLElement>('.w.hl-unknown, .ph.hl-unknown') ?? []);
     if (!all.length) return;
@@ -380,39 +466,49 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const el = all[idx] ?? all[0];
     const w = el.classList.contains('w') ? el : el.querySelector<HTMLElement>('.w');
     const pos = posOf(el);
-    if (pos) { posRef.current = pos; setPosition(pos); nav((p) => p.seek(pos)); highlightSentence(pos); }
-    if (w) openPopupFor(w);
+    if (pos) seek(pos);
+    if (w) tapWord(w);
   };
+  const cardStatus = (s: WordStatus) => { const c = cardRef.current; if (!c) return; if (s === 'known') ctl()?.markKnown(c.lemma); void changeStatus(c.lemma, c.status === s ? null : s); closeCard(); };
 
   // keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return;
+      if (help) { if (e.code === 'Escape' || matchesShortcut(e, settingsRef.current.shortcuts.help)) { e.preventDefault(); setHelp(false); } return; }
       const sc = settingsRef.current.shortcuts;
       const is = (name: string) => matchesShortcut(e, sc[name]);
-      if (is('playPause')) { e.preventDefault(); playPause(); }
-      else if (is('closePopup')) { if (popup) closePopup(); else if (selBar) setSelBar(null); else ctl()?.skip(); }
-      else if (is('nextSentence')) nav((p) => p.next());
-      else if (is('prevSentence')) nav((p) => p.prev());
+      const listening = modeRef.current === 'listening';
+      if (is('help')) { e.preventDefault(); setHelp(true); }
+      else if (is('switchMode')) { e.preventDefault(); switchMode(); }
+      else if (is('playPause')) { e.preventDefault(); playPause(); }
+      else if (is('closePopup')) { if (cardRef.current) closeCard(); else if (selBar) setSelBar(null); else if (popover) setPopover(null); else ctl()?.skip(); }
+      else if (listening && matchesShortcut(e, LISTEN_KEYS._listenBack)) { e.preventDefault(); seekSeconds(-30); }
+      else if (listening && matchesShortcut(e, LISTEN_KEYS._listenFwd)) { e.preventDefault(); seekSeconds(30); }
+      else if (listening && matchesShortcut(e, LISTEN_KEYS._listenUp)) { e.preventDefault(); const p = prevPosition(book, posRef.current); if (p) explainSentenceAt(p); }
+      else if (listening && matchesShortcut(e, LISTEN_KEYS._listenDown)) { e.preventDefault(); const p = nextPosition(book, posRef.current); if (p) explainSentenceAt(p); }
+      else if (is('nextSentence')) { e.preventDefault(); nav((p) => p.next()); }
+      else if (is('prevSentence')) { e.preventDefault(); nav((p) => p.prev()); }
       else if (is('nextParagraph')) nav((p) => p.nextParagraph());
       else if (is('prevParagraph')) nav((p) => p.prevParagraph());
-      else if (is('nextPage')) { e.preventDefault(); isPage ? setPage((p) => ({ ...p, index: Math.min(p.count - 1, p.index + 1) })) : docRef.current?.scrollBy({ top: docRef.current.clientHeight * 0.9, behavior: 'smooth' }); }
-      else if (is('prevPage')) { e.preventDefault(); isPage ? setPage((p) => ({ ...p, index: Math.max(0, p.index - 1) })) : docRef.current?.scrollBy({ top: -docRef.current.clientHeight * 0.9, behavior: 'smooth' }); }
+      else if (is('nextPage') || is('prevPage')) { e.preventDefault(); window.dispatchEvent(new CustomEvent('reader:page', { detail: is('nextPage') ? 1 : -1 })); }
       else if (is('replaySentence')) nav((p) => p.replay());
       else if (is('explainLast')) { e.preventDefault(); explainLast(); }
-      else if (is('explain')) { e.preventDefault(); if (popup) explainPopupWord(); else if (selBar) { void ctl()?.explainNow(selBar.kind, selBar.text, selBar.pos, null); setSelBar(null); } else explainCurrentSentence(); }
-      else if (is('markKnown')) { if (popup) { void changeStatus(popup.lemma, 'known'); closePopup(); } }
-      else if (is('markLearning')) { if (popup) { void changeStatus(popup.lemma, 'learning'); closePopup(); } }
-      else if (is('ignore')) { if (popup) { void changeStatus(popup.lemma, 'ignored'); closePopup(); } }
-      else if (is('toggleListen')) toggleListen();
-      else if (is('toggleBand')) void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, bandEnabled: !settingsRef.current.appearance.bandEnabled } });
-      else if (is('sayWord')) sayPopup();
-      else if (is('speedUp')) setRate(Math.min(2.5, settingsRef.current.voice.rate + 0.1));
-      else if (is('speedDown')) setRate(Math.max(0.5, settingsRef.current.voice.rate - 0.1));
+      else if (is('dontKnow')) { e.preventDefault(); dontKnow(); }
+      else if (is('explain')) { e.preventDefault(); if (cardRef.current) { if (!ctl()?.busy) void ctl()?.explainAgain(); } else if (selBar) { void ctl()?.explainNow(selBar.kind, selBar.text, selBar.pos, null); setSelBar(null); } else explainCurrentSentence(); }
+      else if (is('markKnown')) { if (cardRef.current) cardStatus('known'); }
+      else if (is('markLearning')) { if (cardRef.current) cardStatus('learning'); }
+      else if (is('ignore')) { if (cardRef.current) cardStatus('ignored'); }
+      else if (is('toggleListen')) { if (listening) { setAutoStop((v) => { showToast(v ? 'Auto-stop at hard words off.' : 'Auto-stop at hard words on.'); return !v; }); } }
+      else if (is('toggleHints')) void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, showHints: settingsRef.current.appearance.showHints === false } });
+      else if (is('goTo')) { if (!listening) setPopover((p) => (p === 'goto' ? null : 'goto')); }
+      else if (is('sayWord')) sayCard();
+      else if (is('speedUp')) setRate(settingsRef.current.voice.rate + 0.1);
+      else if (is('speedDown')) setRate(settingsRef.current.voice.rate - 0.1);
       else if (is('speedReset')) setRate(1);
       else if (is('nextHard')) { e.preventDefault(); jumpHard(1); }
       else if (is('prevHard')) { e.preventDefault(); jumpHard(-1); }
-      else if (is('markPhrase')) { if (selBar) { void setMarked([...markedRef.current, ...selBar.ranges]); setSelBar(null); } else markSentence(popup?.pos ?? posRef.current); }
+      else if (is('markPhrase')) { if (selBar) { void setMarked([...markedRef.current, ...selBar.ranges]); setSelBar(null); } else markSentence(cardRef.current?.pos ?? posRef.current); }
       else return;
     };
     window.addEventListener('keydown', onKey);
@@ -420,61 +516,43 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     window.addEventListener('readalong:menu', onMenu);
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('readalong:menu', onMenu); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [popup, selBar, listenOn, isPage, playState]);
+  }, [selBar, help, popover, transcript]);
 
-  // band resize
-  const onBandDrag = (e: React.MouseEvent) => {
-    e.preventDefault();
-    const startY = e.clientY, startPct = settingsRef.current.appearance.bandHeightPct;
-    const total = (docRef.current?.parentElement?.parentElement?.clientHeight ?? 600);
-    const move = (ev: MouseEvent) => { const pct = Math.min(60, Math.max(15, startPct + ((startY - ev.clientY) / total) * 100)); document.documentElement.style.setProperty('--band-h', `${pct}%`); };
-    const up = (ev: MouseEvent) => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); const pct = Math.min(60, Math.max(15, startPct + ((startY - ev.clientY) / total) * 100)); void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, bandHeightPct: Math.round(pct) } }); };
-    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+  if (!dict) return <div className="reader loading"><div className="empty">Loading dictionary…</div></div>;
+
+  const shared: ScreenShared = {
+    book, index, chapter, position, playState, html, docRef, ensureRef, onRendered,
+    tapWord: (el) => tapWord(el), tapSentence, onDoubleClick, onMouseUp, posOf,
+    closeOverlays: () => { const had = !!cardRef.current || !!selBar; closeCard(); setSelBar(null); return had; },
+    playPause, prev: () => nav((p) => p.prev()), next: () => nav((p) => p.next()), seek, goToChapter, setRate, switchMode,
+    explainLast, dontKnow, explainSentenceAt, seekSeconds, openHelp: () => setHelp(true), wpm, busy,
   };
 
-  if (!dict) return <div className="empty">Loading dictionary…</div>;
-
   return (
-    <div className="reader" data-testid="reader" onClick={() => { if (popup) closePopup(); }}>
-      <div className="reader-main">
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
-          <div className={`reader-doc ${isPage ? 'page' : 'scroll'}`} ref={docRef} onClick={(e) => { e.stopPropagation(); onDocClick(e); }} onDoubleClick={onDocDoubleClick} onMouseUp={onMouseUp} data-testid="doc">
-            <div className="pages" ref={pagesRef} />
-            {isPage && page.count > 1 && <>
-              <button className="page-nav left icon" onClick={(e) => { e.stopPropagation(); setPage((p) => ({ ...p, index: Math.max(0, p.index - 1) })); }}>‹</button>
-              <button className="page-nav right icon" onClick={(e) => { e.stopPropagation(); setPage((p) => ({ ...p, index: Math.min(p.count - 1, p.index + 1) })); }}>›</button>
-              <span className="page-indicator">{page.index + 1} / {page.count}</span>
-            </>}
-          </div>
-          {settings.appearance.bandEnabled && (
-            <div className="band" style={{ height: `var(--band-h, ${settings.appearance.bandHeightPct}%)` }} data-testid="band">
-              <div className="band-handle" onMouseDown={onBandDrag} />
-              <div className="band-body" ref={bandRef} onClick={(e) => { e.stopPropagation(); onDocClick(e); }} onDoubleClick={onDocDoubleClick} />
-            </div>
-          )}
-          {popup && (
-            <Popup data={popup} onClose={() => closePopup()} onSay={sayPopup} onAsk={explainPopupWord}
-              onStatus={(s) => { void changeStatus(popup.lemma, s); closePopup(); }} onMarkSentence={() => { markSentence(popup.pos); closePopup(); }} />
-          )}
-          {selBar && (
-            <div className="selection-bar" style={{ left: Math.max(8, selBar.x - 120), top: Math.max(4, selBar.y - 44) }} onClick={(e) => e.stopPropagation()} data-testid="selection-bar">
-              <button className="primary" onClick={() => { void ctl()?.explainNow(selBar.kind, selBar.text, selBar.pos, null); setSelBar(null); window.getSelection()?.removeAllRanges(); }}>Explain {selBar.kind}</button>
-              {selBar.kind !== 'word' && <button onClick={() => { void setMarked([...markedRef.current, ...selBar.ranges]); setSelBar(null); window.getSelection()?.removeAllRanges(); showToast('Marked: it will be explained in listening mode'); }}>Mark for listening</button>}
-              <button onClick={() => { navigator.clipboard.writeText(selBar.text); setSelBar(null); }}>Copy</button>
-            </div>
-          )}
+    <div className={`reader mode-${mode}`} data-testid="reader" data-mode={mode} ref={rootRef} onClick={() => { if (cardRef.current) closeCard(); if (selBar) setSelBar(null); }}>
+      {mode === 'reading' ? (
+        <ReadingScreen shared={shared} settings={settings} popover={popover} setPopover={setPopover} />
+      ) : (
+        <ListeningScreen shared={shared} settings={settings} voices={voices} autoStop={autoStop} onAutoStop={() => setAutoStop((v) => !v)} transcriptOpen={transcriptOpen} onTranscript={() => setTranscriptOpen((v) => !v)}
+          waiting={waiting} onContinue={() => ctl()?.continueNow()}
+          onVoice={(engine, voiceId) => void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine, voiceId } })}
+          onWindow={(w) => void useApp.getState().patchSettings({ listen: { ...settingsRef.current.listen, lastSecondsWindow: w } })}
+          transcript={transcriptOpen ? <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} /> : null} />
+      )}
+      {card && (
+        <WordCard data={card} onClose={closeCard} onSay={sayCard}
+          onKnown={() => cardStatus('known')} onIgnore={() => cardStatus('ignored')}
+          onDontKnow={() => { const c = cardRef.current; if (!c) return; void changeStatus(c.lemma, 'learning', false); setCard({ ...c, status: 'learning' }); if (!ctl()?.busy) void ctl()?.explainAgain(); }} />
+      )}
+      {selBar && (
+        <div className="selection-bar" style={{ left: Math.max(8, selBar.x - 110), top: Math.max(4, selBar.y - 44) }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} data-testid="selection-bar">
+          <button className="primary" onClick={() => { void ctl()?.explainNow(selBar.kind, selBar.text, selBar.pos, null); setSelBar(null); window.getSelection()?.removeAllRanges(); }}>Explain</button>
+          {selBar.kind !== 'word' && <Tip text="Explain it when listening reaches it"><button onClick={() => { void setMarked([...markedRef.current, ...selBar.ranges]); setSelBar(null); window.getSelection()?.removeAllRanges(); showToast('Marked: it will be explained in Listening mode'); }}>Mark</button></Tip>}
+          <button className="quiet" onClick={() => { void navigator.clipboard.writeText(selBar.text); setSelBar(null); }}>Copy</button>
         </div>
-        {transcriptOpen && <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} />}
-      </div>
-      <Transport book={book} state={playState} listenOn={listenOn} settings={settings} chapter={chapter} voices={voices} stops={stops} transcriptOpen={transcriptOpen}
-        onPlayPause={playPause} onPrev={() => nav((p) => p.prev())} onNext={() => nav((p) => p.next())} onToggleListen={toggleListen} onExplainLast={explainLast} onRate={setRate}
-        onVoice={(engine, voiceId) => void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, engine, voiceId } })}
-        onChapter={(i) => { const p = { chapter: i, paragraph: 0, sentence: 0 }; posRef.current = p; setPosition(p); setChapter(i); nav((pbk) => pbk.seek(p)); }}
-        onLayout={() => void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, layout: isPage ? 'scroll' : 'page' } })}
-        onBand={() => void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, bandEnabled: !settingsRef.current.appearance.bandEnabled } })}
-        onTranscript={() => setTranscriptOpen((v) => !v)}
-        onWindow={(w) => void useApp.getState().patchSettings({ listen: { ...settingsRef.current.listen, lastSecondsWindow: w } })} />
-      {!ready && <div className="empty">Preparing…</div>}
+      )}
+      {help && <HelpSheet shortcuts={settings.shortcuts} mode={mode} onClose={() => setHelp(false)} />}
+      {!ready && <div className="reader-preparing">Preparing…</div>}
     </div>
   );
 }

@@ -35,7 +35,8 @@ export function App(): JSX.Element {
         const next = order[(order.indexOf(st.settings.appearance.theme as never) + 1) % order.length];
         void st.patchSettings({ appearance: { ...st.settings.appearance, theme: next } });
       } else if (action === 'band') {
-        void st.patchSettings({ appearance: { ...st.settings.appearance, bandEnabled: !st.settings.appearance.bandEnabled } });
+        // the old subtitle band is now the Listening screen
+        if (st.view === 'reader' && st.book) st.setMode(st.mode === 'reading' ? 'listening' : 'reading');
       } else window.dispatchEvent(new CustomEvent('readalong:menu', { detail: action }));
     });
     return off;
@@ -43,19 +44,24 @@ export function App(): JSX.Element {
 
   useEffect(() => { applyAppearance(settings); }, [settings]);
 
+  // The reader fills the whole window and draws its own slim bars (the traffic-light drag region included).
+  const reader = view === 'reader' && book;
+
   return (
     <div className="app">
-      <div className="titlebar drag">
-        <span className={`title ${view === 'reader' && book ? '' : 'app-name'}`}>{view === 'reader' && book ? book.title : 'Dream Read'}</span>
-        <div className="row no-drag">
-          {view !== 'library' && <Tip text="Your books (Cmd+L)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>}
-          {view !== 'reader' && book && <Tip text="Back to where you stopped" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('reader')}>Continue reading</button></Tip>}
-          {view !== 'settings' && <Tip text="Look, voice, AI and level (Cmd+,)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>}
+      {!reader && (
+        <div className="titlebar drag">
+          <span className="title app-name">Dream Read</span>
+          <div className="row no-drag">
+            {view !== 'library' && <Tip text="Your books (Cmd+L)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>}
+            {book && <Tip text="Back to where you stopped" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('reader')}>Continue reading</button></Tip>}
+            {view !== 'settings' && <Tip text="Look, voice, AI and level (Cmd+,)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>}
+          </div>
         </div>
-      </div>
+      )}
       <div className="content">
         {view === 'library' && <Library />}
-        {view === 'reader' && book && <ReaderView key={book.id} book={book} />}
+        {reader && <ReaderView key={book.id} book={book} />}
         {view === 'settings' && <SettingsView />}
         {view === 'diagnostics' && <DiagnosticsView />}
         {toast && (

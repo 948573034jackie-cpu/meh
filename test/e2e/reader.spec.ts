@@ -1,64 +1,165 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { launchApp } from './helpers';
 
-const TEXT = `The Letter
+const PARAS = [
+  'The letter arrived the next morning. It contained a single, perplexing sentence. Elizabeth read it twice before folding it away.',
+  "Mr. Darcy remained sanguine about the weather. The committee's deliberations were protracted and acrimonious, but a consensus emerged. The children went home.",
+  'He was an old man who fished alone in a skiff in the Gulf Stream and he had gone eighty-four days now without taking a fish. In the first forty days a boy had been with him. But after forty days without a fish the boy\'s parents had told him that the old man was now definitely and finally salao, which is the worst form of unlucky.',
+  'The old man was thin and gaunt with deep wrinkles in the back of his neck. The brown blotches of the benevolent skin cancer the sun brings from its reflection on the tropic sea were on his cheeks. Everything about him was old except his eyes and they were the same color as the sea and were cheerful and undefeated.',
+];
+/** three chapters, each long enough for several pages at 1200x800 */
+const TEXT = [1, 2, 3].map((n) => `# Chapter ${n}: Part ${n}\n\n${Array.from({ length: 4 }, () => PARAS.join('\n\n')).join('\n\n')}`).join('\n\n');
 
-The letter arrived the next morning. It contained a single, perplexing sentence. Elizabeth read it twice before folding it away.
-
-Mr. Darcy remained sanguine about the weather. The committee's deliberations were protracted and acrimonious, but a consensus emerged. The children went home.`;
+async function importBook(page: Page, title = 'Test book'): Promise<void> {
+  await page.getByTestId('paste-text').click();
+  await page.getByTestId('paste-title').fill(title);
+  await page.getByTestId('paste-body').fill(TEXT);
+  await page.getByTestId('paste-import').click();
+  await expect(page.getByTestId('reader')).toBeVisible({ timeout: 20000 });
+}
 
 test.describe('reader', () => {
-  test('paste text, read with highlights, tap a word, mark it known, listen mode stops and continues', async () => {
+  test('reading mode: pages, tap zones, hints, card, progress text; listening mode: lines, timeline, card; switching keeps the position', async () => {
     const { app, page } = await launchApp();
+    await page.setViewportSize({ width: 1200, height: 800 });
     await page.getByTestId('finish-onboarding').click();
-    await page.getByTestId('paste-text').click();
-    await page.getByTestId('paste-title').fill('Test book');
-    await page.getByTestId('paste-body').fill(TEXT);
-    await page.getByTestId('paste-import').click();
-    await expect(page.getByTestId('doc')).toBeVisible({ timeout: 20000 });
-    // chapter rendered with word spans and at least one hard word for a B2 learner
+    await importBook(page);
+
+    // a new book opens in Reading mode, full screen (no app title bar), with hard words highlighted and hinted
+    await expect(page.getByTestId('reading')).toBeVisible();
+    await expect(page.locator('.titlebar')).toHaveCount(0);
     await expect(page.locator('.w.hl-unknown').first()).toBeVisible();
     const hard = await page.locator('.w.hl-unknown').allTextContents();
     expect(hard.map((w) => w.toLowerCase())).toContain('acrimonious');
     expect(hard.map((w) => w.toLowerCase())).not.toContain('darcy');
+    await expect(page.locator('.w[data-hint]').first()).toBeVisible();
+    const hint = await page.locator('.w[data-lemma="acrimonious"][data-hint]').first().getAttribute('data-hint');
+    expect(hint).toMatch(/[一-鿿]/);
+    expect(hint!.length).toBeLessThanOrEqual(6);
 
-    // tap a word: popup with IPA and Chinese meaning
-    await page.locator('.w[data-lemma="sanguine"]').first().click();
-    const popup = page.getByTestId('popup');
-    await expect(popup).toBeVisible();
-    await expect(popup).toContainText('/');
-    await expect(popup.locator('.zh')).toContainText(/[一-鿿]/);
-    // mark known: highlight disappears everywhere
-    await popup.getByText('Known').click();
-    await expect(page.locator('.w[data-lemma="sanguine"].hl-unknown')).toHaveCount(0);
+    // progress text cycles on click
+    await expect(page.getByTestId('progress-text')).toHaveText(/^Page 1 of \d+$/);
+    await page.getByTestId('progress-text').click();
+    await expect(page.getByTestId('progress-text')).toHaveText(/left in chapter$/);
+    await page.getByTestId('progress-text').click();
+    await expect(page.getByTestId('progress-text')).toHaveText(/left in book$/);
+    await page.getByTestId('progress-text').click();
+    await expect(page.getByTestId('progress-text')).toHaveText(/^\d+%$/);
+    await page.getByTestId('progress-text').click();
+
+    // tap the right fifth of the page: page 2 of the chapter
+    await expect(page.locator('.page-count')).toHaveText(/^1 \/ \d+ in chapter$/);
+    await page.getByTestId('doc').click({ position: { x: 1120, y: 400 } });
+    await expect(page.locator('.page-count')).toHaveText(/^2 \/ \d+ in chapter$/);
+    await page.getByTestId('doc').click({ position: { x: 60, y: 400 } });
+    await expect(page.locator('.page-count')).toHaveText(/^1 \/ \d+ in chapter$/);
+    await page.keyboard.press('PageDown');
+    await expect(page.locator('.page-count')).toHaveText(/^2 \/ \d+ in chapter$/);
+
+    // tap a word: the card opens under it and the spoken explanation starts at once; it closes by itself after the explanation
+    const word = page.locator('.w[data-lemma="sanguine"]').first();
+    await word.scrollIntoViewIfNeeded();
+    await word.click();
+    const card = page.getByTestId('card');
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('/');
+    await expect(card.locator('.zh')).toContainText(/[一-鿿]/);
+    await expect(card.locator('.lvl').first()).toContainText(/C1|C2|B2/);
+    await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/, { timeout: 10000 });
+    await expect(card).toHaveCount(0, { timeout: 20000 });
+    // in Reading mode the voice stays paused after an explanation
+    await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Play');
+
+    // "I know" from the card: the highlight and the hint disappear everywhere
+    await page.locator('.w[data-lemma="acrimonious"]').first().click();
+    await expect(card).toBeVisible();
+    await card.getByTestId('card-known').click();
+    await expect(page.locator('.w[data-lemma="acrimonious"].hl-unknown')).toHaveCount(0);
+    await expect(page.locator('.w[data-lemma="acrimonious"][data-hint]')).toHaveCount(0);
     await expect(page.locator('.toast')).toContainText('marked known');
 
-    // play: the current sentence and words get highlighted and the position advances
+    // play: the sentence is highlighted while the voice reads and the position advances
     await page.getByTestId('play').click();
-    await expect(page.locator('.reader-doc .s.cur')).toHaveCount(1);
-    await expect(page.locator('.reader-doc .w.cur-w')).toHaveCount(1, { timeout: 5000 });
-    const firstKey = await page.locator('.reader-doc .s.cur').getAttribute('data-key');
-    await expect.poll(async () => page.locator('.reader-doc .s.cur').getAttribute('data-key'), { timeout: 15000 }).not.toBe(firstKey);
-    await page.getByTestId('play').click(); // pause
-    await expect(page.getByTestId('play')).toHaveText('▶');
-
-    // listening mode: reading stops at a hard word and asks the AI (no key configured -> error entry), then continues
-    await page.locator('.reader-doc .s[data-key="0.1.0"]').click({ position: { x: 2, y: 2 } }).catch(() => undefined);
-    await page.keyboard.press('KeyQ');
-    await expect(page.getByTestId('listen')).toContainText('● Listening');
-    await page.getByTestId('play').click();
-    const transcript = page.getByTestId('transcript');
-    await expect(transcript).toBeVisible({ timeout: 20000 });
-    await expect(transcript.locator('[data-testid="entry"]').first()).toBeVisible({ timeout: 20000 });
-    await expect(transcript.locator('[data-testid="entry"] .st').last()).toContainText(/API key|thinking|speaking|done|skipped/, { timeout: 20000 });
-    // the explained word becomes "learning" (or stays highlighted until explained) and playback continues or pauses cleanly
-    await expect.poll(async () => page.locator('.reader-doc .w.hl-learning').count(), { timeout: 20000 }).toBeGreaterThanOrEqual(0);
+    await expect(page.locator('.reading.playing .s.cur')).toHaveCount(1);
+    await expect(page.locator('.w.cur-w')).toHaveCount(1, { timeout: 5000 });
+    const firstKey = await page.locator('.s.cur').getAttribute('data-key');
+    await expect.poll(async () => page.locator('.s.cur').getAttribute('data-key'), { timeout: 15000 }).not.toBe(firstKey);
     await page.keyboard.press('Space');
+    await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Play');
+    const keyBefore = await page.locator('.s.cur').getAttribute('data-key');
 
-    // library remembers the book and progress
+    // L: Listening mode, same position, the current sentence large
+    await page.keyboard.press('KeyL');
+    await expect(page.getByTestId('listening')).toBeVisible();
+    await expect(page.locator('.listen-lines .s.cur')).toHaveAttribute('data-key', keyBefore!);
+    const sizes = await page.evaluate(() => {
+      const cur = document.querySelector('.listen-lines .s.cur')!;
+      const other = Array.from(document.querySelectorAll('.listen-lines .s')).find((s) => s !== cur)!;
+      return [parseFloat(getComputedStyle(cur).fontSize), parseFloat(getComputedStyle(other).fontSize)];
+    });
+    expect(sizes[0]).toBeGreaterThan(sizes[1] * 1.2);
+    // timeline: chapter marks and a total time
+    await expect(page.getByTestId('chapter-mark')).toHaveCount(2);
+    await expect(page.getByTestId('clock-total')).toHaveText(/^\d+:\d\d$/);
+    await expect(page.getByTestId('mic')).toBeDisabled();
+
+    // play: the sentence advances and the text follows
+    await page.getByTestId('play').click();
+    await expect.poll(async () => page.locator('.listen-lines .s.cur').getAttribute('data-key'), { timeout: 15000 }).not.toBe(keyBefore);
+    await page.keyboard.press('Space');
+    await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Play');
+
+    // tap a word in Listening mode: card, explanation, auto-dismiss
+    const w2 = page.locator('.listen-lines .w[data-lemma="protracted"]').first();
+    await w2.scrollIntoViewIfNeeded();
+    await w2.click();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/, { timeout: 10000 });
+    await expect(card).toHaveCount(0, { timeout: 20000 });
+    await expect(page.locator('.w[data-lemma="protracted"].hl-learning').first()).toBeVisible();
+
+    // help sheet
+    await page.keyboard.press('Shift+Slash');
+    await expect(page.getByTestId('help')).toBeVisible();
+    await expect(page.getByTestId('help')).toContainText('Switch between Reading and Listening');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('help')).toHaveCount(0);
+
+    // the switch button goes back to Reading mode at the same sentence
+    const keyListen = await page.locator('.listen-lines .s.cur').getAttribute('data-key');
+    await page.getByTestId('switch-mode').click();
+    await expect(page.getByTestId('reading')).toBeVisible();
+    await expect(page.locator('.pages .s.cur')).toHaveAttribute('data-key', keyListen!);
+
+    // the mode is remembered per book: leave in Listening mode, reopen from the library
+    await page.getByTestId('switch-mode').click();
+    await expect(page.getByTestId('listening')).toBeVisible();
     await page.getByText('Library', { exact: true }).click();
     await expect(page.getByTestId('book-card')).toHaveCount(1);
-    await expect(page.getByTestId('book-card')).toContainText('Test book');
+    await page.getByTestId('book-card').click();
+    await expect(page.getByTestId('listening')).toBeVisible();
+    const saved = await page.evaluate(() => window.readalong.getSettings());
+    expect(saved.lastMode).toBe('listening');
+    expect(Object.values(saved.bookModes)).toContain('listening');
+    await app.close();
+  });
+
+  test('listening mode stops at a hard word, shows the card, and goes on', async () => {
+    const { app, page } = await launchApp();
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.getByTestId('finish-onboarding').click();
+    await importBook(page, 'Stops');
+    await page.keyboard.press('KeyL');
+    await expect(page.getByTestId('listening')).toBeVisible();
+    await page.getByTestId('play').click();
+    // the first hard word ("perplexing" or "sanguine") stops the voice: a card appears by itself
+    const card = page.getByTestId('card');
+    await expect(card).toBeVisible({ timeout: 20000 });
+    await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/);
+    await expect(card).toHaveCount(0, { timeout: 20000 });
+    // the explained word is "learning" now and the voice carries on (or waits cleanly)
+    await expect.poll(async () => page.locator('.w.hl-learning').count(), { timeout: 20000 }).toBeGreaterThan(0);
+    await page.keyboard.press('Space');
     await app.close();
   });
 
@@ -82,6 +183,7 @@ test.describe('reader', () => {
     expect(saved.appearance.layout).toBe('scroll');
     expect(saved.appearance.maxLineChars).toBe(70);
     expect(saved.appearance.showTips).toBe(true);
+    expect(saved.appearance.showHints).toBe(true);
     await page.getByTestId('finish-onboarding').click();
     await expect(page.getByTestId('library')).toBeVisible();
     await app.close();

@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../state/store';
 import type { Settings, TtsEngineId, AiProviderId, ThemeId } from '@shared/settings';
-import { DEFAULT_SETTINGS, DEFAULT_INSTRUCTIONS } from '@shared/settings';
+import { DEFAULT_SETTINGS } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import { ENGINE_LABELS, AVAILABLE_ENGINES, type TtsVoice } from '@core/tts/engine';
 import { getEngine, defaultVoiceFor } from '@core/tts/registry';
 import { shortcutLabel } from '../reader/shortcuts';
 import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap, type KokoroStatus } from '@shared/api';
 import { Tip } from '../ui/Tip';
+import { StylesEditor } from './StylesEditor';
 
 export const STORAGE_NOTE = 'Keys are stored encrypted in the app\'s own data folder; they survive updates and re-signing.';
 const EMPTY_STATUS: SecretStatus = { saved: false, verified: false, lostAtStartup: false };
@@ -16,7 +17,7 @@ const KEY_PLACEHOLDER: Record<SecretName, string> = { anthropic: 'sk-ant-…', o
 
 type Section = 'start' | 'look' | 'voice' | 'ai' | 'level' | 'shortcuts' | 'data';
 
-const AI_MODELS: { provider: AiProviderId; id: string; name: string; cost: string; note: string }[] = [
+export const AI_MODELS: { provider: AiProviderId; id: string; name: string; cost: string; note: string }[] = [
   { provider: 'anthropic', id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', cost: 'about 1–2 cents a day', note: 'Fast and cheap. Fine for word meanings.' },
   { provider: 'anthropic', id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', cost: 'about 30 cents a day', note: 'Smarter, more natural explanations.' },
   { provider: 'anthropic', id: 'claude-opus-5-5', name: 'Claude Opus 5.5', cost: 'about 65 cents a day', note: 'Best quality.' },
@@ -358,13 +359,9 @@ export function SettingsView(): JSX.Element {
               </div>
             </div>
           </div>
-          <div className="field">
-            <label>Your instructions to the AI</label>
-            <textarea value={S.ai.instructions} onChange={(e) => set({ ai: { ...S.ai, instructions: e.target.value } })} />
-            <div className="hint">Paste the same instructions you use in ChatGPT or Claude. <a href="#" onClick={(e) => { e.preventDefault(); set({ ai: { ...S.ai, instructions: DEFAULT_INSTRUCTIONS } }); }}>Reset to default</a></div>
-          </div>
+          <StylesEditor settings={S} patch={set} models={AI_MODELS} />
           <div className="row" style={{ gap: 18 }}>
-            <div className="field"><label>Explanation length</label>
+            <div className="field"><label>Length of passage summaries and answers to questions</label>
               <select value={S.ai.explanationLength} onChange={(e) => set({ ai: { ...S.ai, explanationLength: e.target.value as never } })}><option value="short">Short</option><option value="normal">Normal</option><option value="long">Long</option></select></div>
             <div className="field"><label>Speak the Chinese meaning</label>
               <select value={S.ai.speakChinese ? '1' : '0'} onChange={(e) => set({ ai: { ...S.ai, speakChinese: e.target.value === '1' } })}><option value="1">Yes, with the Mac Chinese voice</option><option value="0">No, show it only</option></select></div>

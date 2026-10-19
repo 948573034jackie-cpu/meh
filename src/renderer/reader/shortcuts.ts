@@ -15,8 +15,9 @@ export function isTypingTarget(t: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
 }
 
+const KEY_NAMES: Record<string, string> = { Equal: '+', Minus: '−', Slash: '?', Cmd: '⌘', Meta: '⌘', Shift: '⇧', Alt: '⌥', Ctrl: '⌃', Escape: 'Esc' };
 export function shortcutLabel(s: string): string {
-  return s.replace('Key', '').replace('Digit', '').replace('Arrow', '').replace('Equal', '+').replace('Minus', '−').replace('Slash', '?').replace('Cmd', '⌘').replace('Shift', '⇧').replace('Space', 'Space').replace('+', ' ');
+  return s.split('+').map((part) => KEY_NAMES[part] ?? part.replace(/^(Key|Digit|Arrow)/, '')).join(' ');
 }
 
 /** One line per shortcut for the help sheet ("?"), grouped by what it is for. Keys come from settings.shortcuts. */

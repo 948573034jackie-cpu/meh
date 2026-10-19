@@ -128,3 +128,29 @@ export function nextProgressKind(k: ProgressKind): ProgressKind { return PROGRES
 
 /** Speed slider steps: 0.5 .. 2.0 in 0.1 steps, rounded so 0.1 + 0.2 does not become 0.30000000000000004. */
 export function clampRate(r: number, min = 0.5, max = 2): number { return Math.round(Math.min(max, Math.max(min, Number.isFinite(r) ? r : 1)) * 10) / 10; }
+
+/** The sentence that starts at or just before the `words`-th word of the book. */
+export function positionAtWords(idx: BookIndex, words: number): Position | null {
+  const list = idx.sentences;
+  if (!list.length) return null;
+  const w = Math.max(0, words);
+  let lo = 0, hi = list.length - 1, ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].before <= w) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return list[ans].pos;
+}
+
+/**
+ * "Page 12 of 240" for the whole book from the one chapter that is laid out: the words per page measured in
+ * the current chapter are applied to the rest of the book (Kindle counts pages the same way, by text amount).
+ */
+export function bookPages(idx: BookIndex, chapter: number, pageIndex: number, pageCount: number): { page: number; total: number; wordsPerPage: number } {
+  const ch = idx.chapters[chapter];
+  const count = Math.max(1, pageCount);
+  const wordsPerPage = ch && ch.words > 0 ? ch.words / count : 250;
+  const total = Math.max(1, Math.round(idx.totalWords / wordsPerPage));
+  const page = Math.min(total, Math.floor((ch?.before ?? 0) / wordsPerPage) + Math.min(pageIndex, count - 1) + 1);
+  return { page, total, wordsPerPage };
+}
