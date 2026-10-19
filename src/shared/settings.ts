@@ -1,4 +1,6 @@
 import type { CefrLevel, Position } from '@core/model';
+import type { LevelModelJSON } from '@core/level/adapt';
+import type { LevelResult } from '@core/level/score';
 import type { StyleId, StyleOverride } from './styles';
 import { DEFAULT_CONTEXT_RULES } from './styles';
 
@@ -34,6 +36,11 @@ export interface Settings {
     provider: AiProviderId;
     anthropicModel: string;
     openaiModel: string;
+    /**
+     * Model for the background chapter hints (Chinese meaning under hard words). null = the cheapest fit:
+     * Claude Haiku 5.5 when the provider is Anthropic, else the OpenAI model above.
+     */
+    hintsModel: string | null;
     /** The learner's own instructions, sent as part of the system prompt. */
     instructions: string;
     explanationLength: 'short' | 'normal' | 'long';
@@ -117,6 +124,19 @@ export interface Settings {
   lastMode: ReadMode;
   /** bookId -> the screen the learner used last for that book */
   bookModes: Record<string, ReadMode>;
+  /** vocabulary level test (src/core/level): the adaptive model, the last result and when it was taken */
+  level: LevelSettings;
+}
+
+export interface LevelSettings {
+  /** daily Beta model (LevelModel.toJSON()), null until the first test */
+  model: LevelModelJSON | null;
+  /** result of the last test the learner accepted (or saw), null until the first test */
+  lastResult: LevelResult | null;
+  /** ISO time of the last test, null until the first test */
+  testedAt: string | null;
+  /** words and pseudowords shown in earlier tests, so a retake draws fresh items */
+  used?: { words: string[]; pseudowords: string[] };
 }
 
 export const DEFAULT_INSTRUCTIONS = `I am a native Chinese speaker learning English at B2 level. Explain in simple, clear English. Keep it short because I will listen to it, not read it. Give the Chinese meaning of the word or phrase, but do not translate whole sentences into Chinese.`;
@@ -130,6 +150,7 @@ export const DEFAULT_SETTINGS: Settings = {
     provider: 'anthropic',
     anthropicModel: 'claude-opus-5-5',
     openaiModel: 'gpt-5.4-mini',
+    hintsModel: null,
     instructions: DEFAULT_INSTRUCTIONS,
     explanationLength: 'normal',
     speakChinese: true,
@@ -187,6 +208,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   lastMode: 'reading',
   bookModes: {},
+  level: { model: null, lastResult: null, testedAt: null },
 };
 
 /**

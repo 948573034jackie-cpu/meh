@@ -1,5 +1,18 @@
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { Settings, VocabState, LibraryItem, WordStatus, MarkedRange, UsageRecord, TtsEngineId } from './settings';
+import type { HintMap } from '@core/ai/hints';
+
+export type { HintMap, HintPair } from '@core/ai/hints';
+
+/** Progress of the background chapter-hints job (src/main/hints.ts), broadcast as 'hints:progress'. */
+export interface HintsProgress {
+  bookId: string;
+  chapter: number;
+  state: 'queued' | 'running' | 'done' | 'error';
+  /** learner-readable message when state is 'error' */
+  error?: string;
+  code?: AiErrorCode;
+}
 
 export interface DictData { w: Record<string, DictRaw>; f: Record<string, string> }
 export interface DictRaw { i: string; t: string; g: string; f: number; b: number; c: number; o: number; l: string; s: string }
@@ -205,6 +218,14 @@ export interface ReadAlongApi {
   aiTest(provider: SecretName): Promise<ProviderTestResult>;
   onAiEvent(cb: (ev: AiEvent) => void): () => void;
   getUsage(): Promise<UsageRecord[]>;
+  // chapter hints (Chinese meaning under hard words, chosen by the AI for the chapter; see src/main/hints.ts)
+  /** cached hints of a chapter (lemma -> [meaning here, other meaning]) or null when the job has not run yet */
+  hintsGet(bookId: string, chapter: number): Promise<HintMap | null>;
+  /** queues the chapter (no-op when cached or already queued); progress arrives through onHintsProgress */
+  hintsRequest(bookId: string, chapter: number): Promise<void>;
+  /** forgets the cached hints of a book (next request recomputes them) */
+  hintsClear(bookId: string): Promise<void>;
+  onHintsProgress(cb: (ev: HintsProgress) => void): () => void;
   // cloud TTS (engines that synthesize in the main process)
   ttsListVoices(engine: TtsEngineId): Promise<TtsVoiceInfo[]>;
   ttsSynthesize(engine: TtsEngineId, text: string, voiceId: string, rate: number): Promise<CloudTtsResult>;

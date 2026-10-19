@@ -6,6 +6,7 @@ import * as settings from './settings';
 import * as secrets from './secrets';
 import * as vocabulary from './vocabulary';
 import { registerAiHandlers } from './ai';
+import { registerHintsHandlers } from './hints';
 import { registerTtsHandlers } from './tts';
 import { exportDir } from './paths';
 import { writeAtomic } from './storage';
@@ -69,5 +70,6 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   });
 
   registerAiHandlers(getWindow);
+  registerHintsHandlers(getWindow);
   registerTtsHandlers();
 }

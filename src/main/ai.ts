@@ -5,6 +5,7 @@ import { SECRET_NAMES, SECRET_LABELS, type ExplainRequest, type AiEvent, type Ai
 import { buildPrompt, buildStyledPrompt } from '@core/ai/prompts';
 import { resolveStyle } from '@shared/styles';
 import type { StyleId } from '@shared/styles';
+import type { AiProviderId } from '@shared/settings';
 import { getSettings, addUsage, getUsage, usdSpent } from './settings';
 import { getSecret, hasSecret, formatWarning, getAzureCredentials } from './secrets';
 
@@ -87,7 +88,19 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
   }
 }
 
-interface StreamResult { text: string; inputTokens: number; outputTokens: number; cachedTokens: number }
+export interface StreamResult { text: string; inputTokens: number; outputTokens: number; cachedTokens: number }
+
+/**
+ * One non-streaming completion with an explicit provider and model (background jobs such as the chapter
+ * hints; nothing is shown while it runs). Same request shape and usage accounting as the explanations;
+ * the caller records the usage and classifies errors.
+ */
+export async function runCompletion(provider: AiProviderId, model: string, prompt: { system: string; user: string; maxTokens: number }, signal: AbortSignal = new AbortController().signal): Promise<StreamResult> {
+  const key = getSecret(provider);
+  if (!key) throw Object.assign(new Error(provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.'), { code: 'no_key' });
+  const noop = (): void => { /* nothing is streamed */ };
+  return provider === 'anthropic' ? streamAnthropic(key, model, prompt, signal, noop) : streamOpenAI(key, model, prompt, signal, noop);
+}
 
 async function streamAnthropic(apiKey: string, model: string, prompt: { system: string; user: string; maxTokens: number }, signal: AbortSignal, onText: (t: string) => void): Promise<StreamResult> {
   const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 60_000 });

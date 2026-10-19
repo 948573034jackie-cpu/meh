@@ -39,6 +39,14 @@ const api: ReadAlongApi = {
     return () => ipcRenderer.removeListener('ai:event', handler);
   },
   getUsage: () => invoke('ai:usage'),
+  hintsGet: (bookId, chapter) => invoke('hints:get', bookId, chapter),
+  hintsRequest: (bookId, chapter) => invoke('hints:request', bookId, chapter),
+  hintsClear: (bookId) => invoke('hints:clear', bookId),
+  onHintsProgress: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, ev: Parameters<typeof cb>[0]) => cb(ev);
+    ipcRenderer.on('hints:progress', handler);
+    return () => ipcRenderer.removeListener('hints:progress', handler);
+  },
   ttsListVoices: (engine) => invoke('tts:voices', engine),
   ttsSynthesize: (engine, text, voiceId, rate) => invoke('tts:synthesize', engine, text, voiceId, rate),
   kokoroStatus: () => invoke('kokoro:status'),
