@@ -93,7 +93,10 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   await expect(page.getByTestId('mic')).toHaveAttribute('data-line', 'closed');
 
   if (SHOT) {
+    await page.getByTestId('mic').click(); // the call is open again: the button pulses
+    await expect(page.getByTestId('mic')).toHaveAttribute('data-line', 'call');
     await page.getByTestId('voice-text').fill('What does “acrimonious” mean here?');
+    await page.waitForTimeout(400);
     await page.screenshot({ path: SHOT });
   }
   await app.close();

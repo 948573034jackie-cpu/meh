@@ -623,7 +623,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   };
 
   return (
-    <div className={`reader mode-${mode}`} data-testid="reader" data-mode={mode} ref={rootRef} onClick={() => { if (cardRef.current) closeCard(); if (selBar) setSelBar(null); }}>
+    <div className={`reader mode-${mode}${voicePop ? ' voice-open' : ''}`} data-testid="reader" data-mode={mode} ref={rootRef} onClick={() => { if (cardRef.current) closeCard(); if (selBar) setSelBar(null); }}>
       {mode === 'reading' ? (
         <ReadingScreen shared={shared} settings={settings} popover={popover} setPopover={setPopover} />
       ) : (

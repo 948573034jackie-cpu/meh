@@ -63,7 +63,7 @@
 .pages { height: 100%; box-sizing: border-box; padding: 54px 0 46px; column-fill: auto; transition: transform 180ms ease-out; will-change: transform; }
 .pages.no-anim, :root[data-page-turn="0"] .pages { transition: none; }
 /* the reading column is at most --max-line characters wide and centred on the page; the side margins never go below --reader-margin */
-.pages .doc-inner { padding: 0 max(var(--reader-margin), calc((100% - var(--max-line) * 1ch) / 2)); max-width: 100%; }
+.pages .doc-inner { padding: 0 max(var(--reader-margin), 72px, calc((100% - var(--max-line) * 1ch) / 2)); max-width: 100%; }
 .page-view .zone { position: absolute; top: 44px; bottom: 38px; width: 20%; pointer-events: none; }
 .page-view .zone.left { left: 0; } .page-view .zone.right { right: 0; }
 /* the current sentence glows only while the voice reads it */
@@ -107,7 +107,10 @@
 .listen-head button { background: transparent; border-color: transparent; color: var(--fg-muted); padding: 5px 10px; font-size: 13px; }
 .listen-head button:hover { background: var(--bg-hover); color: var(--fg); }
 .listen-head button.primary.switch { background: var(--accent); color: var(--accent-fg); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
-.listen-lines { padding: 38vh 0 58vh; }
+.listen-lines { padding: 38vh 76px 58vh; transition: padding-right 160ms ease; } /* the side padding keeps the lines clear of the floating mic */
+/* the voice popover is open: the lines make room for it instead of running under it */
+.reader.voice-open .listen-lines { padding-right: 400px; }
+.reader.voice-open .page-view { right: 380px; }
 .listen-lines .doc-inner { max-width: calc(var(--max-line-listen) * 1ch); margin: 0 auto; padding: 0 max(40px, var(--reader-margin)); font-size: var(--reader-size); line-height: 1.5; }
 .listen-lines .chapter-title { display: none; }
 .listen-lines .para { margin: 0 0 0.6em; }

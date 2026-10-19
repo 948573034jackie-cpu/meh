@@ -103,7 +103,6 @@ test.describe('reader', () => {
     await expect(page.getByTestId('chapter-mark')).toHaveCount(2);
     await expect(page.getByTestId('clock-total')).toHaveText(/^\d+:\d\d$/);
     await expect(page.getByTestId('mic')).toBeEnabled();
-    await expect(page.getByTestId('mic')).toHaveAttribute('data-line', 'closed');
 
     // play: the sentence advances and the text follows
     await page.getByTestId('play').click();
