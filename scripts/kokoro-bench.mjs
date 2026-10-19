@@ -147,18 +147,16 @@ async function simulate() {
       for (const s of PRIDE.slice(n + 1, n + 3)) void fetch(s).catch(() => undefined);
     } else {
       segs = synthesisSegments(PRIDE[n]);
-      // Playback.prefetchAhead -> AudioTtsEngine.readAhead: the next sentence is fetched once this one is ready,
-      // the rest (up to ~60 s / 8 sentences) goes to the main-process read-ahead queue by distance
+      // Playback: speak(n) first (every segment requested as 'now'), then readAhead() -> AudioTtsEngine:
+      // kokoro:prepare replaces the read-ahead (next ~60 s / 8 sentences, priority by distance) and asks to be told
+      // when the next sentence is ready ('next' priority, wait), then fetches it from the memory cache
+      for (const sg of segs) void fetch(sg.text).catch(() => undefined);
       const ahead = [];
       let secs = 0;
       for (let d = 1; n + d < PRIDE.length && d <= 8 && secs < 60; d++) { ahead.push({ text: PRIDE[n + d], d }); secs += PRIDE[n + d].length / 15; }
-      const segsOf = (text) => synthesisSegments(text).map((s) => s.text);
-      const items = [];
-      for (const a of ahead) for (const s of segsOf(a.text)) items.push({ text: s, voice, speed: 1, priority: 60 - a.d });
-      engine.prepare(items, { replace: true });
-      const nextText = ahead[0]?.text;
-      const mine = Promise.all(segs.map((s) => fetch(s.text)));
-      if (nextText) void mine.then(() => segsOf(nextText).forEach((s) => void fetch(s).catch(() => undefined)));
+      engine.prepare(ahead.map((a) => ({ text: a.text, voice, speed: 1, priority: 80 - a.d })), { replace: true }).catch(() => undefined);
+      const next = ahead[0]?.text;
+      if (next) void ipc(engine.prepare([{ text: next, voice, speed: 1, priority: 90 }])).then(() => synthesisSegments(next).forEach((sg) => void fetch(sg.text).catch(() => undefined)), () => undefined);
     }
     // play segment after segment; each one must be ready when the previous one ends
     for (let k = 0; k < segs.length; k++) {

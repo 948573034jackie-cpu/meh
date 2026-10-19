@@ -1,7 +1,7 @@
 import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
-import { KokoroEngine, type EngineStatus, type SynthesisResult } from './engine';
+import { KokoroEngine, DroppedError, type EngineStatus, type SynthesisResult } from './engine';
 import { KOKORO_VOICES, DEFAULT_VOICE } from './voices';
 
 /**
@@ -11,7 +11,12 @@ import { KOKORO_VOICES, DEFAULT_VOICE } from './voices';
  *  - kokoro:cancelDownload
  *  - kokoro:voices                      -> TtsVoiceInfo[]
  *  - kokoro:synthesize(text, voice, speed, { asFile? }) -> KokoroSynthesisReply
- *  - kokoro:prepare(items)              -> queues sentences for background synthesis
+ *  - kokoro:prepare(items)              -> queues sentences for background synthesis. Items may carry
+ *      `priority` (src/core/tts/segments PRIORITY; default 'background') and `wait: true` (the call then resolves
+ *      when those items are synthesized, so the renderer can fetch them from the memory cache without queueing as
+ *      'now'). Control items (empty text): `{ text: '', replace: true }` makes the call replace the read-ahead
+ *      (queued jobs nobody waits for and not in this call are dropped), `{ text: '', release: true }` turns the
+ *      renderer's own waiting requests into ordinary read-ahead (it cancelled its speech). See KokoroEngine.
  * Main -> renderer: 'kokoro:progress' (EngineStatus) on every change, sent to every window.
  * The preload bridge for these channels still needs to be added to src/preload/index.ts and src/shared/api.ts;
  * until then the voice is reachable through the existing tts:synthesize / tts:voices channels with engine 'kokoro'.
@@ -41,6 +46,16 @@ export function kokoroEngine(): KokoroEngine {
     engine.onStatus = (s) => broadcast(s);
   }
   return engine;
+}
+
+/**
+ * Loads the model and runs the warm-up inference in the background (in the worker thread) when the model is on
+ * disk, so the first sentence the learner plays does not wait for model loading (6 s on a 4-core Intel Mac).
+ */
+export function warmUpKokoro(): void {
+  const eng = kokoroEngine();
+  if (!eng.installedVariant || eng.isLoaded) return;
+  eng.ensureReady(false).catch((e) => console.log(`kokoro: warm-up failed: ${(e as Error).message}`));
 }
 
 function broadcast(s: EngineStatus): void {
@@ -76,5 +91,24 @@ export function registerKokoroIpc(): void {
       mime: 'audio/wav', timings: toTimings(r), durationSec: r.durationSec, phonemes: r.phonemes, fromCache: r.fromCache,
     };
   });
-  ipcMain.handle('kokoro:prepare', (_e, items: { text: string; voice?: string; speed?: number }[]): void => { kokoroEngine().prepare(items); });
+  ipcMain.handle('kokoro:prepare', (_e, items: KokoroPrepareItem[]): Promise<boolean> | void => handlePrepare(kokoroEngine(), items));
+}
+
+/** an item of kokoro:prepare (see the channel list above) */
+export interface KokoroPrepareItem { text: string; voice?: string; speed?: number; priority?: number; wait?: boolean; replace?: boolean; release?: boolean }
+
+/**
+ * Applies one kokoro:prepare call. With `wait` items it resolves true once they are synthesized, or false when they
+ * were dropped from the queue before (a later replace or clear): the renderer then no longer needs them.
+ */
+export function handlePrepare(eng: Pick<KokoroEngine, 'prepare' | 'releaseWaiters'>, items: KokoroPrepareItem[]): Promise<boolean> | void {
+  if (!Array.isArray(items)) return;
+  const replace = items.some((i) => i?.replace === true);
+  if (items.some((i) => i?.release === true)) eng.releaseWaiters();
+  const jobs = items.filter((i) => i && typeof i.text === 'string' && i.text.trim());
+  const waited = jobs.filter((i) => i.wait === true);
+  const rest = jobs.filter((i) => i.wait !== true);
+  // a replacing call keeps its own waited items
+  if (rest.length || replace) void eng.prepare(replace ? [...rest, ...waited] : rest, { replace }).catch(() => undefined);
+  if (waited.length) return eng.prepare(waited).then(() => true, (e: Error) => (e instanceof DroppedError ? false : Promise.reject(e)));
 }

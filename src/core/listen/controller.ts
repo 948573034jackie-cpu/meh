@@ -3,7 +3,8 @@ import type { Dictionary } from '@core/dict/types';
 import type { VocabState, MarkedRange, Settings } from '@shared/settings';
 import type { ExplainRequest, ExplainKind } from '@shared/api';
 import type { TtsEngine, SpeakHandle } from '@core/tts/engine';
-import { samePosition } from '@core/model';
+import { samePosition, sentenceKey } from '@core/model';
+import type { PhraseHit } from '@shared/api';
 import { getSentence, nextPosition, prevPosition, comparePositions, contextAround, wordOffsets } from '@core/nav';
 import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
@@ -150,7 +151,14 @@ export class ListenController {
     if (!cur) return [];
     const s = this.deps.settings();
     const vocab = this.deps.vocab().words;
-    const ann = annotateSentence(cur.para, cur.sentence, this.deps.dict, this.deps.names, s.learnerLevel);
+    // the chapter phrase job's phrases of this sentence (validated: whatever the bridge returned)
+    let found: ChapterPhrase[] = [];
+    try { found = this.deps.chapterPhrases?.(pos) ?? []; } catch { found = []; }
+    const n = cur.sentence.tokens.length;
+    const hits: PhraseHit[] = found
+      .filter((h) => h && typeof h.text === 'string' && h.text.trim() && typeof h.level === 'string' && Number.isInteger(h.start) && Number.isInteger(h.end) && h.start >= 0 && h.end < n && h.start <= h.end)
+      .map((h) => ({ sentenceKey: sentenceKey(pos), start: h.start, end: h.end, text: h.text.trim(), lemma: (h.lemma || h.text).toLowerCase().trim(), level: h.level as CefrLevel, zh: h.zh ?? '' }));
+    const ann = annotateSentence(cur.para, cur.sentence, this.deps.dict, this.deps.names, s.learnerLevel, hits);
     const out: Trigger[] = [];
     const here = this.offsetOf(pos);
     const recently = (lemma: string) => { const at = this.lastExplainedAt.get(lemma); return at !== undefined && s.listen.repeatWindowWords > 0 && here >= at && here - at < s.listen.repeatWindowWords; };
@@ -172,32 +180,20 @@ export class ListenController {
       }
     }
     if (s.listen.autoExplainPhrases) {
-      for (const ph of ann.phrases) {
-        const lemma = ph.result.lemma;
+      const addPhrase = (lemma: string, start: number, end: number, above: boolean, zh: string, level: CefrLevel) => {
         const status = vocab[lemma];
-        if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) continue;
-        if (!isAbove(ph.result.entry.level, s.learnerLevel) && status !== 'learning') continue;
-        if (recently(lemma)) continue;
-        if (out.some((t) => t.lemma === lemma)) continue;
-        // PhraseSpan.end is exclusive (the last word is tokens[end - 1]); Trigger.end is inclusive like word triggers
-        const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end - 1].end);
-        out.push({ kind: 'phrase', token: ph.start, end: ph.end - 1, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
-      }
-      // phrases of the chapter phrase job (idioms, phrasal verbs, slang) stop exactly like words
-      let found: ChapterPhrase[] = [];
-      try { found = this.deps.chapterPhrases?.(pos) ?? []; } catch { found = []; }
-      const n = cur.sentence.tokens.length;
-      for (const ph of found) {
-        if (!ph || typeof ph.text !== 'string' || !ph.text.trim()) continue;
-        if (!Number.isInteger(ph.start) || !Number.isInteger(ph.end) || ph.start < 0 || ph.end >= n || ph.start > ph.end) continue;
-        const lemma = (ph.lemma || ph.text).toLowerCase().trim();
-        const status = vocab[lemma];
-        if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) continue;
-        if (!isAbove(ph.level as CefrLevel, s.learnerLevel) && status !== 'learning') continue;
-        if (recently(lemma)) continue;
-        if (out.some((t) => t.lemma === lemma)) continue;
-        out.push({ kind: 'phrase', token: ph.start, end: ph.end, target: ph.text.trim(), lemma, dict: { ipa: '', zh: (ph.zh ?? '').split('\n')[0], level: ph.level as CefrLevel } });
-      }
+        if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) return;
+        if (!above && status !== 'learning') return;
+        if (recently(lemma)) return;
+        if (out.some((t) => t.lemma === lemma)) return;
+        const text = cur.para.text.slice(cur.sentence.tokens[start].start, cur.sentence.tokens[end].end);
+        out.push({ kind: 'phrase', token: start, end, target: text, lemma, dict: { ipa: '', zh: zh.split('\n')[0], level } });
+      };
+      // dictionary phrases (PhraseSpan.end is exclusive; Trigger.end is inclusive like word triggers), their level
+      // confirmed by the chapter job when it found them too
+      for (const ph of ann.phrases) addPhrase(ph.result.lemma, ph.start, ph.end - 1, ph.above, ph.result.entry.zh, ph.level);
+      // the chapter job's other phrases (idioms, phrasal verbs, slang): they stop exactly like words
+      for (const h of ann.aiPhrases) addPhrase(h.lemma, h.start, h.end, h.above, h.zh ?? '', h.level);
     }
     for (const m of this.deps.marked()) {
       if (m.chapter === pos.chapter && m.paragraph === pos.paragraph && m.sentence === pos.sentence) {

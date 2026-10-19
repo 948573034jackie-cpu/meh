@@ -31,7 +31,10 @@ export function VoiceChatUI(p: Props): JSX.Element {
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const on = snap.line !== 'closed';
   const state = on || snap.ui !== 'off' ? snap.ui : 'off';
-  useEffect(() => { if (p.popover && !on) boxRef.current?.focus(); }, [p.popover, on]);
+  // the typed box takes the focus when the popover opens, not each time a commands window closes (that would
+  // swallow K / D / Esc / M while the popover stays open)
+  const onRef = useRef(on); onRef.current = on;
+  useEffect(() => { if (p.popover && !onRef.current) boxRef.current?.focus(); }, [p.popover]);
   const send = () => { const t = text.trim(); if (!t) return; p.onAsk(t); setText(''); };
   const mb = (bytes: number | undefined) => Math.max(1, Math.round((bytes || 111e6) / 1e6));
   const prog = snap.model?.progress;

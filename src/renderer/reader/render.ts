@@ -1,6 +1,7 @@
 import type { Book, Chapter, Paragraph, Sentence, CefrLevel } from '@core/model';
 import type { Dictionary } from '@core/dict/types';
 import type { VocabState, MarkedRange } from '@shared/settings';
+import type { PhraseHit } from '@shared/api';
 import { annotateSentence, type WordInfo } from '@core/vocab/analysis';
 import { hintFor } from './hints';
 
@@ -14,6 +15,8 @@ export interface RenderOptions {
   hints?: boolean;
   /** lemma -> hint text that replaces the dictionary one (a later AI job fills this) */
   hintOverrides?: Record<string, string>;
+  /** the chapter phrase job's hits of a sentence (sentenceKey "c.p.s"), when loaded */
+  phrases?: (key: string) => readonly PhraseHit[] | undefined;
 }
 
 export interface TokenMeta { lemma: string; level: CefrLevel | null; isName: boolean; inDict: boolean; ipa: string; zh: string }
@@ -59,10 +62,15 @@ export function renderChapter(chapter: Chapter, opts: RenderOptions): { html: st
 
 export function renderSentence(para: Paragraph, s: Sentence, chapter: number, opts: RenderOptions, meta?: Map<string, (TokenMeta | null)[]>): string {
   const key = `${chapter}.${para.index}.${s.index}`;
-  const ann = annotateSentence(para, s, opts.dict, opts.names, opts.learner);
+  const hits = (opts.phrases?.(key) ?? []).filter((h) => Number.isInteger(h.start) && Number.isInteger(h.end) && h.start >= 0 && h.start <= h.end && h.end < s.tokens.length);
+  const ann = annotateSentence(para, s, opts.dict, opts.names, opts.learner, hits);
   const marks = opts.marked.filter((m) => m.chapter === chapter && m.paragraph === para.index && m.sentence === s.index);
-  const phraseAt = new Map<number, { end: number; lemma: string; level: CefrLevel }>();
-  for (const ph of ann.phrases) phraseAt.set(ph.start, { end: ph.end, lemma: ph.result.lemma, level: ph.result.entry.level });
+  // phrase spans (end exclusive): dictionary phrases at their (job-confirmed) level, then the job's own phrases
+  // where they do not overlap one already placed
+  const phraseAt = new Map<number, { end: number; lemma: string; level: CefrLevel; above: boolean }>();
+  const free = (a: number, b: number) => [...phraseAt.entries()].every(([st, p]) => b <= st || a >= p.end);
+  for (const ph of ann.phrases) if (free(ph.start, ph.end)) phraseAt.set(ph.start, { end: ph.end, lemma: ph.result.lemma, level: ph.level, above: ph.above });
+  for (const h of ann.aiPhrases) if (free(h.start, h.end + 1)) phraseAt.set(h.start, { end: h.end + 1, lemma: h.lemma, level: h.level, above: h.above });
   const metas: (TokenMeta | null)[] = [];
   const out: string[] = [`<span class="s" data-s="${s.index}" data-key="${key}">`];
   let cursor = s.start;
@@ -73,7 +81,7 @@ export function renderSentence(para: Paragraph, s: Sentence, chapter: number, op
     const ph = phraseAt.get(i);
     if (ph) {
       const st = opts.vocab[ph.lemma];
-      const cls = st === 'known' || st === 'ignored' ? '' : st === 'learning' ? 'hl-learning' : above(ph.level, opts.learner) ? 'hl-unknown' : '';
+      const cls = st === 'known' || st === 'ignored' ? '' : st === 'learning' ? 'hl-learning' : ph.above ? 'hl-unknown' : '';
       out.push(`<span class="ph ${cls}" data-lemma="${esc(ph.lemma)}" data-level="${ph.level}" data-start="${i}" data-end="${ph.end}">`);
       phraseEnd = ph.end - 1; // PhraseSpan.end is exclusive: the span closes after its last word
     }

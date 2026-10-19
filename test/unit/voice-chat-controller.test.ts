@@ -44,7 +44,7 @@ function setup(paragraphs: string[], listen: Partial<Settings['listen']> = {}, m
   settings.voice.pauseBetweenSentencesMs = 0;
   settings.ai.speakChinese = false;
   settings.ai.styles = { custom: { shape: { wordBefore: 1, wordAfter: 0, sentenceAfterWord: 0, sentenceBefore: 1, sentenceAfter: 0 } } };
-  Object.assign(settings.listen, { pauseAfterExplainMs: 0, quizWaitMs: 40 }, listen);
+  Object.assign(settings.listen, { pauseAfterExplainMs: 0, quizWaitMs: 40, commandWindowMs: 30 }, listen);
   const vocab: VocabState = { words: {}, marked: {} };
   const reader = new FakeTtsEngine(1), explainer = new FakeTtsEngine(1), zh = new FakeTtsEngine(1);
   const ai = fakeAi();
@@ -88,38 +88,52 @@ describe('voice chat: controller', () => {
     t.controller.skip();
   });
 
-  it('Listening: the pause after an explanation opens the window; "I know" (markKnown + continueNow) goes on at once', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 5000 });
+  it('Listening: the window after the word opens the voice line; "I know" (markKnown + answerWindow) goes on at once, no explanation', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
-    await until(() => t.ai.calls.length === 1);
-    t.ai.calls[0].resolve('Sanguine means hopeful.');
     await until(() => t.windows.length === 1);
     expect(t.windows).toEqual([true]);
     expect(t.controller.lastExplained).toMatchObject({ kind: 'word', lemma: 'sanguine' });
     const t0 = Date.now();
     t.controller.markKnown('sanguine');
-    t.controller.continueNow();
+    expect(t.controller.answerWindow('know')).toBe(true);
     await finished;
     expect(Date.now() - t0).toBeLessThan(2000);
+    expect(t.ai.calls.length).toBe(0);
     expect(t.windows).toEqual([true, false]);
-    expect(t.reader.spoken.at(-1)!.text).toBe('Then he left.');
+    expect(t.reader.spoken.slice(-2).map((s) => s.text)).toEqual(['He was sanguine.', 'Then he left.']);
   });
 
-  it('"I don\'t know" in the pause: the word again with again=true, then a new pause window', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 300 });
+  it('"I don\'t know" after the explanation: the word again with again=true, then a new window', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 300 });
     t.playback.play();
-    await until(() => t.ai.calls.length === 1);
+    await until(() => t.ai.calls.length === 1); // silence in the first window: the explanation
     t.ai.calls[0].resolve('Sanguine means hopeful.');
-    await until(() => t.windows.length === 1);
-    void t.controller.explainAgain();
+    await until(() => t.windows.length === 3);
+    expect(t.controller.answerWindow('dont_know')).toBe(true);
     await until(() => t.ai.calls.length === 2);
     expect(t.ai.calls[1].req).toMatchObject({ kind: 'word', target: 'sanguine', again: true });
-    expect(t.windows).toEqual([true, false]); // the first pause ended when the new explanation started
+    expect(t.windows).toEqual([true, false, true, false]);
     t.ai.calls[1].resolve('It means cheerful about the future.');
-    await until(() => t.windows.length === 3);
-    expect(t.windows).toEqual([true, false, true]);
+    await until(() => t.windows.length === 5);
+    expect(t.windows).toEqual([true, false, true, false, true]);
     await until(() => t.reader.spoken.at(-1)?.text === 'Then he left.');
+  });
+
+  it('keepWaiting (the learner starts talking in the window) restarts its countdown', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 150 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    await sleep(100);
+    t.controller.keepWaiting(300);
+    await sleep(120);
+    expect(t.windows).toEqual([true]); // still open after the first 150 ms
+    expect(t.ai.calls.length).toBe(0);
+    t.controller.answerWindow({ text: 'what is it' });
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req.question).toBe('what is it');
+    t.playback.stop();
   });
 
   it('barge-in: hold() silences the explanation and pauses; the spoken question resumes Listening afterwards', async () => {

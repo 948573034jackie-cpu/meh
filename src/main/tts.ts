@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
 import { getSecret, getAzureCredentials } from './secrets';
-import { kokoroSynthesize, kokoroVoices, registerKokoroIpc } from './kokoro/ipc';
+import { kokoroSynthesize, kokoroVoices, registerKokoroIpc, warmUpKokoro } from './kokoro/ipc';
 
 /**
  * Voices synthesized in the main process (the renderer has no network access):
@@ -20,6 +20,13 @@ import { kokoroSynthesize, kokoroVoices, registerKokoroIpc } from './kokoro/ipc'
  */
 export function registerTtsHandlers(): void {
   registerKokoroIpc();
+  // the Dream voice is the default: load it right after start-up (off the main thread) when it is chosen and on disk
+  setTimeout(() => {
+    import('./settings').then(({ getSettings }) => {
+      const v = getSettings().voice;
+      if (v.engine === 'kokoro' || v.explainEngine === 'kokoro') warmUpKokoro();
+    }).catch(() => undefined);
+  }, 1500).unref?.();
   ipcMain.handle('tts:voices', async (_e, engine: TtsEngineId): Promise<TtsVoiceInfo[]> => listVoices(engine));
   ipcMain.handle('tts:synthesize', async (_e, engine: TtsEngineId, text: string, voiceId: string, rate: number): Promise<CloudTtsResult> => {
     const t = text.trim();

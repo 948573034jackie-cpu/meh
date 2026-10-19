@@ -210,6 +210,7 @@ export function buildStyledPrompt(req: ExplainRequest, opts: StyledPromptOpts): 
   ].filter(Boolean).join('\n\n');
   const template = req.kind === 'sentence' ? opts.style.sentencePrompt : opts.style.wordPrompt;
   let task = fillTemplate(template, values);
+  if (req.question && req.question.trim()) task += `\n\nThe learner just said this out loud (speech recognition may have got some words wrong; work out what they most likely meant from the book, and never ask them to repeat): "${req.question.trim()}". Answer it as part of your explanation.`;
   const knobs = knobText(opts.style);
   if (knobs) task += `\n\n${knobs}`;
   if (req.again) task += `\n\nThe learner has just heard a first explanation of this and said they still do not understand. Explain it again from a different angle, more slowly and in more detail than before: start from what they surely know, use the story around this moment, compare it with a simpler word or situation, give one more everyday example, and check the meaning in this exact sentence once more at the end. Take the time it needs.`;

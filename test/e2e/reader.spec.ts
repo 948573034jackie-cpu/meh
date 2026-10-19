@@ -144,7 +144,7 @@ test.describe('reader', () => {
     await app.close();
   });
 
-  test('listening mode stops at a hard word, shows the card, and goes on', async () => {
+  test('listening mode: at a hard word the word, the 5-second window bar, the explanation with its card, then the sentence again', async () => {
     const { app, page } = await launchApp();
     await page.setViewportSize({ width: 1200, height: 800 });
     await page.getByTestId('finish-onboarding').click();
@@ -152,16 +152,32 @@ test.describe('reader', () => {
     await page.keyboard.press('KeyL');
     await expect(page.getByTestId('listening')).toBeVisible();
     await page.getByTestId('play').click();
-    // the first hard word ("perplexing" or "sanguine") stops the voice: a card appears by itself
+    // the first hard word: it is said, then the calm bar with the three answers and the countdown (nothing is said)
+    const bar = page.getByTestId('command-bar');
+    await expect(bar).toBeVisible({ timeout: 20000 });
+    await expect(bar).toHaveAttribute('data-phase', 'before');
+    await expect(page.getByTestId('cmd-know')).toContainText('I know');
+    await expect(page.getByTestId('cmd-know')).toContainText('K');
+    await expect(page.getByTestId('cmd-dont-know')).toContainText('I don’t know');
+    await expect(page.getByTestId('cmd-go-on')).toContainText('Go on');
+    await expect(page.getByTestId('cmd-go-on')).toContainText('Esc');
+    await expect(bar).not.toContainText(/\bstop\b/i);
+    await expect(page.locator('.command-countdown span')).toHaveCount(1);
+    const stoppedAt = await page.locator('.listen-lines .s.cur').getAttribute('data-key');
+    // silence: after the window the explanation starts and its card appears by itself
     const card = page.getByTestId('card');
     await expect(card).toBeVisible({ timeout: 20000 });
     await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/);
-    const stoppedAt = await page.locator('.listen-lines .s.cur').getAttribute('data-key');
-    await expect(card).toHaveCount(0, { timeout: 20000 });
-    // after the explanation and the short pause the voice carries on with the book
-    await expect.poll(async () => page.locator('.listen-lines .s.cur').getAttribute('data-key'), { timeout: 25000 }).not.toBe(stoppedAt);
+    // after the explanation the window opens again; "Go on" ends it: the sentence is read again, then the book goes on
+    await expect(bar).toHaveAttribute('data-phase', 'after', { timeout: 30000 });
+    await page.getByTestId('cmd-go-on').click();
+    await expect(bar).toHaveCount(0);
     await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Pause');
+    await expect.poll(async () => page.locator('.listen-lines .s.cur').getAttribute('data-key'), { timeout: 25000 }).not.toBe(stoppedAt);
+    // the help sheet lists the window keys
     await page.keyboard.press('Space');
+    await page.keyboard.press('Shift+Slash');
+    await expect(page.getByTestId('help')).toContainText('At a hard word');
     await app.close();
   });
 

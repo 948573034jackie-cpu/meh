@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { WordStatus, MarkedRange, TtsEngineId, ReadMode } from '@shared/settings';
 import type { TtsVoice } from '@core/tts/engine';
-import type { HintMap, ExplainRequest } from '@shared/api';
+import type { HintMap, ExplainRequest, PhraseHit } from '@shared/api';
 import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry, type CommandWindow } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
@@ -142,6 +142,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const cmdSeq = useRef(0);
   /** chapter -> the chapter phrase job's hits per sentence (window.readalong.hintsPhrases, when that bridge exists) */
   const phrasesRef = useRef(new Map<number, ChapterPhraseMap>());
+  /** bumps when chapter phrases arrive, so the chapter is rendered again with them highlighted */
+  const [phrasesVersion, setPhrasesVersion] = useState(0);
   const hintOverrides = useMemo(() => { const out: Record<string, string> = {}; for (const [lemma, pair] of Object.entries(hints ?? {})) if (pair?.[0]) out[lemma] = pair[0]; return out; }, [hints]);
 
   const names = useMemo(() => new Set(book.names), [book]);
@@ -371,7 +373,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const api = window.readalong as unknown as { hintsPhrases?: (bookId: string, chapter: number) => Promise<unknown>; onHintsProgress?: typeof window.readalong.onHintsProgress };
     if (typeof api.hintsPhrases !== 'function') return;
     let on = true;
-    const load = (ch: number) => { void api.hintsPhrases!(book.id, ch).then((d) => { if (on) phrasesRef.current.set(ch, toChapterPhraseMap(d, ch)); }, () => undefined); };
+    const load = (ch: number) => { void api.hintsPhrases!(book.id, ch).then((d) => { if (!on) return; phrasesRef.current.set(ch, toChapterPhraseMap(d, ch)); if (ch === chapter) setPhrasesVersion((v) => v + 1); }, () => undefined); };
     load(chapter);
     if (book.chapters[chapter + 1]) load(chapter + 1);
     const off = typeof api.onHintsProgress === 'function' ? api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.state === 'done' && (ev.chapter === chapter || ev.chapter === chapter + 1)) load(ev.chapter); }) : () => undefined;
@@ -383,7 +385,12 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   useEffect(() => { const c = controllerRef.current; if (c) c.enabled = mode === 'listening' && autoStop; }, [mode, autoStop, ready]);
 
   // ---- rendering the chapter ------------------------------------------------------------------
-  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false, hintOverrides }), [dict, names, hintOverrides]);
+  /** the chapter phrase job's hits of a sentence, in the shape annotateSentence takes */
+  function phraseHitsOf(key: string): PhraseHit[] {
+    const ch = Number(key.split('.')[0]);
+    return (phrasesRef.current.get(ch)?.[key] ?? []).map((h) => ({ sentenceKey: key, start: h.start, end: h.end, text: h.text, lemma: h.lemma, level: h.level as CefrLevel, zh: h.zh ?? '' }));
+  }
+  const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false, hintOverrides, phrases: phraseHitsOf }), [dict, names, hintOverrides]);
 
   const html = useMemo(() => {
     if (!dict) return '';
@@ -395,7 +402,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const label = ch.paragraphs[0]?.kind.startsWith('h') ? '' : `<div class="chapter-title">${ch.title.replace(/</g, '&lt;')}</div>`;
     return `<div class="doc-inner">${label}${html}</div>`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dict, chapter, book, renderOpts, settings.learnerLevel, settings.appearance.showHints, vocab.marked]);
+  }, [dict, chapter, book, renderOpts, settings.learnerLevel, settings.appearance.showHints, vocab.marked, phrasesVersion]);
   useEffect(() => { markedRef.current = vocab.marked[book.id] ?? []; }, [vocab.marked, book.id]);
 
   /** the screen injected the chapter: put the highlight back and bring the sentence into view */
