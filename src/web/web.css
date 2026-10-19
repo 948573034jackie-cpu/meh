@@ -1,0 +1,56 @@
+/* iPad / web adjustments layered over the renderer's main.css and reader.css (loaded after them).
+   - safe areas: the app is drawn under the status bar (black-translucent) and inside the rounded corners
+   - touch: every control at least 44 px high/wide, no hover-only controls, no double-tap zoom
+   - no macOS traffic-light gutters (navigator.platform is "MacIntel" on iPad, so the renderer would add them) */
+
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; touch-action: manipulation; -webkit-tap-highlight-color: transparent; background: var(--bg); }
+body { overscroll-behavior: none; }
+#root {
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  box-sizing: border-box;
+}
+/* keep the content the same height as the visible viewport when the on-screen keyboard is up */
+html, body { height: 100%; height: 100dvh; }
+
+/* no traffic lights in a browser */
+:root[data-web] .titlebar { padding-left: 16px; }
+:root[data-web] .screen.reading .bar.top,
+:root[data-web] .listen-head { padding-left: 16px; }
+:root[data-web] .traffic-drag { display: none; }
+:root[data-web] .drag { -webkit-app-region: no-drag; }
+
+
+@media (pointer: coarse), (hover: none) {
+  /* touch targets: 44 x 44 pt minimum (Apple HIG) */
+  button, select, .chip, .seg button, input[type="checkbox"] + label, summary { min-height: 44px; }
+  button { min-width: 44px; }
+  input[type="text"], input[type="password"], input[type="number"], input[type="search"], select, textarea { min-height: 44px; font-size: 16px; /* 16 px stops Safari zooming into fields */ }
+  input[type="range"] { min-height: 44px; }
+  input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
+
+  .titlebar { height: 52px; }
+  .titlebar button, .bar button, .listen-head button, .controls button, .book-card .foot button { min-height: 44px; padding-top: 8px; padding-bottom: 8px; }
+  .screen.reading .bar { height: 56px; }
+  .screen.reading .bar.bottom { height: 52px; }
+  .listen-head { height: 56px; }
+  .controls { gap: 10px; }
+  .controls .speed input[type="range"] { width: 140px; }
+
+  /* controls that only appeared on hover are always visible */
+  .book-card .foot .remove { opacity: 1; }
+  .book-card:hover { transform: none; box-shadow: var(--shadow-sm); border-color: var(--border); }
+  .w:hover:not(.punct) { outline: none; }
+  .listen-lines .s:hover:not(.cur) { opacity: 0.62; }
+  .listen-lines .s.past:hover:not(.cur) { opacity: 0.32; }
+
+  /* tips follow focus (a tap), not a lingering hover */
+  .tip-wrap:hover > .tip { opacity: 0; visibility: hidden; }
+  .tip-wrap:focus-within > .tip { opacity: 1; visibility: visible; }
+
+  /* thin Mac scrollbars are hard to grab; iOS shows its own */
+  ::-webkit-scrollbar { width: 0; height: 0; }
+}
+
+/* the install hint shown by src/web/install.ts on iPad Safari (not in the home-screen app) */
+.web-install-hint { position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 90; max-width: min(560px, calc(100vw - 32px)); background: var(--bg-elevated); color: var(--fg); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 12px 12px 16px; display: flex; gap: 12px; align-items: center; font-size: 14px; font-family: var(--font-sans); }
+.web-install-hint button { flex: none; }

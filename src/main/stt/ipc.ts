@@ -1,6 +1,8 @@
 import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { SttEngine, type EngineStatus, type SttEngineEvent, type RecognizeResult } from './engine';
+import { isVariant } from './download';
+import { getSettings } from '../settings';
 
 /**
  * IPC for local speech-to-text. Channels (renderer -> main, all `invoke`):
@@ -15,15 +17,27 @@ import { SttEngine, type EngineStatus, type SttEngineEvent, type RecognizeResult
  *  - 'stt:event'    SttEngineEvent: { type:'partial'|'final', text, confidence?, segmentId, sessionId }
  *                   | { type:'speechStart'|'speechEnd', sessionId, segmentId } | { type:'error', sessionId, message }
  *  - 'stt:progress' EngineStatus on every change (download progress, state)
- * The preload bridge for these channels still needs to be added to src/preload/index.ts and src/shared/api.ts
- * (see docs/VOICE.md).
+ * Preload bridge: sttStatus / sttDownload / sttCancelDownload / sttStart / sttPush / sttStop / onSttEvent /
+ * onSttProgress in src/preload/index.ts (types in src/shared/api.ts).
  */
 let engine: SttEngine | null = null;
 
+/** The model chosen in Settings (voiceChat.model); STT_VARIANT (env) wins when set, as before. */
+function configuredVariant(): ReturnType<typeof getSettings>['voiceChat']['model'] | undefined {
+  if (process.env.STT_VARIANT) return undefined;
+  try { const v = getSettings().voiceChat?.model; return isVariant(v) ? v : undefined; } catch { return undefined; }
+}
+
 export function sttEngine(): SttEngine {
+  // the learner picked another model: a fresh engine, once no mic session or download is running
+  const want = configuredVariant();
+  if (engine && want && engine.variant !== want) {
+    const st = engine.status();
+    if (st.sessions === 0 && st.state !== 'downloading' && st.state !== 'loading') { void engine.release(); engine = null; }
+  }
   if (!engine) {
     const userData = app.getPath('userData');
-    engine = new SttEngine({ modelDir: process.env.STT_MODEL_DIR || path.join(userData, 'models', 'stt'), log: (m) => console.log(m) });
+    engine = new SttEngine({ modelDir: process.env.STT_MODEL_DIR || path.join(userData, 'models', 'stt'), variant: want, log: (m) => console.log(m) });
     engine.on('status', (s) => broadcast('stt:progress', s));
     engine.on('event', (e) => broadcast('stt:event', e));
   }

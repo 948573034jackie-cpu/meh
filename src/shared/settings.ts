@@ -3,9 +3,11 @@ import type { LevelModelJSON } from '@core/level/adapt';
 import type { LevelResult } from '@core/level/score';
 import type { StyleId, StyleOverride } from './styles';
 import { DEFAULT_CONTEXT_RULES } from './styles';
+import type { SkipSettings } from '@core/import/skip';
+import { DEFAULT_SKIP } from '@core/import/skip';
 
 export type AiProviderId = 'anthropic' | 'openai';
-export type TtsEngineId = 'webspeech' | 'edge' | 'openai' | 'elevenlabs' | 'kokoro';
+export type TtsEngineId = 'webspeech' | 'edge' | 'openai' | 'elevenlabs' | 'kokoro' | 'azure' | 'google';
 /** night (warm dark, default), sepia, light, grey; 'system' follows macOS (night or light). The old 'dark' is read as 'night'. */
 export type ThemeId = 'night' | 'sepia' | 'light' | 'grey' | 'system';
 /** Themes that render dark; the others use the light highlight palette. */
@@ -126,6 +128,21 @@ export interface Settings {
   bookModes: Record<string, ReadMode>;
   /** vocabulary level test (src/core/level): the adaptive model, the last result and when it was taken */
   level: LevelSettings;
+  /** talking with the tutor by voice (src/renderer/voice) */
+  voiceChat: VoiceChatSettings;
+  /** Speechify-style skipping while reading aloud (src/core/import/skip.ts): what the voice leaves out */
+  skip: SkipSettings;
+}
+
+export type SttModelId = 'moonshine-base' | 'moonshine-tiny' | 'parakeet-v3';
+
+export interface VoiceChatSettings {
+  /** the voice line opens by itself with the book (the mic listens all the time) */
+  alwaysOn: boolean;
+  /** local speech-to-text model (docs/VOICE.md) */
+  model: SttModelId;
+  /** key that opens / closes the voice line (KeyboardEvent.code, same format as `shortcuts`) */
+  pushToTalkKey: string;
 }
 
 export interface LevelSettings {
@@ -209,6 +226,8 @@ export const DEFAULT_SETTINGS: Settings = {
   lastMode: 'reading',
   bookModes: {},
   level: { model: null, lastResult: null, testedAt: null },
+  voiceChat: { alwaysOn: false, model: 'moonshine-base', pushToTalkKey: 'KeyM' },
+  skip: { ...DEFAULT_SKIP },
 };
 
 /**

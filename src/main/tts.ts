@@ -2,7 +2,7 @@ import { ipcMain } from 'electron';
 import OpenAI from 'openai';
 import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
-import { getSecret } from './secrets';
+import { getSecret, getAzureCredentials } from './secrets';
 import { kokoroSynthesize, kokoroVoices, registerKokoroIpc } from './kokoro/ipc';
 
 /**
@@ -12,6 +12,11 @@ import { kokoroSynthesize, kokoroVoices, registerKokoroIpc } from './kokoro/ipc'
  *  - openai: OpenAI /v1/audio/speech (gpt-4o-mini-tts). Paid. No word timing; the renderer estimates it.
  *  - elevenlabs: ElevenLabs with-timestamps endpoint. Paid. Character alignment -> word timings.
  *  - kokoro: Kokoro-82M running locally through onnxruntime-node (src/main/kokoro). Free. Word timings from the model.
+ *  - azure: Azure Speech REST (SSML). Paid, 500k chars/month free. The REST endpoint has no word boundaries,
+ *           so no timings are returned and the renderer estimates them proportionally to word length.
+ *  - google: Google Cloud Text-to-Speech v1beta1 REST with an API key. Paid, 1M chars/month free per voice
+ *            family. Neural2 voices: SSML with <mark name="w{i}"/> before each word + SSML_MARK time pointing
+ *            give word start times. Chirp 3 HD voices take plain text (no marks), so their timing is estimated.
  */
 export function registerTtsHandlers(): void {
   registerKokoroIpc();
@@ -23,6 +28,8 @@ export function registerTtsHandlers(): void {
     if (engine === 'openai') return synthOpenAI(t, voiceId || 'ballad', rate);
     if (engine === 'elevenlabs') return synthElevenLabs(t, voiceId || 'JBFqnCBsd6RMkjVDRZzb');
     if (engine === 'kokoro') return kokoroSynthesize(t, voiceId || 'bf_emma', 1); // rate is applied on playback
+    if (engine === 'azure') return synthAzure(t, voiceId || 'en-GB-SoniaNeural', rate);
+    if (engine === 'google') return synthGoogle(t, voiceId || 'en-GB-Neural2-A', rate);
     throw new Error(`Voice engine "${engine}" is not available in this version.`);
   });
 }
@@ -38,6 +45,8 @@ async function listVoices(engine: TtsEngineId): Promise<TtsVoiceInfo[]> {
       .map((v) => ({ id: v.ShortName, name: friendly(v.FriendlyName, v.ShortName), lang: v.Locale, gender: v.Gender }))
       .sort((a, b) => rank(b.lang) - rank(a.lang) || a.name.localeCompare(b.name));
   }
+  if (engine === 'azure') return getAzureCredentials() ? AZURE_VOICES.map((v) => ({ ...v })) : [];
+  if (engine === 'google') return getSecret('google') ? GOOGLE_VOICES.map((v) => ({ ...v })) : [];
   if (engine === 'openai') {
     if (!getSecret('openai')) return [];
     return ['ballad', 'fable', 'alloy', 'ash', 'coral', 'echo', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar'].map((id) => ({ id, name: id[0].toUpperCase() + id.slice(1), lang: 'en', note: id === 'ballad' || id === 'fable' ? 'sounds most British' : undefined }));
@@ -184,4 +193,160 @@ export function charAlignmentToWords(a: { characters: string[]; character_start_
     out.push({ start: a.character_start_times_seconds[start], end: a.character_end_times_seconds[i - 1], charIndex: start, charLength: i - start });
   }
   return out;
+}
+
+// ---- shared SSML helpers -------------------------------------------------------------------------
+export function escapeXml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+/** "en-GB-SoniaNeural" -> "en-GB" */
+export function voiceLocale(voice: string): string {
+  const m = /^([a-z]{2,3}-[A-Z]{2})/.exec(voice);
+  return m ? m[1] : 'en-GB';
+}
+
+/** SSML prosody rate ("+20%") for a playback rate, or null at normal speed. */
+function prosodyRate(rate: number): string | null {
+  if (!rate || Math.abs(rate - 1) <= 0.05) return null;
+  const pct = Math.round((Math.min(3, Math.max(0.5, rate)) - 1) * 100);
+  return `${pct >= 0 ? '+' : ''}${pct}%`;
+}
+
+function toArrayBuffer(b: Buffer): ArrayBuffer { return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer; }
+
+// ---- Azure Speech --------------------------------------------------------------------------------
+const AZURE_VOICES: TtsVoiceInfo[] = [
+  { id: 'en-GB-SoniaNeural', name: 'Sonia (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-RyanNeural', name: 'Ryan (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-LibbyNeural', name: 'Libby (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-ThomasNeural', name: 'Thomas (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-AbbiNeural', name: 'Abbi (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-AlfieNeural', name: 'Alfie (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-BellaNeural', name: 'Bella (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-ElliotNeural', name: 'Elliot (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-EthanNeural', name: 'Ethan (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-HollieNeural', name: 'Hollie (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-MaisieNeural', name: 'Maisie (UK, child)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-GB-NoahNeural', name: 'Noah (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-OliverNeural', name: 'Oliver (UK)', lang: 'en-GB', gender: 'Male' },
+  { id: 'en-GB-OliviaNeural', name: 'Olivia (UK)', lang: 'en-GB', gender: 'Female' },
+  { id: 'en-US-AvaNeural', name: 'Ava (US)', lang: 'en-US', gender: 'Female' },
+  { id: 'en-US-AndrewNeural', name: 'Andrew (US)', lang: 'en-US', gender: 'Male' },
+  { id: 'en-US-JennyNeural', name: 'Jenny (US)', lang: 'en-US', gender: 'Female' },
+  { id: 'en-US-GuyNeural', name: 'Guy (US)', lang: 'en-US', gender: 'Male' },
+];
+
+export const AZURE_OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
+
+export function buildAzureSsml(text: string, voice: string, rate = 1): string {
+  const body = escapeXml(text);
+  const r = prosodyRate(rate);
+  const inner = r ? `<prosody rate="${r}">${body}</prosody>` : body;
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${voiceLocale(voice)}"><voice name="${escapeXml(voice)}">${inner}</voice></speak>`;
+}
+
+export async function synthAzure(text: string, voice: string, rate: number): Promise<CloudTtsResult> {
+  const creds = getAzureCredentials();
+  if (!creds) throw new Error('Add your Azure Speech key and region in Settings to use the Azure voices.');
+  const res = await fetch(`https://${creds.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    method: 'POST',
+    headers: {
+      'Ocp-Apim-Subscription-Key': creds.key,
+      'Content-Type': 'application/ssml+xml',
+      'X-Microsoft-OutputFormat': AZURE_OUTPUT_FORMAT,
+      'User-Agent': 'DreamRead',
+    },
+    body: buildAzureSsml(text, voice, rate),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) throw new Error(`Azure Speech: HTTP ${res.status}${res.status === 401 ? ' (check the key and that the region matches your Speech resource)' : ''} ${(await res.text().catch(() => '')).slice(0, 200)}`.trim());
+  const audio = await res.arrayBuffer();
+  if (audio.byteLength === 0) throw new Error('Azure Speech returned no audio.');
+  // the REST endpoint has no word boundary events: the renderer estimates word times from word lengths
+  return { audio, mime: 'audio/mpeg', timings: null, durationSec: null };
+}
+
+// ---- Google Cloud Text-to-Speech -----------------------------------------------------------------
+const GOOGLE_VOICES: TtsVoiceInfo[] = [
+  ...(['A', 'C', 'F'] as const).map((l) => ({ id: `en-GB-Neural2-${l}`, name: `Neural2 ${l} (UK)`, lang: 'en-GB', gender: 'Female', quality: 'Neural2', note: 'exact word highlight' })),
+  ...(['B', 'D'] as const).map((l) => ({ id: `en-GB-Neural2-${l}`, name: `Neural2 ${l} (UK)`, lang: 'en-GB', gender: 'Male', quality: 'Neural2', note: 'exact word highlight' })),
+  ...(['Aoede', 'Kore', 'Leda', 'Zephyr', 'Achernar'] as const).map((n) => ({ id: `en-GB-Chirp3-HD-${n}`, name: `${n} (UK)`, lang: 'en-GB', gender: 'Female', quality: 'Chirp 3 HD', note: 'most natural, estimated highlight' })),
+  ...(['Charon', 'Fenrir', 'Orus', 'Puck'] as const).map((n) => ({ id: `en-GB-Chirp3-HD-${n}`, name: `${n} (UK)`, lang: 'en-GB', gender: 'Male', quality: 'Chirp 3 HD', note: 'most natural, estimated highlight' })),
+  ...(['F', 'J'] as const).map((l) => ({ id: `en-US-Neural2-${l}`, name: `Neural2 ${l} (US)`, lang: 'en-US', quality: 'Neural2' })),
+];
+
+/** Chirp 3 HD voices do not take SSML marks (no time pointing): they get plain text and estimated timing. */
+export function isChirpVoice(voice: string): boolean { return /chirp/i.test(voice); }
+
+const WORD_RE = /[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu;
+
+/** SSML with <mark name="w{i}"/> before word i, plus each word's position in `text`. */
+export function buildGoogleMarkedSsml(text: string): { ssml: string; words: { charIndex: number; charLength: number }[] } {
+  const words: { charIndex: number; charLength: number }[] = [];
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(WORD_RE)) {
+    const i = m.index!;
+    out += escapeXml(text.slice(last, i)) + `<mark name="w${words.length}"/>` + escapeXml(m[0]);
+    words.push({ charIndex: i, charLength: m[0].length });
+    last = i + m[0].length;
+  }
+  out += escapeXml(text.slice(last));
+  return { ssml: `<speak>${out}</speak>`, words };
+}
+
+/** Google timepoints ({markName: "w3", timeSeconds}) -> word timings; a word's end is the next word's start. */
+export function googleTimepointsToWords(timepoints: { markName?: string; timeSeconds?: number }[] | undefined, words: { charIndex: number; charLength: number }[]): WordTiming[] | null {
+  const starts = new Map<number, number>();
+  for (const tp of timepoints ?? []) {
+    const m = /^w(\d+)$/.exec(tp.markName ?? '');
+    if (m && typeof tp.timeSeconds === 'number' && Number.isFinite(tp.timeSeconds)) starts.set(Number(m[1]), tp.timeSeconds);
+  }
+  const out: WordTiming[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const start = starts.get(i);
+    if (start === undefined) continue;
+    out.push({ start, end: start, charIndex: words[i].charIndex, charLength: words[i].charLength });
+  }
+  if (!out.length) return null;
+  for (let i = 0; i < out.length; i++) out[i].end = i + 1 < out.length ? out[i + 1].start : out[i].start + 0.08 * out[i].charLength + 0.15;
+  return out;
+}
+
+export function buildGoogleRequest(text: string, voice: string, rate: number): { body: Record<string, unknown>; words: { charIndex: number; charLength: number }[] | null } {
+  const chirp = isChirpVoice(voice);
+  const marked = chirp ? null : buildGoogleMarkedSsml(text);
+  const audioConfig: Record<string, unknown> = { audioEncoding: 'MP3' };
+  if (rate && Math.abs(rate - 1) > 0.05) audioConfig.speakingRate = Math.min(2, Math.max(0.25, rate));
+  const body: Record<string, unknown> = {
+    input: marked ? { ssml: marked.ssml } : { text },
+    voice: { languageCode: voiceLocale(voice), name: voice },
+    audioConfig,
+  };
+  if (marked) body.enableTimePointing = ['SSML_MARK'];
+  return { body, words: marked?.words ?? null };
+}
+
+export async function synthGoogle(text: string, voice: string, rate: number): Promise<CloudTtsResult> {
+  const key = getSecret('google');
+  if (!key) throw new Error('Add your Google Cloud API key in Settings to use the Google voices.');
+  const { body, words } = buildGoogleRequest(text, voice, rate);
+  const res = await fetch(`https://texttospeech.googleapis.com/v1beta1/text:synthesize?key=${encodeURIComponent(key)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => '');
+    let msg = raw;
+    try { msg = (JSON.parse(raw) as { error?: { message?: string } }).error?.message ?? raw; } catch { /* not JSON */ }
+    throw new Error(`Google Text-to-Speech: HTTP ${res.status} ${msg.slice(0, 200)}`.trim());
+  }
+  const data = (await res.json()) as { audioContent?: string; timepoints?: { markName?: string; timeSeconds?: number }[] };
+  if (!data.audioContent) throw new Error('Google Text-to-Speech returned no audio.');
+  const audio = Buffer.from(data.audioContent, 'base64');
+  const timings = words ? googleTimepointsToWords(data.timepoints, words) : null;
+  return { audio: toArrayBuffer(audio), mime: 'audio/mpeg', timings, durationSec: null };
 }

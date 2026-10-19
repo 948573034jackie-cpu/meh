@@ -58,6 +58,22 @@ const api: ReadAlongApi = {
     ipcRenderer.on('kokoro:progress', handler);
     return () => ipcRenderer.removeListener('kokoro:progress', handler);
   },
+  sttStatus: () => invoke('stt:status'),
+  sttDownload: () => invoke('stt:download'),
+  sttCancelDownload: () => invoke('stt:cancelDownload'),
+  sttStart: (sessionId, opts) => invoke('stt:start', sessionId, opts ?? {}),
+  sttPush: (sessionId, pcm) => invoke('stt:push', sessionId, pcm),
+  sttStop: (sessionId) => invoke('stt:stop', sessionId),
+  onSttEvent: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, ev: Parameters<typeof cb>[0]) => cb(ev);
+    ipcRenderer.on('stt:event', handler);
+    return () => ipcRenderer.removeListener('stt:event', handler);
+  },
+  onSttProgress: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s);
+    ipcRenderer.on('stt:progress', handler);
+    return () => ipcRenderer.removeListener('stt:progress', handler);
+  },
   getDiagnostics: () => invoke('app:diagnostics'),
   openExternal: (url) => invoke('app:openExternal', url),
   exportText: (fileName, contents) => invoke('app:exportText', fileName, contents),

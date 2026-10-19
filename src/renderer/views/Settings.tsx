@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import { ENGINE_LABELS, AVAILABLE_ENGINES, type TtsVoice } from '@core/tts/engine';
 import { getEngine, defaultVoiceFor } from '@core/tts/registry';
+import { SKIP_OPTIONS, DEFAULT_SKIP, skipAll, allSkipped, type SkipSettings } from '@core/import/skip';
 import { shortcutLabel, SHORTCUT_HELP } from '../reader/shortcuts';
 const HELP_NAMES: Record<string, string> = Object.fromEntries(SHORTCUT_HELP.flatMap((g) => g.items.map((i) => [i.id, i.text])));
 import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap, type KokoroStatus } from '@shared/api';
@@ -16,7 +17,7 @@ const EMPTY_STATUS: SecretStatus = { saved: false, verified: false, lostAtStartu
 export const NO_KEYS: SecretStatusMap = { anthropic: EMPTY_STATUS, openai: EMPTY_STATUS, elevenlabs: EMPTY_STATUS, azure: EMPTY_STATUS, google: EMPTY_STATUS };
 const KEY_PLACEHOLDER: Record<SecretName, string> = { anthropic: 'sk-ant-…', openai: 'sk-…', elevenlabs: 'sk_… or 32 hex characters', azure: 'Speech resource key', google: 'AIza…' };
 
-type Section = 'start' | 'look' | 'voice' | 'ai' | 'level' | 'shortcuts' | 'data';
+type Section = 'start' | 'look' | 'voice' | 'skip' | 'ai' | 'level' | 'shortcuts' | 'data';
 
 export const AI_MODELS: { provider: AiProviderId; id: string; name: string; cost: string; note: string }[] = [
   { provider: 'anthropic', id: 'claude-haiku-5-5', name: 'Claude Haiku 5.5', cost: 'about 1–2 cents a day', note: 'Fast and cheap. Fine for word meanings.' },
@@ -39,6 +40,7 @@ const NAV_ICONS: Record<Section, JSX.Element> = {
   start: <path d="M3 11.5 12 4l9 7.5M5 10v10h14V10" />,
   look: <path d="M12 5C7 5 3.5 8.5 2 12c1.5 3.5 5 7 10 7s8.5-3.5 10-7c-1.5-3.5-5-7-10-7Zm0 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />,
   voice: <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" />,
+  skip: <path d="M5 5l9 7-9 7V5ZM17 5v14" />,
   ai: <path d="M12 3l1.8 4.6L18.5 9l-4.7 1.4L12 15l-1.8-4.6L5.5 9l4.7-1.4L12 3ZM5 16l.9 2.1L8 19l-2.1.9L5 22l-.9-2.1L2 19l2.1-.9L5 16Z" />,
   level: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
   shortcuts: <path d="M3 7h18v10H3zM7 11h1M11 11h1M15 11h1M8 14h8" />,
@@ -59,6 +61,8 @@ export function SettingsView(): JSX.Element {
   const [keyNotes, setKeyNotes] = useState<Partial<Record<SecretName, string>>>({});
   const [testResult, setTestResult] = useState<Partial<Record<SecretName, string>>>({});
   const [voices, setVoices] = useState<TtsVoice[]>([]);
+  /** per engine: the outcome of the last "Test voice" */
+  const [voiceTest, setVoiceTest] = useState<Partial<Record<TtsEngineId, string>>>({});
   const [usage, setUsage] = useState<{ today: number; month: number }>({ today: 0, month: 0 });
 
   const refreshKeys = async () => { try { setKeys(await window.readalong.secretStatus()); } catch { /* main not ready */ } };
@@ -103,14 +107,25 @@ export function SettingsView(): JSX.Element {
     const e = getEngine(engine);
     e.cancelAll();
     const id = voiceId || (await defaultVoiceFor(engine));
-    e.speak('Hello! This is how I will read your books. The quick brown fox jumps over the lazy dog.', { voiceId: id, rate: settings.voice.rate });
+    return e.speak('Hello! This is how I will read your books. The quick brown fox jumps over the lazy dog.', { voiceId: id, rate: settings.voice.rate });
+  };
+  /** "Test voice" on an engine card: plays the sample and reports a failure (missing key, no internet) in words. */
+  const testVoice = async (engine: TtsEngineId) => {
+    setVoiceTest((t) => ({ ...t, [engine]: 'Playing a sample…' }));
+    try {
+      const h = await previewVoice(engine, engine === S.voice.engine ? S.voice.voiceId : '');
+      const outcome = await h.done;
+      setVoiceTest((t) => ({ ...t, [engine]: outcome === 'error' ? `❌ ${h.error?.message ?? 'The voice could not play.'}` : outcome === 'ended' ? '✅ Sample played.' : '' }));
+    } catch (e) { setVoiceTest((t) => ({ ...t, [engine]: `❌ ${(e as Error).message}` })); }
   };
   const S = settings;
   const set = (p: Partial<Settings>) => void patch(p);
   const setA = (p: Partial<Settings['appearance']>) => set({ appearance: { ...S.appearance, ...p } });
+  const skip: SkipSettings = { ...DEFAULT_SKIP, ...(S.skip ?? {}) };
+  const setSkip = (p: Partial<SkipSettings>) => set({ skip: { ...skip, ...p } });
 
   const nav: { id: Section; label: string }[] = [
-    { id: 'start', label: 'Start' }, { id: 'look', label: 'Reading look' }, { id: 'voice', label: 'Voice' }, { id: 'ai', label: 'AI' },
+    { id: 'start', label: 'Start' }, { id: 'look', label: 'Reading look' }, { id: 'voice', label: 'Voice' }, { id: 'skip', label: 'Skip' }, { id: 'ai', label: 'AI' },
     { id: 'level', label: 'Level & stops' }, { id: 'shortcuts', label: 'Shortcuts' }, { id: 'data', label: 'Data' },
   ];
 
@@ -269,13 +284,17 @@ export function SettingsView(): JSX.Element {
             <div className="choice-grid">
               {AVAILABLE_ENGINES.map((id) => {
                 const m = ENGINE_LABELS[id];
-                const needsKey = id === 'openai' ? !keys.openai.saved : id === 'elevenlabs' ? !keys.elevenlabs.saved : false;
+                const needsKey = !!m.key && !keys[m.key].saved;
                 return (
                   <div key={id} className={`choice ${S.voice.engine === id ? 'active' : ''}`} onClick={() => set({ voice: { ...S.voice, engine: id, voiceId: '' } })} data-testid={`engine-${id}`}>
-                    <span className="name">{m.label} <span className={`badge ${m.cost.startsWith('Free') ? 'free' : 'paid'}`}>{m.cost.startsWith('Free') ? 'free' : 'paid'}</span></span>
+                    <span className="name">{m.label} <span className={`badge ${m.perHour === 'free' ? 'free' : 'paid'}`} data-testid={`engine-price-${id}`}>{m.perHour === 'free' ? 'free' : m.perHour}</span></span>
                     <span className="cost">{m.cost}</span>
                     <span className="cost">{m.quality}</span>
-                    {needsKey && <span className="cost">Needs an API key (below)</span>}
+                    {m.key && <span className="cost" data-testid={`engine-key-${id}`}><KeyStatusDot status={keys[m.key]} /> {SECRET_LABELS[m.key]} key: {keys[m.key].verified ? 'saved' : keys[m.key].saved ? 'saved but unreadable, paste it again' : 'needed (below)'}</span>}
+                    <span className="row">
+                      <button disabled={needsKey} onClick={(e) => { e.stopPropagation(); void testVoice(id); }} data-testid={`engine-test-${id}`}>▶ Test voice</button>
+                    </span>
+                    {voiceTest[id] && <span className="cost" data-testid={`engine-test-result-${id}`}>{voiceTest[id]}</span>}
                   </div>
                 );
               })}
@@ -315,8 +334,28 @@ export function SettingsView(): JSX.Element {
                 {testResult[name] && <div className="hint" data-testid={`test-result-${name}`}>{testResult[name]}</div>}
               </React.Fragment>
             ))}
-            <div className="hint">The OpenAI key is shared with ChatGPT explanations. Azure needs the key and the region of your Speech resource; Google needs a Cloud API key with the Text-to-Speech API enabled. Azure and Google voices are coming in a later version; the keys can already be saved and tested. Microsoft Edge voices need no key but use an unofficial free service that may stop working one day. {STORAGE_NOTE}</div>
+            <div className="hint">The OpenAI key is shared with ChatGPT explanations. Azure needs the key and the region of your Speech resource (500,000 characters a month free); Google needs a Cloud API key with the Text-to-Speech API enabled (1 million characters a month free per voice type). Prices per hour assume about 54,000 characters of book text per hour of listening. Microsoft Edge voices need no key but use an unofficial free service that may stop working one day. {STORAGE_NOTE}</div>
           </div>
+        </section>
+      )}
+
+      {section === 'skip' && (
+        <section data-testid="skip-section">
+          <h2>Skip</h2>
+          <p className="section-lead">Parts of a book the voice leaves out. The text on the page does not change.</p>
+          <div className="card">
+            <label className="row" data-testid="skip-all">
+              <input type="checkbox" checked={allSkipped(skip)} onChange={(e) => set({ skip: skipAll(e.target.checked) })} />
+              <span><b>Skip all</b> <span className="hint muted small">Turn every option below on or off.</span></span>
+            </label>
+            {SKIP_OPTIONS.map((o) => (
+              <label key={o.id} className="row" data-testid={`skip-${o.id}`}>
+                <input type="checkbox" checked={skip[o.id]} onChange={(e) => setSkip({ [o.id]: e.target.checked })} />
+                <span>{o.label} <span className="hint muted small">{o.hint}</span></span>
+              </label>
+            ))}
+          </div>
+          <div className="hint muted small">Headers, footers, page numbers, footnotes, contents lines and captions are skipped as whole lines; brackets, citations and web addresses are left out of the sentence being read.</div>
         </section>
       )}
 

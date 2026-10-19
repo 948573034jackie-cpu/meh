@@ -20,7 +20,7 @@ export function getEngine(id: TtsEngineId): TtsEngine {
   if (e) return e;
   if (id === 'webspeech') e = fake ?? new WebSpeechEngine();
   else if (id === 'kokoro') e = new KokoroTtsEngine();
-  else e = new AudioTtsEngine(id, (engine, text, voiceId, rate) => window.readalong.ttsSynthesize(engine, text, voiceId, rate), (engine) => window.readalong.ttsListVoices(engine), id === 'edge' || id === 'elevenlabs');
+  else e = new AudioTtsEngine(id, (engine, text, voiceId, rate) => window.readalong.ttsSynthesize(engine, text, voiceId, rate), (engine) => window.readalong.ttsListVoices(engine), id === 'edge' || id === 'elevenlabs' || id === 'google');
   engines.set(id, e);
   return e;
 }
@@ -30,7 +30,7 @@ export function cancelAllEngines(): void { for (const e of engines.values()) e.c
 /** Sensible default voice per engine when the learner has not picked one. */
 export async function defaultVoiceFor(id: TtsEngineId): Promise<string> {
   if (id === 'webspeech') return fake ? 'fake-gb' : WebSpeechEngine.defaultVoiceId();
-  const fallback: Record<TtsEngineId, string> = { webspeech: '', edge: 'en-GB-SoniaNeural', openai: 'ballad', elevenlabs: 'JBFqnCBsd6RMkjVDRZzb', kokoro: 'bf_emma' };
+  const fallback: Record<TtsEngineId, string> = { webspeech: '', edge: 'en-GB-SoniaNeural', openai: 'ballad', elevenlabs: 'JBFqnCBsd6RMkjVDRZzb', kokoro: 'bf_emma', azure: 'en-GB-SoniaNeural', google: 'en-GB-Neural2-A' };
   try {
     const voices = await getEngine(id).listVoices();
     const gb = voices.find((v) => v.lang.toLowerCase() === 'en-gb');

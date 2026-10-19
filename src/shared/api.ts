@@ -130,6 +130,26 @@ export interface KokoroStatus {
   version: string;
 }
 
+/** Local speech-to-text engine status (mirrors src/main/stt/engine.ts EngineStatus), broadcast as 'stt:progress'. */
+export interface SttStatus {
+  state: 'missing' | 'downloading' | 'loading' | 'ready' | 'error';
+  variant: 'moonshine-base' | 'moonshine-tiny' | 'parakeet-v3';
+  modelDir: string;
+  /** bytes still to download for the configured model (0 when installed) */
+  downloadBytes: number;
+  progress: { phase: 'download' | 'extract' | 'done'; file: string; received: number; total: number; overallReceived: number; overallTotal: number } | null;
+  error: string | null;
+  sessions: number;
+  version: string;
+  confidence: boolean;
+}
+
+/** One event of the speech-to-text engine ('stt:event'); same shape as SttEngineEvent in src/core/voice/session.ts. */
+export type SttEvent =
+  | { type: 'partial' | 'final'; text: string; confidence?: number; segmentId: string; sessionId: string }
+  | { type: 'speechStart' | 'speechEnd'; sessionId: string; segmentId: string }
+  | { type: 'error'; sessionId: string; message: string };
+
 export type AiErrorCode = 'no_key' | 'auth' | 'rate_limit' | 'spend_limit' | 'model' | 'network' | 'timeout' | 'budget' | 'cancelled' | 'other';
 
 export type AiEvent =
@@ -235,6 +255,19 @@ export interface ReadAlongApi {
   kokoroCancelDownload(): Promise<void>;
   kokoroPrepare(items: { text: string; voice?: string; speed?: number }[]): Promise<void>;
   onKokoroProgress(cb: (s: KokoroStatus) => void): () => void;
+  // local speech-to-text (docs/VOICE.md); absent where there is no STT engine (the web build)
+  sttStatus?(): Promise<SttStatus>;
+  /** downloads the configured model; resolves when it is on disk (progress via onSttProgress) */
+  sttDownload?(): Promise<SttStatus>;
+  sttCancelDownload?(): Promise<void>;
+  /** opens a mic session (loads the model first) */
+  sttStart?(sessionId: string, opts?: { sampleRate?: number }): Promise<SttStatus>;
+  /** Int16 mono PCM at the session rate (16 kHz), 20–40 ms per call */
+  sttPush?(sessionId: string, pcm: ArrayBuffer): Promise<void>;
+  /** closes the session; resolves after its last final transcript was sent */
+  sttStop?(sessionId: string): Promise<void>;
+  onSttEvent?(cb: (ev: SttEvent) => void): () => void;
+  onSttProgress?(cb: (s: SttStatus) => void): () => void;
   // misc
   getDiagnostics(): Promise<Diagnostics>;
   openExternal(url: string): Promise<void>;
