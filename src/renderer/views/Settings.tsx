@@ -5,7 +5,8 @@ import { DEFAULT_SETTINGS } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import { ENGINE_LABELS, AVAILABLE_ENGINES, type TtsVoice } from '@core/tts/engine';
 import { getEngine, defaultVoiceFor } from '@core/tts/registry';
-import { shortcutLabel } from '../reader/shortcuts';
+import { shortcutLabel, SHORTCUT_HELP } from '../reader/shortcuts';
+const HELP_NAMES: Record<string, string> = Object.fromEntries(SHORTCUT_HELP.flatMap((g) => g.items.map((i) => [i.id, i.text])));
 import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap, type KokoroStatus } from '@shared/api';
 import { Tip } from '../ui/Tip';
 import { StylesEditor } from './StylesEditor';
@@ -384,6 +385,10 @@ export function SettingsView(): JSX.Element {
           <div className="field">
             <label>My English level</label>
             <div className="row">{CEFR_LEVELS.map((l) => <button key={l} className={S.learnerLevel === l ? 'primary' : ''} onClick={() => set({ learnerLevel: l })} data-testid={`level-${l}`}>{l}</button>)}</div>
+            <div className="row">
+              <Tip text="A 5-minute yes/no word test that finds your real level"><button onClick={() => useApp.getState().setView('leveltest')} data-testid="level-take">{S.level.testedAt ? 'Test my level again' : 'Test my level'}</button></Tip>
+              {S.level.lastResult && <span className="hint muted small">Last test: {S.level.lastResult.cefr}, about {S.level.lastResult.sizeLemmas.toLocaleString()} words, {new Date(S.level.testedAt ?? 0).toLocaleDateString()}</span>}
+            </div>
             <div className="hint">Words above this level are highlighted. In listening mode the reading stops at them and the AI explains them. Double-click a highlighted word to mark it known.</div>
           </div>
           <div className="card">
@@ -414,7 +419,7 @@ export function SettingsView(): JSX.Element {
           <p className="section-lead">They work while reading, when no text box has the focus.</p>
           <div className="card">
             <div className="kv">
-              {Object.entries(S.shortcuts).map(([k, v]) => <React.Fragment key={k}><span>{SHORTCUT_NAMES[k] ?? k}</span><span className="key">{shortcutLabel(v)}</span></React.Fragment>)}
+              {Object.entries(S.shortcuts).map(([k, v]) => <React.Fragment key={k}><span>{SHORTCUT_NAMES[k] ?? HELP_NAMES[k] ?? k}</span><span className="key">{shortcutLabel(v)}</span></React.Fragment>)}
             </div>
           </div>
           <div className="hint muted">Cmd+O opens a book, Cmd+Shift+V pastes text, Cmd+= / Cmd+− change the text size, Cmd+T cycles the theme.</div>

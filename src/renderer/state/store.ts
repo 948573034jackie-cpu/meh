@@ -3,7 +3,7 @@ import type { Book } from '@core/model';
 import type { Settings, LibraryItem, VocabState, ReadMode } from '@shared/settings';
 import { DEFAULT_SETTINGS, isDarkTheme } from '@shared/settings';
 
-export type View = 'library' | 'reader' | 'settings' | 'diagnostics';
+export type View = 'library' | 'reader' | 'settings' | 'diagnostics' | 'vocabulary' | 'progress' | 'leveltest';
 
 interface AppState {
   view: View;

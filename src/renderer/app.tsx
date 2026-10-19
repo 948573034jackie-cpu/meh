@@ -4,6 +4,9 @@ import { Library } from './views/Library';
 import { SettingsView } from './views/Settings';
 import { DiagnosticsView } from './views/Diagnostics';
 import { ReaderView } from './reader/ReaderView';
+import { Vocabulary } from './views/Vocabulary';
+import { Progress } from './views/Progress';
+import { LevelTest } from './views/LevelTest';
 import { Tip } from './ui/Tip';
 
 export function App(): JSX.Element {
@@ -18,13 +21,16 @@ export function App(): JSX.Element {
       useApp.getState().setSettings(settings);
       useApp.getState().setVocab(vocab);
       await useApp.getState().refreshLibrary();
-      if (!settings.onboarded) useApp.getState().setView('settings');
+      // first start: find the learner's level, then the settings tour
+      if (!settings.onboarded) useApp.getState().setView(settings.level.testedAt ? 'settings' : 'leveltest');
     })();
     const off = window.readalong.onMenu((action) => {
       const st = useApp.getState();
       if (action === 'settings') st.setView('settings');
       else if (action === 'library') st.setView('library');
       else if (action === 'diagnostics') st.setView('diagnostics');
+      else if (action === 'vocabulary') st.setView('vocabulary');
+      else if (action === 'progress') st.setView('progress');
       else if (action === 'open') void Library.openDialog();
       else if (action === 'paste') Library.openPaste();
       else if (action === 'fontUp' || action === 'fontDown') {
@@ -55,6 +61,8 @@ export function App(): JSX.Element {
           <div className="row no-drag">
             {view !== 'library' && <Tip text="Your books (Cmd+L)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('library')}>Library</button></Tip>}
             {book && <Tip text="Back to where you stopped" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('reader')}>Continue reading</button></Tip>}
+            {view !== 'vocabulary' && <Tip text="Every word you asked about, with its sentence and meaning" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('vocabulary')} data-testid="nav-vocabulary">My Vocabulary</button></Tip>}
+            {view !== 'progress' && <Tip text="Known and unknown words for each level" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('progress')} data-testid="nav-progress">Progress</button></Tip>}
             {view !== 'settings' && <Tip text="Look, voice, AI and level (Cmd+,)" below align="end"><button className="quiet" onClick={() => useApp.getState().setView('settings')}>Settings</button></Tip>}
           </div>
         </div>
@@ -64,6 +72,9 @@ export function App(): JSX.Element {
         {reader && <ReaderView key={book.id} book={book} />}
         {view === 'settings' && <SettingsView />}
         {view === 'diagnostics' && <DiagnosticsView />}
+        {view === 'vocabulary' && <Vocabulary />}
+        {view === 'progress' && <Progress />}
+        {view === 'leveltest' && <LevelTest onDone={() => useApp.getState().setView(useApp.getState().book ? 'reader' : 'settings')} />}
         {toast && (
           <div className="toast" role="status">
             <span>{toast.text}</span>

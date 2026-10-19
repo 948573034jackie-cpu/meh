@@ -8,12 +8,14 @@ import { launchApp } from './helpers';
  * replace `openLevelTest` with the real way in (the first-start screen or the Settings → Level button).
  */
 async function openLevelTest(page: import('@playwright/test').Page): Promise<void> {
-  // TODO(route): first start should show the test directly; from Settings → Level use the "Test my level" button.
+  // Settings → Level & stops → "Test my level" (first start opens the test directly when no level is saved)
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Level & stops' }).click();
   await page.getByTestId('level-take').click();
 }
 
 test.describe('level test', () => {
-  test.skip('intro → 2 x 50 words → result → Use this level saves the level and the model', async () => {
+  test('intro → 2 x 50 words → result → Use this level saves the level and the model', async () => {
     const { app, page } = await launchApp();
     await page.setViewportSize({ width: 1000, height: 760 });
     await openLevelTest(page);
@@ -27,7 +29,8 @@ test.describe('level test', () => {
     // stage 1: answer with the keyboard (Y / N) and the buttons
     for (let i = 0; i < 50; i++) {
       await expect(page.getByTestId('level-progress')).toHaveText(`${i + 1} of 50`);
-      if (i % 3 === 0) await page.getByTestId('level-yes').click();
+      // say yes to one word in four: a pseudoword yes-rate near 25% keeps the result reliable (the limit is 30%)
+      if (i % 4 === 0) await page.getByTestId('level-yes').click();
       else await page.keyboard.press(i % 2 ? 'KeyN' : 'ArrowLeft');
     }
     await expect(page.getByTestId('level-between')).toBeVisible();
@@ -35,7 +38,7 @@ test.describe('level test', () => {
     await expect(page.getByTestId('level-stage-text')).toHaveText('Stage 2 of 2');
     for (let i = 0; i < 50; i++) {
       await expect(page.getByTestId('level-progress')).toHaveText(`${i + 1} of 50`);
-      await page.keyboard.press(i % 2 ? 'KeyY' : 'KeyN');
+      await page.keyboard.press(i % 4 === 0 ? 'KeyY' : 'KeyN');
     }
 
     const result = page.getByTestId('level-result');
@@ -50,7 +53,7 @@ test.describe('level test', () => {
     await app.close();
   });
 
-  test.skip('Skip for now keeps the current level', async () => {
+  test('Skip for now keeps the current level', async () => {
     const { app, page } = await launchApp();
     await openLevelTest(page);
     await page.getByTestId('level-skip').click();
