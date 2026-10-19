@@ -10,8 +10,8 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 cp -R "$SRC/icons" "$OUT/"
 cp browser-shim.js "$SRC/lib.js" "$SRC/youtube.js" "$SRC/chat.js" "$SRC/popup.js" "$OUT/"
 cat browser-shim.js <(grep -v "dream/dream-bg.js" "$SRC/background.js") > "$OUT/background.js"
-sed 's#<script src="lib.js">#<script src="browser-shim.js"></script><script src="lib.js">#' "$SRC/popup.html" > "$OUT/popup.html"
-sed -i "/dream-settings/d" "$OUT/popup.html"
+# (one sed with no -i: the same on macOS and Linux) the Dream Tutor buttons are Chrome only
+sed -e 's#<script src="lib.js">#<script src="browser-shim.js"></script><script src="lib.js">#' -e '/dream-settings/d' "$SRC/popup.html" > "$OUT/popup.html"
 grep -q "browser-shim.js" "$OUT/popup.html" || { echo "popup.html: could not add browser-shim.js"; exit 1; }
 python3 - "$SRC/manifest.json" "$OUT/manifest.json" <<'PY'
 import json, sys
