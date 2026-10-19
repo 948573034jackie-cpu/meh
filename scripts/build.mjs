@@ -30,7 +30,8 @@ const main = {
   entryPoints: [path.join(root, 'src/main/index.ts')],
   outfile: path.join(dist, 'main/index.js'),
   platform: 'node', format: 'cjs', target: 'node22',
-  external: ['electron'],
+  // onnxruntime-node is a native addon (loads its .node binding and libonnxruntime next to itself): keep it external
+  external: ['electron', 'onnxruntime-node'],
 };
 const preload = {
   ...common,

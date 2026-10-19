@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
 import { getSecret } from './secrets';
+import { kokoroSynthesize, kokoroVoices, registerKokoroIpc } from './kokoro/ipc';
 
 /**
  * Voices synthesized in the main process (the renderer has no network access):
@@ -10,8 +11,10 @@ import { getSecret } from './secrets';
  *          returns word boundaries. May break when Microsoft changes its token scheme; the app then falls back.
  *  - openai: OpenAI /v1/audio/speech (gpt-4o-mini-tts). Paid. No word timing; the renderer estimates it.
  *  - elevenlabs: ElevenLabs with-timestamps endpoint. Paid. Character alignment -> word timings.
+ *  - kokoro: Kokoro-82M running locally through onnxruntime-node (src/main/kokoro). Free. Word timings from the model.
  */
 export function registerTtsHandlers(): void {
+  registerKokoroIpc();
   ipcMain.handle('tts:voices', async (_e, engine: TtsEngineId): Promise<TtsVoiceInfo[]> => listVoices(engine));
   ipcMain.handle('tts:synthesize', async (_e, engine: TtsEngineId, text: string, voiceId: string, rate: number): Promise<CloudTtsResult> => {
     const t = text.trim();
@@ -19,11 +22,13 @@ export function registerTtsHandlers(): void {
     if (engine === 'edge') return synthEdge(t, voiceId || 'en-GB-SoniaNeural', rate);
     if (engine === 'openai') return synthOpenAI(t, voiceId || 'ballad', rate);
     if (engine === 'elevenlabs') return synthElevenLabs(t, voiceId || 'JBFqnCBsd6RMkjVDRZzb');
+    if (engine === 'kokoro') return kokoroSynthesize(t, voiceId || 'bf_emma', 1); // rate is applied on playback
     throw new Error(`Voice engine "${engine}" is not available in this version.`);
   });
 }
 
 async function listVoices(engine: TtsEngineId): Promise<TtsVoiceInfo[]> {
+  if (engine === 'kokoro') return kokoroVoices();
   if (engine === 'edge') {
     const { MsEdgeTTS } = await import('msedge-tts');
     const tts = new MsEdgeTTS();

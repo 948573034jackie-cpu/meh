@@ -3,6 +3,7 @@ import type { TtsEngine } from './engine';
 import { WebSpeechEngine } from './webspeech';
 import { AudioTtsEngine } from './audio';
 import { FakeTtsEngine } from './fake';
+import { KokoroTtsEngine } from './kokoro';
 
 const engines = new Map<TtsEngineId, TtsEngine>();
 let fake: FakeTtsEngine | null = null;
@@ -18,7 +19,8 @@ export function getEngine(id: TtsEngineId): TtsEngine {
   let e = engines.get(id);
   if (e) return e;
   if (id === 'webspeech') e = fake ?? new WebSpeechEngine();
-  else e = new AudioTtsEngine(id, (engine, text, voiceId, rate) => window.readalong.ttsSynthesize(engine, text, voiceId, rate), (engine) => window.readalong.ttsListVoices(engine), id === 'edge' || id === 'elevenlabs' || id === 'kokoro');
+  else if (id === 'kokoro') e = new KokoroTtsEngine();
+  else e = new AudioTtsEngine(id, (engine, text, voiceId, rate) => window.readalong.ttsSynthesize(engine, text, voiceId, rate), (engine) => window.readalong.ttsListVoices(engine), id === 'edge' || id === 'elevenlabs');
   engines.set(id, e);
   return e;
 }
