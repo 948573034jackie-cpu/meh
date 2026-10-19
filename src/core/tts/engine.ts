@@ -49,6 +49,8 @@ export interface TtsEngine {
   cancelAll(): void;
   /** true when a paused utterance exists */
   readonly paused: boolean;
+  /** optional: checks that the engine can actually start speaking (a "Test voice" button); `reason` explains a failure */
+  probe?(): Promise<{ ok: boolean; reason?: string }>;
 }
 
 /** Engines offered in the UI (kokoro is reserved for a later version). */

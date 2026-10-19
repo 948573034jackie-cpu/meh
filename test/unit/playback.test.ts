@@ -115,7 +115,45 @@ class FailingEngine extends FakeTtsEngine {
   }
 }
 
+/** Engine whose first attempt at every sentence fails (a synthesizer hiccup the engine then clears). */
+class FlakyEngine extends FakeTtsEngine {
+  failed = new Set<string>();
+  override speak(text: string, opts: Parameters<FakeTtsEngine['speak']>[1]) {
+    const h = super.speak(text, opts);
+    if (this.failed.has(text)) return h;
+    this.failed.add(text);
+    const out: typeof h = { cancel: () => h.cancel(), done: h.done.then((o) => { if (o !== 'ended') return o; out.error = new Error('The Mac voice did not start'); return 'error' as const; }) };
+    return out;
+  }
+}
+
 describe('Playback regressions', () => {
+  it('re-reads a sentence after one speech error and only reports two errors in a row', async () => {
+    const engine = new FlakyEngine(1);
+    const pb = makePlayback(engine);
+    const errors: string[] = [];
+    pb.on('error', (e) => errors.push(e.message));
+    const finished = new Promise<void>((r) => pb.on('finished', r));
+    pb.play();
+    await finished;
+    expect(errors).toEqual([]);
+    expect(engine.spoken.map((s) => s.text)).toEqual(['First sentence here.', 'First sentence here.', 'Second sentence here.', 'Second sentence here.', 'Third one.', 'Third one.', 'Fourth one.', 'Fourth one.', 'Fifth one.', 'Fifth one.']);
+    expect(pb.state).toBe('idle');
+  });
+
+  it('stops with the engine message when a sentence fails twice in a row', async () => {
+    const engine = new FailingEngine(1);
+    const pb = makePlayback(engine);
+    const errors: string[] = [];
+    pb.on('error', (e) => errors.push(e.message));
+    const paused = new Promise<void>((r) => pb.on('state', (s) => { if (s === 'paused') r(); }));
+    pb.play();
+    await paused;
+    expect(engine.spoken.map((s) => s.text)).toEqual(['First sentence here.', 'First sentence here.']);
+    expect(errors).toEqual(['Microsoft voice returned no audio']);
+    expect(pb.position).toEqual({ chapter: 0, paragraph: 0, sentence: 0 });
+  });
+
   it('stops for a hard word even when it is the last word of the sentence', async () => {
     const engine = new FakeTtsEngine(2);
     const pb = makePlayback(engine);

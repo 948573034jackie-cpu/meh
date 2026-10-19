@@ -40,6 +40,8 @@ export class Playback {
   private handle: SpeakHandle | null = null;
   /** the sentence currently being spoken (recorded in the timeline when it ends or is interrupted) */
   private speaking: TimelineEntry | null = null;
+  /** speak handles that resolved 'error' back to back; one is retried, two stop the reading with the engine's message */
+  private consecutiveErrors = 0;
   private listeners = new Map<keyof PlaybackEvents, Set<(...args: never[]) => void>>();
   readonly timeline: TimelineEntry[] = [];
   hooks: PlaybackHooks = {};
@@ -69,6 +71,7 @@ export class Playback {
   play(from?: Position): void {
     if (from) this._pos = from;
     this.cancelCurrent();
+    this.consecutiveErrors = 0;
     this.setState('playing');
     void this.run(++this.gen);
   }
@@ -185,10 +188,14 @@ export class Playback {
       if (gen !== this.gen) return;
       this.recordSpoken();
       if (outcome === 'error') {
+        // one failure may be a hiccup the engine has already cleared (a stuck synthesizer it reset): re-read the
+        // sentence once; a second failure in a row is a real problem the learner has to hear about
+        if (++this.consecutiveErrors < 2) continue;
         this.emit('error', handle?.error ?? new Error('speech failed'));
         this.setState('paused');
         return;
       }
+      this.consecutiveErrors = 0;
       if (outcome === 'cancelled' && stoppedAtToken === null) return; // paused/stopped externally
       // The hard word was the last word of the sentence, or the engine gave no word boundaries at all:
       // the sentence has been read completely, so the stop happens at its end.
