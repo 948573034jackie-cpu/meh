@@ -14,7 +14,7 @@ import { Readable, Transform } from 'node:stream';
  *  - fp16: 164 MB, runs at fp32 speed on CPU (ORT casts to fp32), RTF ~0.3. DEFAULT.
  *  - fp32: 326 MB, same speed, reference quality.
  *  - int8: 114 MB, dynamic quantization (ConvInteger/MatMulInteger): ~6x SLOWER than fp32 on x86 CPUs with
- *    ORT's CPU provider, and needs ORT >= 1.30 (int8 ConvInteger kernel). Kept for experiments only.
+ *    ORT's CPU provider, and needs ORT >= 1.30 (int8 ConvInteger kernel), so it does not load with the pinned 1.23.2. Kept for experiments only.
  */
 export type ModelVariant = 'fp16' | 'fp32' | 'int8';
 

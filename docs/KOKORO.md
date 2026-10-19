@@ -118,3 +118,8 @@ progress and the reader can call `prepare()`.
 British: bf_emma (default, grade B-), bm_george, bf_isabella, bm_fable, bm_lewis, bf_alice, bf_lily,
 bm_daniel. American: af_heart (A), af_bella (A-), af_nicole, am_michael, am_fenrir, … (grades from the
 Kokoro model card). All 54 vectors are in `voices-v1.0.bin`; `src/main/kokoro/voices.ts` lists the English ones.
+
+## onnxruntime-node version (important)
+onnxruntime-node is pinned to **1.23.2**: it is the newest release that ships macOS **x64** (Intel) binaries;
+1.30 ships darwin/arm64 only, so Kokoro and the Silero VAD would fail on Intel Macs. The fp16/fp32 models load
+and run on 1.23.2 (bench on a 4-core x86: RTF ≈ 0.48); the int8 file does not load on 1.23 (and is slower anyway).
