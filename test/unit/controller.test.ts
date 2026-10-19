@@ -322,7 +322,7 @@ describe('ListenController', () => {
     await until(() => t.windows.length === 1);
     expect(t.controller.answerWindow('dont_know')).toBe(true); // before the explanation: it simply starts
     await until(() => t.ai.calls.length === 1);
-    expect(t.ai.calls[0].req.again).toBeFalsy();
+    expect(t.ai.calls[0].req.again).toBe(true); // "I don't know" straight away: the fuller explanation
     t.ai.calls[0].resolve(REPLY);
     await until(() => t.windows.length === 3);
     expect(t.controller.stopWindow).toBe('after');
@@ -368,23 +368,21 @@ describe('ListenController', () => {
     await finished;
     expect(t.ai.calls.length).toBe(0);
     expect(t.explainer.spoken).toEqual([]);
-    expect(t.learning).toEqual([]);
+    expect(t.learning).toEqual(['sanguine']); // "go on" keeps it as a word to learn
     expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['He was sanguine.', 'Then he left.']);
   });
 
-  it('the learner says something else in the first window: it goes on the explain request as the question', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+  it('the learner says something else in the window: it is ignored (never sent to the AI); silence then explains', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 300 });
     t.playback.play();
     await until(() => t.windows.length === 1);
     expect(t.controller.answerWindow({ text: 'sang win' })).toBe(true);
     await until(() => t.ai.calls.length === 1);
-    expect(t.ai.calls[0].req).toMatchObject({ kind: 'word', target: 'sanguine', question: 'sang win' });
-    expect(t.ai.calls[0].req.history.at(-1)).toMatchObject({ role: 'user' });
-    expect(t.ai.calls[0].req.history.at(-1)!.text).toContain('sang win');
+    expect(t.ai.calls[0].req.question).toBeUndefined();
+    expect(JSON.stringify(t.ai.calls[0].req.history)).not.toContain('sang win');
     t.ai.calls[0].resolve(REPLY);
     await until(() => t.windows.length === 3);
-    // after the explanation a question is not taken by the window (it is answered as a question)
-    expect(t.controller.answerWindow({ text: 'why is he happy' })).toBe(false);
+    expect(t.controller.answerWindow({ text: 'why is he happy' })).toBe(true); // swallowed in the window too
     expect(t.controller.answerWindow('know')).toBe(true);
     await until(() => t.playback.state === 'idle');
     expect(t.ai.calls.length).toBe(1);
@@ -477,5 +475,19 @@ describe('ListenController', () => {
   it('explains a lemma once per sentence even when it appears twice', () => {
     const t = setup(['The sanguine man met a sanguine woman.']);
     expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 }).map((x) => x.token)).toEqual([1]);
+  });
+});
+
+describe('5-second window is commands only', () => {
+  it('speech in the window is never sent to the AI; go on marks learning without explaining', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 200 } as never);
+    t.playback.play();
+    await until(() => t.controller.stopWindow === 'before', 8000);
+    expect(t.controller.answerWindow({ text: 'sanguine sanguine what is this' })).toBe(true);
+    expect(t.ai.calls.length).toBe(0);
+    expect(t.controller.answerWindow('bye')).toBe(true);
+    await until(() => t.learning.includes('sanguine'), 4000);
+    expect(t.ai.calls.length).toBe(0);
+    t.playback.stop();
   });
 });

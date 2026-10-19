@@ -95,6 +95,8 @@ export interface ListenDeps {
   mode?: () => ReadMode;
   /** the AI's context-chosen Chinese meanings for a lemma in this chapter (chapter hints), if ready */
   contextZh?: (lemma: string) => string[] | undefined;
+  /** a Listening stop starts on this word/phrase (show its dictionary card now) / is finished with it (hide the card) */
+  onStopTarget?: (t: { kind: ExplainKind; target: string; lemma?: string } | null) => void;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
   /**
@@ -271,10 +273,13 @@ export class ListenController {
       for (const t of ordered) {
         if (over()) break;
         if (t.lemma && (this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known')) continue;
+        this.deps.onStopTarget?.({ kind: t.kind, target: t.target, lemma: t.lemma });
+        try {
         this.last = { kind: t.kind, target: t.target, pos, dict: t.dict ?? null, lemma: t.lemma };
         // recorded now: whatever the learner answers, this word does not stop again within the repeat window
         if (t.lemma) this.lastExplainedAt.set(t.lemma, this.offsetOf(pos));
-        let question: string | undefined;
+        // The 5-second window only listens for the three commands; nothing the learner says is sent to the AI.
+        let deeper = false;
         if (t.lemma) {
           const said = await this.sayTarget(t.target, t.lemma, Math.max(0, s.listen.wordRepeats));
           if (over()) break;
@@ -282,10 +287,11 @@ export class ListenController {
           const a = await this.commandWindow('before', t);
           if (a === 'aborted' || over()) break;
           if (a === 'know') { this.dismissed.add(t.lemma); continue; }
-          if (a === 'bye') continue;
-          if (typeof a === 'object') question = a.text.trim() || undefined;
+          // "go on": no explanation, but the word is still one to learn
+          if (a === 'bye') { if (!this.dismissed.has(t.lemma) && this.deps.vocab().words[t.lemma] !== 'known') this.deps.onMarkLearning(t.lemma); continue; }
+          if (a === 'dont_know') deeper = true; // "I don't know" straight away: the fuller explanation at once
         }
-        let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, question);
+        let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, undefined, deeper);
         if (res === 'aborted' || over()) break;
         if (res === 'skipped') continue;
         for (;;) {
@@ -297,8 +303,9 @@ export class ListenController {
             continue;
           }
           if (a === 'know' && t.lemma) this.dismissed.add(t.lemma);
-          break; // "bye bye", nothing, or "I know": the word stays as it is (learning unless known now)
+          break; // "go on", nothing, or "I know": the word stays as it is (learning unless known now)
         }
+        } finally { this.deps.onStopTarget?.(null); }
       }
     } finally { off(); }
     if (aborted || this.disposed || !listening()) return 'stop';
@@ -368,7 +375,9 @@ export class ListenController {
   answerWindow(a: WindowAnswer): boolean {
     const w = this.flowWin;
     if (!w) return false;
-    if (typeof a === 'object' && w.phase === 'after') return false;
+    // anything other than the three commands (the learner repeating the word, a question) is swallowed: the window
+    // only takes commands and never sends speech to the AI
+    if (typeof a === 'object') return true;
     w.resolve(a);
     return true;
   }

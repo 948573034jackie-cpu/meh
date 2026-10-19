@@ -46,7 +46,7 @@ export const PHRASES: Record<CommandIntent, readonly string[]> = {
     'what', 'again', 'explain again', 'say again', 'say it again', 'one more time', "i don't understand", 'i dont understand', 'i don understand',
   ],
   know: ['i know', 'i knew', 'i no', 'i now', 'i know it', 'yes i know', 'yeah i know', 'ya i know', 'got it', 'i got it', 'i understand', 'understood'],
-  bye: ['bye bye', 'bye', 'goodbye', 'good bye', 'bai bai', 'by by', 'bai', 'see you', 'see ya', "that's all", 'thats all', 'that is all', 'the end'],
+  bye: ['bye bye', 'bye', 'goodbye', 'good bye', 'bai bai', 'by by', 'bai', 'see you', 'see ya', "that's all", 'thats all', 'that is all', 'the end', 'go on', 'go ahead', 'keep going', 'continue', 'carry on', 'next', 'skip', 'skip it', 'move on'],
 };
 
 /** Order matters: DONT_KNOW first because "i know" is a substring of "i don't know". */

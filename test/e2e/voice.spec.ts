@@ -55,10 +55,12 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Pause');
   expect(await line(page)).toBe('closed');
 
-  // 2. the next hard word: what the learner says in the first window goes with the explanation as its question
+  // 2. the next hard word: anything else the learner says in the window is ignored (never sent to the AI);
+  //    when the 5 seconds run out the explanation starts on its own
   await expect.poll(async () => (await line(page)) === 'window' && (await phase(page)) === 'before', { timeout: 40000 }).toBe(true);
   await inject(page, 'what is that', 'e2e:2');
-  await expect.poll(async () => (await requests(page)).some((r) => (r.kind === 'word' || r.kind === 'phrase') && r.question === 'what is that'), { timeout: 5000 }).toBe(true);
+  await expect.poll(async () => (await requests(page)).some((r) => r.kind === 'word' || r.kind === 'phrase'), { timeout: 15000 }).toBe(true);
+  expect((await requests(page)).some((r) => r.question === 'what is that')).toBe(false);
   const second = (await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase').at(-1)!;
 
   // 3. after its explanation the window opens again: "I don't know" asks for a second, deeper explanation,
@@ -68,9 +70,8 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   await expect.poll(async () => (await requests(page)).some((r) => r.target === second.target && r.again === true), { timeout: 5000 }).toBe(true);
   await expect.poll(async () => (await line(page)) === 'window' && (await phase(page)) === 'after', { timeout: 30000 }).toBe(true);
   await inject(page, 'what does this mean', 'e2e:4');
-  await expect.poll(async () => (await requests(page)).some((r) => r.kind === 'question' && r.question === 'what does this mean'), { timeout: 5000 }).toBe(true);
-  const q = (await requests(page)).find((r) => r.kind === 'question')!;
-  expect(Array.isArray(q.history)).toBe(true);
+  await page.waitForTimeout(500);
+  expect((await requests(page)).some((r) => r.question === 'what does this mean')).toBe(false); // the window takes commands only
 
   // 3b. the keys work in the window too: D before the explanation starts it, Esc after it goes on
   await expect.poll(async () => (await phase(page)) === 'before', { timeout: 60000 }).toBe(true);
@@ -94,7 +95,7 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   // 5. the explanations drawer shows You / Tutor
   await page.getByTestId('transcript-toggle').click();
   await expect(page.getByTestId('transcript')).toContainText('You');
-  await expect(page.getByTestId('transcript')).toContainText('what does this mean');
+  await expect(page.getByTestId('transcript')).toContainText('Why is the committee angry?');
   await expect(page.locator('.voice-dock.shifted')).toHaveCount(1);
   await page.getByTestId('transcript-toggle').click();
 

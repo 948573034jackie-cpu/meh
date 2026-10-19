@@ -204,6 +204,13 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       onPauseWindow: (open) => voiceRef.current?.pauseWindow(open),
       onCommandWindow: (w) => { cmdWinRef.current = w; setCmdWin(w ? { ...w, id: ++cmdSeq.current } : null); },
       chapterPhrases: (pos) => phrasesRef.current.get(pos.chapter)?.[sentenceKey(pos)],
+      // the dictionary card shows under the word while it is said 3 times and explained; it goes away afterwards
+      onStopTarget: (t) => {
+        if (!t) { closeCard(); return; }
+        cancelCardClose();
+        const c = anchorCard(t.kind, t.target);
+        if (c) setCard(t.kind === 'phrase' ? { ...c, word: t.target } : c);
+      },
       onTranscript: (entry) => {
         setTranscript((prev) => (prev.some((e) => e.id === entry.id) ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev.slice(-40), entry]));
         setBusy(controller.busy);
@@ -498,17 +505,23 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     void ctl()?.explainNow('word', c.word, c.pos, d, c.isName ? undefined : c.lemma);
   }
   /** Keeps the card in step with the explanation it belongs to; opens one when listening stopped on a hard word. */
+  /** Opens the dictionary card under a word or phrase of the current sentence (Listening stops). */
+  function anchorCard(kind: string, target: string): Card | null {
+    if (!docRef.current) return null;
+    const cur = docRef.current.querySelector(`.s[data-key="${keyOf(posRef.current)}"]`) ?? docRef.current.querySelector('.s.cur');
+    const spans = Array.from(cur?.querySelectorAll<HTMLElement>(kind === 'word' ? '.w[data-lemma]' : '.ph, [data-phrase]') ?? []);
+    const el = spans.find((w) => (w.firstChild?.textContent ?? w.textContent ?? '').trim() === target) ?? spans.find((w) => (w.textContent ?? '').trim().toLowerCase() === target.toLowerCase());
+    const wordEl = el?.classList.contains('w') ? el : el?.querySelector<HTMLElement>('.w') ?? null;
+    if (!wordEl) return null;
+    return cardFor(wordEl);
+  }
+
   function followEntry(entry: TranscriptEntry): void {
     let c = cardRef.current;
     const isWordish = entry.kind === 'word' || entry.kind === 'phrase';
-    if (!c && isWordish && entry.status === 'thinking' && docRef.current) {
+    if (!c && isWordish && entry.status === 'thinking') {
       // an automatic stop (or an explanation started from elsewhere): anchor a card to the word in the current sentence
-      const cur = docRef.current.querySelector(`.s[data-key="${keyOf(posRef.current)}"]`) ?? docRef.current.querySelector('.s.cur');
-      const spans = Array.from(cur?.querySelectorAll<HTMLElement>(entry.kind === 'word' ? '.w[data-lemma]' : '.ph') ?? []);
-      const el = spans.find((w) => (w.firstChild?.textContent ?? w.textContent ?? '').trim() === entry.target) ?? spans.find((w) => (w.textContent ?? '').trim().toLowerCase() === entry.target.toLowerCase());
-      const wordEl = el?.classList.contains('w') ? el : el?.querySelector<HTMLElement>('.w') ?? null;
-      if (!wordEl) return;
-      c = cardFor(wordEl); if (!c) return;
+      c = anchorCard(entry.kind, entry.target); if (!c) return;
       cancelCardClose();
     }
     if (!c) return;

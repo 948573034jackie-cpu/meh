@@ -130,9 +130,9 @@ describe('voice chat: controller', () => {
     await sleep(120);
     expect(t.windows).toEqual([true]); // still open after the first 150 ms
     expect(t.ai.calls.length).toBe(0);
-    t.controller.answerWindow({ text: 'what is it' });
-    await until(() => t.ai.calls.length === 1);
-    expect(t.ai.calls[0].req.question).toBe('what is it');
+    t.controller.answerWindow({ text: 'what is it' }); // swallowed: the window only takes commands
+    await until(() => t.ai.calls.length === 1); // the countdown ran out: the explanation starts
+    expect(t.ai.calls[0].req.question).toBeUndefined();
     t.playback.stop();
   });
 
