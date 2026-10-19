@@ -9,7 +9,7 @@ import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
 import { resolveStyle } from '@shared/styles';
 import type { Playback } from './playback';
-import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
+import { styledWordScript, styledSentenceScript, plainScript, aiSteps, proseSteps, splitByScript, type ScriptStep, type AnyStep, type ScriptSettings } from './script';
 import { StreamSentenceSplitter } from './sentences';
 import { cleanSpokenProse } from '@core/ai/prompts';
 
@@ -68,6 +68,8 @@ export interface ListenDeps {
   onBudget?: (daily: number, monthly: number) => void;
   /** which screen the learner is on; default 'listening' */
   mode?: () => ReadMode;
+  /** the AI's context-chosen Chinese meanings for a lemma in this chapter (chapter hints), if ready */
+  contextZh?: (lemma: string) => string[] | undefined;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
   /**
@@ -430,9 +432,19 @@ export class ListenController {
     const s = this.deps.settings();
     const say = async (text: string, lang: 'en' | 'zh', role: string): Promise<boolean> => {
       if (cancelled || !text.trim()) return !cancelled;
+      // any English text that still contains Chinese (answers to questions, older styles): Chinese parts go to the
+      // Chinese voice, or are left out when Chinese is off; an English voice would read them as "Chinese letter"
+      if (lang === 'en' && /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text)) {
+        for (const run of splitByScript(text)) {
+          if (!(await say(run.text, run.zh ? 'zh' : 'en', run.zh ? 'chinese' : role))) return false;
+        }
+        return !cancelled;
+      }
       const engine = lang === 'zh' ? this.deps.zhEngine() : role === 'sentence' || role === 'word' ? this.deps.engine() : this.deps.explainEngine();
       const v = role === 'sentence' || role === 'word' ? this.deps.voice() : this.deps.explainVoice();
-      const voiceId = lang === 'zh' ? this.deps.zhVoiceId() ?? v.voiceId : v.voiceId;
+      const zhVoice = lang === 'zh' ? this.deps.zhVoiceId() : null;
+      if (lang === 'zh' && !zhVoice) return !cancelled; // never let an English voice read Chinese characters
+      const voiceId = zhVoice ?? v.voiceId;
       const rate = role === 'word' ? Math.min(v.rate, 0.9) : v.rate;
       const h = engine.speak(text, { voiceId, rate });
       activeHandle = h;
@@ -478,7 +490,7 @@ export class ListenController {
           }
           return false;
         }
-        const spoken = prose ? proseSteps(aiParts!.free ?? '', { zh: dict?.zh, speakChinese: s.ai.speakChinese, zhAvailable: !!this.deps.zhVoiceId() }) : aiSteps(aiParts!, scriptSettings(s), !!this.deps.zhVoiceId());
+        const spoken = prose ? proseSteps(aiParts!.free ?? '', { zh: (lemma ? this.deps.contextZh?.(lemma)?.filter(Boolean).join('，') : undefined) || dict?.zh, speakChinese: s.ai.speakChinese, zhAvailable: !!this.deps.zhVoiceId() }) : aiSteps(aiParts!, scriptSettings(s), !!this.deps.zhVoiceId());
         if (!(await runSteps(spoken))) return false;
       }
       return true;

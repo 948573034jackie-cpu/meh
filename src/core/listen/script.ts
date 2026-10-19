@@ -85,14 +85,49 @@ export function styledSentenceScript(sentence: string, shape: ScriptShape): Scri
  */
 export function proseSteps(text: string, opts: { zh?: string | null; speakChinese: boolean; zhAvailable: boolean }): AnyStep[] {
   const steps: AnyStep[] = [];
+  const chinese = opts.speakChinese && opts.zhAvailable;
   const [first, rest] = splitAtPause(text);
   const add = (t: string) => {
     for (const para of cleanSpokenProse(t).split(/\n\s*\n/).map((x) => x.replace(/\s+/g, ' ').trim()).filter(Boolean)) {
-      steps.push({ type: 'say', text: para, lang: 'en', role: 'explanation' }, { type: 'pause', ms: 250 });
+      // Chinese inside the English reply goes to the Chinese voice (an English voice reads it as "Chinese letter");
+      // with Chinese switched off it is left out of the speech
+      for (const run of splitByScript(para)) {
+        if (run.zh) { if (chinese) steps.push({ type: 'say', text: run.text, lang: 'zh', role: 'chinese' }); }
+        else if (/[\p{L}\p{N}]/u.test(run.text)) steps.push({ type: 'say', text: run.text, lang: 'en', role: 'explanation' });
+      }
+      steps.push({ type: 'pause', ms: 250 });
     }
   };
   add(first);
   if (rest !== null) { steps.push({ type: 'wait' }); add(rest); }
-  if (opts.speakChinese && opts.zhAvailable && opts.zh) steps.push({ type: 'say', text: opts.zh, lang: 'zh', role: 'chinese' }, { type: 'pause', ms: 250 });
+  const zh = opts.zh ? twoMeanings(opts.zh) : '';
+  if (chinese && zh) steps.push({ type: 'pause', ms: 300 }, { type: 'say', text: zh, lang: 'zh', role: 'chinese' }, { type: 'pause', ms: 250 });
   return steps;
+}
+
+const CJK = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+
+/** Splits text into runs of Chinese and non-Chinese; Chinese punctuation stays with the Chinese run. */
+export function splitByScript(text: string): { text: string; zh: boolean }[] {
+  const out: { text: string; zh: boolean }[] = [];
+  const re = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF][\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF\s]*/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index! > last) out.push({ text: text.slice(last, m.index), zh: false });
+    out.push({ text: m[0].trim(), zh: true });
+    last = m.index! + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), zh: false });
+  return out.map((r) => ({ ...r, text: r.text.trim() })).filter((r) => r.text);
+}
+
+/**
+ * The two Chinese meanings to say at the end: from a dictionary line like "a. 尖刻的, 讥讽的, 激烈的" or an AI
+ * pair ["尖刻的", "刻薄的"]. Part-of-speech marks, brackets and Latin letters are removed; at most two, no repeats.
+ */
+export function twoMeanings(raw: string | string[]): string {
+  const parts = (Array.isArray(raw) ? raw : raw.split(/[,，;；、/\n]/))
+    .map((x) => x.replace(/\b[a-z]{1,5}\.\s*/gi, '').replace(/[(（[【][^)）\]】]*[)）\]】]/g, '').replace(/[A-Za-z]/g, '').trim())
+    .filter((x) => CJK.test(x));
+  return [...new Set(parts)].slice(0, 2).join('，');
 }

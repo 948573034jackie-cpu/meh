@@ -188,6 +188,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
       explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(settingsRef.current.voice.rate, 1.2) }; },
       zhVoiceId: () => (settingsRef.current.ai.speakChinese ? zhVoiceRef.current : null),
+      contextZh: (lemma) => hintsRef.current?.[lemma],
       explain: (req, onDelta) => { if (E2E) e2eRequests.push(structuredClone(req)); const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
       mode: () => modeRef.current,
       onWaiting: (w) => setWaiting(w),
@@ -660,6 +661,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       {card && (
         <WordCard data={card} onClose={closeCard} onSay={sayCard}
           onKnown={() => cardStatus('known')} onIgnore={() => cardStatus('ignored')}
+          chineseOn={settings.ai.speakChinese} onToggleChinese={() => void useApp.getState().patchSettings({ ai: { ...settingsRef.current.ai, speakChinese: !settingsRef.current.ai.speakChinese } })}
           onDontKnow={() => { const c = cardRef.current; if (!c) return; void changeStatus(c.lemma, 'learning', false); setCard({ ...c, status: 'learning' }); if (!ctl()?.busy) void ctl()?.explainAgain(); }} />
       )}
       {selBar && (

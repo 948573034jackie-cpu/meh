@@ -122,6 +122,7 @@ export function ListeningScreen(p: Props): JSX.Element {
           </div>
           <div className="group explain">
             <Tip text="Hear the last explanation again, deeper; or explain the hard word of this sentence (D)"><button onClick={shared.dontKnow} data-testid="dontknow">I don't know</button></Tip>
+            <Tip text="Speak the Chinese meaning at the end of each explanation, with a Chinese voice"><button className={settings.ai.speakChinese ? 'listen-toggle on' : 'listen-toggle'} aria-pressed={settings.ai.speakChinese} onClick={() => void useApp.getState().patchSettings({ ai: { ...useApp.getState().settings.ai, speakChinese: !useApp.getState().settings.ai.speakChinese } })} data-testid="chinese-toggle">中文</button></Tip>
             <Tip text="Explain what was just read (Shift+E)"><button onClick={shared.explainLast} data-testid="explain-last">Explain last</button></Tip>
             <select value={settings.listen.lastSecondsWindow} onChange={(e) => p.onWindow(Number(e.target.value) as never)} aria-label="How far back" data-testid="window">
               {[20, 30, 40, 60].map((s) => <option key={s} value={s}>{s} s</option>)}

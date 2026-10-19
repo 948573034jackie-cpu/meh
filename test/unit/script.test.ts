@@ -20,3 +20,22 @@ describe('scripts', () => {
     expect(aiSteps({ definition: 'x', chinese: '乐' }, s, false).filter((x) => x.type === 'say')).toHaveLength(1);
   });
 });
+
+import { proseSteps, splitByScript, twoMeanings } from '@core/listen/script';
+describe('Chinese in explanations', () => {
+  it('splits Chinese runs out of English text', () => {
+    expect(splitByScript('It means 尖刻的 here, okay.')).toEqual([{ text: 'It means', zh: false }, { text: '尖刻的', zh: true }, { text: 'here, okay.', zh: false }]);
+  });
+  it('keeps two clean meanings', () => {
+    expect(twoMeanings('a. 尖刻的, 讥讽的, 激烈的')).toBe('尖刻的，讥讽的');
+    expect(twoMeanings(['刻薄的', ''])).toBe('刻薄的');
+    expect(twoMeanings('n. (pl.) 血红色; 红粉笔 sth')).toBe('血红色，红粉笔');
+  });
+  it('speaks Chinese with the Chinese voice, at the end, and drops it when off', () => {
+    const on = proseSteps('Sharp words. In Chinese 尖刻的.', { zh: 'a. 尖刻的, 讥讽的, 激烈的', speakChinese: true, zhAvailable: true });
+    const says = on.filter((s) => s.type === 'say') as { text: string; lang: string }[];
+    expect(says.map((s) => [s.lang, s.text])).toEqual([['en', 'Sharp words. In Chinese'], ['zh', '尖刻的'], ['zh', '尖刻的，讥讽的']]);
+    const off = proseSteps('Sharp words. In Chinese 尖刻的.', { zh: '尖刻的', speakChinese: false, zhAvailable: true });
+    expect((off.filter((s) => s.type === 'say') as { lang: string }[]).every((s) => s.lang === 'en')).toBe(true);
+  });
+});

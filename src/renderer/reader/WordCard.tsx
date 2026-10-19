@@ -32,9 +32,12 @@ interface Props {
   onKnown: () => void;
   onDontKnow: () => void;
   onIgnore: () => void;
+  /** speak the Chinese meaning at the end of explanations */
+  chineseOn?: boolean;
+  onToggleChinese?: () => void;
 }
 
-export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore }: Props): JSX.Element {
+export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore, chineseOn, onToggleChinese }: Props): JSX.Element {
   const glosses = data.zh ? parseGloss(data.zh).slice(0, 2) : [];
   const style: React.CSSProperties = { left: Math.max(8, data.x - 150), top: data.above ? undefined : data.y + 8, bottom: data.above ? `calc(100% - ${data.y}px + 8px)` : undefined };
   const ex = data.explain;
@@ -64,6 +67,7 @@ export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore }
         <Tip text="Known: no highlight, no hint, never explained (K)" align="start"><button className={data.status === 'known' ? 'active' : ''} onClick={onKnown} data-testid="card-known">I know</button></Tip>
         <Tip text="Hear it explained again, deeper; stays highlighted (D)"><button className={data.status === 'learning' ? 'active' : ''} onClick={onDontKnow} data-testid="card-dontknow">I don't know</button></Tip>
         <Tip text="Ignore this word for good (X)" align="end"><button className={data.status === 'ignored' ? 'active' : ''} onClick={onIgnore} data-testid="card-ignore">Ignore</button></Tip>
+        {onToggleChinese && <Tip text={chineseOn ? 'Chinese meaning is spoken at the end of explanations. Tap to turn it off.' : 'Chinese meaning is not spoken. Tap to turn it on.'} align="end"><button className={chineseOn ? 'active' : ''} onClick={onToggleChinese} data-testid="card-chinese" aria-pressed={!!chineseOn}>中文 {chineseOn ? 'on' : 'off'}</button></Tip>}
         <span className="grow" />
         <button className="icon quiet close" onClick={onClose} aria-label="Close (Esc)">✕</button>
       </div>
