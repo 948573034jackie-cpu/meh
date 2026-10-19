@@ -177,6 +177,10 @@
 .entry .zh { font-family: var(--font-zh); color: var(--hl-learning); }
 .entry .body { white-space: pre-wrap; line-height: 1.5; }
 .entry.error { border-color: var(--danger); }
+.entry.chat { gap: 8px; }
+.entry.chat .who { display: inline-block; min-width: 3.2em; font-size: 0.72em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-right: 4px; }
+.entry.chat .you { font-weight: 600; }
+.entry.chat .tutor .body { white-space: pre-wrap; line-height: 1.5; }
 
 /* ---- help sheet ------------------------------------------------------------------------------------ */
 .help-sheet { width: min(820px, 92vw); }
