@@ -295,6 +295,13 @@ describe('ListenController', () => {
     expect(t.controller.countStops(0)).toBeGreaterThanOrEqual(1);
   });
 
+  it('an easy word the learner marked as learning (yellow) also makes listening pause', () => {
+    const t = setup(['Then he left.']);
+    expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 })).toEqual([]);
+    t.vocab.words.left = 'learning';
+    expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 }).map((x) => x.target)).toEqual(['left']);
+  });
+
   it('a learning word (heard before, learner silent) is explained again later; a known word never', () => {
     const t = setup(['He was sanguine.', 'Then acrimonious.']);
     t.vocab.words.sanguine = 'learning';

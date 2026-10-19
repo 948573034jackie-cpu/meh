@@ -118,7 +118,11 @@ export class ListenController {
     const here = this.offsetOf(pos);
     const recently = (lemma: string) => { const at = this.lastExplainedAt.get(lemma); return at !== undefined && s.listen.repeatWindowWords > 0 && here >= at && here - at < s.listen.repeatWindowWords; };
     if (s.listen.autoExplainWords) {
-      for (const ti of ann.hardTokens) {
+      // stop at every word above the learner's level AND at every yellow "learning" word, even an easy one the
+      // learner tapped: a learning word is a word they said they do not know yet
+      const hard = new Set(ann.hardTokens);
+      const candidates = ann.infos.map((info, i) => (info && (hard.has(i) || vocab[info.lemma] === 'learning') ? i : -1)).filter((i) => i >= 0);
+      for (const ti of candidates) {
         const info = ann.infos[ti];
         if (!info) continue;
         const status = vocab[info.lemma];
@@ -135,7 +139,7 @@ export class ListenController {
         const lemma = ph.result.lemma;
         const status = vocab[lemma];
         if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) continue;
-        if (!isAbove(ph.result.entry.level, s.learnerLevel)) continue;
+        if (!isAbove(ph.result.entry.level, s.learnerLevel) && status !== 'learning') continue;
         if (recently(lemma)) continue;
         if (out.some((t) => t.lemma === lemma)) continue;
         // PhraseSpan.end is exclusive (the last word is tokens[end - 1]); Trigger.end is inclusive like word triggers
