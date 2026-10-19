@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Playback } from '@core/listen/playback';
-import { ListenController, type ListenDeps } from '@core/listen/controller';
+import { ListenController, type ListenDeps, type CommandWindow, type ChapterPhrase } from '@core/listen/controller';
 import { FakeTtsEngine } from '@core/tts/fake';
 import type { Dictionary, DictEntry } from '@core/dict/types';
 import type { ExplainRequest } from '@shared/api';
@@ -40,12 +40,12 @@ async function until(cond: () => boolean, ms = 3000): Promise<void> {
 }
 
 let mode: 'reading' | 'listening' = 'listening';
-function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
+function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}, phrases?: (pos: Position) => ChapterPhrase[]) {
   const book = makeBook([{ title: 'One', paragraphs }]);
   const settings: Settings = structuredClone(DEFAULT_SETTINGS);
   settings.voice.pauseBetweenSentencesMs = 0;
-  settings.ai.styles = { custom: { shape: { wordBefore: 1, wordAfter: 1, sentenceAfterWord: 1, sentenceBefore: 1, sentenceAfter: 1 } } };
-  Object.assign(settings.listen, { pauseAfterExplainMs: 0, quizWaitMs: 40 }, patch);
+  settings.ai.styles = { custom: { shape: { wordBefore: 1, wordAfter: 0, sentenceAfterWord: 0, sentenceBefore: 1, sentenceAfter: 1 } } };
+  Object.assign(settings.listen, { pauseAfterExplainMs: 0, quizWaitMs: 40, commandWindowMs: 30 }, patch);
   mode = 'listening';
   const vocab: VocabState = { words: {}, marked: {} };
   const reader = new FakeTtsEngine(1);
@@ -54,6 +54,7 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
   const ai = fakeAi();
   const learning: string[] = [];
   const windows: boolean[] = [];
+  const bars: (CommandWindow | null)[] = [];
   const playback = new Playback(book, { engine: () => reader, voice: () => ({ voiceId: 'fake-gb', rate: 1 }), pauseMs: () => 0 });
   const controller = new ListenController(playback, {
     book, dict, names: new Set(),
@@ -62,17 +63,19 @@ function setup(paragraphs: string[], patch: Partial<Settings['listen']> = {}) {
     voice: () => ({ voiceId: 'fake-gb', rate: 1 }), explainVoice: () => ({ voiceId: 'fake-gb', rate: 1 }), zhVoiceId: () => 'fake-zh',
     explain: ai.explain, onTranscript: () => undefined, onMarkLearning: (l) => learning.push(l), mode: () => mode,
     onPauseWindow: (open) => windows.push(open),
+    onCommandWindow: (w) => bars.push(w),
+    chapterPhrases: phrases,
   });
   controller.enabled = true;
   const states: string[] = [];
   playback.on('state', (s) => states.push(s));
-  return { book, settings, vocab, reader, explainer, zh, ai, learning, playback, controller, states, windows };
+  return { book, settings, vocab, reader, explainer, zh, ai, learning, playback, controller, states, windows, bars };
 }
 
 const REPLY = 'Sanguine means hopeful.\n\nIn this sentence he stays cheerful.';
 
 describe('ListenController', () => {
-  it('runs the word script at a stop, even when the hard word ends the sentence, then continues reading', async () => {
+  it('Listening: at a stop the word 3 times, the window, the explanation, the window, then the sentence again and on', async () => {
     const t = setup(['He was sanguine.', 'Then he left.']);
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
@@ -82,8 +85,10 @@ describe('ListenController', () => {
     await finished;
     expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Sanguine means hopeful.', 'In this sentence he stays cheerful.']);
     expect(t.zh.spoken.map((s) => s.text)).toEqual(['乐观的']);
-    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'He was sanguine.', 'Then he left.']);
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'sanguine', 'He was sanguine.', 'Then he left.']);
     expect(t.learning).toEqual(['sanguine']);
+    expect(t.windows).toEqual([true, false, true, false]);
+    expect(t.bars.map((b) => b?.phase ?? null)).toEqual(['before', null, 'after', null]);
     expect(t.controller.busy).toBe(false);
   });
 
@@ -114,7 +119,7 @@ describe('ListenController', () => {
     expect(t.controller.busy).toBe(false);
   });
 
-  it('skip ends the stop and reading continues with the next sentence', async () => {
+  it('skip ends the stop; the sentence is read again (no second stop in it) and reading goes on', async () => {
     const t = setup(['The sanguine man was acrimonious.', 'Then he left.']);
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
@@ -122,7 +127,7 @@ describe('ListenController', () => {
     t.controller.skip();
     await finished;
     expect(t.ai.calls.length).toBe(1);
-    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+    expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['The sanguine man was acrimonious.', 'Then he left.']);
   });
 
   it('a manual explanation during an automatic one replaces it, ends that stop, and stays skippable', async () => {
@@ -196,24 +201,22 @@ describe('ListenController', () => {
     expect(t.learning).toEqual([]);
   });
 
-  it('listening mode: silence after the explanation, then the book continues', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 120 });
+  it('listening mode: silence after the explanation (the whole window), then the book continues', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 120 });
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
     await until(() => t.ai.calls.length === 1);
     t.ai.calls[0].resolve(REPLY);
-    await until(() => t.reader.spoken.length === 4); // sentence, word, word, sentence
+    await until(() => t.windows.length === 3); // the window after the explanation
     const t0 = Date.now();
     await finished;
     expect(Date.now() - t0).toBeGreaterThanOrEqual(100);
-    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+    expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['He was sanguine.', 'Then he left.']);
   });
 
   it('listening mode: moving to another sentence during the pause closes the voice window at once', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.', 'The end.'], { pauseAfterExplainMs: 5000 });
+    const t = setup(['He was sanguine.', 'Then he left.', 'The end.'], { commandWindowMs: 5000 });
     t.playback.play();
-    await until(() => t.ai.calls.length === 1);
-    t.ai.calls[0].resolve(REPLY);
     await until(() => t.windows.length === 1);
     expect(t.windows).toEqual([true]);
     t.controller.skip();
@@ -225,11 +228,11 @@ describe('ListenController', () => {
   });
 
   it('listening mode: switching to Reading during the pause keeps the book paused', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.'], { pauseAfterExplainMs: 150 });
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 150 });
     t.playback.play();
     await until(() => t.ai.calls.length === 1);
     t.ai.calls[0].resolve(REPLY);
-    await until(() => t.windows.length === 1);
+    await until(() => t.windows.length === 3);
     mode = 'reading';
     await until(() => t.playback.state === 'paused');
     await sleep(60);
@@ -259,8 +262,10 @@ describe('ListenController', () => {
     t.ai.calls[0].resolve(REPLY);
     await until(() => t.playback.state === 'paused');
     await sleep(60);
-    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'He was sanguine.']);
+    // Reading keeps its script (the style's word repeats before the explanation), no commands window before it
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine']);
     expect(t.playback.state).toBe('paused');
+    expect(t.bars.filter(Boolean).every((b) => b!.phase === 'after')).toBe(true);
   });
 
   it('quiz style: waits at [PAUSE] for the learner, continueNow ends the wait early', async () => {
@@ -310,21 +315,163 @@ describe('ListenController', () => {
     expect(t.controller.triggersFor({ chapter: 0, paragraph: 1, sentence: 0 })).toEqual([]);
   });
 
-  it('"I don\'t know" explains the last word again, deeper, then listening continues', async () => {
-    const t = setup(['He was sanguine.', 'Then he left.']);
+  it('"I don\'t know" after the explanation: again, deeper (again=true), then the window again; nothing = learning, re-read', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.controller.answerWindow('dont_know')).toBe(true); // before the explanation: it simply starts
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req.again).toBeFalsy();
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 3);
+    expect(t.controller.stopWindow).toBe('after');
+    expect(t.controller.answerWindow('dont_know')).toBe(true);
+    await until(() => t.ai.calls.length === 2);
+    expect(t.ai.calls[1].req).toMatchObject({ kind: 'word', target: 'sanguine', again: true });
+    t.ai.calls[1].resolve('Sanguine is hopeful, from another angle.');
+    await until(() => t.windows.length === 5);
+    expect(t.windows).toEqual([true, false, true, false, true]);
+    t.settings.listen.commandWindowMs = 30;
+    t.controller.keepWaiting(30); // the learner said nothing in the end: the window runs out
+    await finished;
+    expect(t.explainer.spoken.map((s) => s.text).slice(-1)).toEqual(['Sanguine is hopeful, from another angle.']);
+    expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['He was sanguine.', 'Then he left.']);
+    expect(t.learning).toContain('sanguine');
+  });
+
+  it('"I know" in the first window: no explanation request, known, the sentence is read again from its start', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'sanguine']);
+    expect(t.ai.calls.length).toBe(0); // nothing is said or asked during the window
+    expect(t.bars.at(-1)).toMatchObject({ phase: 'before', ms: 5000, target: 'sanguine', kind: 'word' });
+    expect(t.controller.lastExplained).toMatchObject({ kind: 'word', lemma: 'sanguine' });
+    t.controller.markKnown('sanguine'); // what ReaderView does with "I know" (and it saves the status)
+    expect(t.controller.answerWindow('know')).toBe(true);
+    await finished;
+    expect(t.ai.calls.length).toBe(0);
+    expect(t.learning).toEqual([]);
+    expect(t.windows).toEqual([true, false]);
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['He was sanguine.', 'sanguine', 'sanguine', 'sanguine', 'He was sanguine.', 'Then he left.']);
+    expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 })).toEqual([]);
+  });
+
+  it('"bye bye" (Esc, Go on) in the first window: no explanation, the AI is silent, the sentence is read again', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.controller.answerWindow('bye')).toBe(true);
+    await finished;
+    expect(t.ai.calls.length).toBe(0);
+    expect(t.explainer.spoken).toEqual([]);
+    expect(t.learning).toEqual([]);
+    expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['He was sanguine.', 'Then he left.']);
+  });
+
+  it('the learner says something else in the first window: it goes on the explain request as the question', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.controller.answerWindow({ text: 'sang win' })).toBe(true);
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req).toMatchObject({ kind: 'word', target: 'sanguine', question: 'sang win' });
+    expect(t.ai.calls[0].req.history.at(-1)).toMatchObject({ role: 'user' });
+    expect(t.ai.calls[0].req.history.at(-1)!.text).toContain('sang win');
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 3);
+    // after the explanation a question is not taken by the window (it is answered as a question)
+    expect(t.controller.answerWindow({ text: 'why is he happy' })).toBe(false);
+    expect(t.controller.answerWindow('know')).toBe(true);
+    await until(() => t.playback.state === 'idle');
+    expect(t.ai.calls.length).toBe(1);
+  });
+
+  it('the re-read of the sentence never stops at the same word again, even with no repeat window', async () => {
+    const t = setup(['He was sanguine and acrimonious.', 'Then he left.'], { repeatWindowWords: 0 });
     const finished = new Promise<void>((r) => t.playback.on('finished', r));
     t.playback.play();
     await until(() => t.ai.calls.length === 1);
     t.ai.calls[0].resolve(REPLY);
-    await until(() => t.reader.spoken.length === 4);
-    const p = t.controller.explainAgain();
-    await until(() => t.ai.calls.length === 2);
-    expect(t.ai.calls[1].req).toMatchObject({ kind: 'word', target: 'sanguine', again: true });
-    t.ai.calls[1].resolve('Let me try another way. Sanguine is hopeful.');
-    await p;
+    await until(() => t.ai.calls.length === 2); // both hard words of the sentence are handled in the one stop
+    expect(t.ai.calls[1].req.target).toBe('acrimonious');
+    t.ai.calls[1].resolve('Acrimonious means bitter.');
     await finished;
-    expect(t.explainer.spoken.map((s) => s.text).slice(-1)).toEqual(['Let me try another way. Sanguine is hopeful.']);
-    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+    expect(t.ai.calls.length).toBe(2);
+    const read = t.reader.spoken.map((s) => s.text).filter((x) => x.includes(' '));
+    expect(read).toEqual(['He was sanguine and acrimonious.', 'He was sanguine and acrimonious.', 'Then he left.']);
+  });
+
+  it('pausing in the window ends the stop without resuming; play goes on from the same sentence without stopping there', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000, repeatWindowWords: 0 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.playback.pause();
+    await until(() => t.windows.length === 2);
+    await sleep(40);
+    expect(t.playback.state).toBe('paused');
+    expect(t.ai.calls.length).toBe(0);
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await finished;
+    expect(t.windows).toEqual([true, false]);
+    expect(t.reader.spoken.map((s) => s.text).slice(-2)).toEqual(['He was sanguine.', 'Then he left.']);
+  });
+
+  it('hold() (the learner starts talking) in the window ends the stop; release() re-reads the sentence once', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000, repeatWindowWords: 0 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.controller.hold()).toBe(true);
+    await sleep(30);
+    expect(t.playback.state).toBe('paused');
+    t.controller.release(true);
+    await finished;
+    expect(t.ai.calls.length).toBe(0);
+    expect(t.reader.spoken.map((s) => s.text).filter((x) => x === 'Then he left.')).toHaveLength(1);
+    expect(t.reader.spoken.map((s) => s.text).filter((x) => x === 'He was sanguine.')).toHaveLength(2);
+  });
+
+  it('dispose during the window closes it and nothing resumes', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 5000 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.controller.dispose();
+    t.playback.stop();
+    await sleep(40);
+    expect(t.windows).toEqual([true, false]);
+    expect(t.bars.at(-1)).toBeNull();
+    expect(t.playback.state).toBe('idle');
+    expect(t.ai.calls.length).toBe(0);
+  });
+
+  it('chapter phrases above the level stop like words (the phrase 3 times, after its last word)', async () => {
+    const phrases = (pos: Position): ChapterPhrase[] => (pos.paragraph === 0 ? [{ start: 1, end: 2, text: 'kicked off', lemma: 'kick off', level: 'C1', zh: '开始' }, { start: 4, end: 5, text: 'the party', lemma: 'the party', level: 'A1' }] : []);
+    const t = setup(['They kicked off the party.', 'Then he left.'], { commandWindowMs: 5000 }, phrases);
+    const trig = t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 });
+    expect(trig).toEqual([expect.objectContaining({ kind: 'phrase', token: 1, end: 2, target: 'kicked off', lemma: 'kick off', dict: { ipa: '', zh: '开始', level: 'C1' } })]);
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.reader.spoken.map((s) => s.text)).toEqual(['They kicked off the party.', 'kicked off', 'kicked off', 'kicked off']);
+    t.controller.answerWindow('dont_know');
+    await until(() => t.ai.calls.length === 1);
+    expect(t.ai.calls[0].req).toMatchObject({ kind: 'phrase', target: 'kicked off' });
+    t.ai.calls[0].resolve('To kick off means to start.');
+    await until(() => t.windows.length === 3);
+    t.controller.answerWindow('bye');
+    await finished;
+    expect(t.learning).toEqual(['kick off']);
+  });
+
+  it('answerWindow is false when no commands window of a stop is open', () => {
+    const t = setup(['He was calm.']);
+    expect(t.controller.answerWindow('know')).toBe(false);
+    expect(t.controller.stopWindow).toBeNull();
   });
 
   it('explains a lemma once per sentence even when it appears twice', () => {

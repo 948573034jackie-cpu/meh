@@ -46,6 +46,11 @@ export const SHORTCUT_HELP: { group: string; items: { id: string; text: string; 
     { id: 'nextHard', text: 'Jump to the next hard word' },
     { id: 'prevHard', text: 'Jump to the previous hard word' },
   ] },
+  { group: 'At a hard word (the 5-second window)', items: [
+    { id: '_winKnow', text: '"I know": known for good, no explanation; the sentence is read again and the book goes on' },
+    { id: '_winDontKnow', text: '"I don\'t know": the explanation now (after it: again, deeper)' },
+    { id: '_winGoOn', text: '"Go on": no explanation; the sentence is read again and the book goes on' },
+  ] },
   { group: 'Words', items: [
     { id: 'markKnown', text: 'Mark the word on the card as known (never explained again)' },
     { id: 'markLearning', text: 'Mark the word on the card as learning' },
@@ -65,6 +70,9 @@ export const SHORTCUT_HELP: { group: string; items: { id: string; text: string; 
   ] },
   { group: 'Help', items: [{ id: 'help', text: 'This sheet' }] },
 ];
+
+/** The window answers use the keys of these shortcuts (K, D, Esc by default). */
+export const WINDOW_KEY_OF: Record<string, string> = { _winKnow: 'markKnown', _winDontKnow: 'dontKnow', _winGoOn: 'closePopup' };
 
 /** Keys of the listening-only shortcuts, which are fixed (not in settings). */
 export const LISTEN_KEYS: Record<string, string> = { _listenUp: 'ArrowUp', _listenDown: 'ArrowDown', _listenBack: 'Shift+ArrowLeft', _listenFwd: 'Shift+ArrowRight' };

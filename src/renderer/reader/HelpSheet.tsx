@@ -1,6 +1,6 @@
 import React from 'react';
 import type { ReadMode } from '@shared/settings';
-import { SHORTCUT_HELP, LISTEN_KEYS, shortcutLabel } from './shortcuts';
+import { SHORTCUT_HELP, LISTEN_KEYS, WINDOW_KEY_OF, shortcutLabel } from './shortcuts';
 
 /** The "?" sheet: every shortcut with a one-line explanation. Keys come from settings.shortcuts. */
 export function HelpSheet({ shortcuts, mode, onClose }: { shortcuts: Record<string, string>; mode: ReadMode; onClose: () => void }): JSX.Element {
@@ -14,7 +14,7 @@ export function HelpSheet({ shortcuts, mode, onClose }: { shortcuts: Record<stri
               <h3>{g.group}</h3>
               <div className="kv">
                 {g.items.map((it) => {
-                  const key = LISTEN_KEYS[it.id] ?? shortcuts[it.id];
+                  const key = LISTEN_KEYS[it.id] ?? shortcuts[WINDOW_KEY_OF[it.id] ?? it.id];
                   if (!key) return null;
                   const off = it.modes && !it.modes.includes(mode);
                   return <React.Fragment key={it.id}><span className="key">{shortcutLabel(key)}</span><span className={off ? 'muted' : ''}>{it.text}{off ? ` (${it.modes!.join('/')} mode)` : ''}</span></React.Fragment>;

@@ -2,7 +2,7 @@ import type { Book, Position, CefrLevel } from '@core/model';
 import type { Dictionary } from '@core/dict/types';
 import type { VocabState, MarkedRange, Settings } from '@shared/settings';
 import type { ExplainRequest, ExplainKind } from '@shared/api';
-import type { TtsEngine } from '@core/tts/engine';
+import type { TtsEngine, SpeakHandle } from '@core/tts/engine';
 import { samePosition } from '@core/model';
 import { getSentence, nextPosition, prevPosition, comparePositions, contextAround, wordOffsets } from '@core/nav';
 import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
@@ -24,6 +24,30 @@ function scriptFor(kind: ExplainKind, target: string, sentence: string, s: Setti
   if (kind === 'phrase' || kind === 'sentence') return styledSentenceScript(sentence, shape);
   return plainScript();
 }
+
+/**
+ * Listening stop at a word or phrase: the target was already said `wordRepeats` times before the commands
+ * window, so the script starts with the explanation (the style may still add the word / sentence after it).
+ * Marked phrases and sentences (no lemma) keep their sentence script.
+ */
+function listenScriptFor(kind: ExplainKind, target: string, sentence: string, s: Settings, lemma: string | undefined): ScriptStep[] {
+  if (!lemma || (kind !== 'word' && kind !== 'phrase')) return scriptFor(kind, target, sentence, s);
+  const shape = resolveStyle(s.ai.activeStyle, s.ai.styles).shape;
+  return styledWordScript(target, sentence, { ...shape, wordBefore: 0 });
+}
+
+/** What the learner answered in a commands window (voice, K / D / Esc, or the buttons); `text` = anything else they said. */
+export type WindowAnswer = 'know' | 'dont_know' | 'bye' | { text: string };
+type WindowResult = WindowAnswer | 'timeout' | 'aborted';
+
+/**
+ * A commands window is open: 'before' = the word was just said (Listening), 'after' = an explanation just
+ * ended (Listening stop, a manual explanation, or Reading's answer window). `ms` is the time left.
+ */
+export interface CommandWindow { phase: 'before' | 'after'; ms: number; target: string; kind: ExplainKind | null }
+
+/** A phrase found for a chapter by the AI phrase job (token indices within the sentence, end inclusive). */
+export interface ChapterPhrase { start: number; end: number; text: string; lemma: string; level: string; zh?: string }
 
 export interface TranscriptEntry {
   id: number;
@@ -78,6 +102,10 @@ export interface ListenDeps {
    * it is open. Calls come in pairs (true, then false).
    */
   onPauseWindow?: (open: boolean) => void;
+  /** the commands window opened (or its countdown restarted) / closed: the bottom bar with I know / I don't know / Go on */
+  onCommandWindow?: (w: CommandWindow | null) => void;
+  /** above-level phrases of the sentence found by the chapter phrase job (none when absent) */
+  chapterPhrases?: (pos: Position) => ChapterPhrase[] | null | undefined;
 }
 
 /** The last word/phrase/sentence explanation (what "I know" and "I don't know" refer to). */
@@ -155,6 +183,21 @@ export class ListenController {
         const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end - 1].end);
         out.push({ kind: 'phrase', token: ph.start, end: ph.end - 1, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
       }
+      // phrases of the chapter phrase job (idioms, phrasal verbs, slang) stop exactly like words
+      let found: ChapterPhrase[] = [];
+      try { found = this.deps.chapterPhrases?.(pos) ?? []; } catch { found = []; }
+      const n = cur.sentence.tokens.length;
+      for (const ph of found) {
+        if (!ph || typeof ph.text !== 'string' || !ph.text.trim()) continue;
+        if (!Number.isInteger(ph.start) || !Number.isInteger(ph.end) || ph.start < 0 || ph.end >= n || ph.start > ph.end) continue;
+        const lemma = (ph.lemma || ph.text).toLowerCase().trim();
+        const status = vocab[lemma];
+        if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) continue;
+        if (!isAbove(ph.level as CefrLevel, s.learnerLevel) && status !== 'learning') continue;
+        if (recently(lemma)) continue;
+        if (out.some((t) => t.lemma === lemma)) continue;
+        out.push({ kind: 'phrase', token: ph.start, end: ph.end, target: ph.text.trim(), lemma, dict: { ipa: '', zh: (ph.zh ?? '').split('\n')[0], level: ph.level as CefrLevel } });
+      }
     }
     for (const m of this.deps.marked()) {
       if (m.chapter === pos.chapter && m.paragraph === pos.paragraph && m.sentence === pos.sentence) {
@@ -167,6 +210,10 @@ export class ListenController {
   }
 
   private stopAt(pos: Position): number | 'end' | null {
+    // the re-read of a sentence after its stop: everything in it has been handled
+    const guard = this.rereadGuard;
+    this.rereadGuard = null;
+    if (guard && samePosition(guard, pos)) return null;
     if (!this.enabled) return null;
     const s = this.deps.settings();
     if (s.listen.maxStopsPer10Min > 0) {
@@ -176,18 +223,19 @@ export class ListenController {
     }
     const triggers = this.triggersFor(pos);
     if (!triggers.length) return null;
-    const first = triggers[0];
-    if (first.kind === 'word') return first.token;
-    return 'end';
+    // stop right after the first word or phrase (a phrase after its last word); marked ranges at the sentence end
+    const at = Math.min(...triggers.map((t) => (t.kind === 'word' ? t.token : t.kind === 'phrase' && t.lemma ? t.end : Infinity)));
+    return Number.isFinite(at) ? at : 'end';
   }
 
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
     const triggers = this.triggersFor(pos);
     if (!triggers.length) return 'next';
     this.stopTimes.push(Date.now());
+    void stoppedAtToken;
+    if ((this.deps.mode?.() ?? 'listening') === 'listening') return this.listenStop(pos, triggers);
     const cur = getSentence(this.deps.book, pos)!;
     const s = this.deps.settings();
-    void stoppedAtToken;
     this.skipRequested = false;
     // Explain every hard word of the sentence in order, then phrases/sentence marks.
     const ordered = [...triggers.filter((t) => t.kind === 'word'), ...triggers.filter((t) => t.kind !== 'word')];
@@ -202,6 +250,136 @@ export class ListenController {
     return this.afterExplanation();
   }
 
+  /**
+   * Listening mode, the stop at a hard word or phrase (docs/RULES.md): the target 3 times, a silent commands window
+   * ("I know" = known, no explanation; "bye bye" = no explanation; anything else or silence = the explanation,
+   * which also answers what the learner said), then after the explanation another window ("I don't know" = again,
+   * deeper; "I know" = known; "bye bye" or nothing = it stays learning). The reading then goes back to the start
+   * of the interrupted sentence (never the next one) and does not stop in it again.
+   * Returns 'stop' always: the reading loop that asked is ended and, unless the learner paused, seeked, switched
+   * to Reading or closed the reader meanwhile, a new one is started here at the sentence start.
+   */
+  private async listenStop(pos: Position, triggers: Trigger[]): Promise<'next' | 'stop'> {
+    const cur = getSentence(this.deps.book, pos)!;
+    const s = this.deps.settings();
+    this.skipRequested = false;
+    this.rereadGuard = pos;
+    let aborted = false;
+    // pause, seek, stop, play from elsewhere, hold (barge-in) or a manual explanation: this stop is over at once
+    const off = this.playback.on('state', (st) => { if (st !== 'explaining') { aborted = true; this.flowWin?.resolve('aborted'); } });
+    const listening = () => (this.deps.mode?.() ?? 'listening') === 'listening';
+    const over = () => aborted || this.disposed || this.skipRequested || !listening();
+    // words and phrases in reading order, marked ranges (no lemma) last
+    const ordered = [...triggers.filter((t) => t.lemma).sort((a, b) => a.end - b.end), ...triggers.filter((t) => !t.lemma)];
+    try {
+      for (const t of ordered) {
+        if (over()) break;
+        if (t.lemma && (this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known')) continue;
+        this.last = { kind: t.kind, target: t.target, pos, dict: t.dict ?? null, lemma: t.lemma };
+        // recorded now: whatever the learner answers, this word does not stop again within the repeat window
+        if (t.lemma) this.lastExplainedAt.set(t.lemma, this.offsetOf(pos));
+        let question: string | undefined;
+        if (t.lemma) {
+          const said = await this.sayTarget(t.target, t.lemma, Math.max(0, s.listen.wordRepeats));
+          if (over()) break;
+          if (said === 'skipped') continue; // tapped away (known) while it was said
+          const a = await this.commandWindow('before', t);
+          if (a === 'aborted' || over()) break;
+          if (a === 'know') { this.dismissed.add(t.lemma); continue; }
+          if (a === 'bye') continue;
+          if (typeof a === 'object') question = a.text.trim() || undefined;
+        }
+        let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, question);
+        if (res === 'aborted' || over()) break;
+        if (res === 'skipped') continue;
+        for (;;) {
+          const a = await this.commandWindow('after', t);
+          if (a === 'aborted' || over()) break;
+          if (a === 'dont_know') {
+            res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, undefined, true);
+            if (res !== 'done' || over()) break;
+            continue;
+          }
+          if (a === 'know' && t.lemma) this.dismissed.add(t.lemma);
+          break; // "bye bye", nothing, or "I know": the word stays as it is (learning unless known now)
+        }
+      }
+    } finally { off(); }
+    if (aborted || this.disposed || !listening()) return 'stop';
+    if (this.held || this.current) return 'stop'; // the learner is talking / a newer explanation resumes the reading
+    // back to the start of the interrupted sentence (the guard keeps it from stopping there again)
+    this.rereadGuard = pos;
+    this.playback.play(pos);
+    return 'stop';
+  }
+
+  /** Says the word or phrase `times` times with the reading voice (slowly); 'skipped' when it was cancelled. */
+  private async sayTarget(target: string, lemma: string | undefined, times: number): Promise<'done' | 'skipped'> {
+    let cancelled = false;
+    let handle: SpeakHandle | null = null;
+    let wake: (() => void) | null = null;
+    const mine = { cancel: () => { if (cancelled) return; cancelled = true; handle?.cancel(); wake?.(); this.deps.engine().cancelAll(); }, lemma };
+    this.current = mine;
+    try {
+      for (let i = 0; i < times && !cancelled; i++) {
+        if (i > 0) await new Promise<void>((r) => { const tm = setTimeout(r, 350); wake = () => { clearTimeout(tm); r(); }; });
+        wake = null;
+        if (cancelled) break;
+        const v = this.deps.voice();
+        const h = this.deps.engine().speak(target, { voiceId: v.voiceId, rate: Math.min(v.rate, 0.9) });
+        handle = h;
+        await h.done;
+        handle = null;
+      }
+    } finally { if (this.current === mine) this.current = null; }
+    return cancelled ? 'skipped' : 'done';
+  }
+
+  /** The commands window of a Listening stop: the mic listens, nothing is said; ends on an answer or after commandWindowMs. */
+  private async commandWindow(phase: 'before' | 'after', t: Trigger): Promise<WindowResult> {
+    if (this.disposed) return 'aborted';
+    const ms = this.deps.settings().listen.commandWindowMs ?? 5000;
+    if (!(ms > 0)) return 'timeout';
+    this.deps.onPauseWindow?.(true);
+    this.deps.onCommandWindow?.({ phase, ms, target: t.target, kind: t.kind });
+    const res = await new Promise<WindowResult>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const win = {
+        phase,
+        resolve: (r: WindowResult) => { if (timer) clearTimeout(timer); if (this.flowWin === win) this.flowWin = null; resolve(r); },
+        extend: (more: number) => {
+          if (timer) clearTimeout(timer);
+          timer = setTimeout(() => win.resolve('timeout'), more);
+          this.deps.onCommandWindow?.({ phase, ms: more, target: t.target, kind: t.kind });
+        },
+      };
+      this.flowWin = win;
+      timer = setTimeout(() => win.resolve('timeout'), ms);
+    });
+    this.deps.onPauseWindow?.(false);
+    this.deps.onCommandWindow?.(null);
+    return res;
+  }
+  private flowWin: { phase: 'before' | 'after'; resolve: (r: WindowResult) => void; extend: (ms: number) => void } | null = null;
+  /** the sentence a Listening stop resumes at: its next read does not stop again */
+  private rereadGuard: Position | null = null;
+
+  /**
+   * The learner answered in the commands window of a Listening stop. Returns false when no such window is open
+   * (or, after the explanation, for a question: that is answered as a question), so the caller does what it does
+   * outside a stop. The caller saves "I know" (vocabulary) itself.
+   */
+  answerWindow(a: WindowAnswer): boolean {
+    const w = this.flowWin;
+    if (!w) return false;
+    if (typeof a === 'object' && w.phase === 'after') return false;
+    w.resolve(a);
+    return true;
+  }
+
+  /** Which commands window of a Listening stop is open, if any. */
+  get stopWindow(): 'before' | 'after' | null { return this.flowWin?.phase ?? null; }
+
   /** Listening: a short silence, then the book continues. Reading: stop and wait for the learner. */
   private async afterExplanation(): Promise<'next' | 'stop'> {
     if ((this.deps.mode?.() ?? 'listening') === 'reading') { this.readingWindow(); return 'stop'; }
@@ -214,16 +392,19 @@ export class ListenController {
       // pause, seek, a chapter change or play from elsewhere ends the pause at once: the reading that waits here is
       // stale, and the voice window must not stay open (listening to the book) while the new reading goes on
       const off = this.playback.on('state', (st) => { if (st !== startState) { changed = true; (wakeMine as (() => void) | null)?.(); } });
+      const info = (left: number): CommandWindow => ({ phase: 'after', ms: left, target: this.last?.target ?? '', kind: this.last?.kind ?? null });
       this.deps.onPauseWindow?.(true);
+      this.deps.onCommandWindow?.(info(ms));
       await new Promise<void>((r) => {
         let t = setTimeout(r, ms);
         wakeMine = this.wakeAfter = () => { clearTimeout(t); r(); };
-        extendMine = this.extendAfter = (more) => { clearTimeout(t); t = setTimeout(r, more); };
+        extendMine = this.extendAfter = (more) => { clearTimeout(t); t = setTimeout(r, more); this.deps.onCommandWindow?.(info(more)); };
       });
       if (this.wakeAfter === wakeMine) this.wakeAfter = null;
       if (this.extendAfter === extendMine) this.extendAfter = null;
       off();
       this.deps.onPauseWindow?.(false);
+      this.deps.onCommandWindow?.(null);
       if (changed || this.playback.state === 'idle') return 'stop';
       // the learner switched to Reading during the pause: Reading stays where it is
       if ((this.deps.mode?.() ?? 'listening') === 'reading') return 'stop';
@@ -236,7 +417,8 @@ export class ListenController {
     const ms = this.deps.settings().listen.pauseAfterExplainMs;
     if (!this.deps.onPauseWindow || ms <= 0 || this.disposed) return;
     if (this.readingWindowTimer) clearTimeout(this.readingWindowTimer); else this.deps.onPauseWindow(true);
-    this.readingWindowTimer = setTimeout(() => { this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); }, ms);
+    this.deps.onCommandWindow?.({ phase: 'after', ms, target: this.last?.target ?? '', kind: this.last?.kind ?? null });
+    this.readingWindowTimer = setTimeout(() => { this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); this.deps.onCommandWindow?.(null); }, ms);
   }
   private readingWindowTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -249,16 +431,18 @@ export class ListenController {
     if (this.disposed) return;
     this.skip();
     this.wakeAfter?.(); this.wakeWait?.();
-    if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); }
+    this.flowWin?.resolve('aborted');
+    if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); this.deps.onCommandWindow?.(null); }
     this.disposed = true;
+    this.rereadGuard = null;
     this.held = false; this.heldResume = false; this.pendingResume = false;
   }
 
   /** Ends the current wait (the pause after an explanation, or a quiz wait) without cancelling anything. */
-  continueNow(): void { this.wakeAfter?.(); this.wakeWait?.(); this.closeReadingWindow(); }
+  continueNow(): void { this.flowWin?.resolve('bye'); this.wakeAfter?.(); this.wakeWait?.(); this.closeReadingWindow(); }
   /** The learner started talking during the pause: give them `ms` more before the book goes on. */
-  keepWaiting(ms = 5000): void { this.extendAfter?.(ms); }
-  private closeReadingWindow(): void { if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); } }
+  keepWaiting(ms = 5000): void { if (this.flowWin) this.flowWin.extend(ms); else this.extendAfter?.(ms); }
+  private closeReadingWindow(): void { if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); this.deps.onCommandWindow?.(null); } }
   private wakeAfter: (() => void) | null = null;
   private extendAfter: ((ms: number) => void) | null = null;
   private wakeWait: (() => void) | null = null;
@@ -372,8 +556,8 @@ export class ListenController {
   /** "I know": known now, never explained or highlighted again. */
   markKnown(lemma: string): void { this.dismiss(lemma); }
 
-  /** Interrupts the current explanation; reading continues with the next sentence. */
-  skip(): void { this.skipRequested = true; this.current?.cancel(); }
+  /** Interrupts the current explanation (or the commands window of a stop); Listening re-reads the interrupted sentence and goes on. */
+  skip(): void { this.skipRequested = true; this.current?.cancel(); this.flowWin?.resolve('bye'); }
 
   /** true while an explanation (automatic or manual) is being fetched or spoken */
   get busy(): boolean { return this.current !== null; }
@@ -399,7 +583,10 @@ export class ListenController {
       kind, target, sentence,
       before: ctx.before, after: ctx.after,
       book: { title: this.deps.book.title, chapter: this.deps.book.chapters[pos.chapter]?.title ?? '' },
-      dict: dict ?? undefined, question, history: [...this.history],
+      dict: dict ?? undefined, question,
+      // what the learner said in the commands window before a word explanation: the styled prompt reads the history,
+      // so it goes there too (the rules tell the AI it may be badly recognised)
+      history: question && kind !== 'question' ? [...this.history, { role: 'user', text: `(said aloud just now, speech recognition may be wrong) ${question}` }] : [...this.history],
       position: { chapter: pos.chapter, paragraph: pos.paragraph, sentence: pos.sentence },
       styleId: s0.ai.activeStyle,
       again,

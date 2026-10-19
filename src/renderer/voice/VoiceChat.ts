@@ -199,6 +199,23 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
     this.opts.tutor.ask(t, false);
   }
 
+  /**
+   * Entering Listening mode: when the speech model is not installed, show the download consent card (without
+   * opening a call afterwards), so the commands windows at hard words can hear the learner. Returns whether the
+   * card was shown; the caller remembers that it asked once.
+   */
+  offerModel(): Promise<boolean> {
+    const decide = (st: SttStatus | null): boolean => {
+      if (this.disposed || !st || this.line === 'call' || this.consent) return false;
+      if (st.state !== 'missing' && !(st.state === 'error' && st.downloadBytes > 0)) return false;
+      this.consent = true;
+      this.changed();
+      return true;
+    };
+    if (this.model) return Promise.resolve(decide(this.model));
+    return this.opts.stt.status().then((st) => { this.model = st; return decide(st); }, () => false);
+  }
+
   /** The consent card: download the speech model now. */
   acceptDownload(): void {
     this.consent = true;

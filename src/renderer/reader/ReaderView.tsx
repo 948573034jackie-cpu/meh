@@ -4,7 +4,7 @@ import type { WordStatus, MarkedRange, TtsEngineId, ReadMode } from '@shared/set
 import type { TtsVoice } from '@core/tts/engine';
 import type { HintMap, ExplainRequest } from '@shared/api';
 import { Playback, type PlaybackState } from '@core/listen/playback';
-import { ListenController, type TranscriptEntry } from '@core/listen/controller';
+import { ListenController, type TranscriptEntry, type CommandWindow } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
 import { explain as aiExplain } from '@core/ai/client';
 import { firstPosition, getSentence, percentAt, nextPosition, prevPosition } from '@core/nav';
@@ -26,6 +26,7 @@ import { VoiceChatUI, type VoiceExchange } from '../voice/VoiceChatUI';
 import { MicCapture, SilentMic } from '../voice/mic';
 import { sttBridge, e2eSttBridge, installE2eHooks } from '../voice/bridge';
 import { Tip } from '../ui/Tip';
+import { toChapterPhraseMap, type ChapterPhraseMap } from './phrases';
 
 const E2E = typeof location !== 'undefined' && new URLSearchParams(location.search).has('e2e');
 if (E2E) useFakeEngine(2);
@@ -135,6 +136,12 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   /** the AI's chapter hints (lemma -> [meaning as used here, other meaning]); null until the job has run */
   const [hints, setHints] = useState<HintMap | null>(null);
   const hintsRef = useRef<HintMap | null>(null); hintsRef.current = hints;
+  /** the commands window of a stop (or after an explanation) is open: the bottom bar with I know / I don't know / Go on */
+  const [cmdWin, setCmdWin] = useState<(CommandWindow & { id: number }) | null>(null);
+  const cmdWinRef = useRef<CommandWindow | null>(null);
+  const cmdSeq = useRef(0);
+  /** chapter -> the chapter phrase job's hits per sentence (window.readalong.hintsPhrases, when that bridge exists) */
+  const phrasesRef = useRef(new Map<number, ChapterPhraseMap>());
   const hintOverrides = useMemo(() => { const out: Record<string, string> = {}; for (const [lemma, pair] of Object.entries(hints ?? {})) if (pair?.[0]) out[lemma] = pair[0]; return out; }, [hints]);
 
   const names = useMemo(() => new Set(book.names), [book]);
@@ -193,6 +200,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       mode: () => modeRef.current,
       onWaiting: (w) => setWaiting(w),
       onPauseWindow: (open) => voiceRef.current?.pauseWindow(open),
+      onCommandWindow: (w) => { cmdWinRef.current = w; setCmdWin(w ? { ...w, id: ++cmdSeq.current } : null); },
+      chapterPhrases: (pos) => phrasesRef.current.get(pos.chapter)?.[sentenceKey(pos)],
       onTranscript: (entry) => {
         setTranscript((prev) => (prev.some((e) => e.id === entry.id) ? prev.map((e) => (e.id === entry.id ? entry : e)) : [...prev.slice(-40), entry]));
         setBusy(controller.busy);
@@ -249,23 +258,17 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       mic: E2E ? new SilentMic() : new MicCapture(),
       alwaysOn: settingsRef.current.voiceChat?.alwaysOn ?? false,
       tutor: {
-        know: () => {
-          const c = ctl(); if (!c) return;
-          const l = c.lastExplained;
-          if (l?.lemma) { c.markKnown(l.lemma); void changeStatus(l.lemma, 'known'); if (cardRef.current?.lemma === l.lemma) closeCard(); }
-          c.continueNow();
+        know: () => answerKnow(),
+        dontKnow: () => answerDontKnow(),
+        ask: (text, spoken) => {
+          // in the window right after the word was said, anything the learner says goes with its explanation
+          if (ctl()?.answerWindow({ text })) return;
+          const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, text, undefined, undefined, spoken);
         },
-        dontKnow: () => {
-          const c = ctl(); if (!c) return;
-          const l = c.lastExplained;
-          if (l?.lemma) void changeStatus(l.lemma, 'learning', false);
-          void c.explainAgain();
-        },
-        ask: (text, spoken) => { const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, text, undefined, undefined, spoken); },
         hold: () => { ctl()?.hold(); },
         release: () => ctl()?.release(modeRef.current === 'listening'),
         keepWaiting: () => ctl()?.keepWaiting(),
-        continueBook: () => { if (modeRef.current === 'listening') ctl()?.continueNow(); },
+        continueBook: () => { const c = ctl(); if (c && !c.answerWindow('bye') && modeRef.current === 'listening') c.continueNow(); },
       },
     });
     voiceRef.current = chat;
@@ -280,13 +283,22 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   }, [ready, book]);
   // the consent card and errors live in the popover: show it
   useEffect(() => { if (voiceSnap?.consent || voiceSnap?.error) setVoicePop(true); }, [voiceSnap?.consent, voiceSnap?.error]);
+  // entering Listening mode without the speech model: offer the download once, so the windows at hard words can hear
+  const hasVoice = voiceSnap !== null;
+  useEffect(() => {
+    const chat = voiceRef.current;
+    if (mode !== 'listening' || !chat || settingsRef.current.voiceChat?.modelOffered) return;
+    void chat.offerModel().then((shown) => {
+      if (shown) void useApp.getState().patchSettings({ voiceChat: { ...settingsRef.current.voiceChat, modelOffered: true } });
+    });
+  }, [mode, hasVoice]);
   const setAlwaysOn = (on: boolean) => {
     voiceRef.current?.setAlwaysOn(on);
     void useApp.getState().patchSettings({ voiceChat: { ...settingsRef.current.voiceChat, alwaysOn: on } });
   };
   /** what the popover shows: the last question and its answer, or the last command heard */
   const voiceLast: VoiceExchange | null = useMemo(() => {
-    if (heard) return { you: heard.text, tutor: heard.command === 'know' ? 'Good, marked as known.' : heard.command === 'dont_know' ? 'Let me explain it again.' : 'Bye bye! Talk to me any time.', status: 'done' };
+    if (heard) return { you: heard.text, tutor: heard.command === 'know' ? 'Good, marked as known.' : heard.command === 'dont_know' ? 'Once more, from another angle.' : 'Bye bye! Talk to me any time.', status: 'done' };
     const q = [...transcript].reverse().find((e) => e.kind === 'question');
     return q ? { you: q.question ?? '', tutor: q.parts?.free ?? q.text, status: q.status, error: q.error } : null;
   }, [heard, transcript]);
@@ -353,6 +365,19 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const off = api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.chapter === chapter && ev.state === 'done') void fetch(); });
     return () => { on = false; off(); };
   }, [book, chapter]);
+
+  // ---- chapter phrases (idioms, phrasal verbs, slang) found by the chapter job: Listening stops at them like words ----
+  useEffect(() => {
+    const api = window.readalong as unknown as { hintsPhrases?: (bookId: string, chapter: number) => Promise<unknown>; onHintsProgress?: typeof window.readalong.onHintsProgress };
+    if (typeof api.hintsPhrases !== 'function') return;
+    let on = true;
+    const load = (ch: number) => { void api.hintsPhrases!(book.id, ch).then((d) => { if (on) phrasesRef.current.set(ch, toChapterPhraseMap(d, ch)); }, () => undefined); };
+    load(chapter);
+    if (book.chapters[chapter + 1]) load(chapter + 1);
+    const off = typeof api.onHintsProgress === 'function' ? api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.state === 'done' && (ev.chapter === chapter || ev.chapter === chapter + 1)) load(ev.chapter); }) : () => undefined;
+    return () => { on = false; off(); };
+  }, [book, chapter]);
+  useEffect(() => { phrasesRef.current = new Map(); }, [book]);
 
   // the controller stops at hard words only on the Listening screen (and only while auto-stop is on)
   useEffect(() => { const c = controllerRef.current; if (c) c.enabled = mode === 'listening' && autoStop; }, [mode, autoStop, ready]);
@@ -587,6 +612,26 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     if (pos) seek(pos);
     if (w) tapWord(w);
   };
+  /** "I know" (voice, K during a window, the button): known for good; a stop ends without (more) explanation. */
+  function answerKnow(): void {
+    const c = ctl(); if (!c) return;
+    const l = c.lastExplained;
+    if (l?.lemma) { c.markKnown(l.lemma); void changeStatus(l.lemma, 'known'); if (cardRef.current?.lemma === l.lemma) closeCard(); }
+    if (!c.answerWindow('know')) c.continueNow();
+  }
+  /** "I don't know" (voice, D during a window, the button): before the explanation it simply starts; after it, again and deeper. */
+  function answerDontKnow(): void {
+    const c = ctl(); if (!c) return;
+    if (c.answerWindow('dont_know')) return;
+    const l = c.lastExplained;
+    if (l?.lemma) void changeStatus(l.lemma, 'learning', false);
+    void c.explainAgain();
+  }
+  /** "Go on" (Esc during a window, the button, "bye bye"): no (more) explanation; Listening re-reads the sentence and goes on. */
+  function answerGoOn(): void {
+    const c = ctl(); if (!c) return;
+    if (!c.answerWindow('bye')) c.continueNow();
+  }
   const cardStatus = (s: WordStatus) => { const c = cardRef.current; if (!c) return; if (s === 'known') ctl()?.markKnown(c.lemma); void changeStatus(c.lemma, c.status === s ? null : s); closeCard(); };
 
   // keyboard
@@ -597,6 +642,14 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       const sc = settingsRef.current.shortcuts;
       const is = (name: string) => matchesShortcut(e, sc[name]);
       const listening = modeRef.current === 'listening';
+      // during a commands window K / D / Esc answer it (before the card and popup meanings of those keys)
+      if (cmdWinRef.current && (is('markKnown') || is('dontKnow') || is('closePopup'))) {
+        e.preventDefault();
+        if (is('markKnown')) answerKnow();
+        else if (is('dontKnow')) answerDontKnow();
+        else { setSelBar(null); answerGoOn(); }
+        return;
+      }
       if (matchesShortcut(e, settingsRef.current.voiceChat?.pushToTalkKey || 'KeyM')) { e.preventDefault(); voiceRef.current?.toggle(); }
       else if (is('help')) { e.preventDefault(); setHelp(true); }
       else if (is('switchMode')) { e.preventDefault(); switchMode(); }
@@ -676,6 +729,16 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
           onToggle={() => voiceRef.current?.toggle()} onAlwaysOn={setAlwaysOn} onAsk={(t) => voiceRef.current?.askTyped(t)}
           onAcceptDownload={() => voiceRef.current?.acceptDownload()} onDeclineDownload={() => voiceRef.current?.declineDownload()} onDismissError={() => voiceRef.current?.dismissError()}
           keyLabel={shortcutLabel(settings.voiceChat?.pushToTalkKey || 'KeyM')} shifted={mode === 'listening' && transcriptOpen} />
+      )}
+      {cmdWin && (
+        <div className={`command-bar in-${mode}`} data-testid="command-bar" data-phase={cmdWin.phase} role="group" aria-label="Your answer" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="command-buttons">
+            <button className="cmd know" data-testid="cmd-know" onClick={answerKnow}>I know <kbd>{shortcutLabel(settings.shortcuts.markKnown || 'KeyK')}</kbd></button>
+            <button className="cmd dont-know" data-testid="cmd-dont-know" onClick={answerDontKnow}>I don’t know <kbd>{shortcutLabel(settings.shortcuts.dontKnow || 'KeyD')}</kbd></button>
+            <button className="cmd go-on" data-testid="cmd-go-on" onClick={answerGoOn}>Go on <kbd>{shortcutLabel(settings.shortcuts.closePopup || 'Escape')}</kbd></button>
+          </div>
+          <div className="command-countdown" aria-hidden="true"><span key={cmdWin.id} style={{ animationDuration: `${cmdWin.ms}ms` }} /></div>
+        </div>
       )}
       {help && <HelpSheet shortcuts={{ ...settings.shortcuts, pushToTalk: settings.voiceChat?.pushToTalkKey || 'KeyM' }} mode={mode} onClose={() => setHelp(false)} />}
       {!ready && <div className="reader-preparing">Preparing…</div>}

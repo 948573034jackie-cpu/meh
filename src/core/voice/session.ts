@@ -4,7 +4,7 @@
  * subscription and tests can pass fake events.
  *
  * Modes:
- *  - 'commands'     the 7 s pause after an explanation: "I know" / "I don't know" / "bye bye" fire as
+ *  - 'commands'     the 5 s commands window at a hard word or after an explanation: "I know" / "I don't know" / "bye bye" fire as
  *                   commands; any other final transcript becomes a `question` for the AI.
  *  - 'conversation' the learner is talking with the tutor: finals become `question`s (including "I know",
  *                   which may be part of an answer); only "bye bye" is still a command.

@@ -2,7 +2,7 @@ import type { CefrLevel, Position } from '@core/model';
 import type { LevelModelJSON } from '@core/level/adapt';
 import type { LevelResult } from '@core/level/score';
 import type { StyleId, StyleOverride } from './styles';
-import { DEFAULT_CONTEXT_RULES } from './styles';
+import { DEFAULT_CONTEXT_RULES, LEGACY_CONTEXT_RULES } from './styles';
 import type { SkipSettings } from '@core/import/skip';
 import { DEFAULT_SKIP } from '@core/import/skip';
 
@@ -89,6 +89,11 @@ export interface Settings {
     tapHighlightCancels: boolean;
     /** listening mode: silence after an explanation before the book continues */
     pauseAfterExplainMs: number;
+    /**
+     * Listening mode, at a hard word or phrase: how long the commands window stays open (mic listening for
+     * "I know" / "I don't know" / "bye bye", K / D / Esc, the buttons), after the word is said and after its explanation
+     */
+    commandWindowMs: number;
     /** quiz style: how long to wait for the learner's answer before giving it */
     quizWaitMs: number;
   };
@@ -144,6 +149,8 @@ export interface VoiceChatSettings {
   model: SttModelId;
   /** key that opens / closes the voice line (KeyboardEvent.code, same format as `shortcuts`) */
   pushToTalkKey: string;
+  /** the speech-model download was offered once on entering Listening mode (never asked again by itself) */
+  modelOffered?: boolean;
 }
 
 export interface LevelSettings {
@@ -193,7 +200,8 @@ export const DEFAULT_SETTINGS: Settings = {
     sentenceRepeatsForPhrase: 2,
     lastSecondsWindow: 30,
     tapHighlightCancels: true,
-    pauseAfterExplainMs: 7000,
+    pauseAfterExplainMs: 5000,
+    commandWindowMs: 5000,
     quizWaitMs: 7000,
   },
   appearance: {
@@ -227,17 +235,23 @@ export const DEFAULT_SETTINGS: Settings = {
   lastMode: 'reading',
   bookModes: {},
   level: { model: null, lastResult: null, testedAt: null },
-  voiceChat: { alwaysOn: false, model: 'moonshine-base', pushToTalkKey: 'KeyM' },
+  voiceChat: { alwaysOn: false, model: 'moonshine-base', pushToTalkKey: 'KeyM', modelOffered: false },
   skip: { ...DEFAULT_SKIP },
 };
 
 /**
- * Brings a stored settings object up to date in place and returns it: the v1 theme 'dark' became 'night'.
+ * Brings a stored settings object up to date in place and returns it: the v1 theme 'dark' became 'night';
+ * shared AI rules still equal to an earlier default get the current default (no filler, badly recognised
+ * speech); the old 7 s pause after an explanation became the 5 s window.
  * Safe to call on partial objects (patches) and on the defaults.
  */
 export function migrateSettings<T extends { appearance?: { theme?: string } }>(s: T): T {
   const theme = s?.appearance?.theme as string | undefined;
   if (theme === 'dark') s.appearance!.theme = 'night';
+  const ai = (s as { ai?: { contextRules?: unknown } } | null)?.ai;
+  if (ai && typeof ai.contextRules === 'string' && LEGACY_CONTEXT_RULES.some((old) => old.trim() === (ai.contextRules as string).trim())) ai.contextRules = DEFAULT_CONTEXT_RULES;
+  const listen = (s as { listen?: { pauseAfterExplainMs?: unknown } } | null)?.listen;
+  if (listen && listen.pauseAfterExplainMs === 7000) listen.pauseAfterExplainMs = 5000;
   return s;
 }
 

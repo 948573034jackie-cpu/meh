@@ -217,9 +217,18 @@ export function buildStyledPrompt(req: ExplainRequest, opts: StyledPromptOpts): 
   return { system, user: `${history}${ctx}\n\n${task}`, maxTokens: req.again ? Math.round(opts.style.maxTokens * 1.6) : opts.style.maxTokens };
 }
 
-/** Strips anything a model might still add that a voice should not read: markdown, labels, list markers. */
+/** Opening filler the learner asked never to hear (docs/RULES.md, "No filler"); removed from the start of a reply. */
+const OPENING_FILLER = [
+  /^(?:what a |that's a |that is a )?(?:great|good|nice|excellent|lovely) question[.!,]*\s*/i,
+  /^let me explain(?: (?:it|this|that|again))?(?: to you)?[.!:,]*\s*/i,
+  /^as I (?:said|mentioned)(?: (?:before|earlier))?[.!:,]*\s*/i,
+  /^we already know (?:this|that)(?: word)?[.!:,]*\s*/i,
+  /^now,\s*/i,
+];
+
+/** Strips anything a model might still add that a voice should not read: markdown, labels, list markers, opening filler. */
 export function cleanSpokenProse(text: string): string {
-  return text
+  let out = text
     .replace(/\*\*|__|`/g, '')
     .replace(/^#+[ \t]*/gm, '')
     .replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]+/gm, '')
@@ -227,4 +236,12 @@ export function cleanSpokenProse(text: string): string {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const re of OPENING_FILLER) {
+      const next = out.replace(re, '');
+      if (next !== out && next.trim()) { out = next.charAt(0).toUpperCase() + next.slice(1); changed = true; }
+    }
+  }
+  return out;
 }

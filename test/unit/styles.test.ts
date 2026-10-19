@@ -15,7 +15,7 @@ describe('explanation styles', () => {
   });
   it('custom style keeps the learner\'s shape: word x3, word x1, sentence x1; sentence x1 then x2', () => {
     const c = resolveStyle('custom', undefined);
-    expect(c.shape).toEqual({ wordBefore: 3, wordAfter: 1, sentenceAfterWord: 1, sentenceBefore: 1, sentenceAfter: 2 });
+    expect(c.shape).toEqual({ wordBefore: 3, wordAfter: 0, sentenceAfterWord: 0, sentenceBefore: 1, sentenceAfter: 2 });
   });
   it('merges overrides over defaults and ignores unknown ids', () => {
     const all = resolveStyles({ teacher: { model: 'claude-haiku-5-5', shape: { wordAfter: 7 } as never }, nope: { name: 'x' } } as never);

@@ -192,3 +192,17 @@
 .help-groups .kv { grid-template-columns: 86px 1fr; gap: 5px 10px; font-size: 13px; align-items: baseline; }
 .help-groups .kv .key { white-space: nowrap; }
 @media (max-width: 760px) { .help-groups { grid-template-columns: 1fr; } }
+
+/* The commands window at a hard word (both screens): three big, calm answers and a thin countdown line. */
+.command-bar { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; gap: 8px; align-items: stretch; padding: 10px 12px 8px; background: color-mix(in srgb, var(--bg-elevated) 94%, transparent); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); font-family: var(--font-sans); zoom: var(--ui-scale); animation: command-in 160ms ease-out; max-width: calc(100% - 32px); }
+.command-bar.in-listening { bottom: 132px; }
+.command-buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.command-bar .cmd { font-size: 16px; padding: 12px 20px; border-radius: 12px; min-width: 132px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid var(--border); background: var(--bg-hover); color: var(--fg); cursor: pointer; }
+.command-bar .cmd:hover { background: color-mix(in srgb, var(--accent) 16%, var(--bg-hover)); }
+.command-bar .cmd.know { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.command-bar .cmd kbd { font-family: var(--font-sans); font-size: 11.5px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.command-countdown { height: 3px; border-radius: 3px; background: color-mix(in srgb, var(--fg) 10%, transparent); overflow: hidden; }
+.command-countdown span { display: block; height: 100%; background: var(--accent); transform-origin: left center; animation-name: command-countdown; animation-timing-function: linear; animation-fill-mode: forwards; }
+@keyframes command-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes command-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (prefers-reduced-motion: reduce) { .command-bar { animation: none; } }
