@@ -236,6 +236,46 @@ describe('ListenController', () => {
     expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Was he happy or sad?', 'He was happy.']);
   });
 
+  it('does not explain the same word again within the repeat window, but does after it', async () => {
+    const filler = Array.from({ length: 30 }, (_, i) => `Word ${i} here.`).join(' '); // 90 words
+    const t = setup(['He was sanguine.', 'Still sanguine.', filler, 'Again sanguine.'], { repeatWindowWords: 50 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.ai.calls.length === 2, 8000);
+    expect(t.ai.calls[1].req.sentence).toBe('Again sanguine.');
+    t.ai.calls[1].resolve(REPLY);
+    await finished;
+    expect(t.ai.calls.length).toBe(2);
+    expect(t.controller.countStops(0)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a learning word (heard before, learner silent) is explained again later; a known word never', () => {
+    const t = setup(['He was sanguine.', 'Then acrimonious.']);
+    t.vocab.words.sanguine = 'learning';
+    t.vocab.words.acrimonious = 'known';
+    expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 }).map((x) => x.lemma)).toEqual(['sanguine']);
+    expect(t.controller.triggersFor({ chapter: 0, paragraph: 1, sentence: 0 })).toEqual([]);
+  });
+
+  it('"I don\'t know" explains the last word again, deeper, then listening continues', async () => {
+    const t = setup(['He was sanguine.', 'Then he left.']);
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.reader.spoken.length === 4);
+    const p = t.controller.explainAgain();
+    await until(() => t.ai.calls.length === 2);
+    expect(t.ai.calls[1].req).toMatchObject({ kind: 'word', target: 'sanguine', again: true });
+    t.ai.calls[1].resolve('Let me try another way. Sanguine is hopeful.');
+    await p;
+    await finished;
+    expect(t.explainer.spoken.map((s) => s.text).slice(-1)).toEqual(['Let me try another way. Sanguine is hopeful.']);
+    expect(t.reader.spoken.map((s) => s.text).slice(-1)).toEqual(['Then he left.']);
+  });
+
   it('explains a lemma once per sentence even when it appears twice', () => {
     const t = setup(['The sanguine man met a sanguine woman.']);
     expect(t.controller.triggersFor({ chapter: 0, paragraph: 0, sentence: 0 }).map((x) => x.token)).toEqual([1]);

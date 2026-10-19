@@ -96,3 +96,19 @@ export function contextAround(book: Book, pos: Position, wordsBefore: number, wo
   };
   return { before: collect(-1, wordsBefore), after: collect(1, wordsAfter) };
 }
+
+/** Word offset of every sentence from the start of the book (prefix sums), for "within N words" rules. */
+export function wordOffsets(book: Book): (pos: Position) => number {
+  const table: number[][][] = [];
+  let n = 0;
+  for (const ch of book.chapters) {
+    const chTab: number[][] = [];
+    for (const para of ch.paragraphs) {
+      const pTab: number[] = [];
+      for (const s of para.sentences) { pTab.push(n); n += s.tokens.filter((t) => t.kind === 'word').length; }
+      chTab.push(pTab);
+    }
+    table.push(chTab);
+  }
+  return (pos) => table[pos.chapter]?.[pos.paragraph]?.[pos.sentence] ?? 0;
+}

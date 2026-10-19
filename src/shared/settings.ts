@@ -64,7 +64,10 @@ export interface Settings {
     /** stop on highlighted words automatically while in listening mode */
     autoExplainWords: boolean;
     autoExplainPhrases: boolean;
+    /** @deprecated replaced by repeatWindowWords */
     firstOccurrencePerChapterOnly: boolean;
+    /** a word explained once is not explained again within this many words of text (0 = every time) */
+    repeatWindowWords: number;
     maxStopsPer10Min: number; // 0 = unlimited
     wordRepeats: number; // say the word N times before and after the explanation
     sentenceRepeatsAfterWord: number; // read the sentence N times after a word explanation
@@ -92,7 +95,11 @@ export interface Settings {
     lineHeight: number;
     /** maximum line length of the reading column, in characters (ch) */
     maxLineChars: number;
+    /** maximum line length of the listening screen (subtitles), in characters (ch); wider, with comfortable side margins */
+    listenMaxLineChars: number;
     marginPx: number;
+    /** "tap anything to see how it works" tooltips on the main buttons */
+    showTips: boolean;
     bandEnabled: boolean;
     bandHeightPct: number; // 20..45
     highlightsDark: HighlightColors;
@@ -130,6 +137,7 @@ export const DEFAULT_SETTINGS: Settings = {
     autoExplainWords: true,
     autoExplainPhrases: true,
     firstOccurrencePerChapterOnly: true,
+    repeatWindowWords: 500,
     maxStopsPer10Min: 0,
     wordRepeats: 3,
     sentenceRepeatsAfterWord: 2,
@@ -149,7 +157,9 @@ export const DEFAULT_SETTINGS: Settings = {
     uiScale: 1,
     lineHeight: 1.6,
     maxLineChars: 70,
+    listenMaxLineChars: 90,
     marginPx: 48,
+    showTips: true,
     bandEnabled: true,
     bandHeightPct: 30,
     highlightsDark: { unknown: '#59c7fa', learning: '#ffd666', sentence: '#ffffff', word: '#fb923c', marked: '#c084fc' },

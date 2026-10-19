@@ -83,3 +83,15 @@ describe('buildStyledPrompt', () => {
     expect(cleanSpokenProse('**Definition:** hi\n\n- one\n1. two\nIN THIS SENTENCE: here')).toBe('hi\n\none\ntwo\nhere');
   });
 });
+
+describe('explain again', () => {
+  it('adds the deeper second-explanation instruction and a bigger budget', () => {
+    const style = resolveStyle('custom', undefined);
+    const base = { kind: 'word' as const, target: 'flinched', sentence: 'She flinched.', before: '', after: '', book: { title: 'T', chapter: '' }, history: [] };
+    const a = buildStyledPrompt(base, { style, contextRules: DEFAULT_CONTEXT_RULES, level: 'B2', native: 'Chinese' });
+    const b = buildStyledPrompt({ ...base, again: true }, { style, contextRules: DEFAULT_CONTEXT_RULES, level: 'B2', native: 'Chinese' });
+    expect(a.user).not.toContain('still do not understand');
+    expect(b.user).toContain('still do not understand');
+    expect(b.maxTokens).toBeGreaterThan(a.maxTokens);
+  });
+});

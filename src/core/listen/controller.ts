@@ -4,7 +4,7 @@ import type { VocabState, MarkedRange, Settings } from '@shared/settings';
 import type { ExplainRequest, ExplainKind } from '@shared/api';
 import type { TtsEngine } from '@core/tts/engine';
 import { samePosition } from '@core/model';
-import { getSentence, nextPosition, prevPosition, comparePositions, contextAround } from '@core/nav';
+import { getSentence, nextPosition, prevPosition, comparePositions, contextAround, wordOffsets } from '@core/nav';
 import { parseExplanation, type ExplanationParts } from '@core/ai/prompts';
 import { annotateSentence } from '@core/vocab/analysis';
 import { resolveStyle } from '@shared/styles';
@@ -67,7 +67,11 @@ interface Trigger { kind: 'word' | 'phrase' | 'sentence'; token: number; end: nu
  */
 export class ListenController {
   enabled = false;
-  private explainedThisChapter = new Map<number, Set<string>>();
+  /** lemma -> word offset of the sentence where it was last explained (the "not again within N words" rule) */
+  private lastExplainedAt = new Map<string, number>();
+  private offsetOf: (pos: Position) => number;
+  /** the last word/phrase/sentence explanation, for "I don't know" (explain again) */
+  private last: { kind: ExplainKind; target: string; pos: Position; dict: ExplainRequest['dict']; lemma?: string } | null = null;
   private stopTimes: number[] = [];
   private current: { cancel: () => void; lemma?: string } | null = null;
   /** lemmas the learner tapped away during a stop: known now, never explained or marked again */
@@ -81,6 +85,7 @@ export class ListenController {
   private historyChapter = -1;
 
   constructor(private playback: Playback, private deps: ListenDeps) {
+    this.offsetOf = wordOffsets(deps.book);
     playback.hooks = {
       stopAt: (pos) => this.stopAt(pos),
       onStop: (pos, token) => this.onStop(pos, token),
@@ -95,14 +100,16 @@ export class ListenController {
     const vocab = this.deps.vocab().words;
     const ann = annotateSentence(cur.para, cur.sentence, this.deps.dict, this.deps.names, s.learnerLevel);
     const out: Trigger[] = [];
-    const seen = this.explainedThisChapter.get(pos.chapter) ?? new Set<string>();
+    const here = this.offsetOf(pos);
+    const recently = (lemma: string) => { const at = this.lastExplainedAt.get(lemma); return at !== undefined && s.listen.repeatWindowWords > 0 && here >= at && here - at < s.listen.repeatWindowWords; };
     if (s.listen.autoExplainWords) {
       for (const ti of ann.hardTokens) {
         const info = ann.infos[ti];
         if (!info) continue;
         const status = vocab[info.lemma];
-        if (status === 'known' || status === 'ignored' || status === 'learning' || this.dismissed.has(info.lemma)) continue;
-        if (s.listen.firstOccurrencePerChapterOnly && seen.has(info.lemma)) continue;
+        // 'learning' words (heard once, learner silent or "I don't know") are explained again, outside the window
+        if (status === 'known' || status === 'ignored' || this.dismissed.has(info.lemma)) continue;
+        if (recently(info.lemma)) continue;
         if (out.some((t) => t.lemma === info.lemma)) continue; // the same word twice in one sentence: one stop
         const tok = cur.sentence.tokens[ti];
         out.push({ kind: 'word', token: ti, end: ti, target: tok.text, lemma: info.lemma, dict: info.entry ? { ipa: info.entry.ipa, zh: info.entry.zh.split('\n')[0], level: info.entry.level } : null });
@@ -112,9 +119,9 @@ export class ListenController {
       for (const ph of ann.phrases) {
         const lemma = ph.result.lemma;
         const status = vocab[lemma];
-        if (status === 'known' || status === 'ignored' || status === 'learning' || this.dismissed.has(lemma)) continue;
+        if (status === 'known' || status === 'ignored' || this.dismissed.has(lemma)) continue;
         if (!isAbove(ph.result.entry.level, s.learnerLevel)) continue;
-        if (s.listen.firstOccurrencePerChapterOnly && seen.has(lemma)) continue;
+        if (recently(lemma)) continue;
         if (out.some((t) => t.lemma === lemma)) continue;
         const text = cur.para.text.slice(cur.sentence.tokens[ph.start].start, cur.sentence.tokens[ph.end].end);
         out.push({ kind: 'phrase', token: ph.start, end: ph.end, target: text, lemma, dict: { ipa: '', zh: ph.result.entry.zh.split('\n')[0], level: ph.result.entry.level } });
@@ -158,6 +165,7 @@ export class ListenController {
     for (const t of ordered) {
       if (t.lemma && (this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known')) continue; // tapped away meanwhile
       const script = scriptFor(t.kind, t.target, cur.text, s);
+      this.last = { kind: t.kind, target: t.target, pos, dict: t.dict ?? null, lemma: t.lemma };
       const res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, script, t.lemma);
       if (res === 'aborted') return 'stop'; // the learner paused, seeked or stopped: the reading loop that asked is stale
       if (this.skipRequested) break;
@@ -186,14 +194,15 @@ export class ListenController {
   private wakeWait: (() => void) | null = null;
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
-  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean): Promise<void> {
+  async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean, again?: boolean): Promise<void> {
     const wasPlaying = this.beginManual(resumeAfter);
     const resumeAt = this.playback.position;
     const cur = getSentence(this.deps.book, pos);
     const sentence = cur?.text ?? target;
     const s = this.deps.settings();
     const script = scriptFor(kind, target, sentence, s);
-    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question);
+    if (kind === 'word' || kind === 'phrase' || kind === 'sentence') this.last = { kind, target, pos, dict, lemma };
+    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again);
     const readOn = kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
     // Reading mode: stop and wait. Listening mode: the pause, then on with the book.
     const resume = wasPlaying && (this.deps.mode?.() ?? 'listening') === 'listening' && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');
@@ -236,6 +245,16 @@ export class ListenController {
     this.playback.play(readOn);
   }
 
+  /** "I don't know": the last explanation again, deeper; the word stays learning and will be explained again later. */
+  async explainAgain(): Promise<void> {
+    const l = this.last;
+    if (!l) return;
+    await this.explainNow(l.kind, l.target, l.pos, l.dict, l.lemma, undefined, undefined, true);
+  }
+
+  /** "I know": known now, never explained or highlighted again. */
+  markKnown(lemma: string): void { this.dismiss(lemma); }
+
   /** Interrupts the current explanation; reading continues with the next sentence. */
   skip(): void { this.skipRequested = true; this.current?.cancel(); }
 
@@ -253,7 +272,7 @@ export class ListenController {
    * explanation); 'aborted' = the playback state changed underneath it (pause, seek, stop, play), so the
    * caller must not continue the stop it belongs to.
    */
-  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string): Promise<'done' | 'skipped' | 'aborted'> {
+  private async runExplanation(kind: ExplainKind, target: string, pos: Position, sentence: string, dict: ExplainRequest['dict'], script: ScriptStep[], lemma?: string, question?: string, again?: boolean): Promise<'done' | 'skipped' | 'aborted'> {
     if (this.historyChapter !== pos.chapter) { this.history = []; this.historyChapter = pos.chapter; }
     const entry: TranscriptEntry = { id: ++this.transcriptId, kind, target, sentence, text: '', parts: null, status: 'thinking' };
     this.deps.onTranscript({ ...entry });
@@ -266,6 +285,7 @@ export class ListenController {
       dict: dict ?? undefined, question, history: this.history,
       position: { chapter: pos.chapter, paragraph: pos.paragraph, sentence: pos.sentence },
       styleId: s0.ai.activeStyle,
+      again,
     };
     let cancelled = false;
     let aborted = false;
@@ -342,8 +362,8 @@ export class ListenController {
     offState();
     if (this.current === mine) this.current = null;
     if (lemma) {
-      // whatever happened, do not stop again for this word in this chapter
-      this.explainedThisChapter.set(pos.chapter, (this.explainedThisChapter.get(pos.chapter) ?? new Set()).add(lemma));
+      // whatever happened, do not stop again for this word within the repeat window
+      this.lastExplainedAt.set(lemma, this.offsetOf(pos));
       if (!this.dismissed.has(lemma) && (completed || entry.status === 'speaking' || entry.status === 'done')) this.deps.onMarkLearning(lemma);
     }
     if (entry.status !== 'error') entry.status = cancelled ? 'skipped' : 'done';
@@ -357,12 +377,13 @@ export class ListenController {
     const ch = this.deps.book.chapters[chapter];
     if (!ch) return 0;
     const s = this.deps.settings();
-    const seen = new Set<string>();
+    const lastAt = new Map<string, number>();
     let n = 0;
     for (const para of ch.paragraphs) for (const sent of para.sentences) {
-      const ts = this.triggersFor({ chapter, paragraph: para.index, sentence: sent.index })
-        .filter((t) => !t.lemma || !s.listen.firstOccurrencePerChapterOnly || !seen.has(t.lemma));
-      for (const t of ts) if (t.lemma) seen.add(t.lemma);
+      const pos = { chapter, paragraph: para.index, sentence: sent.index };
+      const here = this.offsetOf(pos);
+      const ts = this.triggersFor(pos).filter((t) => !t.lemma || s.listen.repeatWindowWords === 0 || !lastAt.has(t.lemma) || here - lastAt.get(t.lemma)! >= s.listen.repeatWindowWords);
+      for (const t of ts) if (t.lemma) lastAt.set(t.lemma, here);
       if (ts.length) n += 1;
     }
     return n;

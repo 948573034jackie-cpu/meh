@@ -21,6 +21,8 @@ export interface ExplainRequest {
   position?: Position;
   /** explanation style to use; undefined = the active style in settings */
   styleId?: string;
+  /** the learner heard an explanation and said "I don't know": explain again, deeper */
+  again?: boolean;
   /** previous exchanges in this chapter, oldest first */
   history: { role: 'user' | 'assistant'; text: string }[];
 }
@@ -106,6 +108,8 @@ export interface ReadAlongApi {
   // misc
   getDiagnostics(): Promise<Diagnostics>;
   openExternal(url: string): Promise<void>;
+  /** Writes a text file into ~/Documents/Dream Read and reveals it in Finder; resolves with the full path. */
+  exportText(fileName: string, contents: string): Promise<string>;
   onMenu(cb: (action: string) => void): () => void;
 }
 
