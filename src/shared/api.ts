@@ -27,6 +27,17 @@ export interface ExplainRequest {
   history: { role: 'user' | 'assistant'; text: string }[];
 }
 
+export interface KokoroStatus {
+  state: 'missing' | 'downloading' | 'loading' | 'ready' | 'error';
+  variant: string;
+  modelDir: string;
+  downloadBytes: number;
+  progress: { file: string; received: number; total: number; percent: number } | null;
+  error: string | null;
+  queued: number;
+  version: string;
+}
+
 export type AiErrorCode = 'no_key' | 'auth' | 'rate_limit' | 'spend_limit' | 'model' | 'network' | 'timeout' | 'budget' | 'cancelled' | 'other';
 
 export type AiEvent =
@@ -105,6 +116,12 @@ export interface ReadAlongApi {
   // cloud TTS (engines that synthesize in the main process)
   ttsListVoices(engine: TtsEngineId): Promise<TtsVoiceInfo[]>;
   ttsSynthesize(engine: TtsEngineId, text: string, voiceId: string, rate: number): Promise<CloudTtsResult>;
+  // Kokoro (free local voice): model download and prefetch
+  kokoroStatus(): Promise<KokoroStatus>;
+  kokoroDownload(): Promise<KokoroStatus>;
+  kokoroCancelDownload(): Promise<void>;
+  kokoroPrepare(items: { text: string; voice?: string; speed?: number }[]): Promise<void>;
+  onKokoroProgress(cb: (s: KokoroStatus) => void): () => void;
   // misc
   getDiagnostics(): Promise<Diagnostics>;
   openExternal(url: string): Promise<void>;

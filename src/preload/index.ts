@@ -33,6 +33,15 @@ const api: ReadAlongApi = {
   getUsage: () => invoke('ai:usage'),
   ttsListVoices: (engine) => invoke('tts:voices', engine),
   ttsSynthesize: (engine, text, voiceId, rate) => invoke('tts:synthesize', engine, text, voiceId, rate),
+  kokoroStatus: () => invoke('kokoro:status'),
+  kokoroDownload: () => invoke('kokoro:download'),
+  kokoroCancelDownload: () => invoke('kokoro:cancelDownload'),
+  kokoroPrepare: (items) => invoke('kokoro:prepare', items),
+  onKokoroProgress: (cb) => {
+    const handler = (_e: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s);
+    ipcRenderer.on('kokoro:progress', handler);
+    return () => ipcRenderer.removeListener('kokoro:progress', handler);
+  },
   getDiagnostics: () => invoke('app:diagnostics'),
   openExternal: (url) => invoke('app:openExternal', url),
   exportText: (fileName, contents) => invoke('app:exportText', fileName, contents),

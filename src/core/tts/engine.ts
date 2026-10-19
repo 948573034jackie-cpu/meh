@@ -54,12 +54,12 @@ export interface TtsEngine {
 }
 
 /** Engines offered in the UI (kokoro is reserved for a later version). */
-export const AVAILABLE_ENGINES: TtsEngineId[] = ['webspeech', 'edge', 'openai', 'elevenlabs'];
+export const AVAILABLE_ENGINES: TtsEngineId[] = ['kokoro', 'webspeech', 'edge', 'openai', 'elevenlabs'];
 
 export const ENGINE_LABELS: Record<TtsEngineId, { label: string; kind: 'local' | 'cloud'; cost: string; quality: string }> = {
   webspeech: { label: 'Mac voices (built in)', kind: 'local', cost: 'Free', quality: 'Good with the Enhanced or Premium British voices (free download in System Settings)' },
   edge: { label: 'Microsoft neural voices', kind: 'cloud', cost: 'Free (unofficial, needs internet)', quality: 'Very good British voices (Sonia, Ryan, Libby, Thomas)' },
   openai: { label: 'OpenAI voice', kind: 'cloud', cost: 'Paid, about 1.5 cents per minute', quality: 'Very natural, British accent on request' },
   elevenlabs: { label: 'ElevenLabs voice', kind: 'cloud', cost: 'Paid subscription', quality: 'Best, true British voices' },
-  kokoro: { label: 'Kokoro neural voice (offline)', kind: 'local', cost: 'Free, one-time 160 MB download', quality: 'Very good, runs on your Mac' },
+  kokoro: { label: 'Dream voice (Kokoro, offline)', kind: 'local', cost: 'Free, one-time 192 MB download', quality: 'Natural British voices (Emma, George), runs on your Mac, no internet needed' },
 };

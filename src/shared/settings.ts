@@ -142,7 +142,7 @@ export const DEFAULT_SETTINGS: Settings = {
     contextWordsAfter: 200,
     generateScenePicture: false,
   },
-  voice: { engine: 'webspeech', voiceId: '', explainEngine: null, explainVoiceId: null, rate: 1.0, pauseBetweenSentencesMs: 250 },
+  voice: { engine: 'kokoro', voiceId: 'bf_emma', explainEngine: null, explainVoiceId: null, rate: 1.0, pauseBetweenSentencesMs: 250 },
   listen: {
     autoExplainWords: true,
     autoExplainPhrases: true,

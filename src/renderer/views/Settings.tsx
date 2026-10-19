@@ -6,7 +6,7 @@ import { CEFR_LEVELS } from '@core/model';
 import { ENGINE_LABELS, AVAILABLE_ENGINES, type TtsVoice } from '@core/tts/engine';
 import { getEngine, defaultVoiceFor } from '@core/tts/registry';
 import { shortcutLabel } from '../reader/shortcuts';
-import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap } from '@shared/api';
+import { SECRET_LABELS, type SecretName, type SecretStatus, type SecretStatusMap, type KokoroStatus } from '@shared/api';
 import { Tip } from '../ui/Tip';
 
 export const STORAGE_NOTE = 'Keys are stored encrypted in the app\'s own data folder; they survive updates and re-signing.';
@@ -279,6 +279,7 @@ export function SettingsView(): JSX.Element {
               })}
             </div>
           </div>
+          {S.voice.engine === 'kokoro' && <KokoroCard />}
           <VoicePicker label="Voice" engine={S.voice.engine} voiceId={S.voice.voiceId} voices={voices} onChange={(voiceId) => set({ voice: { ...S.voice, voiceId } })} onPreview={() => previewVoice(S.voice.engine, S.voice.voiceId)} />
           {S.voice.engine === 'webspeech' && <div className="hint muted small">Better free British voices: System Settings → Accessibility → Spoken Content → System Voice → Manage Voices… → English (UK) → download Daniel (Enhanced), Serena (Premium) or Jamie (Premium). Restart Dream Read afterwards and pick the new voice here.</div>}
           <div className="field">
@@ -510,5 +511,36 @@ function DataSection({ usage }: { usage: { today: number; month: number } }): JS
       </div>
       <div className="field"><label>Where your data lives</label><pre className="small muted" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{diag}</pre></div>
     </section>
+  );
+}
+
+
+/** Download state of the free local voice, with a one-click download and progress. */
+export function KokoroCard(): JSX.Element {
+  const [st, setSt] = useState<KokoroStatus | null>(null);
+  useEffect(() => {
+    let on = true;
+    window.readalong.kokoroStatus().then((s) => { if (on) setSt(s); }).catch(() => undefined);
+    const off = window.readalong.onKokoroProgress((s) => { if (on) setSt(s); });
+    return () => { on = false; off(); };
+  }, []);
+  if (!st) return <div className="hint muted small">Checking the Dream voice…</div>;
+  const mb = (n: number) => `${Math.round(n / 1_048_576)} MB`;
+  if (st.state === 'ready') return <div className="hint small" data-testid="kokoro-ready">Dream voice is ready on this Mac. {st.queued > 0 ? `Preparing ${st.queued} sentences ahead…` : 'Sentences are prepared ahead and kept on disk, so playback stays smooth.'}</div>;
+  if (st.state === 'downloading' && st.progress) {
+    return (
+      <div className="field" data-testid="kokoro-downloading">
+        <div className="hint small">Downloading the Dream voice: {mb(st.progress.received)} of {mb(st.progress.total)} ({Math.round(st.progress.percent)}%). You can keep reading with a Mac voice meanwhile.</div>
+        <div className="bar"><i style={{ width: `${st.progress.percent}%` }} /></div>
+        <div className="row"><button onClick={() => void window.readalong.kokoroCancelDownload()}>Cancel</button></div>
+      </div>
+    );
+  }
+  if (st.state === 'loading') return <div className="hint small">Loading the Dream voice…</div>;
+  return (
+    <div className="field" data-testid="kokoro-missing">
+      <div className="hint small">{st.state === 'error' && st.error ? `The voice could not be set up: ${st.error}. ` : ''}The Dream voice is a free, natural British voice that runs on your Mac. It needs a one-time download of about {mb(st.downloadBytes)}.</div>
+      <div className="row"><button className="primary" onClick={() => void window.readalong.kokoroDownload()} data-testid="kokoro-download">Download the Dream voice</button></div>
+    </div>
   );
 }
