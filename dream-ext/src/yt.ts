@@ -57,6 +57,8 @@ interface YtcApi {
   settings(): { sendOn: boolean; target: string; voiceOn: boolean };
   buildSentences(cues: unknown[]): TimedSentence[];
   setBarStatus(text: string, bad?: boolean): void;
+  checkMic?(): void;
+  micBlocked?(): boolean;
 }
 interface DreamHook {
   /** the Dream Tutor handles the video now: youtube.js leaves pauses, plays and voice commands alone */
@@ -69,6 +71,8 @@ interface DreamHook {
   callChanged(): void;
   /** for the 🩺 check */
   diag(): Record<string, unknown> | null;
+  /** the call with Claude is open: youtube.js keeps the microphone on */
+  wantsMic(): boolean;
 }
 declare global { interface Window { __ytcApi?: YtcApi; __ytcDream?: DreamHook; __drDebug?: unknown } }
 
@@ -132,6 +136,8 @@ interface Talk {
   started: number;
   timer: ReturnType<typeof setInterval>;
   error?: string;
+  /** opened with 📞: it waits for you (no quiet-seconds go on) */
+  manual?: boolean;
 }
 
 class Session {
@@ -160,6 +166,8 @@ class Session {
   private voiceId = '';
   private zhVoice: string | null = null;
   private keys: store.Keys = {};
+  /** the Mac's English voices (for the quick settings) */
+  private macVoices: { id: string; name: string }[] = [];
   private playback: Playback | null = null;
   private controller: ListenController | null = null;
   private disposed = false;
@@ -296,6 +304,12 @@ class Session {
     this.mac = getEngine('webspeech');
     this.macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.zhMac = await chineseVoiceId().catch(() => null);
+    void this.mac.listVoices().then((vs) => {
+      // English voices, the better ones (Enhanced / Premium / Siri) first
+      const good = (n: string) => (/premium|enhanced|siri/i.test(n) ? 0 : 1);
+      this.macVoices = vs.filter((v) => /^en/i.test(v.lang)).sort((a, b) => good(a.name) - good(b.name) || a.name.localeCompare(b.name)).map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` }));
+      this.renderQuickIfOpen();
+    }).catch(() => undefined);
     this.applyVoice();
   }
 
@@ -314,7 +328,7 @@ class Session {
       this.voiceId = kind === 'openai' ? extras.openaiVoice : extras.elevenVoice;
       this.zhVoice = this.voiceId;
     }
-    this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t));
+    this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => this.closeCard());
   }
 
   /** the teacher says the sentence being taught: it plays from the video */
@@ -695,7 +709,11 @@ class Session {
   // ---- the talk: a live voice call (OpenAI realtime) or the speech recognition + the tutor ---------------------------
   private talkWaiter: (() => void) | null = null;
 
-  private liveAvailable(): boolean { return !!this.keys.openai && extras.liveOn; }
+  /** the call goes to OpenAI's live voice only when chosen (and its key is saved); otherwise you talk with Claude */
+  private liveAvailable(): boolean { return extras.talkWith === 'openai' && !!this.keys.openai && extras.liveOn; }
+  /** the call with Claude listens through the page's microphone (youtube.js) */
+  wantsMic(): boolean { return this.mode === 'tutor' && !!this.talk && !this.talk.live; }
+  private talkName(): string { return extras.talkWith === 'openai' && this.keys.openai ? 'your tutor' : 'Claude'; }
   private liveVoice(): string { return LIVE_VOICES.has(extras.openaiVoice) ? extras.openaiVoice : 'marin'; }
 
   /** what the live tutor knows right now */
@@ -759,6 +777,7 @@ class Session {
     if (!t) {
       t = this.talk = { live: null, pos, word, explanation, log: [], hearing: false, started: Date.now(), timer: setInterval(() => this.talkTick(), 1000) };
     } else { t.pos = pos; if (word) t.word = word; if (explanation) t.explanation = explanation; t.started = Date.now(); }
+    if (greet) t.manual = true;
     if (this.liveAvailable() && !t.live && !t.error) {
       const call = this.pre && !this.pre.isClosed ? this.pre : this.newCall(word, explanation);
       this.pre = null;
@@ -766,6 +785,15 @@ class Session {
       call.update(this.liveContext(t.word, t.explanation));
       if (greet) void call.ready.then(() => call.say('Greet the learner in a few words, in easy English, and ask what they would like to know about this part of the video.'));
     } else if (t.live) t.live.update(this.liveContext(t.word, t.explanation));
+    else {
+      // the call with Claude: the microphone on now; 📞 starts with a short hello in the tutor's voice
+      window.__ytcApi?.checkMic?.();
+      if (fresh && greet) {
+        const h = this.tts?.speak('Hi! What would you like to know about this part?', { voiceId: this.voiceId, rate: settings.voice.rate });
+        void h?.done.then(() => { this.lastTtsEnd = Date.now(); });
+        this.putLine(t, { id: 'hello', who: 'tutor', text: 'Hi! What would you like to know about this part?', final: true });
+      }
+    }
     t.live?.setMic(true);
     if (fresh && this.cmdWin?.phase === 'after') this.controller?.keepWaiting(20_000);
     this.showCommandWindow(this.cmdWin);
@@ -788,6 +816,7 @@ class Session {
     t.live?.close();
     if (this.pre) { this.pre.close(); this.pre = null; }
     this.renderTalk();
+    setTimeout(() => window.__ytcApi?.checkMic?.(), 0);
   }
 
   /** the explanation (or the next one) is talking: the live call does not listen meanwhile (no echo) */
@@ -798,7 +827,7 @@ class Session {
     if (!t) return;
     // keep the stop's window open while we talk (Dream Read's window would end after a few seconds)
     if (this.cmdWin && this.cmdWin.phase === 'after') this.controller?.keepWaiting(20_000);
-    const quiet = extras.talkSilenceSec;
+    const quiet = t.manual ? 0 : extras.talkSilenceSec;
     if (quiet > 0 && !this.controller?.busy && !t.live?.speaking && !t.hearing) {
       const last = Math.max(t.started, t.live?.lastActivity ?? 0, this.lastHeardAt, this.lastTtsEnd);
       if (Date.now() - last > quiet * 1000) this.goOn();
@@ -820,10 +849,18 @@ class Session {
       if (!box) continue;
       if (!t) { box.hidden = true; box.innerHTML = ''; continue; }
       const live = t.live;
-      const state = live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question';
+      const last = this.transcript[this.transcript.length - 1];
+      const claudeBusy = !live && !!this.controller?.busy;
+      const blocked = !live && !!window.__ytcApi?.micBlocked?.();
+      const state = live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me')
+        : blocked ? 'The microphone is blocked for youtube.com: click the lock icon left of the address bar → Microphone → Allow. (You can type.)'
+        : claudeBusy ? (last?.status === 'thinking' ? `${this.talkName()} is thinking…` : `${this.talkName()} is talking · Space = stop · “bye bye” = back to the video`)
+        : t.hearing ? 'Listening to you…'
+        : `📞 Call with ${this.talkName()} · just talk (or type)${t.error ? ` · live voice off: ${t.error}` : ''}`;
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       box.hidden = false;
-      box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${live && live.state === 'ready' ? 'on' : ''} ${t.hearing ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
+      const micOn = live ? live.state === 'ready' : !blocked && !claudeBusy;
+      box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${micOn ? 'on' : ''} ${t.hearing ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
         <button data-act="go" class="primary">Go on ▶ <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)">✕</button></div>`;
       box.onclick = (ev) => {
         const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
@@ -833,6 +870,7 @@ class Session {
       const log = box.querySelector('.tlog');
       if (log) log.scrollTop = log.scrollHeight;
     }
+    this.fitSoon();
   }
 
   private setTalkStatus(text: string): void {
@@ -978,9 +1016,12 @@ class Session {
     if (final) this.lastHeardAt = Date.now();
     if (/\bshut\s*up\b/.test(lower)) { act(() => this.shutUp()); return true; }
     if (/\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/.test(lower)) { if (!this.callStop) act(() => this.explainLast()); return true; }
-    if (this.talk) {
-      // the talk without the live call: commands, or a question for the tutor
-      if (!final) return true;
+    // (the 5-second window before an explanation only takes I know / I don't know, even during a call)
+    if (this.talk && this.cmdWin?.phase !== 'before') {
+      // the call with Claude: commands, or a question for Claude
+      this.lastHeardAt = Date.now();
+      if (!final) { if (!this.talk.hearing) { this.talk.hearing = true; this.renderTalk(); } return true; }
+      this.talk.hearing = false;
       const d = detectCommand(t);
       if (d.intent === 'bye' || /\b(let'?s go|go on|continue)\b/.test(lower)) act(() => this.goOn());
       else if (d.intent === 'know' && t.split(/\s+/).length <= 4) act(() => this.answerKnow());
@@ -1033,6 +1074,12 @@ class Session {
     // an explanation starts: the live call gets ready (mic off) / stops listening while the teacher talks
     if (e.status === 'thinking' && e.kind !== 'question' && this.mode === 'tutor') { this.preconnect(); this.muteTalk(); }
     if (e.status === 'speaking' && this.talk) this.muteTalk();
+    // the call with Claude: what you asked and what Claude says, on the page
+    if (this.talk && !this.talk.live && e.kind === 'question') {
+      this.putLine(this.talk, { id: `q${e.id}`, who: 'you', text: e.question ?? '', final: true });
+      if (e.text) this.putLine(this.talk, { id: `a${e.id}`, who: 'tutor', text: e.status === 'error' ? e.error ?? '' : e.text, final: e.status !== 'thinking' && e.status !== 'speaking' });
+    }
+    if (this.talk) this.renderTalk();
     if (e.status === 'done' || e.status === 'error' || e.status === 'skipped') {
       this.lastTtsEnd = Date.now();
       if (e.status === 'skipped' && !this.talk && this.pre && !this.flow) { this.pre.close(); this.pre = null; }
@@ -1205,6 +1252,7 @@ class Session {
     let z = el.querySelector<HTMLElement>('.zh-line');
     if (!z) { z = document.createElement('span'); z.className = 'zh-line'; el.appendChild(z); }
     z.textContent = zh;
+    this.fitSoon();
   }
 
   // =============================================================================================================
@@ -1254,10 +1302,11 @@ class Session {
     const el = document.createElement('div');
     el.className = 'stage';
     el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div>
-      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="Type a question for your tutor" aria-label="Question for the tutor"><button type="submit">Ask</button></form></div>
-      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div>`;
+      <div class="dock"><div class="cmd" hidden></div><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="Type a question for your tutor" aria-label="Question for the tutor"><button type="submit">Ask</button></form></div>
+      <div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div>`;
     root.appendChild(el);
     this.stage = { host, root, el };
+    window.addEventListener('resize', () => this.fitPart());
     this.placeStage();
     const page = el.querySelector<HTMLElement>('.page')!;
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
@@ -1290,7 +1339,7 @@ class Session {
       <span class="seg" data-name="secs">${[20, 30, 40, 60].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
-      ${this.mode === 'tutor' ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button>` : ''}
+      ${this.mode === 'tutor' ? `<button data-act="talk" title="Voice call (${esc(comboLabel(sc.talk))})">📞 Call ${esc(this.talkName())}</button>` : ''}
       <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? '🎬 Video' : '📖 Listening'}</button>
       <button data-act="quick" title="Quick settings">⚙</button>${listening ? '' : '<button data-act="close" class="quiet" title="Back to the video">✕</button>'}`;
     top.onclick = (ev) => {
@@ -1312,6 +1361,7 @@ class Session {
     if (!this.stage || !this.vb) return;
     if (normalView() && !extras.stageOn && part) return;
     this.partKeys = part && part.length ? new Set(part.map((p) => sentenceKey(p))) : null;
+    this.partEnd = part && part.length ? part[part.length - 1] : null;
     this.stageShown = true;
     this.placeStage();
     this.stage.host.hidden = false;
@@ -1322,12 +1372,37 @@ class Session {
     this.showCommandWindow(this.cmdWin);
     this.renderTalk();
     if (part?.length) { this.ensureZh(part); this.scrollToCur(true); }
+    this.fitPart();
   }
+
+  /** a stop: the whole part (20-60 s) must be on the screen, every word, so the text gets smaller when needed */
+  private fitPart(): void {
+    const el = this.stage?.el;
+    const page = el?.querySelector<HTMLElement>('.page');
+    const doc = page?.querySelector<HTMLElement>('.doc-inner');
+    if (!el || !page || !doc || !this.stageVisible()) return;
+    if (el.dataset.view !== 'part') { page.style.removeProperty('--part-size'); return; }
+    let size = clamp(extras.stageSizePx || 34, 16, 96);
+    page.style.setProperty('--part-size', `${size}px`);
+    for (let i = 0; i < 8; i++) {
+      const cs = getComputedStyle(page);
+      const avail = page.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - 8;
+      const need = doc.scrollHeight;
+      if (need <= avail || size <= 14) break;
+      size = Math.max(14, Math.floor(size * Math.min(0.97, Math.sqrt(avail / need))));
+      page.style.setProperty('--part-size', `${size}px`);
+    }
+    page.scrollTop = 0;
+  }
+  private partEnd: Position | null = null;
+  private fitSoon(): void { if (this.fitTimer) clearTimeout(this.fitTimer); this.fitTimer = setTimeout(() => this.fitPart(), 60); }
+  private fitTimer: ReturnType<typeof setTimeout> | null = null;
 
   private hideStage(): void {
     if (!this.stage || extras.view === 'listening') return;
     this.stageShown = false;
     this.partKeys = null;
+    this.partEnd = null;
     this.stage.host.hidden = true;
     document.documentElement.classList.remove('dr-stage');
     if (this.quickRoot === this.stage.el) this.closeQuick();
@@ -1380,7 +1455,7 @@ class Session {
     const scroll = q.querySelector('.q-body')?.scrollTop ?? 0;
     // a box the learner is typing in keeps its text (no re-render under the cursor)
     if (q.contains(q.ownerDocument.activeElement) || (root.getRootNode() as ShadowRoot).activeElement?.closest?.('.quick')) return;
-    renderQuick(q, { settings, extras, keys: this.keys, testVoice: () => this.testVoice(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
+    renderQuick(q, { settings, extras, keys: this.keys, testVoice: () => this.testVoice(), close: () => this.closeQuick(), toast: (t) => this.toast(t), speaking: this.voiceKind, macVoices: this.macVoices, testCall: () => void this.callTutor() });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -1409,7 +1484,7 @@ class Session {
     const sc = shortcutMap(extras.shortcuts);
     const callName = window.__ytcApi?.settings().target === 'chatgpt' ? 'ChatGPT call' : 'Claude call';
     head.innerHTML = `<span class="brand">Dream</span><span class="mode ${tutor ? 'tutor' : ''}">${tutor ? 'My tutor' : esc(callName)}</span><span class="grow"></span>
-      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hi bro”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
+      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hi bro”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Call ${esc(this.talkName())} (${esc(comboLabel(sc.talk))})">📞 Call</button>` : ''}
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
@@ -1502,6 +1577,7 @@ class Session {
     const f = clamp(extras.followAt ?? 42, 10, 85) / 100;
     for (const [root, sel] of [[this.panel?.el, '.lines'], [this.stage?.el, '.page']] as const) {
       if (!root) continue;
+      if (root === this.stage?.el && root.dataset.view === 'part') continue;
       const box = root.querySelector<HTMLElement>(sel);
       const el = this.sentenceEl(root, this.cur);
       if (!box || !el || !box.clientHeight) continue;
@@ -1689,6 +1765,7 @@ class Session {
         if (act === 'know') this.answerKnow(); else if (act === 'dont') this.answerDontKnow(); else if (act === 'go') this.answerGoOn();
       };
     }
+    this.fitSoon();
   }
 
   private renderTranscript(): void {
@@ -1771,6 +1848,11 @@ class Session {
 
   settingsChanged(prev: Settings): void {
     this.applyLook();
+    if (prev.listen.lastSecondsWindow !== settings.listen.lastSecondsWindow && this.partEnd && this.vb && this.stageVisible()) {
+      const t = this.vb.timingOf(this.partEnd);
+      if (t) this.showStage(this.partAt(t.end - 0.01, settings.listen.lastSecondsWindow));
+    }
+    if (prev.voice.voiceId !== settings.voice.voiceId && settings.voice.voiceId && this.voiceKind === 'mac') setTimeout(() => this.testVoice(), 50);
     if (prev.learnerLevel !== settings.learnerLevel || prev.appearance.showHints !== settings.appearance.showHints) {
       this.render();
       if (prev.learnerLevel !== settings.learnerLevel) void this.runHintsJob();
@@ -1784,7 +1866,8 @@ class Session {
 
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
-    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) this.applyVoice();
+    if (prev.stageSizePx !== extras.stageSizePx) this.fitSoon();
+    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) { this.applyVoice(); if (prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) this.testVoice(); }
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
     if (prev.zhLines !== extras.zhLines && extras.zhLines && this.stageVisible() && this.vb) {
@@ -1883,7 +1966,7 @@ class Session {
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null } : null,
-      flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
+      flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null, mic: this.wantsMic(),
     };
   }
 }
@@ -1962,6 +2045,7 @@ async function boot(): Promise<void> {
     },
     callChanged: () => { if (window.__ytcApi?.settings().sendOn && extras.tutorOn) void setTutor(false); else refresh(); },
     diag: () => (session ? session.diag() : { mode: 'off', on: extras.tutorOn }),
+    wantsMic: () => !!session && session.wantsMic(),
   };
   const bar = document.getElementById('yt2c-bar');
   if (bar) window.__ytcDream.decorateBar(bar);

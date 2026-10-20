@@ -114,8 +114,17 @@ export class LiveCall {
     const audio = document.createElement('audio');
     audio.autoplay = true;
     this.audio = audio;
-    pc.ontrack = (e) => { audio.srcObject = e.streams[0]; void audio.play().catch(() => undefined); };
-    const track = this.louder(this.mic, MIC_GAIN[this.cfg.mic ?? 2]);
+    pc.ontrack = (e) => {
+      audio.srcObject = e.streams[0];
+      // Chrome may block sound until the page is clicked: then the next click starts it
+      void audio.play().catch(() => {
+        this.ev.state(this.state, 'Click anywhere on the page once to hear your tutor.');
+        const again = () => { void audio.play().catch(() => undefined); };
+        document.addEventListener('pointerdown', again, { once: true, capture: true });
+        document.addEventListener('keydown', again, { once: true, capture: true });
+      });
+    };
+    const track = await this.louder(this.mic, MIC_GAIN[this.cfg.mic ?? 2]);
     this.sendTrack = track;
     track.enabled = this.micOn;
     pc.addTrack(track, this.mic);
@@ -129,10 +138,11 @@ export class LiveCall {
     };
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const r = (await chrome.runtime.sendMessage({ type: 'dream-live-sdp', sdp: offer.sdp, session: sessionFor(this.cfg) })) as { sdp?: string; level?: number; error?: string } | undefined;
+    const r = (await chrome.runtime.sendMessage({ type: 'dream-live-sdp', sdp: offer.sdp, session: sessionFor(this.cfg) })) as { sdp?: string; level?: number; model?: string; error?: string } | undefined;
     if (this.closed) return;
     if (!r?.sdp) { const err = new Error(r?.error ?? 'The live voice did not answer.'); this.fail(err); throw err; }
     this.level = r.level ?? 0;
+    if (r.model) this.cfg = { ...this.cfg, model: r.model }; // (an older live model may have answered)
     await pc.setRemoteDescription({ type: 'answer', sdp: r.sdp });
     await new Promise<void>((resolve, reject) => {
       if (dc.readyState === 'open') { resolve(); return; }
@@ -263,13 +273,17 @@ export class LiveCall {
 
   private ctx: AudioContext | null = null;
   private sendTrack: MediaStreamTrack | null = null;
-  /** the microphone made louder (echo cancelling already happened in the capture); the plain track if that fails */
-  private louder(stream: MediaStream, gain: number): MediaStreamTrack {
+  /**
+   * The microphone made louder (echo cancelling already happened in the capture). Chrome keeps an audio context
+   * suspended until the page was clicked; a suspended one would send silence, so then the plain microphone is used.
+   */
+  private async louder(stream: MediaStream, gain: number): Promise<MediaStreamTrack> {
     const raw = stream.getAudioTracks()[0];
     if (gain <= 1.01) return raw;
     try {
       const ctx = new AudioContext();
-      void ctx.resume().catch(() => undefined);
+      await Promise.race([ctx.resume().catch(() => undefined), new Promise((r) => setTimeout(r, 400))]);
+      if (ctx.state !== 'running') { void ctx.close().catch(() => undefined); return raw; }
       const src = ctx.createMediaStreamSource(stream);
       const g = ctx.createGain();
       g.gain.value = gain;

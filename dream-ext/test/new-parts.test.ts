@@ -8,7 +8,7 @@ import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence }
 import { parseLines, parseWordMeanings } from '../src/zh';
 import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
-import { realtimeUsd, liveSessionLadder, pickProvider } from '../src/bg';
+import { realtimeUsd, liveSessionLadder, pickProvider, liveModels } from '../src/bg';
 import { sessionFor, liveInstructions } from '../src/live';
 import { resolveVoice, SentenceFromVideo } from '../src/voice';
 import { Playback } from '@core/listen/playback';
@@ -99,6 +99,9 @@ describe('the live call and the voice', () => {
     expect(ladder).toHaveLength(3);
     expect(JSON.stringify(ladder[2])).not.toContain('transcription');
     expect(JSON.stringify(ladder[2])).toContain('marin');
+  });
+  it('live models: the chosen one first, then the older ones', () => {
+    expect(liveModels('gpt-realtime-2.1-mini')).toEqual(['gpt-realtime-2.1-mini', 'gpt-realtime-2.1', 'gpt-realtime-2', 'gpt-realtime']);
   });
   it('cost of the live call from its usage', () => {
     const usd = realtimeUsd('gpt-realtime-2.1-mini', { input_token_details: { audio_tokens: 1_000_000, text_tokens: 0 }, output_token_details: { audio_tokens: 1_000_000 } });

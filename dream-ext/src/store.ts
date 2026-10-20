@@ -32,7 +32,9 @@ export interface YtExtras {
   talkAfterExplain: boolean;
   /** quiet seconds in the talk before the video goes on by itself; 0 = wait for me ("go on", Enter or play) */
   talkSilenceSec: number;
-  /** the talk is a live voice call (real time, needs an OpenAI key); off = speech recognition + the tutor's voice */
+  /** who you talk to in the call: Claude (your Claude key: the microphone, Claude, the tutor's voice) or OpenAI's live voice (real time) */
+  talkWith: 'claude' | 'openai';
+  /** the OpenAI live voice is allowed (with talkWith 'openai') */
   liveOn: boolean;
   /** the OpenAI realtime model of the live talk */
   liveModel: string;
@@ -66,7 +68,7 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: true, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: true, talkSilenceSec: 3, talkWith: 'claude', liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
 };
 

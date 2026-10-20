@@ -115,7 +115,7 @@ export class SentenceFromVideo implements TtsEngine {
   readonly label: string;
   readonly costNote: string;
   readonly wordBoundaries: boolean;
-  constructor(private voice: () => TtsEngine, private video: TtsEngine & { hold(): void; forceStart: boolean; markTeacherPlayed(): void }, private isTaughtSentence: (text: string) => boolean) {
+  constructor(private voice: () => TtsEngine, private video: TtsEngine & { hold(): void; forceStart: boolean; markTeacherPlayed(): void }, private isTaughtSentence: (text: string) => boolean, private onPlay?: () => void) {
     const v = voice();
     this.id = v.id; this.kind = v.kind; this.label = v.label; this.costNote = v.costNote; this.wordBoundaries = v.wordBoundaries;
   }
@@ -123,6 +123,7 @@ export class SentenceFromVideo implements TtsEngine {
   listVoices(): Promise<TtsVoice[]> { return this.voice().listVoices(); }
   speak(text: string, opts: SpeakOptions): SpeakHandle {
     if (!this.isTaughtSentence(text)) return this.voice().speak(text, opts);
+    this.onPlay?.(); // (the dictionary card closes when the sentence plays again)
     this.video.forceStart = true;
     const h = this.video.speak(text, { ...opts, onWord: undefined });
     return { done: h.done.then((o) => { this.video.hold(); if (o === 'ended') this.video.markTeacherPlayed(); return o; }), cancel: () => h.cancel(), get error() { return h.error; } };

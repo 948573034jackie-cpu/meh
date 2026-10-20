@@ -17,6 +17,12 @@ export interface QuickCtx {
   keys: store.Keys;
   /** say a test sentence with the chosen voice */
   testVoice(): void;
+  /** the voice that speaks now ('mac' when a cloud voice has no key) */
+  speaking: 'mac' | 'openai' | 'elevenlabs';
+  /** the Mac's English voices */
+  macVoices: { id: string; name: string }[];
+  /** start a test call */
+  testCall(): void;
   close(): void;
   toast(text: string): void;
 }
@@ -38,8 +44,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const sc = shortcutMap(x.shortcuts);
   const styles = resolveStyles(s.ai.styles).filter((st) => !st.hidden);
   const shape = styles.find((st) => st.id === s.ai.activeStyle)?.shape ?? styles[0].shape;
-  const voices = x.voice === 'elevenlabs' ? ELEVEN_VOICES : OPENAI_VOICES;
-  const voiceVal = x.voice === 'elevenlabs' ? x.elevenVoice : x.openaiVoice;
+  const voices = ctx.speaking === 'elevenlabs' ? ELEVEN_VOICES : OPENAI_VOICES;
+  const voiceVal = ctx.speaking === 'elevenlabs' ? x.elevenVoice : x.openaiVoice;
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
     <section><h4>What you see</h4>
@@ -61,14 +67,20 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     </section>
     <section><h4>Voice</h4>
       <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
-      ${x.voice !== 'mac' ? `<label>Voice <select data-name="voiceId">${voices.map((v) => `<option value="${v.id}"${v.id === voiceVal ? ' selected' : ''}>${esc(v.name)}</option>`).join('')}</select><button type="button" data-act="test">▶ Test</button></label>` : '<label>Voice <button type="button" data-act="test">▶ Test</button> <span class="muted">(Mac voices: pick one in the full settings)</span></label>'}
+      <p class="speaking">Speaking now: <b>${ctx.speaking === 'openai' ? 'OpenAI voice' : ctx.speaking === 'elevenlabs' ? 'ElevenLabs voice' : 'Mac voice'}</b>${ctx.speaking === 'mac' && (x.voice === 'openai' || x.voice === 'auto') && !keys.openai ? ' <span class="warn">(the OpenAI voices need your OpenAI key, see API keys below)</span>' : ''}${ctx.speaking === 'mac' && x.voice === 'elevenlabs' && !keys.elevenlabs ? ' <span class="warn">(ElevenLabs needs its key, see API keys below)</span>' : ''}</p>
+      ${ctx.speaking !== 'mac'
+        ? `<label>Voice <select data-name="voiceId">${voices.map((v) => `<option value="${v.id}"${v.id === voiceVal ? ' selected' : ''}>${esc(v.name)}</option>`).join('')}</select><button type="button" data-act="test">▶ Test</button></label>`
+        : `<label>Mac voice <select data-name="macVoice">${ctx.macVoices.length ? ctx.macVoices.map((v) => `<option value="${esc(v.id)}"${v.id === s.voice.voiceId ? ' selected' : ''}>${esc(v.name)}</option>`).join('') : '<option value="">(the Mac voices are loading…)</option>'}</select><button type="button" data-act="test">▶ Test</button></label>
+           <p class="muted">Better Mac voices: System Settings → Accessibility → Spoken Content → System voice → Manage Voices… → download an "Enhanced" or "Premium" English voice, then reload YouTube.</p>`}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
       <p class="muted">Auto = the OpenAI voice when your OpenAI key is saved, otherwise the Mac voice.</p>
     </section>
-    <section><h4>Talk to my tutor</h4>
+    <section><h4>Voice call</h4>
+      <label>Call with ${seg('talkWith', x.talkWith ?? 'claude', [['claude', 'Claude'], ['openai', 'OpenAI live (real time)']])} <button type="button" data-act="test-call">📞 Test the call</button></label>
+      ${(x.talkWith ?? 'claude') === 'claude' ? `<p class="muted">Claude hears you through the microphone and answers in the tutor's voice (your Claude key${keys.anthropic ? ' ✓' : ' is needed'}). Talk when the dot is green; Space stops Claude.</p>` : `<p class="muted">OpenAI's live voice answers at once and you can interrupt it (your OpenAI key${keys.openai ? ' ✓' : ' is needed'}).</p>`}
       <label>After each explanation ${onOff('talkAfter', x.talkAfterExplain)}</label>
-      <label>Live voice call (real time) ${onOff('liveOn', x.liveOn)} ${keys.openai ? '' : '<span class="warn">needs an OpenAI key</span>'}</label>
+      <label>OpenAI live voice ${onOff('liveOn', x.liveOn)} ${keys.openai ? '' : '<span class="warn">needs an OpenAI key</span>'}</label>
       <label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>
       <label>Microphone ${seg('mic', x.micLevel ?? 2, [[1, 'Normal'], [2, 'Sensitive'], [3, 'Very sensitive']])}</label>
       <label>Go on ${seg('silence', x.talkSilenceSec > 0 ? 'auto' : 'wait', [['wait', 'Wait for me'], ['auto', 'After quiet seconds']])}${x.talkSilenceSec > 0 ? ` <input type="number" data-name="silenceSec" min="3" max="120" value="${x.talkSilenceSec}" style="width:64px"> s` : ''}</label>
@@ -122,6 +134,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'speakChinese') void store.patchSettings({ ai: { ...s.ai, speakChinese: v === 'on' } });
       else if (segName === 'talkAfter') void store.patchExtras({ talkAfterExplain: v === 'on' });
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
+      else if (segName === 'talkWith') void store.patchExtras({ talkWith: v as 'claude' | 'openai' });
       else if (segName === 'liveModel') void store.patchExtras({ liveModel: v });
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });
       else if (segName === 'silence') void store.patchExtras({ talkSilenceSec: v === 'auto' ? 3 : 0 });
@@ -130,6 +143,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     }
     if (act === 'close') ctx.close();
     else if (act === 'test') ctx.testVoice();
+    else if (act === 'test-call') { ctx.close(); ctx.testCall(); }
     else if (act === 'teacher-reset') void store.patchExtras({ teacher: DEFAULT_TEACHER }).then(() => ctx.toast('Your own rules are back.'));
     else if (act === 'save-key') {
       const k = b.dataset.k as store.KeyName;
@@ -178,7 +192,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   el.onchange = (ev) => {
     const t = ev.target as HTMLSelectElement;
     const name = t.dataset.name;
-    if (name === 'voiceId') void store.patchExtras(x.voice === 'elevenlabs' ? { elevenVoice: t.value } : { openaiVoice: t.value });
+    if (name === 'voiceId') void store.patchExtras(ctx.speaking === 'elevenlabs' ? { elevenVoice: t.value } : { openaiVoice: t.value });
+    else if (name === 'macVoice' && t.value) void store.patchSettings({ voice: { ...s.voice, voiceId: t.value } });
     else if (name === 'model') {
       const [provider, model] = t.value.split(':') as ['anthropic' | 'openai', string];
       void store.patchSettings({ ai: { ...s.ai, provider, ...(provider === 'anthropic' ? { anthropicModel: model } : { openaiModel: model }) } });

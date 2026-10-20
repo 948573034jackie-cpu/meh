@@ -190,6 +190,8 @@ const api = http.createServer((req, res) => {
   ok('the video stopped right after "meticulous" (not at the sentence end)', win && v1.paused && v1.t > 5.8 && v1.t < 7.6, JSON.stringify(v1));
   ok('the word was said 3 times before the window', win && win.spoken && win.spoken.slice(0, 3).every((s) => s === 'meticulous'), JSON.stringify(win && win.spoken));
   ok('the reading page shows the last part (the 2 sentences so far) over the screen', win && win.stage.shown && win.stage.view === 'part' && win.stage.visibleLines === 2, JSON.stringify(win && win.stage));
+  const fits = () => sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const p = r.querySelector('.page').getBoundingClientRect(); const ls = [...r.querySelectorAll('.s.in-part')]; return ls.length > 0 && ls.every((x) => { const b = x.getBoundingClientRect(); return b.height > 0 && b.top >= p.top - 1 && b.bottom <= p.bottom + 1; }); });
+  ok('every word of the part is on the screen (nothing hidden, nothing to scroll)', await fits());
   const cardLook = await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const c = r.querySelector('.card'); const cmd = r.querySelector('.cmd'); return { card: c && !c.hidden ? c.innerText : null, cmd: cmd && !cmd.hidden ? cmd.innerText : null }; });
   ok('the card is on the page (word, level, Chinese); the window has only I know / I don\'t know', cardLook.card && /meticulous/.test(cardLook.card) && /C2/.test(cardLook.card) && /一丝不苟/.test(cardLook.card) && /I know/.test(cardLook.cmd) && /I don.t know/.test(cardLook.cmd) && !/Go on/.test(cardLook.cmd), JSON.stringify(cardLook));
   const pre = explains(/The sentence being read now:\\nToday my friend/);
@@ -200,9 +202,11 @@ const api = http.createServer((req, res) => {
   ok('then the word is said 10 more times (your RULE ONE)', !!tenAfter);
   const replay = await until(async () => (await seeksTo(3.85)) >= 1 ? await vstate() : null, 10000, 60);
   ok('then the sentence plays from the video (back to its start, about 4 s)', !!replay, JSON.stringify(replay));
+  const cardGone = await until(() => sroot(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return !c || c.hidden; }), 3000, 60);
+  ok('the dictionary card closes when the sentence plays again', !!cardGone);
   const talk1 = await until(async () => { const d = await dbg(); return d && d.talk ? d : null; }, 10000);
   const talkUi = talk1 && await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const t = r.querySelector('.talk'); const cmd = r.querySelector('.cmd'); return { talk: t && !t.hidden ? t.innerText : null, cmd: cmd && !cmd.hidden ? cmd.innerText : null }; });
-  ok('a moment to ask: the talk opens (no I know / I don\'t know at the end)', talkUi && /Type your question|Talk to me/.test(talkUi.talk) && !talkUi.cmd, JSON.stringify(talkUi));
+  ok('a moment to ask: the call with Claude opens (no I know / I don\'t know at the end)', talkUi && /Call with Claude|just talk/.test(talkUi.talk) && !talkUi.cmd, JSON.stringify(talkUi));
   const on1 = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && v.t > 8.0 && !d.talk ? { v, d } : null; }, 12000, 100);
   ok('nobody asked: after 3 quiet seconds the video goes on after the sentence (heard just now), the page goes away', on1 && !on1.d.stage.shown && (await seeksTo(3.85)) === 1, JSON.stringify(on1 && on1.v));
   const entries = await until(async () => { const e = await store('drEntries'); return e && e.meticulous ? e : null; }, 8000);
@@ -248,6 +252,9 @@ const api = http.createServer((req, res) => {
   ok('pausing: the page shows the last 20 s in complete sentences (6 lines)', part && part.stage.view === 'part' && part.stage.visibleLines === 6, JSON.stringify(part && part.stage));
   const replayed = await until(async () => (await seeksTo(7.85)) >= 1 ? await vstate() : null, 6000, 60);
   ok('the part plays again from its start (the audio, the page stays on)', !!replayed && (await dbg()).stage.shown, JSON.stringify(replayed));
+  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="40"]').click());
+  const more = await until(async () => { const d = await dbg(); return d && d.stage.visibleLines === 8 ? d : null; }, 4000, 80);
+  ok('40 s on the page: at once the last 40 s (8 complete sentences), all on the screen', !!more && await fits(), JSON.stringify((await dbg()).stage));
   const passage = await until(() => apiLog.slice(nBefore).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 20000);
   ok('after the replay: the teacher breaks the part down (your rules, the whole part)', passage && /sentence number eight/.test(passage.user) && /very easy English/.test(passage.user), passage && passage.user.slice(0, 160));
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
@@ -288,7 +295,7 @@ const api = http.createServer((req, res) => {
   await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-act="quick"]').click());
   await sleep(300);
   const quick = await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); return q && !q.hidden ? { text: q.innerText, teacher: (q.querySelector('textarea[data-name="teacher"]') || {}).value || '' } : null; });
-  ok('⚙ quick settings open right on the page (sizes, voice, talk, my teacher\'s rules, keys, shortcuts)', quick && /Reading page/i.test(quick.text) && /Tutor's voice/i.test(quick.text) && /Live voice call/i.test(quick.text) && /Microphone/i.test(quick.text) && /RULE ONE/.test(quick.teacher) && /Shortcuts/i.test(quick.text), quick && quick.text.slice(0, 120));
+  ok('⚙ quick settings open right on the page (sizes, voice, talk, my teacher\'s rules, keys, shortcuts)', quick && /Speaking now: Mac voice/i.test(quick.text) && /Mac voice/i.test(quick.text) && /Call with/i.test(quick.text) && /Reading page/i.test(quick.text) && /Tutor's voice/i.test(quick.text) && /Live voice call/i.test(quick.text) && /Microphone/i.test(quick.text) && /RULE ONE/.test(quick.teacher) && /Shortcuts/i.test(quick.text), quick && quick.text.slice(0, 120));
   await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); q.querySelector('.seg[data-name="seconds"] button[data-v="40"]').click(); });
   await sleep(500);
   ok('changing the part length there is saved at once', (await store('drSettings')).listen.lastSecondsWindow === 40);
@@ -302,10 +309,29 @@ const api = http.createServer((req, res) => {
   await panel(() => { const r = document.getElementById('dr-panel-host').shadowRoot; r.querySelector('form.ask input').value = 'What is a gregarious man?'; r.querySelector('form.ask button').click(); });
   const q = await until(() => apiLog.slice(nQ).find((r) => r.user.includes('What is a gregarious man?')), 8000);
   ok('a typed question goes to the tutor with the video context', !!q);
-  await sleep(3000);
+  await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !d.flow && !v.paused && d.state === 'playing'; }, 20000);
+
+  // ---- 9b. 📞 call Claude: hello, you talk, Claude answers out loud, "bye bye" ----
+  const nC = apiLog.length;
+  await yt.keyboard.press('Shift+KeyT');
+  const call = await until(async () => { const d = await dbg(); return d && d.talk && d.flow === 'call' && d.talk.log.some((l) => /tutor: Hi!/.test(l)) ? d : null; }, 6000);
+  ok('Shift+T: a call with Claude opens on the page, Claude says hello', call && call.talk.live === null && call.stage.shown && (await speak()).some((x) => /What would you like to know/.test(x)), JSON.stringify(call && call.talk));
+  ok('the call keeps the microphone on (even with voice commands off)', (await dbg()).mic === true);
+  await sleep(1500);
+  const say = (text, key) => sw.evaluate(async ([t, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: true, key: k }); }, [text, key]);
+  await say('What is a gregarious man', 'c1:0');
+  const cq = await until(() => apiLog.slice(nC).find((r) => /What is a gregarious man/.test(r.user)), 8000);
+  ok('what you say goes to Claude (your Claude key) with the part on the screen', !!cq && /sk-ant-test-key/.test(cq.key));
+  const ans = await until(async () => { const d = await dbg(); return d.talk && d.talk.log.some((l) => /tutor: A gregarious man/.test(l)) && (await speak()).some((x) => /A gregarious man loves/.test(x)) ? d : null; }, 10000);
+  ok('Claude answers out loud; both show on the page', !!ans, JSON.stringify(ans && ans.talk.log));
+  await sleep(1500);
+  ok('the call waits for you (no going on after 3 quiet seconds when you called)', !!(await dbg()).talk);
+  await say('bye bye', 'c2:0');
+  const out = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.talk && !d.flow ? v : null; }, 8000, 80);
+  ok('"bye bye": the call ends and the video plays on', !!out, JSON.stringify(out));
 
   // ---- 10. the OpenAI voice and the live voice call (real time) ----
-  await patch('drExtras', { talkSilenceSec: 0 }); // the call waits for you (the test talks in it)
+  await patch('drExtras', { talkSilenceSec: 0, talkWith: 'openai' }); // the OpenAI live call; it waits for you (the test talks in it)
   await patch('drKeys', { openai: 'sk-openai-test' });
   await until(async () => (await dbg()).voice === 'openai', 5000);
   ok('with an OpenAI key the tutor uses the OpenAI voice (Auto)', (await dbg()).voice === 'openai');

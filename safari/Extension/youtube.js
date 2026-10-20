@@ -315,6 +315,9 @@
     settings: () => ({ sendOn: settings.sendOn, target: settings.target, voiceOn: settings.voiceOn }),
     buildSentences: (cues) => buildSentences(cues, { words: true }),
     setBarStatus: (text, bad) => setBarStatus(text, bad),
+    /** start / stop the microphone now (the Claude call), instead of at the next 1.5-second check */
+    checkMic: () => { try { checkMic(); } catch (e) { /* ignore */ } },
+    micBlocked: () => micBlocked,
   };
 
   window.__ytcDebug = {
@@ -843,13 +846,14 @@
     if (!ALWAYS_LISTEN) stopListening();
   }
 
-  if (ALWAYS_LISTEN) {
-    setInterval(() => {
-      const want = settings.voiceOn && (settings.sendOn || dreamOwns()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
-      if (want && !rec && recWanted !== 'blocked') startListening();
-      if (!want && rec) stopListening();
-    }, 1500);
+  // the Dream Tutor's voice call with Claude needs the microphone even when voice commands are off
+  function dreamWantsMic() { try { return !!(window.__ytcDream && window.__ytcDream.wantsMic && window.__ytcDream.wantsMic()); } catch (e) { return false; } }
+  function checkMic() {
+    const want = ((settings.voiceOn && (settings.sendOn || dreamOwns())) || dreamWantsMic()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
+    if (want && !rec && recWanted !== 'blocked') startListening();
+    if (!want && rec) stopListening();
   }
+  if (ALWAYS_LISTEN) setInterval(checkMic, 1500);
 
   function startListening() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -869,18 +873,20 @@
       r.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           recWanted = 'blocked';
+          micBlocked = true;
           setHint('Microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (Enter still works.)');
         }
       };
       r.onend = () => { // Chrome stops after silence: listen again (a late "end" of an OLD listener changes nothing)
         if (rec !== r) return;
         rec = null;
-        if (recWanted === true && (pending || ALWAYS_LISTEN)) setTimeout(startListening, 300);
+        if (recWanted === true && (pending || ALWAYS_LISTEN || dreamWantsMic())) setTimeout(startListening, 300);
       };
       r.start();
     } catch (e) { rec = null; }
   }
 
+  let micBlocked = false;
   function stopListening() {
     if (recWanted !== 'blocked') recWanted = false;
     if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }

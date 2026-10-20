@@ -8,7 +8,7 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.1) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
+| **Chrome extension** (v3.2) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
 | **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
 
@@ -133,7 +133,7 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
-## 7. My tutor (Chrome only, v3.1): your own AI teacher on YouTube
+## 7. My tutor (Chrome only, v3.2): your own AI teacher on YouTube
 
 Two ways to learn, never at the same time (turning one on turns the other off):
 
@@ -152,7 +152,7 @@ At every automatic stop:
 4. The explanation starts at once (the AI already wrote it while you waited), with **your own teacher rules**
    (RULE ONE for words, RULE TWO for sentences), in a natural voice, Chinese at the end.
 5. The word 10 times, the sentence from the video.
-6. A moment to ask by voice (live call). Quiet for 3 seconds = the video goes on.
+6. A moment to ask by voice (a call with Claude). Quiet for 3 seconds = the video goes on. The dictionary card closes when the sentence plays again.
 
 Your commands:
 - **Pause** the video: the part plays again on the page, the teacher breaks it down in very easy English, you can
@@ -160,7 +160,7 @@ Your commands:
 - **←** (left arrow): the last sentence is played, explained and played again.
 - **"bye bye"** (or Esc): the AI stops at once and the video plays again from the start of what was explained.
 - **Space** while the teacher talks: pause the teacher and ask.
-- **📞 Talk** (Shift+T): a live voice call with the tutor about what is on the screen (real time, you can interrupt).
+- **📞 Call** (Shift+T): a voice call about what is on the screen, with **Claude** (your Claude key) or OpenAI's live voice (real time, you can interrupt).
 - **Shift+L**: listening mode (all subtitles over the screen, the playing line near the middle) / normal video.
 - **[ ]**: smaller / bigger text; **Shift+C**: Chinese under every line (live AI translation). All keys can be changed.
 
