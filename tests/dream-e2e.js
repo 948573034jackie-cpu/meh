@@ -394,7 +394,7 @@ const api = http.createServer((req, res) => {
 
   // ---- 10b. the voice call with Claude (no OpenAI): greeting, a spoken question, Claude's answer spoken, "let's go" ----
   await until(async () => !(await dbg()).talk, 8000);
-  await patch('drExtras', { callEngine: 'claude' });
+  await patch('drExtras', { callEngine: 'claude', talkSilenceSec: 3 });
   await yt.evaluate(() => document.querySelector('video').pause());
   await sleep(600);
   await yt.keyboard.press('Escape');
@@ -404,7 +404,8 @@ const api = http.createServer((req, res) => {
   const greeted = await until(async () => { const d = await dbg(); return d && d.talk && d.talk.chat && d.talk.log.some((l) => /^tutor: (Hi|Hello)/.test(l)) ? d : null; }, 8000);
   ok('📞 with Claude: the call opens and the tutor greets you (no OpenAI)', !!greeted && !greeted.talk.live, JSON.stringify(greeted && greeted.talk));
   await until(async () => (await dbg()).talk?.chat === 'listening', 8000);
-  await sleep(1000);
+  await sleep(6000);
+  ok('the call waits for you (it does not hang up after 3 quiet seconds)', !!(await dbg()).talk, JSON.stringify((await dbg()).talk));
   const say = (text, key) => sw.evaluate(async ([t, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: true, key: k }); }, [text, key]);
   await say('what does gregarious mean', 'c1:0');
   const chatReq = await until(() => apiLog.slice(nChat).find((r) => r.kind === 'chat'), 8000);

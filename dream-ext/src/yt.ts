@@ -144,6 +144,8 @@ interface Talk {
   started: number;
   timer: ReturnType<typeof setInterval>;
   error?: string;
+  /** a real call: you opened it (📞, Space) or you started talking in it; it does not end after a few quiet seconds */
+  call?: boolean;
 }
 
 class Session {
@@ -898,6 +900,7 @@ class Session {
     } else if (t.live) t.live.update(this.liveContext(t.word, t.explanation));
     else if (!t.chat && this.chatAvailable()) { t.chat = this.newChat(); if (greet) t.chat.greet(); }
     t.live?.setMic(true);
+    if (greet || this.heldTalk) t.call = true;
     if (fresh && this.cmdWin?.phase === 'after') this.controller?.keepWaiting(20_000);
     this.showCommandWindow(this.cmdWin);
     this.renderTalk();
@@ -930,7 +933,8 @@ class Session {
     if (!t) return;
     // keep the stop's window open while we talk (Dream Read's window would end after a few seconds)
     if (this.cmdWin && this.cmdWin.phase === 'after') this.controller?.keepWaiting(20_000);
-    const quiet = extras.talkSilenceSec;
+    // the short moment after an explanation ends after a few quiet seconds; a real call waits a minute for you
+    const quiet = extras.talkSilenceSec > 0 && t.call ? Math.max(60, extras.talkSilenceSec) : extras.talkSilenceSec;
     if (quiet > 0 && !this.controller?.busy && !t.live?.speaking && !t.chat?.busy && !t.hearing) {
       const last = Math.max(t.started, t.live?.lastActivity ?? 0, t.chat?.lastActivity ?? 0, this.lastHeardAt, this.lastTtsEnd);
       if (Date.now() - last > quiet * 1000) this.goOn();
@@ -955,7 +959,7 @@ class Session {
       const noLive = !live && !t.error && extras.liveOn && !this.keys.openai ? 'No live call: it needs your OpenAI key (⚙ → API keys). ' : '';
       const chat = t.chat;
       const voiceOn = !!window.__ytcApi?.settings().voiceOn;
-      const state = chat ? (chat.thinking && !chat.speaking ? 'Your tutor is thinking…' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type' : 'Type your question (voice: turn on Voice commands in the extension window)')
+      const state = chat ? (chat.thinking && !chat.speaking ? 'Your tutor is thinking…' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : 'Type your question (voice: turn on Voice commands in the extension window)')
         : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       box.hidden = false;
@@ -1113,9 +1117,17 @@ class Session {
       if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && final) { act(() => this.byeBye()); return true; }
       if (chat.busy) { if (final && t.split(/\s+/).length <= 4 && /\b(stop|wait|hold on|shut up|sorry|excuse me)\b/.test(lower)) act(() => chat.interrupt()); return true; }
       if (Date.now() - this.lastTtsEnd < 900) return true;
+      // the microphone heard the end of the tutor's own voice from the speaker (an echo), not you
+      if (Date.now() - this.lastTtsEnd < 4000) {
+        const said = new Set(talk.log.filter((l) => l.who === 'tutor').slice(-2).map((l) => l.text).join(' ').toLowerCase().match(/[a-z']+/g) ?? []);
+        const words = lower.match(/[a-z']+/g) ?? [];
+        if (words.length >= 2 && words.filter((w) => said.has(w)).length / words.length >= 0.8) return true;
+      }
+      // you are talking: the call waits for you (and becomes a real call)
+      this.lastHeardAt = Date.now();
+      talk.call = true;
       this.putLine(talk, { id: `u${key ?? 'h'}`, who: 'you', text: t, final });
       if (!final) return true;
-      this.lastHeardAt = Date.now();
       if (/\b(let'?s go|go on|continue|back to the video|play the video)\b/.test(lower) && t.split(/\s+/).length <= 6) { act(() => this.goOn()); return true; }
       act(() => chat.ask(t));
       return true;
@@ -1162,7 +1174,7 @@ class Session {
     if (this.mode === 'call') { void chrome.runtime.sendMessage({ type: 'ask', text: question, target: window.__ytcApi?.settings().target }); this.toast('Sent to the call.'); return; }
     // in the live call, a typed question goes to the call
     if (this.talk?.live && this.talk.live.state === 'ready') { this.talk.live.ask(question); this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); return; }
-    if (this.talk?.chat && !this.talk.chat.closed) { this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); this.talk.chat.ask(question); return; }
+    if (this.talk?.chat && !this.talk.chat.closed) { this.talk.call = true; this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); this.talk.chat.ask(question); return; }
     const sent = getSentence(this.vb.book, pos)?.text ?? '';
     void c.explainNow('question', sent, pos, null, undefined, question, undefined, undefined, spoken);
   }
