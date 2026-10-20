@@ -38,6 +38,10 @@ export class ChatCall {
   thinking = false;
   speaking = false;
   closed = false;
+  /** the last error of Claude or the voice ('' = none), shown in the call */
+  lastError = '';
+  /** what happened in the call, for the 🩺 check / diagnostics (time + event) */
+  events: string[] = [];
   /** last time someone said something (for "go on after N quiet seconds") */
   lastActivity = Date.now();
   private job: { cancel(): void } | null = null;
@@ -47,6 +51,12 @@ export class ChatCall {
   private turn = 0;
 
   constructor(private deps: ChatCallDeps) {}
+
+  note(event: string): void {
+    const d = new Date();
+    this.events.push(`${d.toTimeString().slice(0, 8)} ${event.slice(0, 140)}`);
+    if (this.events.length > 60) this.events.splice(0, this.events.length - 60);
+  }
 
   /** the tutor is thinking, talking, or has more to say */
   get busy(): boolean { return this.thinking || this.speaking || this.queue.length > 0; }
@@ -64,7 +74,9 @@ export class ChatCall {
   ask(text: string): void {
     const q = text.trim();
     if (this.closed || !q) return;
+    if (this.job) this.note('a new question replaces the one Claude was answering');
     this.interrupt();
+    this.lastError = '';
     // two learner turns in a row (the last answer was cut): one turn
     const last = this.history[this.history.length - 1];
     if (last?.role === 'user') last.content = `${last.content}\n${q}`;
@@ -72,6 +84,7 @@ export class ChatCall {
     this.lastActivity = Date.now();
     const id = `a${++this.turn}`;
     this.thinking = true;
+    this.note('asking Claude');
     this.deps.changed();
     const splitter = new StreamSentenceSplitter();
     let written = '';
@@ -86,6 +99,7 @@ export class ChatCall {
       if (this.job !== job) return;
       this.job = null;
       this.thinking = false;
+      this.note(`Claude answered (${text.length} characters)`);
       for (const sentence of splitter.flush(text)) this.enqueue(sentence);
       this.history.push({ role: 'assistant', content: text });
       this.deps.line(id, cleanSpokenProse(text), true);
@@ -96,7 +110,8 @@ export class ChatCall {
       this.thinking = false;
       // what was said before it broke still counts as the tutor's turn
       if (written.trim()) this.history.push({ role: 'assistant', content: written });
-      if (e.code !== 'cancelled') this.deps.error(e.message);
+      this.note(`Claude: ${e.code === 'cancelled' ? 'cancelled' : `error ${e.message}`}`);
+      if (e.code !== 'cancelled') { this.lastError = e.message; this.deps.error(e.message); }
       this.deps.changed();
     });
   }
@@ -115,10 +130,11 @@ export class ChatCall {
       while (this.queue.length && !this.closed) {
         const next = this.queue.shift()!;
         const h = this.deps.speak(next.text, next.lang);
-        if (!h) continue;
+        if (!h) { this.note(`not spoken (no ${next.lang} voice): ${next.text.slice(0, 30)}`); continue; }
         this.handle = h;
         if (!this.speaking) { this.speaking = true; this.deps.changed(); }
-        await h.done;
+        const outcome = await h.done;
+        if (outcome === 'error') { this.note(`voice error: ${h.error?.message ?? '?'}`); this.lastError = `the voice failed (${h.error?.message ?? 'no details'})`; }
         this.handle = null;
         this.lastActivity = Date.now();
       }
@@ -130,6 +146,7 @@ export class ChatCall {
 
   /** the learner interrupts: the answer stops (what was already said stays in the conversation) */
   interrupt(): void {
+    if (this.job || this.speaking) this.note('interrupted');
     if (this.job) { this.job.cancel(); this.job = null; }
     this.thinking = false;
     this.queue = [];

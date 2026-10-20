@@ -408,6 +408,8 @@ const api = http.createServer((req, res) => {
   ok('the call waits for you (it does not hang up after 3 quiet seconds)', !!(await dbg()).talk, JSON.stringify((await dbg()).talk));
   const say = (text, key) => sw.evaluate(async ([t, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: true, key: k }); }, [text, key]);
   await say('what does gregarious mean', 'c1:0');
+  await say('sorry', 'c1:1'); // a short word right after (as people do) must not throw the answer away
+  await say('bro', 'c1:2');
   const chatReq = await until(() => apiLog.slice(nChat).find((r) => r.kind === 'chat'), 8000);
   ok('what you say goes to Claude with the conversation and the screen (short spoken answers)', chatReq && /gregarious/.test(chatReq.user) && /This call works through text/.test(chatReq.sys) && /RULE ONE/.test(chatReq.sys), chatReq && chatReq.user.slice(0, 200));
   // (an OpenAI key is saved here, so the tutor's voice is the OpenAI voice: what it was asked to say is in "cloud")

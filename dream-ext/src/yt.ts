@@ -959,7 +959,7 @@ class Session {
       const noLive = !live && !t.error && extras.liveOn && !this.keys.openai ? 'No live call: it needs your OpenAI key (⚙ → API keys). ' : '';
       const chat = t.chat;
       const voiceOn = !!window.__ytcApi?.settings().voiceOn;
-      const state = chat ? (chat.thinking && !chat.speaking ? 'Your tutor is thinking…' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : 'Type your question (voice: turn on Voice commands in the extension window)')
+      const state = chat ? (chat.lastError && !chat.busy ? `Claude did not answer: ${chat.lastError} · try again or type` : chat.thinking && !chat.speaking ? 'Asking Claude… (one moment)' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : 'Type your question (voice: turn on Voice commands in the extension window)')
         : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       box.hidden = false;
@@ -1115,13 +1115,24 @@ class Session {
     if (chat && !chat.closed && this.talk) {
       const talk = this.talk;
       if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && final) { act(() => this.byeBye()); return true; }
-      if (chat.busy) { if (final && t.split(/\s+/).length <= 4 && /\b(stop|wait|hold on|shut up|sorry|excuse me)\b/.test(lower)) act(() => chat.interrupt()); return true; }
-      if (Date.now() - this.lastTtsEnd < 900) return true;
+      const nWords = t.split(/\s+/).filter(Boolean).length;
+      // the tutor is talking: only a clear "stop" interrupts (its own voice from the speaker must not count as you)
+      if (chat.speaking || (chat.busy && !chat.thinking)) {
+        if (final && nWords <= 4 && /\b(stop|wait|hold on|shut up)\b/.test(lower)) { chat.note(`you: stop (${t})`); act(() => chat.interrupt()); }
+        return true;
+      }
+      // Claude is thinking about your question: a short word ("bro", "ok", "sorry") does not throw the answer away;
+      // more words are added to your question
+      if (chat.thinking) {
+        if (!final) return true;
+        if (nWords < 3) { chat.note(`ignored while thinking: ${t}`); return true; }
+      }
+      if (Date.now() - this.lastTtsEnd < 900) { if (final) chat.note(`ignored (just after the tutor spoke): ${t}`); return true; }
       // the microphone heard the end of the tutor's own voice from the speaker (an echo), not you
       if (Date.now() - this.lastTtsEnd < 4000) {
         const said = new Set(talk.log.filter((l) => l.who === 'tutor').slice(-2).map((l) => l.text).join(' ').toLowerCase().match(/[a-z']+/g) ?? []);
         const words = lower.match(/[a-z']+/g) ?? [];
-        if (words.length >= 2 && words.filter((w) => said.has(w)).length / words.length >= 0.8) return true;
+        if (words.length >= 2 && words.filter((w) => said.has(w)).length / words.length >= 0.8) { if (final) chat.note(`ignored (echo of the tutor): ${t}`); return true; }
       }
       // you are talking: the call waits for you (and becomes a real call)
       this.lastHeardAt = Date.now();
@@ -1129,6 +1140,7 @@ class Session {
       this.putLine(talk, { id: `u${key ?? 'h'}`, who: 'you', text: t, final });
       if (!final) return true;
       if (/\b(let'?s go|go on|continue|back to the video|play the video)\b/.test(lower) && t.split(/\s+/).length <= 6) { act(() => this.goOn()); return true; }
+      chat.note(`heard: ${t}`);
       act(() => chat.ask(t));
       return true;
     }
@@ -2115,7 +2127,7 @@ class Session {
   /** diagnostics for the 🩺 check and the developer (no keys): the voices and the call */
   voiceState(): Record<string, unknown> {
     const mac = this.mac as unknown as { state?: () => unknown } | null;
-    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic() };
+    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic() };
   }
 
   debug() {
