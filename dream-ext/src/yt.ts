@@ -152,6 +152,8 @@ class Session {
   private engine: VideoEngine;
   private mac: TtsEngine | null = null;
   private macVoice = '';
+  /** the Mac's English voices (picked in the quick settings) */
+  private macVoices: { id: string; name: string; lang: string }[] = [];
   private zhMac: string | null = null;
   private tts: TtsEngine | null = null;
   private zhTts: TtsEngine | null = null;
@@ -296,6 +298,10 @@ class Session {
     this.mac = getEngine('webspeech');
     this.macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.zhMac = await chineseVoiceId().catch(() => null);
+    this.macVoices = (await this.mac.listVoices().catch(() => []))
+      .filter((v) => /^en\b|^en[-_]/i.test(v.lang))
+      .map((v) => ({ id: v.id, name: v.name, lang: v.lang }))
+      .sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
     this.applyVoice();
   }
 
@@ -314,7 +320,8 @@ class Session {
       this.voiceId = kind === 'openai' ? extras.openaiVoice : extras.elevenVoice;
       this.zhVoice = this.voiceId;
     }
-    this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t));
+    // the sentence plays again from the video (after the explanation): the word card has done its job
+    this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
   }
 
   /** the teacher says the sentence being taught: it plays from the video */
@@ -763,8 +770,13 @@ class Session {
       const call = this.pre && !this.pre.isClosed ? this.pre : this.newCall(word, explanation);
       this.pre = null;
       t.live = call;
-      call.update(this.liveContext(t.word, t.explanation));
-      if (greet) void call.ready.then(() => call.say('Greet the learner in a few words, in easy English, and ask what they would like to know about this part of the video.'));
+      // the call may still be connecting: what is on the screen and the explanation go in once it is open
+      const tk = t;
+      void call.ready.then(() => {
+        if (tk.live !== call) return;
+        call.update(this.liveContext(tk.word, tk.explanation));
+        if (greet) call.say('Greet the learner in a few words, in easy English, and ask what they would like to know about this part of the video.');
+      }, () => undefined);
     } else if (t.live) t.live.update(this.liveContext(t.word, t.explanation));
     t.live?.setMic(true);
     if (fresh && this.cmdWin?.phase === 'after') this.controller?.keepWaiting(20_000);
@@ -820,7 +832,8 @@ class Session {
       if (!box) continue;
       if (!t) { box.hidden = true; box.innerHTML = ''; continue; }
       const live = t.live;
-      const state = live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question';
+      const noLive = !live && !t.error && extras.liveOn && !this.keys.openai ? 'No live call: it needs your OpenAI key (⚙ → API keys). ' : '';
+      const state = live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       box.hidden = false;
       box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${live && live.state === 'ready' ? 'on' : ''} ${t.hearing ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
@@ -1205,6 +1218,7 @@ class Session {
     let z = el.querySelector<HTMLElement>('.zh-line');
     if (!z) { z = document.createElement('span'); z.className = 'zh-line'; el.appendChild(z); }
     z.textContent = zh;
+    if (this.partKeys) this.fitPart();
   }
 
   // =============================================================================================================
@@ -1262,6 +1276,10 @@ class Session {
     const page = el.querySelector<HTMLElement>('.page')!;
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
     page.addEventListener('touchmove', () => { this.userScrollAt = Date.now(); }, { passive: true });
+    // the window, the dock (explanation, talk) or the commands window changed size: the part is fitted again
+    const ro = new ResizeObserver(() => this.fitPart());
+    ro.observe(page);
+    this.offs.push(() => ro.disconnect());
     this.wireWords(page);
     this.wireAsk(el);
     el.querySelector('.sayrow')!.addEventListener('click', (ev) => {
@@ -1340,6 +1358,33 @@ class Session {
     if (!el) return;
     el.dataset.view = this.partKeys && normalView() ? 'part' : 'all';
     el.querySelectorAll<HTMLElement>('.s').forEach((s) => s.classList.toggle('in-part', !!this.partKeys?.has(s.dataset.key ?? '')));
+    // all subtitles: your own text size at once (the playing line is placed right after this)
+    if (el.dataset.view !== 'part') el.querySelector<HTMLElement>('.page')?.style.removeProperty('font-size');
+    this.fitPart();
+  }
+
+  private fitFrame = 0;
+  /** soon (once per frame): the part is fitted to the page again (the dock, the card or the Chinese lines changed) */
+  private fitPart(): void {
+    if (this.fitFrame) return;
+    this.fitFrame = requestAnimationFrame(() => { this.fitFrame = 0; this.fitNow(); });
+  }
+  /**
+   * A stop / a pause: the whole part (20 / 30 / 40 / 60 s) is on the screen at once, every word. The text is as big
+   * as your text size (A− / A+), and smaller only when the part would not fit; the page never needs scrolling.
+   */
+  private fitNow(): void {
+    const el = this.stage?.el;
+    const page = el?.querySelector<HTMLElement>('.page');
+    if (!el || !page || !this.stageVisible()) return;
+    if (el.dataset.view !== 'part') { page.style.removeProperty('font-size'); return; }
+    const max = clamp(extras.stageSizePx || 34, 16, 96);
+    const fits = (px: number): boolean => { page.style.fontSize = `${px}px`; return page.scrollHeight <= page.clientHeight + 1; };
+    if (!page.clientHeight || fits(max)) { page.scrollTop = 0; return; }
+    let lo = 9, hi = max;
+    while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (fits(mid)) lo = mid; else hi = mid; }
+    fits(Math.floor(lo * 2) / 2);
+    page.scrollTop = 0;
   }
 
   private markStopSentence(pos: Position): void {
@@ -1378,9 +1423,11 @@ class Session {
     if (!root || !q) return;
     q.hidden = false;
     const scroll = q.querySelector('.q-body')?.scrollTop ?? 0;
-    // a box the learner is typing in keeps its text (no re-render under the cursor)
-    if (q.contains(q.ownerDocument.activeElement) || (root.getRootNode() as ShadowRoot).activeElement?.closest?.('.quick')) return;
-    renderQuick(q, { settings, extras, keys: this.keys, testVoice: () => this.testVoice(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
+    // a box the learner is typing in (or a slider being dragged) keeps its value: no re-render under the cursor;
+    // after a button or a list choice it is drawn again at once, so the change shows
+    const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
+    if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -1400,6 +1447,7 @@ class Session {
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${clamp(extras.stageSizePx || 34, 16, 96)}px`);
     }
+    this.fitPart();
   }
 
   renderHead(): void {
@@ -1621,14 +1669,23 @@ class Session {
         if (row && this.card?.lemma === lemma) row.innerHTML = `<span><span class="pos">here</span>${esc(m[0])}${m[1] ? `<span class="pos"> · ${esc(m[1])}</span>` : ''}</span>`;
       }, () => { if (row) row.innerHTML = ''; });
     } else if (!here) cardEl.querySelector('.zh.here')?.remove();
-    // under the word, inside the visible area
-    const rr = root.getBoundingClientRect();
-    const wr = el?.getBoundingClientRect();
-    const x = wr ? wr.left - rr.left + wr.width / 2 : rr.width / 2;
-    let y = wr ? wr.bottom - rr.top + 8 : 60;
-    cardEl.style.left = `${Math.max(8, Math.min(rr.width - 308, x - 150))}px`;
-    if (y + 220 > rr.height && wr) y = Math.max(8, wr.top - rr.top - 8 - cardEl.offsetHeight);
-    cardEl.style.top = `${y}px`;
+    // the page with the part: the card gets its own column on the right (it must not hide a word of the part)
+    const side = root === this.stage?.el && root.dataset.view === 'part' && root.clientWidth >= 760;
+    this.stage?.el.classList.toggle('card-side', side);
+    if (side) {
+      cardEl.style.left = '';
+      cardEl.style.top = `${(root.querySelector<HTMLElement>('.page')?.offsetTop ?? 56) + 14}px`;
+      this.fitPart();
+    } else {
+      // under the word, inside the visible area
+      const rr = root.getBoundingClientRect();
+      const wr = el?.getBoundingClientRect();
+      const x = wr ? wr.left - rr.left + wr.width / 2 : rr.width / 2;
+      let y = wr ? wr.bottom - rr.top + 8 : 60;
+      cardEl.style.left = `${Math.max(8, Math.min(rr.width - 308, x - 150))}px`;
+      if (y + 220 > rr.height && wr) y = Math.max(8, wr.top - rr.top - 8 - cardEl.offsetHeight);
+      cardEl.style.top = `${y}px`;
+    }
     cardEl.onclick = (ev) => {
       ev.stopPropagation();
       const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
@@ -1668,6 +1725,7 @@ class Session {
       if (c) c.hidden = true;
       r.querySelectorAll('.stop-target').forEach((e) => e.classList.remove('stop-target'));
     }
+    if (this.stage?.el.classList.contains('card-side')) { this.stage.el.classList.remove('card-side'); this.fitPart(); }
   }
 
   // ---- the commands window ---------------------------------------------------------------------------------------
@@ -1872,9 +1930,27 @@ class Session {
     };
   }
 
+  /** tests: is every word of the part inside the page (no scrolling), and does the card cover any of them? */
+  private partLayout(): { fits: boolean; covered: number; words: number; fontPx: number } | null {
+    const el = this.stage?.el, page = el?.querySelector<HTMLElement>('.page');
+    if (!el || !page || !this.stageVisible() || el.dataset.view !== 'part') return null;
+    const pr = page.getBoundingClientRect();
+    const card = el.querySelector<HTMLElement>(':scope > .card');
+    const cr = card && !card.hidden ? card.getBoundingClientRect() : null;
+    const words = Array.from(page.querySelectorAll<HTMLElement>('.s.in-part .w'));
+    let out = 0, covered = 0;
+    for (const w of words) {
+      const r = w.getBoundingClientRect();
+      if (r.top < pr.top - 1 || r.bottom > pr.bottom + 1 || r.left < pr.left - 1 || r.right > pr.right + 1) out++;
+      if (cr && r.right > cr.left && r.left < cr.right && r.bottom > cr.top && r.top < cr.bottom) covered++;
+    }
+    return { fits: out === 0 && page.scrollHeight <= page.clientHeight + 1, covered, words: words.length, fontPx: parseFloat(getComputedStyle(page).fontSize) };
+  }
+
   debug() {
     const stage = this.stage?.el;
     return {
+      layout: this.partLayout(),
       mode: this.mode, sentences: this.vb?.order.length ?? 0, state: this.playback?.state ?? null, cur: this.cur, window: this.cmdWin, card: this.card,
       transcript: this.transcript.map((e) => ({ kind: e.kind, target: e.target, status: e.status, text: e.text.slice(0, 80) })),
       spoken: (this.mac as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,

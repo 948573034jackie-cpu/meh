@@ -145,13 +145,14 @@ Before you watch, the AI reads the video:
 - it marks what is above your level: words, phrases and whole hard sentences (with short Chinese hints).
 
 At every automatic stop:
-1. The page shows the last 30 seconds (20 / 30 / 40 / 60) over the whole screen, big and clear.
+1. The page shows the last 30 seconds (20 / 30 / 40 / 60) over the whole screen, big and clear: always every word
+   at once (a long part gets smaller text; the word card has its own column and never covers the text).
 2. A word is said 3 times (a hard sentence is played once from the video).
 3. 5 seconds: **I know** (K) = unhighlighted, no explanation, the sentence plays again, on.
    **I don't know** (D), silence or anything else = explained; it stays highlighted and is explained again next time.
 4. The explanation starts at once (the AI already wrote it while you waited), with **your own teacher rules**
    (RULE ONE for words, RULE TWO for sentences), in a natural voice, Chinese at the end.
-5. The word 10 times, the sentence from the video.
+5. The word 10 times, the sentence from the video (the word card closes as it plays).
 6. A moment to ask by voice (live call). Quiet for 3 seconds = the video goes on.
 
 Your commands:
@@ -165,7 +166,7 @@ Your commands:
 - **[ ]**: smaller / bigger text; **Shift+C**: Chinese under every line (live AI translation). All keys can be changed.
 
 Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (OpenAI marin /
-cedar…, ElevenLabs, Mac), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
+cedar…, ElevenLabs, or any Mac voice; it tells you when a key is missing), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
 instructions (write anything), how many repeats, the API keys and the shortcuts.
 
 📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the

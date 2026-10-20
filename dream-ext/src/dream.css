@@ -140,8 +140,12 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .zh-line { display: none; }
 :host([data-zh="1"]) .stage .zh-line { display: block; font-family: var(--font-zh); font-size: 0.56em; line-height: 1.45; color: var(--fg-muted); margin: 0.12em 0 0.2em; }
 .stage .page .s.cur .zh-line { color: color-mix(in srgb, var(--fg) 85%, transparent); }
-/* a stop / a pause: only the last part (whole sentences), large */
-.stage[data-view="part"] .page { padding-top: 8vh; }
+/* a stop / a pause: only the last part (whole sentences), as large as fits: every word on the screen at once
+   (the text size is fitted by the script; nothing scrolls away) */
+.stage[data-view="part"] .page { padding-top: 3vh; padding-bottom: 3vh; }
+/* the word card sits in its own column on the right, so it never covers a word of the part */
+.stage[data-view="part"].card-side .page { padding-right: 344px; }
+.stage[data-view="part"].card-side > .card { left: auto !important; right: 18px; }
 .stage[data-view="part"] .page .s:not(.in-part) { display: none; }
 .stage[data-view="part"] .page .para:not(:has(.in-part)) { display: none; }
 .stage[data-view="part"] .page .s.in-part { display: block; opacity: 0.9; margin: 0 0 0.45em; }
@@ -156,7 +160,9 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .stage .dock .hand[hidden] { display: none; }
 .stage .ask { border-top: 0; padding: 8px 18px 12px; }
 .stage .ask input { font-size: 14px; }
-.stage .cmd { bottom: calc(36vh + 12px); }
+/* the commands window sits between the text and the dock (not over the text) */
+.stage .cmd { position: static; transform: none; order: 1; align-self: center; margin: 8px auto; flex: none; animation-name: card-in; }
+.stage .dock { order: 2; }
 .stage .card { font-size: 14.5px; }
 
 /* ---- the talk with the tutor ---- */

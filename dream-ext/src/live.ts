@@ -104,7 +104,12 @@ export class LiveCall {
     try {
       this.mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) {
-      const err = new Error(`The microphone is not allowed on youtube.com (${(e as Error).name || 'blocked'}). Click the lock icon left of the address bar → Microphone → Allow, then try again.`);
+      const ex = e as Error;
+      // macOS itself can block the microphone for Chrome (then the site permission does not help)
+      const bySystem = /system/i.test(ex.message || '') || ex.name === 'NotReadableError';
+      const err = new Error(ex.name === 'NotFoundError' ? 'No microphone was found. Plug one in (or check System Settings → Sound → Input), then try again.'
+        : bySystem ? 'macOS does not let Chrome use the microphone. Open System Settings → Privacy & Security → Microphone, turn on Google Chrome, restart Chrome, then try again.'
+        : `The microphone is not allowed on youtube.com (${ex.name || 'blocked'}). Click the icon left of the address bar → Microphone → Allow, then try again.`);
       this.fail(err);
       throw err;
     }

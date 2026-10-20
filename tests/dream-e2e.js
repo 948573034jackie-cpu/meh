@@ -192,6 +192,8 @@ const api = http.createServer((req, res) => {
   ok('the reading page shows the last part (the 2 sentences so far) over the screen', win && win.stage.shown && win.stage.view === 'part' && win.stage.visibleLines === 2, JSON.stringify(win && win.stage));
   const cardLook = await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const c = r.querySelector('.card'); const cmd = r.querySelector('.cmd'); return { card: c && !c.hidden ? c.innerText : null, cmd: cmd && !cmd.hidden ? cmd.innerText : null }; });
   ok('the card is on the page (word, level, Chinese); the window has only I know / I don\'t know', cardLook.card && /meticulous/.test(cardLook.card) && /C2/.test(cardLook.card) && /一丝不苟/.test(cardLook.card) && /I know/.test(cardLook.cmd) && /I don.t know/.test(cardLook.cmd) && !/Go on/.test(cardLook.cmd), JSON.stringify(cardLook));
+  const lay1 = await until(async () => { const d = await dbg(); return d && d.layout && d.layout.fits ? d.layout : null; }, 3000);
+  ok('every word of the part is on the page at once (nothing to scroll); the card covers no word', lay1 && lay1.fits && lay1.covered === 0 && lay1.words > 10, JSON.stringify(lay1 || (await dbg()).layout));
   const pre = explains(/The sentence being read now:\\nToday my friend/);
   ok('no waiting: the explanation was asked for when the video stopped (nothing the learner said in it)', pre.length === 1 && pre[0].model === 'claude-opus-5-5' && pre[0].effort === 'low' && pre[0].cache && pre[0].fallbacks === 'default' && /RULE ONE/.test(pre[0].sys) && !/said aloud/.test(pre[0].user), JSON.stringify(pre.map((r) => ({ m: r.model, e: r.effort, c: r.cache, f: r.fallbacks }))));
   const spokeExp = await until(async () => { const s = await speak(); return s.some((x) => /very careful/.test(x)) ? s : null; }, 10000);
@@ -200,6 +202,9 @@ const api = http.createServer((req, res) => {
   ok('then the word is said 10 more times (your RULE ONE)', !!tenAfter);
   const replay = await until(async () => (await seeksTo(3.85)) >= 1 ? await vstate() : null, 10000, 60);
   ok('then the sentence plays from the video (back to its start, about 4 s)', !!replay, JSON.stringify(replay));
+  const cardGone = await sroot(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return !c || c.hidden; });
+  const cardNull = await until(async () => { const d = await dbg(); return d && !d.card; }, 1500, 50); // the debug snapshot is up to 150 ms old
+  ok('as the sentence plays again after the explanation, the dictionary card is closed', cardGone && !!cardNull, JSON.stringify((await dbg()).card));
   const talk1 = await until(async () => { const d = await dbg(); return d && d.talk ? d : null; }, 10000);
   const talkUi = talk1 && await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const t = r.querySelector('.talk'); const cmd = r.querySelector('.cmd'); return { talk: t && !t.hidden ? t.innerText : null, cmd: cmd && !cmd.hidden ? cmd.innerText : null }; });
   ok('a moment to ask: the talk opens (no I know / I don\'t know at the end)', talkUi && /Type your question|Talk to me/.test(talkUi.talk) && !talkUi.cmd, JSON.stringify(talkUi));
@@ -243,9 +248,13 @@ const api = http.createServer((req, res) => {
   await until(async () => (await vstate()).t > 30.6, 15000);
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 3; });
   const nBefore = apiLog.length;
+  await patch('drExtras', { stageSizePx: 96 }); // the biggest text: the part must still fit
   await yt.evaluate(() => document.querySelector('video').pause());
   const part = await until(async () => { const d = await dbg(); return d && d.flow === 'part' && d.stage.shown ? d : null; }, 6000);
   ok('pausing: the page shows the last 20 s in complete sentences (6 lines)', part && part.stage.view === 'part' && part.stage.visibleLines === 6, JSON.stringify(part && part.stage));
+  const lay6 = await until(async () => { const d = await dbg(); return d && d.layout && d.layout.fits ? d.layout : null; }, 3000);
+  ok('text size 96 px: the 6 lines are made smaller until every word is on the page', lay6 && lay6.fontPx < 96 && lay6.fontPx >= 9, JSON.stringify(lay6 || (await dbg()).layout));
+  await patch('drExtras', { stageSizePx: 34 });
   const replayed = await until(async () => (await seeksTo(7.85)) >= 1 ? await vstate() : null, 6000, 60);
   ok('the part plays again from its start (the audio, the page stays on)', !!replayed && (await dbg()).stage.shown, JSON.stringify(replayed));
   const passage = await until(() => apiLog.slice(nBefore).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 20000);
@@ -292,6 +301,15 @@ const api = http.createServer((req, res) => {
   await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); q.querySelector('.seg[data-name="seconds"] button[data-v="40"]').click(); });
   await sleep(500);
   ok('changing the part length there is saved at once', (await store('drSettings')).listen.lastSecondsWindow === 40);
+  // the voice: without an OpenAI key the panel says so and offers the Mac voices; a real click changes it at once
+  const qv = () => sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const on = q.querySelector('.seg[data-name="voice"] .on'); const mac = q.querySelector('select[data-name="macVoice"]'); return { on: on && on.dataset.v, warn: /No OpenAI key is saved/.test(q.innerText), mac: mac ? Array.from(mac.options).map((o) => o.text) : null, live: !!q.querySelector('select[data-name="openaiVoice"]') }; });
+  const qv0 = await qv();
+  ok('quick settings, no OpenAI key: "you hear the Mac voice" + a Mac voice list + the live call voice', qv0.on === 'auto' && qv0.warn && qv0.mac && qv0.mac.some((t) => /Fake Daniel/.test(t)) && qv0.live, JSON.stringify(qv0));
+  await yt.locator('#dr-stage-host .quick .seg[data-name="voice"] button[data-v="mac"]').click();
+  const qv1 = await until(async () => { const x = await qv(); return x.on === 'mac' ? x : null; }, 3000);
+  ok('clicking "Mac" (a real click) changes the voice and the panel shows it at once', qv1 && !qv1.warn && qv1.mac && (await store('drExtras')).voice === 'mac', JSON.stringify(qv1 || await qv()));
+  await yt.locator('#dr-stage-host .quick .seg[data-name="voice"] button[data-v="auto"]').click();
+  ok('and back to Auto', !!(await until(async () => (await qv()).on === 'auto', 3000)));
   await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick [data-act="close"]').click());
   await yt.keyboard.press('Shift+KeyL');
   const norm = await until(async () => { const d = await dbg(); return d && d.view === 'normal' && !d.stage.shown ? d : null; }, 5000);

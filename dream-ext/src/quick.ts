@@ -15,6 +15,11 @@ export interface QuickCtx {
   settings: Settings;
   extras: store.YtExtras;
   keys: store.Keys;
+  /** the voice really speaking now (a cloud voice without its key = the Mac voice) */
+  voiceNow: 'mac' | 'openai' | 'elevenlabs';
+  /** the Mac's English voices, and the one the tutor uses */
+  macVoices: { id: string; name: string; lang: string }[];
+  macVoice: string;
   /** say a test sentence with the chosen voice */
   testVoice(): void;
   close(): void;
@@ -38,8 +43,17 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const sc = shortcutMap(x.shortcuts);
   const styles = resolveStyles(s.ai.styles).filter((st) => !st.hidden);
   const shape = styles.find((st) => st.id === s.ai.activeStyle)?.shape ?? styles[0].shape;
-  const voices = x.voice === 'elevenlabs' ? ELEVEN_VOICES : OPENAI_VOICES;
-  const voiceVal = x.voice === 'elevenlabs' ? x.elevenVoice : x.openaiVoice;
+  const options = (list: { id: string; name: string }[], val: string) => list.map((v) => `<option value="${esc(v.id)}"${v.id === val ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
+  // the voice you really hear: a cloud voice without its key falls back to the Mac voice, so say so
+  const now = ctx.voiceNow;
+  const missing = now === 'mac' ? (x.voice === 'elevenlabs' ? 'ElevenLabs' : x.voice === 'openai' || x.voice === 'auto' ? 'OpenAI' : '') : '';
+  const voiceRows = [
+    missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
+    now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
+    now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select></label>` : '',
+    now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',
+    now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '',
+  ].filter(Boolean).join('\n      ');
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
     <section><h4>What you see</h4>
@@ -60,8 +74,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Hide YouTube's own captions ${onOff('hideCc', x.hideYtCaptions)}</label>
     </section>
     <section><h4>Voice</h4>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
-      ${x.voice !== 'mac' ? `<label>Voice <select data-name="voiceId">${voices.map((v) => `<option value="${v.id}"${v.id === voiceVal ? ' selected' : ''}>${esc(v.name)}</option>`).join('')}</select><button type="button" data-act="test">▶ Test</button></label>` : '<label>Voice <button type="button" data-act="test">▶ Test</button> <span class="muted">(Mac voices: pick one in the full settings)</span></label>'}
+      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])} <button type="button" data-act="test">▶ Test</button></label>
+      ${voiceRows}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
       <p class="muted">Auto = the OpenAI voice when your OpenAI key is saved, otherwise the Mac voice.</p>
@@ -93,12 +107,17 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button></section>
   </div>`;
 
-  const patchListen = (p: Partial<Settings['listen']>) => void store.patchSettings({ listen: { ...s.listen, ...p } });
-  const patchShape = (p: Record<string, number>) => {
-    const id = s.ai.activeStyle;
-    const cur = s.ai.styles[id] ?? {};
-    void store.patchSettings({ ai: { ...s.ai, styles: { ...s.ai.styles, [id]: { ...cur, shape: { ...shape, ...(cur.shape ?? {}), ...p } } } } });
-  };
+  // every change is made on the settings as they are now (this panel may be older than the last change)
+  const patchS = (fn: (cur: Settings) => Partial<Settings>) => void store.getSettings().then((cur) => store.patchSettings(fn(cur)));
+  const patchListen = (p: Partial<Settings['listen']>) => patchS((cur) => ({ listen: { ...cur.listen, ...p } }));
+  const patchLook = (p: Partial<Settings['appearance']>) => patchS((cur) => ({ appearance: { ...cur.appearance, ...p } }));
+  const patchAi = (p: Partial<Settings['ai']>) => patchS((cur) => ({ ai: { ...cur.ai, ...p } }));
+  const patchShape = (p: Record<string, number>) => patchS((cur) => {
+    const id = cur.ai.activeStyle;
+    const st = cur.ai.styles[id] ?? {};
+    const base = resolveStyles(cur.ai.styles).find((x) => x.id === id)?.shape ?? shape;
+    return { ai: { ...cur.ai, styles: { ...cur.ai.styles, [id]: { ...st, shape: { ...base, ...(st.shape ?? {}), ...p } } } } };
+  });
   el.onclick = (ev) => {
     const b = (ev.target as HTMLElement).closest('button');
     if (!b) return;
@@ -116,10 +135,10 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'stopSentences') void store.patchExtras({ stopSentences: v === 'on' });
       else if (segName === 'seconds') patchListen({ lastSecondsWindow: Number(v) as Settings['listen']['lastSecondsWindow'] });
       else if (segName === 'zhLines') void store.patchExtras({ zhLines: v === 'on' });
-      else if (segName === 'hints') void store.patchSettings({ appearance: { ...s.appearance, showHints: v === 'on' } });
+      else if (segName === 'hints') patchLook({ showHints: v === 'on' });
       else if (segName === 'hideCc') void store.patchExtras({ hideYtCaptions: v === 'on' });
       else if (segName === 'voice') void store.patchExtras({ voice: v as store.VoiceChoice });
-      else if (segName === 'speakChinese') void store.patchSettings({ ai: { ...s.ai, speakChinese: v === 'on' } });
+      else if (segName === 'speakChinese') patchAi({ speakChinese: v === 'on' });
       else if (segName === 'talkAfter') void store.patchExtras({ talkAfterExplain: v === 'on' });
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
       else if (segName === 'liveModel') void store.patchExtras({ liveModel: v });
@@ -166,9 +185,9 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     const n = Number(t.value);
     if (name === 'followAt') later(() => void store.patchExtras({ followAt: n }));
     else if (name === 'stageSize') later(() => void store.patchExtras({ stageSizePx: n }), 120);
-    else if (name === 'panelSize') later(() => void store.patchSettings({ appearance: { ...s.appearance, fontSizePx: n } }), 120);
-    else if (name === 'bandSize') later(() => void store.patchSettings({ appearance: { ...s.appearance, subtitleSizePx: n } }), 120);
-    else if (name === 'rate') later(() => void store.patchSettings({ voice: { ...s.voice, rate: n } }));
+    else if (name === 'panelSize') later(() => patchLook({ fontSizePx: n }), 120);
+    else if (name === 'bandSize') later(() => patchLook({ subtitleSizePx: n }), 120);
+    else if (name === 'rate') later(() => patchS((cur) => ({ voice: { ...cur.voice, rate: n } })));
     else if (name === 'teacher') later(() => void store.patchExtras({ teacher: t.value }), 600);
     else if (name === 'silenceSec' && n >= 3) later(() => void store.patchExtras({ talkSilenceSec: n }), 500);
     else if (name === 'wordRepeats') later(() => patchListen({ wordRepeats: n }), 400);
@@ -178,11 +197,13 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   el.onchange = (ev) => {
     const t = ev.target as HTMLSelectElement;
     const name = t.dataset.name;
-    if (name === 'voiceId') void store.patchExtras(x.voice === 'elevenlabs' ? { elevenVoice: t.value } : { openaiVoice: t.value });
+    if (name === 'openaiVoice') void store.patchExtras({ openaiVoice: t.value }).then(() => ctx.toast('Voice changed.'));
+    else if (name === 'elevenVoice') void store.patchExtras({ elevenVoice: t.value }).then(() => ctx.toast('Voice changed.'));
+    else if (name === 'macVoice') { patchS((cur) => ({ voice: { ...cur.voice, voiceId: t.value } })); ctx.toast('Voice changed.'); }
     else if (name === 'model') {
       const [provider, model] = t.value.split(':') as ['anthropic' | 'openai', string];
-      void store.patchSettings({ ai: { ...s.ai, provider, ...(provider === 'anthropic' ? { anthropicModel: model } : { openaiModel: model }) } });
-    } else if (name === 'style') void store.patchSettings({ ai: { ...s.ai, activeStyle: t.value as Settings['ai']['activeStyle'] } });
+      patchAi({ provider, ...(provider === 'anthropic' ? { anthropicModel: model } : { openaiModel: model }) });
+    } else if (name === 'style') patchAi({ activeStyle: t.value as Settings['ai']['activeStyle'] });
   };
   // typing here must not reach YouTube's shortcuts
   for (const evName of ['keydown', 'keyup', 'keypress']) el.addEventListener(evName, (e) => { const tg = e.target as HTMLElement; if (/^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName)) e.stopPropagation(); });
