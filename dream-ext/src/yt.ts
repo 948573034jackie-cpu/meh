@@ -2088,6 +2088,45 @@ async function setTutor(on: boolean): Promise<void> {
   refresh();
 }
 
+/**
+ * A copy of your settings and My Vocabulary (never the API keys) in this browser's storage for youtube.com: it outlives
+ * the extension, so after the extension is removed and loaded again, everything comes back by itself.
+ */
+const BACKUP_KEY = 'dreamTutorBackup.v1';
+const BACKUP_PARTS = [store.STORAGE_KEYS.settings, store.STORAGE_KEYS.extras, store.STORAGE_KEYS.vocab, store.STORAGE_KEYS.entries];
+async function restoreIfFresh(): Promise<boolean> {
+  try {
+    const now = await chrome.storage.local.get(BACKUP_PARTS);
+    if (Object.keys(now).length) return false; // not a fresh install
+    const raw = localStorage.getItem(BACKUP_KEY);
+    if (!raw) return false;
+    const b = JSON.parse(raw) as Record<string, unknown>;
+    const put: Record<string, unknown> = {};
+    for (const k of BACKUP_PARTS) if (b[k]) put[k] = b[k];
+    if (!Object.keys(put).length) return false;
+    await chrome.storage.local.set(put);
+    return true;
+  } catch { return false; }
+}
+let backupTimer: ReturnType<typeof setTimeout> | null = null;
+function backupSoon(): void {
+  if (backupTimer) clearTimeout(backupTimer);
+  backupTimer = setTimeout(() => {
+    backupTimer = null;
+    void chrome.storage.local.get(BACKUP_PARTS).then((o) => {
+      const save = (data: Record<string, unknown>) => localStorage.setItem(BACKUP_KEY, JSON.stringify({ at: new Date().toISOString(), ...data }));
+      try { save(o); } catch {
+        // too big for the page's storage: keep the words, drop the long explanations
+        try {
+          const entries = (o[store.STORAGE_KEYS.entries] ?? {}) as Record<string, Record<string, unknown>>;
+          const slim = Object.fromEntries(Object.entries(entries).map(([k, e]) => [k, { ...e, explanation: String(e.explanation ?? '').slice(0, 300) }]));
+          save({ ...o, [store.STORAGE_KEYS.entries]: slim });
+        } catch { /* no room at all */ }
+      }
+    }).catch(() => undefined);
+  }, 4000);
+}
+
 /** (unpacked) a newer build is in the extension's folder: it reloads itself and then this page */
 function devCheck(): void {
   try { void chrome.runtime.sendMessage({ type: 'dream-dev-check', build: typeof __DREAM_BUILD__ === 'string' ? __DREAM_BUILD__ : '' }).catch(() => undefined); } catch { /* the extension was reloaded */ }
@@ -2095,6 +2134,7 @@ function devCheck(): void {
 
 async function boot(): Promise<void> {
   devCheck();
+  const restored = await restoreIfFresh();
   [settings, extras, vocab] = await Promise.all([store.getSettings(), store.getExtras(), store.getVocab()]);
   const mig = store.migrateExtras(extras);
   if (mig) extras = await store.patchExtras(mig);
@@ -2119,6 +2159,7 @@ async function boot(): Promise<void> {
   if (bar) window.__ytcDream.decorateBar(bar);
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
+    if (BACKUP_PARTS.some((k) => ch[k])) backupSoon();
     if (ch[store.STORAGE_KEYS.settings]) { const prev = settings; settings = store.mergeSettings(ch[store.STORAGE_KEYS.settings].newValue); session?.settingsChanged(prev); }
     if (ch[store.STORAGE_KEYS.extras]) { const prev = extras; extras = { ...store.DEFAULT_EXTRAS, ...ch[store.STORAGE_KEYS.extras].newValue }; session?.extrasChanged(prev); refresh(); }
     if (ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...(ch[store.STORAGE_KEYS.vocab].newValue?.words ?? {}) }, marked: {} }; }
@@ -2134,10 +2175,25 @@ async function boot(): Promise<void> {
     }
     session?.keydown(e);
   }, true);
+  // the extension was reloaded, updated or removed: this page's tutor can do nothing any more, so it takes itself off the
+  // page (no dark reading page, no empty panel, YouTube's own look back); a reload of the page brings the new one
+  const alive = setInterval(() => {
+    if (chrome.runtime?.id) return;
+    clearInterval(alive);
+    try { session?.dispose(); } catch { /* already half gone */ }
+    session = null;
+    try { speechSynthesis.cancel(); } catch { /* no speech */ }
+    for (const id of ['dr-panel-host', 'dr-band-host', 'dr-stage-host', 'dr-page-style', 'yt2c-overlay', 'yt2c-bar']) document.getElementById(id)?.remove();
+    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize');
+    document.documentElement.style.removeProperty('--dr-vsize');
+    window.dispatchEvent(new Event('resize'));
+  }, 2000);
   // YouTube is a single-page app: a new video = a new session
   document.addEventListener('yt-navigate-finish', () => { setTimeout(refresh, 300); devCheck(); });
   setInterval(() => { const id = location.pathname === '/watch' ? window.__ytcApi?.videoId() : null; if ((session?.videoId ?? null) !== (id && wantedMode() ? id : null)) refresh(); }, 1500);
   refresh();
+  backupSoon();
+  if (restored) setTimeout(() => session?.toast('Your settings and My Vocabulary are back (from the backup). Add your API keys again: ⚙ → API keys.', 12000), 3000);
 }
 
 (function wait(tries = 0) {

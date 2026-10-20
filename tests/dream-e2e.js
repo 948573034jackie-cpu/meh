@@ -459,6 +459,14 @@ const api = http.createServer((req, res) => {
   const lv = await voc.evaluate(() => document.querySelectorAll('#levels .level').length);
   ok('Progress shows the six levels', lv === 6, lv);
 
+  // ---- 13. the backup: the extension removed and loaded again = settings and My Vocabulary come back by themselves ----
+  const bk = await yt.evaluate(() => { const b = JSON.parse(localStorage.getItem('dreamTutorBackup.v1') || 'null'); return !!(b && b.drEntries && b.drEntries.meticulous && b.drSettings && !b.drKeys); });
+  ok('a backup of settings and My Vocabulary (never the keys) is kept for youtube.com', bk);
+  await sw.evaluate(() => chrome.storage.local.clear());
+  await yt.reload();
+  const restoredBk = await until(async () => { const e = await store('drEntries'); return e && e.meticulous ? true : null; }, 12000);
+  ok('fresh install: settings and My Vocabulary come back from the backup (keys do not)', !!restoredBk && !(await store('drKeys')), JSON.stringify({ restoredBk }));
+
   tracing = false;
   await ctx.close();
   api.close();
