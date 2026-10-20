@@ -38,6 +38,8 @@ export interface YtExtras {
   liveOn: boolean;
   /** the OpenAI realtime model of the live talk */
   liveModel: string;
+  /** the voice call: Claude + the tutor's voice (speech recognition, no OpenAI needed) or OpenAI realtime */
+  callEngine: 'claude' | 'openai';
   /** microphone of the live talk: 1 normal, 2 sensitive, 3 very sensitive */
   micLevel: 1 | 2 | 3;
   /** 'listening' = Dream Read's page with all the subtitles over the whole screen; 'normal' = the video */
@@ -86,7 +88,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, migrated: 0,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', migrated: 0,
 };
 
 /**

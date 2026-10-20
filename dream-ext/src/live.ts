@@ -306,12 +306,14 @@ export class LiveCall {
 }
 
 /** What the live tutor knows: the learner's rules, the part on the screen, the word just explained. */
-export function liveInstructions(o: { teacher: string; level: string; title: string; part: string[]; from: string; to: string; word?: string; explanation?: string; hints?: string }): string {
+export function liveInstructions(o: { teacher: string; level: string; title: string; part: string[]; from: string; to: string; word?: string; explanation?: string; hints?: string; byText?: boolean }): string {
   return [
     'You are the learner\'s own English teacher, in a live voice call while they watch a YouTube video. Their first language is Chinese; their English is about CEFR level ' + o.level + '.',
     'Talk like a real phone call: short turns of one to four sentences, warm and natural, easy spoken English. Never use lists, headings or labels. Never ask the learner to repeat; speech recognition may mishear them, so work out what they most likely meant. When you give a Chinese meaning, say it in Mandarin Chinese.',
     'Talk about the part of the video that is on the screen now (below). Explain only what is really there; never invent words of the video.',
-    'When the learner wants to watch on (go on, let\'s go, continue, next, play, OK got it, bye bye), call continue_video right away. When they say they know a word now, call mark_word with status known.',
+    o.byText
+      ? 'This call works through text: speech recognition writes down what the learner says (it may mishear, so work out what they meant and never ask them to repeat), and a voice reads your answer aloud. Write only plain spoken sentences: no lists, symbols, brackets or emojis. Keep each answer short, one to four sentences and under about 60 words, unless the learner asks for more. Sometimes end with a short, friendly question to keep the talk going. When the learner wants to go back to the video, tell them to say go on.'
+      : 'When the learner wants to watch on (go on, let\'s go, continue, next, play, OK got it, bye bye), call continue_video right away. When they say they know a word now, call mark_word with status known.',
     o.teacher ? `The learner's own instructions for their teacher (follow them):\n${o.teacher}` : '',
     `Video: "${o.title}"`,
     `On the screen now (${o.from} to ${o.to} in the video):\n${o.part.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,

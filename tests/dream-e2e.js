@@ -86,7 +86,7 @@ const sse = (req, res, text) => {
   };
   tick();
 };
-const kindOf = (sys, url) => (url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : 'explain');
+const kindOf = (sys, url) => (url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
 const api = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-max-age': '600' }); res.end(); return; }
   if (req.url === '/peer.html') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(peerHtml); return; }
@@ -122,6 +122,7 @@ const api = http.createServer((req, res) => {
     if (kind === 'hard') { const m = [...user.matchAll(/(\d+)\. ([^\\]*)/g)].find((x) => /number six/.test(x[2])); return sse(req, res, JSON.stringify({ hard: m ? [Number(m[1])] : [] })); }
     if (kind === 'zhlines') { const n = [...user.matchAll(/\\n(\d+)\. /g)].map((m) => Number(m[1])); return sse(req, res, n.map((k) => `${k}. 中文第${k}句`).join('\n')); }
     if (kind === 'zhword') return sse(req, res, '细致的；仔细的');
+    if (kind === 'chat') return sse(req, res, /gregarious/i.test(user) ? 'Gregarious means friendly. A gregarious man loves parties and people. Do you know someone like that?' : 'Sure. Ask me anything about this part.');
     // explanations: about the sentence being read now (the context around it holds the other hard words too)
     const cur = (/The sentence being read now:\\n(.*?)(?:\\n|")/.exec(user) || [])[1] || '';
     if (/The learner just paused the video/.test(user)) return sse(req, res, 'In this part the speaker counts the sentences of the lesson. That is the main point.');
@@ -360,7 +361,7 @@ const api = http.createServer((req, res) => {
   await sleep(3000);
 
   // ---- 10. the OpenAI voice and the live voice call (real time) ----
-  await patch('drExtras', { talkSilenceSec: 0 }); // the call waits for you (the test talks in it)
+  await patch('drExtras', { talkSilenceSec: 0, callEngine: 'openai' }); // the call waits for you (the test talks in it); OpenAI realtime here
   await patch('drKeys', { openai: 'sk-openai-test' });
   await until(async () => (await dbg()).voice === 'openai', 5000);
   ok('with an OpenAI key the tutor uses the OpenAI voice (Auto)', (await dbg()).voice === 'openai');
@@ -390,6 +391,32 @@ const api = http.createServer((req, res) => {
   ok('the call got its context update and the tool answer', got.includes('session.update') && got.includes('conversation.item.create'), JSON.stringify(got));
   const usage = await until(async () => ((await store('drUsage')) || []).find((u) => u.model === 'gpt-realtime-2.1'), 5000);
   ok('the live call\'s cost is counted in your budget', usage && usage.usd > 0, JSON.stringify(usage));
+
+  // ---- 10b. the voice call with Claude (no OpenAI): greeting, a spoken question, Claude's answer spoken, "let's go" ----
+  await until(async () => !(await dbg()).talk, 8000);
+  await patch('drExtras', { callEngine: 'claude' });
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await sleep(600);
+  await yt.keyboard.press('Escape');
+  await sleep(400);
+  const nChat = apiLog.length;
+  await yt.keyboard.press('Shift+KeyT');
+  const greeted = await until(async () => { const d = await dbg(); return d && d.talk && d.talk.chat && d.talk.log.some((l) => /^tutor: (Hi|Hello)/.test(l)) ? d : null; }, 8000);
+  ok('📞 with Claude: the call opens and the tutor greets you (no OpenAI)', !!greeted && !greeted.talk.live, JSON.stringify(greeted && greeted.talk));
+  await until(async () => (await dbg()).talk?.chat === 'listening', 8000);
+  await sleep(1000);
+  const say = (text, key) => sw.evaluate(async ([t, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: true, key: k }); }, [text, key]);
+  await say('what does gregarious mean', 'c1:0');
+  const chatReq = await until(() => apiLog.slice(nChat).find((r) => r.kind === 'chat'), 8000);
+  ok('what you say goes to Claude with the conversation and the screen (short spoken answers)', chatReq && /gregarious/.test(chatReq.user) && /This call works through text/.test(chatReq.sys) && /RULE ONE/.test(chatReq.sys), chatReq && chatReq.user.slice(0, 200));
+  // (an OpenAI key is saved here, so the tutor's voice is the OpenAI voice: what it was asked to say is in "cloud")
+  const answered = await until(async () => { const d = await dbg(); return [...(d.cloud || []), ...(d.spoken || [])].some((x) => /Gregarious means friendly/.test(x)) && d.talk?.log.some((l) => /^tutor: Gregarious means friendly/.test(l)); }, 10000);
+  ok('Claude\'s answer is spoken by the tutor\'s voice and shown in the call', !!answered, JSON.stringify((await dbg()).talk));
+  await until(async () => (await dbg()).talk?.chat === 'listening', 10000);
+  await sleep(1000);
+  await say('ok let\'s go', 'c2:0');
+  const backToVideo = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 8000);
+  ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo));
 
   // ---- 11. one voice at a time; the check report ----
   await yt.evaluate(() => document.getElementById('yt2c-b-claude').click());

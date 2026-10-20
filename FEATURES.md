@@ -183,6 +183,10 @@ New in 3.2:
   teach only the hardest item (a hard sentence first, then the highest level).
 - **My Vocabulary** is saved online too (Chrome sync, your Google account) and in a backup for youtube.com; it comes back
   by itself after a reinstall. It shows **"You know about N English words"**; 📒 on YouTube shows the number.
+- **Voice call with Claude** (📞 / Shift+T), no OpenAI needed: you talk (Chrome's speech recognition) or type, Claude
+  answers with the conversation and what is on the screen, and your tutor's own voice speaks it at once, sentence by
+  sentence. Say "stop" (or press Space) to interrupt, "go on" to go back to the video. OpenAI realtime is still an
+  option (⚙ → Talk with), and if it fails (no credit) the call switches to Claude by itself.
 - The extension updates itself when a newer build is put in its folder (unpacked installs).
 
 📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the

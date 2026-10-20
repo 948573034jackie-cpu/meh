@@ -1,0 +1,145 @@
+/**
+ * The voice call without OpenAI: what the learner says (Chrome's speech recognition, through youtube.js) or types goes
+ * to Claude with the whole conversation and what is on the screen; the answer is spoken by the tutor's own voice
+ * (Mac / OpenAI / ElevenLabs, at the teacher's volume) sentence by sentence while it is still being written, so the
+ * tutor starts talking at once. A new question, "stop" or Space stops the current answer.
+ */
+import { StreamSentenceSplitter } from '@core/listen/sentences';
+import { cleanSpokenProse } from '@core/ai/prompts';
+import { splitByScript } from '@core/listen/script';
+import type { SpeakHandle } from '@core/tts/engine';
+import { chatStream } from './ai-client';
+
+export interface ChatTurn { role: 'user' | 'assistant'; content: string }
+
+export interface ChatCallDeps {
+  /** the tutor's instructions: the learner's rules, the part on the screen, the explanation just given */
+  system(): string;
+  /** speaks one piece (English with the teacher's voice, Chinese with the Chinese voice); null = cannot be spoken */
+  speak(text: string, lang: 'en' | 'zh'): SpeakHandle | null;
+  cancelSpeech(): void;
+  /** what the tutor is saying, for the page (grows while it is written) */
+  line(id: string, text: string, final: boolean): void;
+  /** thinking / speaking changed */
+  changed(): void;
+  error(message: string): void;
+  /** the tutor stopped speaking (the microphone may now take the learner's words again) */
+  spoke(): void;
+}
+
+const GREETINGS = [
+  "Hi! I'm here. What would you like to know about this part?",
+  'Hello! Ask me anything about what you just heard.',
+  'Hi there! Which word or sentence should we look at together?',
+];
+
+export class ChatCall {
+  history: ChatTurn[] = [];
+  thinking = false;
+  speaking = false;
+  closed = false;
+  /** last time someone said something (for "go on after N quiet seconds") */
+  lastActivity = Date.now();
+  private job: { cancel(): void } | null = null;
+  private queue: { text: string; lang: 'en' | 'zh' }[] = [];
+  private handle: SpeakHandle | null = null;
+  private pumping = false;
+  private turn = 0;
+
+  constructor(private deps: ChatCallDeps) {}
+
+  /** the tutor is thinking, talking, or has more to say */
+  get busy(): boolean { return this.thinking || this.speaking || this.queue.length > 0; }
+
+  /** the tutor speaks first (📞): a short, friendly opening, no waiting for the AI */
+  greet(): void {
+    const g = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
+    // the conversation must start with the learner: the call button counts as their first turn
+    this.history.push({ role: 'user', content: '(The learner pressed the call button to talk to you.)' }, { role: 'assistant', content: g });
+    this.deps.line(`a${++this.turn}`, g, true);
+    this.enqueue(g);
+  }
+
+  /** what the learner said or typed */
+  ask(text: string): void {
+    const q = text.trim();
+    if (this.closed || !q) return;
+    this.interrupt();
+    // two learner turns in a row (the last answer was cut): one turn
+    const last = this.history[this.history.length - 1];
+    if (last?.role === 'user') last.content = `${last.content}\n${q}`;
+    else this.history.push({ role: 'user', content: q });
+    this.lastActivity = Date.now();
+    const id = `a${++this.turn}`;
+    this.thinking = true;
+    this.deps.changed();
+    const splitter = new StreamSentenceSplitter();
+    let written = '';
+    const job = chatStream(this.deps.system(), this.history.slice(-16), (full) => {
+      if (this.job !== job) return;
+      written = full;
+      this.deps.line(id, cleanSpokenProse(full), false);
+      for (const sentence of splitter.push(full)) this.enqueue(sentence);
+    });
+    this.job = job;
+    void job.done.then((text) => {
+      if (this.job !== job) return;
+      this.job = null;
+      this.thinking = false;
+      for (const sentence of splitter.flush(text)) this.enqueue(sentence);
+      this.history.push({ role: 'assistant', content: text });
+      this.deps.line(id, cleanSpokenProse(text), true);
+      this.deps.changed();
+    }, (e: Error & { code?: string }) => {
+      if (this.job !== job) return;
+      this.job = null;
+      this.thinking = false;
+      // what was said before it broke still counts as the tutor's turn
+      if (written.trim()) this.history.push({ role: 'assistant', content: written });
+      if (e.code !== 'cancelled') this.deps.error(e.message);
+      this.deps.changed();
+    });
+  }
+
+  private enqueue(sentence: string): void {
+    const t = cleanSpokenProse(sentence).trim();
+    if (!t || this.closed) return;
+    for (const run of splitByScript(t)) if (run.text.trim()) this.queue.push({ text: run.text.trim(), lang: run.zh ? 'zh' : 'en' });
+    void this.pump();
+  }
+
+  private async pump(): Promise<void> {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length && !this.closed) {
+        const next = this.queue.shift()!;
+        const h = this.deps.speak(next.text, next.lang);
+        if (!h) continue;
+        this.handle = h;
+        if (!this.speaking) { this.speaking = true; this.deps.changed(); }
+        await h.done;
+        this.handle = null;
+        this.lastActivity = Date.now();
+      }
+    } finally {
+      this.pumping = false;
+      if (this.speaking) { this.speaking = false; this.deps.spoke(); this.deps.changed(); }
+    }
+  }
+
+  /** the learner interrupts: the answer stops (what was already said stays in the conversation) */
+  interrupt(): void {
+    if (this.job) { this.job.cancel(); this.job = null; }
+    this.thinking = false;
+    this.queue = [];
+    if (this.handle) { this.handle.cancel(); this.handle = null; }
+    this.deps.cancelSpeech();
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.interrupt();
+    this.closed = true;
+  }
+}

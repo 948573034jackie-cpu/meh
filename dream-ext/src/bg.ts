@@ -217,6 +217,44 @@ export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, o
   } catch (e) { const c = classifyError(e, { model }); throw Object.assign(new Error(c.message), { code: c.code }); }
 }
 
+// ---- the voice call without OpenAI: the learner's words (speech recognition) go to Claude, a voice reads the answer --
+export interface ChatTurn { role: 'user' | 'assistant'; content: string }
+
+/** One turn of the tutor's phone call: the whole conversation so far, streamed back sentence by sentence. */
+export async function runChat(system: string, messages: ChatTurn[], signal: AbortSignal, onDelta: (t: string) => void): Promise<{ text: string; usd: number }> {
+  const s = await getSettings();
+  const keys = await getKeys();
+  const { provider, model } = pickProvider(s, keys);
+  const key = keys[provider];
+  if (!key) throw noKey(provider);
+  const monthly = usdSince(await getUsage(), periodStarts().month);
+  if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error('Monthly AI budget reached.'), { code: 'budget' });
+  const turns = messages.filter((m) => m.content.trim()).slice(-16);
+  try {
+    let r: StreamResult;
+    if (provider === 'anthropic') {
+      const client = new Anthropic({ apiKey: key, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).anthropic ? { baseURL: (await baseUrls()).anthropic } : {}) });
+      const stream = client.messages.stream({ model, max_tokens: 400, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: turns, output_config: { effort: 'low' } } as never, { signal });
+      stream.on('text', (t: string) => onDelta(t));
+      const fin = await stream.finalMessage();
+      const u = fin.usage;
+      r = { text: fin.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join(''), inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens ?? 0, cachedTokens: u.cache_read_input_tokens ?? 0 };
+    } else {
+      const client = new OpenAI({ apiKey: key, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).openai ? { baseURL: (await baseUrls()).openai } : {}) });
+      const stream = await client.chat.completions.create({ model, messages: [{ role: 'system', content: system }, ...turns], stream: true, stream_options: { include_usage: true }, max_completion_tokens: 900, ...(/^(gpt-5|o[1-9])/.test(model) ? { reasoning_effort: 'low' as const } : {}) }, { signal });
+      let text = ''; let usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0 };
+      for await (const chunk of stream) {
+        const d = chunk.choices?.[0]?.delta?.content;
+        if (d) { text += d; onDelta(d); }
+        if (chunk.usage) usage = { prompt_tokens: chunk.usage.prompt_tokens, completion_tokens: chunk.usage.completion_tokens, cached: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0 };
+      }
+      r = { text, inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, cachedTokens: usage.cached };
+    }
+    const u = await record(provider, model, r);
+    return { text: r.text, usd: u.usd };
+  } catch (e) { const c = classifyError(e, { model }); throw Object.assign(new Error(c.message), { code: c.code }); }
+}
+
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
 interface TtsAsk { engine: 'openai' | 'elevenlabs'; text: string; voice: string; lang?: 'en' | 'zh' }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
@@ -375,7 +413,13 @@ export function installDreamBackground(): void {
     const ctrl = new AbortController();
     port.onDisconnect.addListener(() => ctrl.abort());
     const post = (m: unknown) => { try { port.postMessage(m); } catch { /* the page went away */ } };
-    port.onMessage.addListener((msg: { type: string; req?: ExplainRequest; prompt?: PromptBundle; stream?: boolean }) => {
+    port.onMessage.addListener((msg: { type: string; req?: ExplainRequest; prompt?: PromptBundle; stream?: boolean; system?: string; messages?: ChatTurn[] }) => {
+      if (msg?.type === 'chat' && msg.system && msg.messages) {
+        runChat(msg.system, msg.messages, ctrl.signal, (t) => post({ type: 'delta', text: t }))
+          .then((r) => post({ type: 'done', text: r.text, usd: r.usd }))
+          .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
+        return;
+      }
       if (msg?.type === 'explain' && msg.req) {
         runExplain(msg.req, ctrl.signal, (t) => post({ type: 'delta', text: t }))
           .then((r) => post({ type: 'done', text: r.text, usage: r.usage }))

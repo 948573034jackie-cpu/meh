@@ -42,6 +42,7 @@ import * as store from './store';
 import { clock, computeProgress, estimateKnown } from './vocab';
 import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
+import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION } from './sentences-ai';
 import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from './zh';
 import { buildHardSentencesPrompt, parseHardSentences, HARD_PER_SECONDS } from './hard-sentences';
@@ -130,6 +131,8 @@ interface Ui { host: HTMLElement; root: ShadowRoot; el: HTMLElement }
 interface TalkLine { id: string; who: 'you' | 'tutor'; text: string; final: boolean }
 interface Talk {
   live: LiveCall | null;
+  /** the voice call with Claude (speech recognition + the tutor's voice), when there is no live call */
+  chat: ChatCall | null;
   /** the sentence the talk is about: "go on" continues from its start (unless a window or a flow decides) */
   pos: Position;
   word?: string;
@@ -769,17 +772,36 @@ class Session {
   // ---- the talk: a live voice call (OpenAI realtime) or the speech recognition + the tutor ---------------------------
   private talkWaiter: (() => void) | null = null;
 
-  private liveAvailable(): boolean { return !!this.keys.openai && extras.liveOn; }
+  /** OpenAI realtime: chosen, with an OpenAI key */
+  private liveAvailable(): boolean { return !!this.keys.openai && extras.liveOn && extras.callEngine === 'openai'; }
+  /** the call with Claude: any AI key (the voice is the tutor's own) */
+  private chatAvailable(): boolean { return extras.liveOn && (!!this.keys.anthropic || !!this.keys.openai); }
+
+  private newChat(): ChatCall {
+    const chat: ChatCall = new ChatCall({
+      system: () => { const t = this.talk; return this.liveContext(t?.word, t?.explanation, true); },
+      speak: (text, lang) => {
+        if (lang === 'zh') return this.zhVoice ? this.zhOut?.speak(text, { voiceId: this.zhVoice, rate: settings.voice.rate }) ?? null : null;
+        return this.teachOut?.speak(text, { voiceId: this.voiceId, rate: settings.voice.rate }) ?? null;
+      },
+      cancelSpeech: () => { this.tts?.cancelAll(); this.zhTts?.cancelAll(); },
+      line: (id, text, final) => { const t = this.talk; if (t?.chat === chat) this.putLine(t, { id, who: 'tutor', text, final }); },
+      changed: () => { if (this.talk?.chat === chat) this.renderTalk(); },
+      error: (m) => { this.toast(m, 9000); },
+      spoke: () => { this.lastTtsEnd = Date.now(); },
+    });
+    return chat;
+  }
   private liveVoice(): string { return LIVE_VOICES.has(extras.openaiVoice) ? extras.openaiVoice : 'marin'; }
 
   /** what the live tutor knows right now */
-  private liveContext(word?: string, explanation?: string): string {
+  private liveContext(word?: string, explanation?: string, byText = false): string {
     const vb = this.vb!;
     const part = this.partKeys && this.partKeys.size ? vb.order.filter((p) => this.partKeys!.has(sentenceKey(p))) : this.partAt(video()?.currentTime ?? 0, settings.listen.lastSecondsWindow);
     const lines = part.map((p) => getSentence(vb.book, p)?.text ?? '').filter(Boolean);
     const a = part.length ? vb.timingOf(part[0])!.start : 0, b = part.length ? vb.timingOf(part[part.length - 1])!.end : 0;
     const hints = Object.entries(this.hints).filter(([l]) => lines.some((x) => x.toLowerCase().includes(l))).slice(0, 12).map(([l, z]) => `${l} = ${z.filter(Boolean).join('，')}`).join('; ');
-    return liveInstructions({ teacher: extras.teacher, level: settings.learnerLevel, title: vb.book.title, part: lines, from: clock(a), to: clock(b), word, explanation, hints });
+    return liveInstructions({ teacher: extras.teacher, level: settings.learnerLevel, title: vb.book.title, part: lines, from: clock(a), to: clock(b), word, explanation, hints, byText });
   }
 
   private newCall(word?: string, explanation?: string): LiveCall {
@@ -787,8 +809,12 @@ class Session {
       state: (s, detail) => {
         const t = this.talk;
         if (s === 'error' && detail) {
-          if (t?.live === call) { t.live = null; t.error = detail; this.renderTalk(); }
-          this.toast(detail, 9000);
+          if (t?.live === call) {
+            t.live = null; t.error = detail;
+            // the OpenAI call does not work (no credit, no microphone…): talk with Claude instead
+            if (this.chatAvailable() && !t.chat) { t.chat = this.newChat(); t.chat.greet(); this.toast(`The OpenAI live call did not work (${detail}). You talk with Claude now.`, 9000); }
+            this.renderTalk();
+          } else this.toast(detail, 9000);
           if (this.pre === call) this.pre = null;
         } else if (detail) this.toast(detail, 6000);
         if (t?.live === call) this.renderTalk();
@@ -831,7 +857,7 @@ class Session {
     let t = this.talk;
     const fresh = !t;
     if (!t) {
-      t = this.talk = { live: null, pos, word, explanation, log: [], hearing: false, started: Date.now(), timer: setInterval(() => this.talkTick(), 1000) };
+      t = this.talk = { live: null, chat: null, pos, word, explanation, log: [], hearing: false, started: Date.now(), timer: setInterval(() => this.talkTick(), 1000) };
     } else { t.pos = pos; if (word) t.word = word; if (explanation) t.explanation = explanation; t.started = Date.now(); }
     if (this.liveAvailable() && !t.live && !t.error) {
       const call = this.pre && !this.pre.isClosed ? this.pre : this.newCall(word, explanation);
@@ -845,6 +871,7 @@ class Session {
         if (greet) call.say('Greet the learner in a few words, in easy English, and ask what they would like to know about this part of the video.');
       }, () => undefined);
     } else if (t.live) t.live.update(this.liveContext(t.word, t.explanation));
+    else if (!t.chat && this.chatAvailable()) { t.chat = this.newChat(); if (greet) t.chat.greet(); }
     t.live?.setMic(true);
     if (fresh && this.cmdWin?.phase === 'after') this.controller?.keepWaiting(20_000);
     this.showCommandWindow(this.cmdWin);
@@ -865,12 +892,13 @@ class Session {
     this.talk = null;
     clearInterval(t.timer);
     t.live?.close();
+    t.chat?.close();
     if (this.pre) { this.pre.close(); this.pre = null; }
     this.renderTalk();
   }
 
   /** the explanation (or the next one) is talking: the live call does not listen meanwhile (no echo) */
-  private muteTalk(): void { const t = this.talk; if (t?.live) { t.live.setMic(false); if (t.live.speaking) t.live.interrupt(); } }
+  private muteTalk(): void { const t = this.talk; if (t?.live) { t.live.setMic(false); if (t.live.speaking) t.live.interrupt(); } t?.chat?.interrupt(); }
 
   private talkTick(): void {
     const t = this.talk;
@@ -878,8 +906,8 @@ class Session {
     // keep the stop's window open while we talk (Dream Read's window would end after a few seconds)
     if (this.cmdWin && this.cmdWin.phase === 'after') this.controller?.keepWaiting(20_000);
     const quiet = extras.talkSilenceSec;
-    if (quiet > 0 && !this.controller?.busy && !t.live?.speaking && !t.hearing) {
-      const last = Math.max(t.started, t.live?.lastActivity ?? 0, this.lastHeardAt, this.lastTtsEnd);
+    if (quiet > 0 && !this.controller?.busy && !t.live?.speaking && !t.chat?.busy && !t.hearing) {
+      const last = Math.max(t.started, t.live?.lastActivity ?? 0, t.chat?.lastActivity ?? 0, this.lastHeardAt, this.lastTtsEnd);
       if (Date.now() - last > quiet * 1000) this.goOn();
     }
   }
@@ -900,10 +928,13 @@ class Session {
       if (!t) { box.hidden = true; box.innerHTML = ''; continue; }
       const live = t.live;
       const noLive = !live && !t.error && extras.liveOn && !this.keys.openai ? 'No live call: it needs your OpenAI key (⚙ → API keys). ' : '';
-      const state = live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
+      const chat = t.chat;
+      const voiceOn = !!window.__ytcApi?.settings().voiceOn;
+      const state = chat ? (chat.thinking && !chat.speaking ? 'Your tutor is thinking…' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type' : 'Type your question (voice: turn on Voice commands in the extension window)')
+        : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       box.hidden = false;
-      box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${live && live.state === 'ready' ? 'on' : ''} ${t.hearing ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
+      box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${(live && live.state === 'ready') || (chat && voiceOn) ? 'on' : ''} ${t.hearing || (chat && !chat.busy && voiceOn) ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
         <button data-act="go" class="primary">Go on ▶ <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)">✕</button></div>`;
       box.onclick = (ev) => {
         const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
@@ -1050,6 +1081,20 @@ class Session {
     if (this.mode !== 'tutor' && !this.callStop) return false; // call mode: youtube.js handles "hi bro" / "shut up"
     // the live call hears you itself (with echo cancelling); the page's recognition could hear the tutor
     if (this.talk?.live && this.talk.live.state !== 'error') return true;
+    // the call with Claude: while the tutor talks only "stop" / "bye bye" count (its own voice must not be taken for yours)
+    const chat = this.talk?.chat;
+    if (chat && !chat.closed && this.talk) {
+      const talk = this.talk;
+      if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && final) { act(() => this.byeBye()); return true; }
+      if (chat.busy) { if (final && t.split(/\s+/).length <= 4 && /\b(stop|wait|hold on|shut up|sorry|excuse me)\b/.test(lower)) act(() => chat.interrupt()); return true; }
+      if (Date.now() - this.lastTtsEnd < 900) return true;
+      this.putLine(talk, { id: `u${key ?? 'h'}`, who: 'you', text: t, final });
+      if (!final) return true;
+      this.lastHeardAt = Date.now();
+      if (/\b(let'?s go|go on|continue|back to the video|play the video)\b/.test(lower) && t.split(/\s+/).length <= 6) { act(() => this.goOn()); return true; }
+      act(() => chat.ask(t));
+      return true;
+    }
     const inWindow = this.windowOpen || !!this.cmdWin || !!this.callStop;
     // "bye bye" stops the AI whatever it does (it is never in an explanation, so it is safe while the tutor talks)
     if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && (final || /bye[\s-]*bye/.test(lower))) { act(() => this.byeBye()); return true; }
@@ -1092,6 +1137,7 @@ class Session {
     if (this.mode === 'call') { void chrome.runtime.sendMessage({ type: 'ask', text: question, target: window.__ytcApi?.settings().target }); this.toast('Sent to the call.'); return; }
     // in the live call, a typed question goes to the call
     if (this.talk?.live && this.talk.live.state === 'ready') { this.talk.live.ask(question); this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); return; }
+    if (this.talk?.chat && !this.talk.chat.closed) { this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); this.talk.chat.ask(question); return; }
     const sent = getSentence(this.vb.book, pos)?.text ?? '';
     void c.explainNow('question', sent, pos, null, undefined, question, undefined, undefined, spoken);
   }
@@ -1956,7 +2002,8 @@ class Session {
       return;
     }
     if (a.when === 'explaining') {
-      // Space pauses the teacher (only while it explains; otherwise YouTube's play / pause)
+      // Space pauses the teacher (only while it explains or talks in the call; otherwise YouTube's play / pause)
+      if (tutor && this.talk?.chat?.busy) { swallow(); this.talk.chat.interrupt(); return; }
       if (!tutor || !this.controller?.busy) return;
       swallow();
       this.interrupt();
@@ -2039,7 +2086,7 @@ class Session {
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
-      talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null } : null,
+      talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null } : null,
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
     };
   }
