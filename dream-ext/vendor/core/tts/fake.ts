@@ -11,7 +11,7 @@ export class FakeTtsEngine implements TtsEngine {
   readonly kind = 'local' as const;
   readonly costNote = 'Free';
   readonly wordBoundaries = true;
-  spoken: { text: string; rate: number; voiceId: string }[] = [];
+  spoken: { text: string; rate: number; voiceId: string; volume?: number }[] = [];
   private timers = new Set<ReturnType<typeof setTimeout>>();
   private active: SpeakHandle[] = [];
   private _paused = false;
@@ -21,7 +21,7 @@ export class FakeTtsEngine implements TtsEngine {
     return [{ id: 'fake-gb', name: 'Fake Daniel', lang: 'en-GB', engine: 'webspeech' }, { id: 'fake-zh', name: 'Fake Tingting', lang: 'zh-CN', engine: 'webspeech' }];
   }
   speak(text: string, opts: SpeakOptions): SpeakHandle {
-    this.spoken.push({ text, rate: opts.rate, voiceId: opts.voiceId });
+    this.spoken.push({ text, rate: opts.rate, voiceId: opts.voiceId, volume: opts.volume });
     let resolve!: (o: SpeakOutcome) => void;
     const done = new Promise<SpeakOutcome>((r) => { resolve = r; });
     const timers: ReturnType<typeof setTimeout>[] = [];

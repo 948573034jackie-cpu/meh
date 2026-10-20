@@ -185,7 +185,7 @@ export class WebSpeechEngine implements TtsEngine {
       const u = new SpeechSynthesisUtterance(text);
       utterance = u;
       u.rate = clampRate(opts.rate);
-      u.volume = volume;
+      u.volume = Math.min(volume, Math.max(0, Math.min(1, opts.volume ?? 1)));
       u.lang = voice?.lang ?? 'en-GB';
       if (voice) u.voice = voice;
       let lastIndex = -1;

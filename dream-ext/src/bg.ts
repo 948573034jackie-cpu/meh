@@ -19,6 +19,7 @@ import { resolveStyle, type StyleId } from '@shared/styles';
 import type { AiProviderId, Settings } from '@shared/settings';
 import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
 import { PART_PROMPT } from './teacher-text';
+import { isWay } from './teaching-ways';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
 const PRICES: Record<string, [number, number, number]> = {
@@ -79,10 +80,14 @@ export function pickProvider(s: Settings, keys: Keys): { provider: AiProviderId;
 }
 
 /** The learner's own teacher instructions go into the system prompt (cached with it). */
-async function withTeacher(prompt: PromptBundle): Promise<PromptBundle> {
+async function withTeacher(prompt: PromptBundle, styleId?: string): Promise<PromptBundle> {
   const t = (await getExtras()).teacher?.trim();
   if (!t) return prompt;
-  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}` };
+  // one of the seven teaching ways (other than the learner's own Picture It) decides the steps; the rules keep the tone
+  const way = isWay(styleId) && styleId !== 'way-picture'
+    ? '\nThe learner chose a different teaching way for this explanation. Where these instructions and the teaching way in the task disagree about the steps, follow the teaching way in the task; keep everything else.'
+    : '';
+  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}${way}` };
 }
 
 async function streamAnthropic(apiKey: string, model: string, prompt: PromptBundle, signal: AbortSignal, onText: (t: string) => void): Promise<StreamResult> {
@@ -185,7 +190,7 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const partPrompt = part && style ? { ...style, sentencePrompt: PART_PROMPT.replace('{{part}}', req.target).replace('{{seconds}}', String((req as ExplainRequest & { seconds?: number }).seconds ?? 30)), maxTokens: Math.max(style.maxTokens, 1400) } : null;
   const prompt = await withTeacher(style
     ? buildStyledPrompt(partPrompt ? { ...req, kind: 'sentence' } : req, { style: partPrompt ?? style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
-    : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }));
+    : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }), part ? undefined : style?.id);
   try {
     const r = provider === 'anthropic' ? await streamAnthropic(key, model, prompt, signal, onDelta) : await streamOpenAI(key, model, prompt, signal, onDelta);
     const u = await record(provider, model, r);
@@ -339,7 +344,30 @@ export async function testKey(provider: AiProviderId): Promise<{ ok: boolean; me
   }
 }
 
+// ---- an unpacked extension updates itself: a newer build in its folder = reload, then the YouTube tab that noticed --------
+const isUnpacked = (): boolean => typeof chrome !== 'undefined' && !!chrome.runtime?.getManifest && !('update_url' in chrome.runtime.getManifest());
+async function buildStamp(): Promise<string | null> {
+  try { return (await (await fetch(chrome.runtime.getURL('dream/build-stamp.txt'), { cache: 'no-store' })).text()).trim() || null; } catch { return null; }
+}
+/** `running` = the build the asking YouTube script came from; a different build in the folder = reload */
+export async function devReload(tabId: number | undefined, running: string | undefined): Promise<boolean> {
+  if (!isUnpacked() || !running) return false;
+  const now = await buildStamp();
+  if (!now || now === running) return false;
+  if (tabId !== undefined) await chrome.storage.session?.set({ drReloadTab: tabId }).catch(() => undefined);
+  setTimeout(() => chrome.runtime.reload(), 120);
+  return true;
+}
+async function afterDevReload(): Promise<void> {
+  const o = await chrome.storage.session?.get('drReloadTab').catch(() => ({} as Record<string, unknown>));
+  const id = (o as Record<string, unknown> | undefined)?.drReloadTab as number | undefined;
+  if (id === undefined) return;
+  await chrome.storage.session.remove('drReloadTab').catch(() => undefined);
+  chrome.tabs.reload(id).catch(() => undefined);
+}
+
 export function installDreamBackground(): void {
+  void afterDevReload();
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'dream-ai') return;
     const ctrl = new AbortController();
@@ -359,6 +387,7 @@ export function installDreamBackground(): void {
   });
   chrome.runtime.onMessage.addListener((msg: { type?: string; provider?: AiProviderId }, _sender, sendResponse) => {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
+    if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
     if (msg?.type === 'dream-tts') { void synthesize(msg as unknown as TtsAsk).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }

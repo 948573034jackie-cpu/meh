@@ -15,6 +15,7 @@ export const SHORTCUTS: ShortcutAction[] = [
   { id: 'bigger', label: 'Bigger text', def: 'BracketRight' },
   { id: 'smaller', label: 'Smaller text', def: 'BracketLeft' },
   { id: 'zh', label: 'Chinese translation on / off', def: 'Shift+KeyC' },
+  { id: 'band', label: 'Subtitles on the video on / off', def: 'Shift+KeyS' },
   { id: 'tutor', label: 'My tutor on / off', def: 'Shift+KeyM' },
   { id: 'interrupt', label: 'Pause the teacher and ask (while it explains)', def: 'Space', when: 'explaining' },
   { id: 'continue', label: 'Go on (back to the video)', def: 'Enter', when: 'page' },

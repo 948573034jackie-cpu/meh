@@ -15,9 +15,11 @@ const entries = [
   ['src/vocab-page.ts', 'vocab-page.js'],
 ].filter(([src]) => fs.existsSync(path.join(root, src)));
 
+// every build gets its own stamp: the YouTube script carries it, and the folder has it in build-stamp.txt
+const stamp = Date.now().toString(36);
 const common = {
   bundle: true, format: 'iife', platform: 'browser', target: ['chrome116'], alias, logLevel: 'info', legalComments: 'none',
-  define: { 'process.env.NODE_ENV': '"production"' }, sourcemap: false, minify: true, loader: { '.css': 'text' },
+  define: { 'process.env.NODE_ENV': '"production"', __DREAM_BUILD__: JSON.stringify(stamp) }, sourcemap: false, minify: true, loader: { '.css': 'text' },
 };
 fs.mkdirSync(out, { recursive: true });
 const watch = process.argv.includes('--watch');
@@ -27,3 +29,5 @@ for (const [src, file] of entries) {
   else await esbuild.build(opts);
 }
 for (const f of fs.readdirSync(path.join(root, 'static'))) fs.copyFileSync(path.join(root, 'static', f), path.join(out, f));
+// a new build on disk: an unpacked extension notices it and reloads itself (see devReload in src/bg.ts)
+if (!watch) fs.writeFileSync(path.join(out, 'build-stamp.txt'), `${stamp}\n`);

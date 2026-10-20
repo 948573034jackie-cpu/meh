@@ -15,6 +15,8 @@ export interface SpeakOptions {
   voiceId: string;
   /** 0.5 .. 2.5, 1 = normal */
   rate: number;
+  /** 0 .. 1 (the learner's volume slider), 1 = full; not set = full */
+  volume?: number;
   onStart?: () => void;
   /** charIndex/charLength index into the spoken text (UTF-16 units) */
   onWord?: (charIndex: number, charLength: number) => void;

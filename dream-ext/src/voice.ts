@@ -106,6 +106,38 @@ export class VoiceWithBackup implements TtsEngine {
 }
 
 /**
+ * The learner's volume sliders: every speak() of `inner` gets the volume of its slider (the word / sentence being
+ * taught, or the teacher's explanation), read at that moment, so a slider change counts from the next sentence.
+ */
+export class WithVolume implements TtsEngine {
+  readonly id: TtsEngine['id'];
+  readonly kind: TtsEngine['kind'];
+  readonly label: string;
+  readonly costNote: string;
+  readonly wordBoundaries: boolean;
+  constructor(private inner: () => TtsEngine, private volume: () => number) {
+    const v = inner();
+    this.id = v.id; this.kind = v.kind; this.label = v.label; this.costNote = v.costNote; this.wordBoundaries = v.wordBoundaries;
+  }
+  get paused(): boolean { return this.inner().paused; }
+  listVoices(): Promise<TtsVoice[]> { return this.inner().listVoices(); }
+  speak(text: string, opts: SpeakOptions): SpeakHandle { return this.inner().speak(text, { ...opts, volume: this.volume() }); }
+  prefetch(text: string, voiceId: string, rate: number): void { this.inner().prefetch?.(text, voiceId, rate); }
+  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner().readAhead?.(texts, voiceId, rate); }
+  stopReadAhead(): void { this.inner().stopReadAhead?.(); }
+  pause(): void { this.inner().pause(); }
+  resume(): void { this.inner().resume(); }
+  cancelAll(): void { this.inner().cancelAll(); }
+  setRate(rate: number): void { (this.inner() as { setRate?: (r: number) => void }).setRate?.(rate); }
+}
+
+/** A volume slider (0..100) as the sound level: squared, so the slider feels even to the ear (50 % is about -12 dB). */
+export function sliderGain(slider: number): number {
+  const s = Math.max(0, Math.min(100, Number.isFinite(slider) ? slider : 100)) / 100;
+  return s * s;
+}
+
+/**
  * The teacher's "say the sentence" goes to the video: when the text is the sentence being taught, the real
  * sentence plays (and the video pauses again at its end); everything else goes to the tutor's voice.
  */

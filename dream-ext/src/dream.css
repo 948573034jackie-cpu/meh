@@ -67,8 +67,8 @@ input, textarea, select { font: inherit; color: var(--fg); background: var(--bg-
 .ask button { font-size: 13px; }
 
 /* ---- big Dream subtitles over the video (full screen / theater) ---- */
-.band { position: absolute; left: 4%; right: 4%; bottom: 13%; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
-.band .line { pointer-events: auto; max-width: 92%; text-align: center; font-family: var(--font-serif); font-size: clamp(18px, 3.1vw, 40px); line-height: 1.45; color: #fff; background: rgba(12, 13, 16, 0.78); border-radius: 12px; padding: 0.25em 0.6em; text-shadow: 0 1px 3px #000; }
+.band { position: absolute; left: 4%; right: 4%; bottom: var(--band-bottom, 7%); display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+.band .line { pointer-events: auto; max-width: 92%; text-align: center; font-family: var(--font-serif); font-size: clamp(14px, var(--subtitle-size), 96px); line-height: 1.45; color: #fff; background: rgba(12, 13, 16, 0.78); border-radius: 12px; padding: 0.25em 0.6em; text-shadow: 0 1px 3px #000; }
 .band .line:empty { display: none; }
 .band .line .s { display: inline; }
 .band .say { pointer-events: none; max-width: 80%; font-size: clamp(13px, 1.4vw, 18px); line-height: 1.45; color: var(--fg); background: rgba(12, 13, 16, 0.82); border-radius: 10px; padding: 6px 12px; }

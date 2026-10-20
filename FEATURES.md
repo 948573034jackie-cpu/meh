@@ -8,7 +8,7 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.1) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
+| **Chrome extension** (v3.2) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
 | **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
 
@@ -133,7 +133,7 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
-## 7. My tutor (Chrome only, v3.1): your own AI teacher on YouTube
+## 7. My tutor (Chrome only, v3.2): your own AI teacher on YouTube
 
 Two ways to learn, never at the same time (turning one on turns the other off):
 
@@ -168,6 +168,18 @@ Your commands:
 Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (OpenAI marin /
 cedar…, ElevenLabs, or any Mac voice; it tells you when a key is missing), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
 instructions (write anything), how many repeats, the API keys and the shortcuts.
+
+New in 3.2:
+- **Two volume sliders** (⚙ → Voice): the teacher's explanation and the word / sentence being taught. They follow the
+  video's volume (100 % = as loud as the video).
+- After an explanation the video **goes on by itself** (no talk, no live call waiting). Talk only when you ask (📞 / Shift+T).
+- **Subtitles on the video**: lower by default, height slider, Auto / Always / Off, **Shift+S** to show / hide (remembered);
+  YouTube's own subtitles: hide while Dream shows / always / never.
+- **Video size**: YouTube decides, or your own size (40–85 % of the page).
+- **Seven teaching ways** (⚙ → My teacher), each with a beginner (A1–A2) and an intermediate (B1+) version: Picture It
+  (your rules in easy English), Chinese Bridge, Chunk Catcher, Guess First, Little Story, Ask Why, Echo Me. Edit any of
+  them (✎) and Reset.
+- The extension updates itself when a newer build is put in its folder (unpacked installs).
 
 📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the
 video; CSV download; progress per level (A1 to C2).

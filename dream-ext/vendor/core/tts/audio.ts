@@ -184,6 +184,7 @@ export class AudioTtsEngine implements TtsEngine {
       if (ready) this.preloaded.delete(k);
       const { audio, url } = ready ?? this.load(res);
       audio.playbackRate = clampRate(this.liveRate);
+      audio.volume = Math.max(0, Math.min(1, opts.volume ?? 1));
       // provider timings index the text it synthesized (trimmed by the main process); shift them to this text
       const offset = seg.start + (seg.text.length - seg.text.trimStart().length);
       let timings: WordTiming[] | null = res.timings?.length ? res.timings.map((w) => ({ ...w, charIndex: w.charIndex + offset })) : null;

@@ -26,7 +26,7 @@ export const LIVE_TOOLS: LiveTool[] = [
 
 /** 1 = normal, 2 = sensitive, 3 = very sensitive (quiet voice, laptop microphone, lying in bed) */
 export type MicLevel = 1 | 2 | 3;
-export interface LiveConfig { model: string; voice: string; instructions: string; transcribe: boolean; mic?: MicLevel }
+export interface LiveConfig { model: string; voice: string; instructions: string; transcribe: boolean; mic?: MicLevel; /** 0..1, the teacher's volume slider */ volume?: number }
 
 /** how much the voice is made louder before it is sent, per microphone level */
 export const MIC_GAIN: Record<MicLevel, number> = { 1: 1, 2: 2.2, 3: 3.5 };
@@ -118,6 +118,7 @@ export class LiveCall {
     this.pc = pc;
     const audio = document.createElement('audio');
     audio.autoplay = true;
+    audio.volume = Math.max(0, Math.min(1, this.cfg.volume ?? 1));
     this.audio = audio;
     pc.ontrack = (e) => { audio.srcObject = e.streams[0]; void audio.play().catch(() => undefined); };
     const track = this.louder(this.mic, MIC_GAIN[this.cfg.mic ?? 2]);
@@ -164,6 +165,9 @@ export class LiveCall {
     for (const t of [this.sendTrack, ...(this.mic?.getAudioTracks() ?? [])]) if (t) t.enabled = on;
     if (on) this.lastActivity = Date.now();
   }
+
+  /** the teacher's volume slider moved */
+  setVolume(v: number): void { this.cfg = { ...this.cfg, volume: v }; if (this.audio) this.audio.volume = Math.max(0, Math.min(1, v)); }
 
   /** new context (another part of the video, the explanation just given) */
   update(instructions: string): void {

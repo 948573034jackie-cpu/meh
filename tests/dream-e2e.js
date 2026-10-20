@@ -148,7 +148,7 @@ const api = http.createServer((req, res) => {
   const patch = (k, v) => sw.evaluate(([key, val]) => chrome.storage.local.get(key).then((o) => chrome.storage.local.set({ [key]: { ...(o[key] || {}), ...val } })), [k, v]);
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' },
-    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true },
+    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1 },
     drTestBaseUrls: { anthropic: 'http://localhost:8790', openai: 'http://localhost:8790/v1' },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,
@@ -203,6 +203,9 @@ const api = http.createServer((req, res) => {
   ok('after the window the tutor explains at once (no second request)', !!spokeExp && explains(/The sentence being read now:\\nToday my friend/).length === 1, JSON.stringify(spokeExp && spokeExp.slice(-3)));
   const tenAfter = await until(async () => { const s = await speak(); const i = s.findIndex((x) => /very careful/.test(x)); return i >= 0 && s.slice(i + 1).filter((x) => x === 'meticulous').length >= 10 ? s : null; }, 20000);
   ok('then the word is said 10 more times (your RULE ONE)', !!tenAfter);
+  const vols = (await dbg()).spokenVol || [];
+  const wordVol = vols.find(([t]) => t === 'meticulous'), teachVol = vols.find(([t]) => /very careful/.test(t));
+  ok('two volumes: the word at the word slider (80 % = 0.64), the explanation at the teacher slider (60 % = 0.36)', wordVol && Math.abs(wordVol[1] - 0.64) < 0.01 && teachVol && Math.abs(teachVol[1] - 0.36) < 0.01, JSON.stringify({ wordVol, teachVol }));
   const replay = await until(async () => (await seeksTo(3.85)) >= 1 ? await vstate() : null, 10000, 60);
   ok('then the sentence plays from the video (back to its start, about 4 s)', !!replay, JSON.stringify(replay));
   const cardGone = await sroot(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return !c || c.hidden; });
@@ -304,6 +307,26 @@ const api = http.createServer((req, res) => {
   await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); q.querySelector('.seg[data-name="seconds"] button[data-v="40"]').click(); });
   await sleep(500);
   ok('changing the part length there is saved at once', (await store('drSettings')).listen.lastSecondsWindow === 40);
+  // the two volume sliders
+  const volUi = await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); return { t: !!q.querySelector('input[data-name="teacherVolume"]'), w: !!q.querySelector('input[data-name="wordVolume"]'), tw: !!q.querySelector('[data-act="test-word"]') }; });
+  await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const i = q.querySelector('input[data-name="teacherVolume"]'); i.value = '35'; i.dispatchEvent(new Event('input', { bubbles: true })); const j = q.querySelector('input[data-name="wordVolume"]'); j.value = '50'; j.dispatchEvent(new Event('input', { bubbles: true })); });
+  const volSaved = await until(async () => { const x = await store('drExtras'); return x.teacherVolume === 35 && x.wordVolume === 50 ? x : null; }, 3000);
+  ok('quick settings: teacher voice and word voice volume sliders (saved at once)', volUi.t && volUi.w && volUi.tw && !!volSaved, JSON.stringify(volUi));
+  await patch('drExtras', { teacherVolume: 60, wordVolume: 80 });
+  // the seven teaching ways: in the picker, editable, and Reset brings the original back
+  const qq = (fn) => sroot(fn);
+  const ways = await qq(() => [...document.getElementById('dr-stage-host').shadowRoot.querySelectorAll('.quick select[data-name="style"] option')].map((o) => o.value));
+  ok('teaching ways: my rules + the 7 ways in the picker', ['custom', 'way-picture', 'way-bridge', 'way-chunks', 'way-guess', 'way-story', 'way-why', 'way-echo'].every((id) => ways.includes(id)), JSON.stringify(ways));
+  await qq(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const s = q.querySelector('select[data-name="style"]'); s.value = 'way-story'; s.dispatchEvent(new Event('change', { bubbles: true })); });
+  await until(async () => (await store('drSettings')).ai.activeStyle === 'way-story', 3000);
+  await sleep(400);
+  await qq(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick [data-act="way-edit"]').click());
+  await sleep(300);
+  await qq(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const t = q.querySelector('textarea[data-name="wayWord"]'); t.value = 'MY OWN WAY: explain {{word}} with a joke.'; t.dispatchEvent(new Event('input', { bubbles: true })); });
+  const edited = await until(async () => (((await store('drSettings')).ai.styles || {})['way-story'] || {}).wordPrompt === 'MY OWN WAY: explain {{word}} with a joke.', 3000);
+  await qq(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick [data-act="way-reset"]').click());
+  const reset = await until(async () => /tell a short new story/i.test((((await store('drSettings')).ai.styles || {})['way-story'] || {}).wordPrompt || ''), 3000);
+  ok('a teaching way can be edited (saved) and reset to the original', !!edited && !!reset, JSON.stringify({ edited, reset }));
   // the voice: without an OpenAI key the panel says so and offers the Mac voices; a real click changes it at once
   const qv = () => sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const on = q.querySelector('.seg[data-name="voice"] .on'); const mac = q.querySelector('select[data-name="macVoice"]'); return { on: on && on.dataset.v, warn: /No OpenAI key is saved/.test(q.innerText), mac: mac ? Array.from(mac.options).map((o) => o.text) : null, live: !!q.querySelector('select[data-name="openaiVoice"]') }; });
   const qv0 = await qv();
@@ -317,6 +340,15 @@ const api = http.createServer((req, res) => {
   await yt.keyboard.press('Shift+KeyL');
   const norm = await until(async () => { const d = await dbg(); return d && d.view === 'normal' && !d.stage.shown ? d : null; }, 5000);
   ok('Shift+L again: back to the normal video', !!norm);
+  // the subtitles over the video: lower (height slider), on / off with Shift+S
+  await patch('drExtras', { band: 'on', bandBottom: 3 });
+  const bandLow = await until(() => sroot(() => { const h = document.getElementById('dr-band-host'); if (!h || h.style.display === 'none') return null; const b = h.shadowRoot.querySelector('.band'); const p = h.getBoundingClientRect(), r = b.getBoundingClientRect(); return r.height > 0 ? { fromBottom: Math.round(p.bottom - r.bottom), playerH: Math.round(p.height) } : null; }).then((x) => (x && x.fromBottom <= 0.05 * x.playerH ? x : null)), 3000);
+  ok('subtitles on the video sit lower (3 % from the bottom)', !!bandLow, JSON.stringify(bandLow));
+  const bandOn = await sroot(() => { const h = document.getElementById('dr-band-host'); return !!h && h.style.display !== 'none'; });
+  await yt.keyboard.press('Shift+KeyS');
+  const bandOff = await until(async () => (await store('drExtras')).band === 'off' && await sroot(() => { const h = document.getElementById('dr-band-host'); return !h || h.style.display === 'none'; }), 3000);
+  ok('Shift+S hides the subtitles on the video (remembered)', !!bandOff, JSON.stringify({ bandOn, band: (await store('drExtras')).band }));
+  await patch('drExtras', { band: 'auto', bandBottom: 7 });
 
   // ---- 9. a typed question ----
   const nQ = apiLog.length;
@@ -368,6 +400,8 @@ const api = http.createServer((req, res) => {
   ok('🩺 Check (Chrome): reports My tutor (keys saved, voice, live talk), no Safari advice', /My tutor: \{"on":true/.test(report) && /"keys":\["anthropic","openai"\]/.test(report) && !/Split View|Safari window|Safari pauses|Safari stops/.test(report) && /"tutor":\{/.test(report), report.slice(0, 400));
 
   // ---- 11b. a slow page: the right column comes late, the panel still shows the subtitles and the status ----
+  await patch('drExtras', { talkAfterExplain: false, talkSilenceSec: 3 }); // the new default: no talk after explanations
+  const nWay = apiLog.length;
   const slow = await ctx.newPage();
   await slow.goto('https://www.youtube.com/watch?v=drm00000002');
   const late = await until(() => slow.evaluate(() => { const h = document.getElementById('dr-panel-host'); if (!h || !h.isConnected) return null; const r = h.shadowRoot; const n = r.querySelectorAll('.lines .s').length; const st = (r.querySelector('.status') || {}).textContent || ''; return n === 10 && /sentences/.test(st) ? { n, st } : null; }), 15000);
@@ -385,6 +419,17 @@ const api = http.createServer((req, res) => {
   if (wpos) await slow.mouse.click(wpos.x, wpos.y);
   const real = await until(() => slow.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .card'); return c && !c.hidden ? c.innerText.slice(0, 40) : null; }), 3000);
   ok('a click a moment later opens the word card as before', !!real, real);
+  // the new default: after an explanation the video simply goes on (no talk, no live call, no waiting for you)
+  await slow.keyboard.press('Escape');
+  await sleep(500);
+  const sdbg = () => slow.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  await slow.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 4.2; return v.play(); });
+  let sawTalk = false;
+  const stopped = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; return d && d.window && d.window.target === 'meticulous' ? d : null; }, 15000, 100);
+  const onAgain = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; const v = await slow.evaluate(() => ({ t: document.querySelector('video').currentTime, paused: document.querySelector('video').paused })); return d && !d.window && !v.paused && v.t > 8.2 ? v : null; }, 25000, 100);
+  ok('no talk after explanations (new default): after the explanation the video goes on by itself', !!stopped && !!onAgain && !sawTalk, JSON.stringify({ stopped: !!stopped, onAgain, sawTalk }));
+  const wayReq = apiLog.slice(nWay).find((r) => r.kind === 'explain' && /meticulous/.test(r.user));
+  ok('the chosen teaching way (Little Story, intermediate for B2) is what the AI is asked to do', wayReq && /short new story, six to nine sentences/.test(wayReq.user) && /follow the teaching way in the task/.test(wayReq.sys), wayReq && wayReq.user.slice(-300));
   await slow.close();
 
   // ---- 12. the settings page and My Vocabulary ----

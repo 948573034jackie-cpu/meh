@@ -101,6 +101,10 @@ export interface ListenDeps {
   contextZh?: (lemma: string) => string[] | undefined;
   /** a Listening stop starts on this word/phrase (show its dictionary card now) / is finished with it (hide the card) */
   onStopTarget?: (t: { kind: ExplainKind; target: string; lemma?: string } | null) => void;
+  /** (YouTube) how long the window after an explanation stays open, ms (default: commandWindowMs) */
+  afterWindowMs?: () => number;
+  /** (YouTube) the quiet moment after a question the style asks ([PAUSE]), ms */
+  thinkPauseMs?: () => number;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
   /**
@@ -362,7 +366,9 @@ export class ListenController {
   /** The commands window of a Listening stop: the mic listens, nothing is said; ends on an answer or after commandWindowMs. */
   private async commandWindow(phase: 'before' | 'after', t: Trigger): Promise<WindowResult> {
     if (this.disposed) return 'aborted';
-    const ms = this.deps.settings().listen.commandWindowMs ?? 5000;
+    const full = this.deps.settings().listen.commandWindowMs ?? 5000;
+    // (YouTube) after an explanation the app may want only a short moment before the video goes on
+    const ms = phase === 'after' && this.deps.afterWindowMs ? Math.min(full, this.deps.afterWindowMs()) : full;
     if (!(ms > 0)) return 'timeout';
     this.deps.onPauseWindow?.(true);
     this.deps.onCommandWindow?.({ phase, ms, target: t.target, kind: t.kind });
@@ -735,9 +741,14 @@ export class ListenController {
         if (cancelled) return false;
         const next = ready.shift();
         if (next !== undefined) {
-          const text = cleanSpokenProse(next).replace(/\[PAUSE\]/gi, ' ').trim();
           if (entry.status === 'thinking') { entry.status = 'speaking'; this.deps.onTranscript({ ...entry }); }
-          if (text && !(await say(text, 'en', 'explanation'))) return false;
+          // [PAUSE] after a question of the style: a quiet moment to think of the answer
+          const parts = next.split(/\[PAUSE\]/i);
+          for (let i = 0; i < parts.length; i++) {
+            if (i > 0) { await pause(this.deps.thinkPauseMs?.() ?? 3500); if (cancelled) return false; }
+            const text = cleanSpokenProse(parts[i]).trim();
+            if (text && !(await say(text, 'en', 'explanation'))) return false;
+          }
           continue;
         }
         if (finished) break;

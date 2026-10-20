@@ -40,7 +40,7 @@ import { VideoEngine } from './video-engine';
 import { explain as aiExplain, complete, completeStream, getDictionary } from './ai-client';
 import * as store from './store';
 import { clock } from './vocab';
-import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, LIVE_VOICES, cloudSpoken } from './voice';
+import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION } from './sentences-ai';
 import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from './zh';
@@ -97,6 +97,11 @@ function pageStyle(): void {
     #dr-stage-host { position: fixed; inset: 0; z-index: 2147482000; }
     :fullscreen #dr-stage-host { position: absolute; }
     #dr-stage-host[hidden] { display: none !important; }
+    html.dr-hide-cc-always .ytp-caption-window-container { display: none !important; }
+    /* your video size (normal view): the video takes this share of the page width, the panel the rest */
+    html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #primary.ytd-watch-flexy { flex: 0 0 auto !important; width: calc(var(--dr-vsize) - 24px) !important; max-width: none !important; min-width: 320px !important; }
+    html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #secondary.ytd-watch-flexy { flex: 1 1 auto !important; width: auto !important; min-width: 260px !important; max-width: none !important; }
+    html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) { --ytd-watch-flexy-min-player-width: 280px !important; --ytd-watch-flexy-max-player-width: 4000px !important; }
   `;
   (document.head || document.documentElement).appendChild(st);
 }
@@ -111,6 +116,8 @@ function makeHost(id: string): { host: HTMLElement; root: ShadowRoot } {
   return { host, root };
 }
 
+/** an explanation as shown / saved: a style's thinking pause is not a word */
+const shown = (t: string) => t.replace(/\s*\[PAUSE\]\s*/gi, ' … ');
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
@@ -158,6 +165,10 @@ class Session {
   private tts: TtsEngine | null = null;
   private zhTts: TtsEngine | null = null;
   private router: SentenceFromVideo | null = null;
+  /** what the teacher says, at the learner's volumes: the word / sentence taught, the explanation, the Chinese */
+  private wordOut: WithVolume | null = null;
+  private teachOut: WithVolume | null = null;
+  private zhOut: WithVolume | null = null;
   private voiceKind: 'mac' | 'openai' | 'elevenlabs' = 'mac';
   private voiceId = '';
   private zhVoice: string | null = null;
@@ -326,6 +337,20 @@ class Session {
     }
     // the sentence plays again from the video (after the explanation): the word card has done its job
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
+    this.wordOut = new WithVolume(() => this.router!, () => this.volumeOf('word'));
+    this.teachOut = new WithVolume(() => this.tts!, () => this.volumeOf('teacher'));
+    this.zhOut = new WithVolume(() => this.zhTts!, () => this.volumeOf('teacher'));
+  }
+
+  /**
+   * The learner's two volume sliders (the word / sentence taught, the teacher's explanation), squared so they feel
+   * even; with "follow the video" 100 % is as loud as the video (YouTube's own volume, its loudness levelling too).
+   */
+  volumeOf(kind: 'word' | 'teacher'): number {
+    const g = sliderGain(kind === 'word' ? extras.wordVolume : extras.teacherVolume);
+    const v = video();
+    const base = extras.followVideoVolume && v && !v.muted ? v.volume : 1;
+    return Math.max(0, Math.min(1, g * base));
   }
 
   /** the teacher says the sentence being taught: it plays from the video */
@@ -336,7 +361,14 @@ class Session {
   }
 
   testVoice(): void {
-    const h = this.tts?.speak('Hello! I am your English teacher. Let us learn with this video.', { voiceId: this.voiceId, rate: settings.voice.rate });
+    const h = this.teachOut?.speak('Hello! I am your English teacher. Let us learn with this video.', { voiceId: this.voiceId, rate: settings.voice.rate });
+    void h?.done.then(() => { if (h.error) this.toast(h.error.message, 6000); });
+  }
+
+  /** the word voice at its volume (quick settings ▶) */
+  testWord(): void {
+    this.tts?.cancelAll();
+    const h = this.wordOut?.speak('wonderful', { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) });
     void h?.done.then(() => { if (h.error) this.toast(h.error.message, 6000); });
   }
 
@@ -361,10 +393,11 @@ class Session {
       settings: () => settings, vocab: () => vocab,
       marked: () => [],
       sentenceTrigger: (pos) => { const l = extras.stopSentences ? this.hardKeys.get(sentenceKey(pos)) : undefined; return l ? { lemma: l } : null; },
-      engine: () => this.router!, explainEngine: () => this.tts!, zhEngine: () => this.zhTts!,
+      engine: () => this.wordOut!, explainEngine: () => this.teachOut!, zhEngine: () => this.zhOut!,
       voice: () => ({ voiceId: this.voiceId, rate: settings.voice.rate }),
       explainVoice: () => ({ voiceId: this.voiceKind === 'mac' ? (settings.voice.explainVoiceId || this.voiceId) : this.voiceId, rate: Math.min(settings.voice.rate, 1.2) }),
-      zhVoiceId: () => (settings.ai.speakChinese ? this.zhVoice : null),
+      // (Chinese Bridge speaks Chinese on purpose)
+      zhVoiceId: () => (settings.ai.speakChinese || settings.ai.activeStyle === 'way-bridge' ? this.zhVoice : null),
       contextZh: (lemma) => this.hints[lemma],
       explain: (req, onDelta) => {
         (window as unknown as { __drRequests?: ExplainRequest[] }).__drRequests?.push(structuredClone(req));
@@ -378,6 +411,9 @@ class Session {
       onCommandWindow: (w) => this.onWindow(w),
       onPauseWindow: (open) => { this.windowOpen = open; },
       onStopTarget: (t) => this.onStopTarget(t),
+      // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
+      afterWindowMs: () => (extras.talkAfterExplain ? (settings.listen.commandWindowMs || 5000) : 1500),
+      thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
       onTranscript: (e) => this.onTranscript(e),
       onMarkLearning: (lemma) => { if (!vocab.words[lemma]) void this.changeStatus(lemma, 'learning'); },
       onBudget: (daily, monthly) => { if (settings.ai.dailyWarnUsd > 0 && daily >= settings.ai.dailyWarnUsd) this.toast(`AI spending today: $${daily.toFixed(2)} (this month $${monthly.toFixed(2)})`); },
@@ -722,7 +758,7 @@ class Session {
   }
 
   private newCall(word?: string, explanation?: string): LiveCall {
-    const call: LiveCall = new LiveCall({ model: extras.liveModel, voice: this.liveVoice(), instructions: this.liveContext(word, explanation), transcribe: true, mic: extras.micLevel ?? 2 }, {
+    const call: LiveCall = new LiveCall({ model: extras.liveModel, voice: this.liveVoice(), instructions: this.liveContext(word, explanation), transcribe: true, mic: extras.micLevel ?? 2, volume: this.volumeOf('teacher') }, {
       state: (s, detail) => {
         const t = this.talk;
         if (s === 'error' && detail) {
@@ -1062,7 +1098,7 @@ class Session {
     if (e.lemma && (e.kind === 'word' || e.kind === 'phrase' || e.kind === 'sentence') && (e.status === 'done' || (e.status === 'skipped' && e.text.length > 40)) && e.text && !this.saved.has(e.id) && this.vb) {
       this.saved.add(e.id);
       const t = e.position ? this.vb.timingOf(e.position) : null;
-      void store.upsertEntry({ lemma: e.lemma, word: e.target, sentence: e.sentence, explanation: e.text, chinese: e.chinese ?? (this.hints[e.lemma]?.join('，') ?? ''), bookId: this.vb.book.id, bookTitle: this.vb.book.title, chapter: t ? clock(t.start) : '', position: e.position, level: e.level as CefrLevel | undefined, again: e.again }).catch(() => undefined);
+      void store.upsertEntry({ lemma: e.lemma, word: e.target, sentence: e.sentence, explanation: shown(e.text), chinese: e.chinese ?? (this.hints[e.lemma]?.join('，') ?? ''), bookId: this.vb.book.id, bookTitle: this.vb.book.title, chapter: t ? clock(t.start) : '', position: e.position, level: e.level as CefrLevel | undefined, again: e.again }).catch(() => undefined);
     }
     this.renderBandSay();
   }
@@ -1439,7 +1475,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -1458,7 +1494,9 @@ class Session {
       h.style.setProperty('--subtitle-size', `${clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${clamp(extras.stageSizePx || 34, 16, 96)}px`);
+      h.style.setProperty('--band-bottom', `${clamp(extras.bandBottom ?? 7, 0, 60)}%`);
     }
+    applyPageLook();
     this.fitPart();
   }
 
@@ -1704,7 +1742,7 @@ class Session {
       if (!act || !this.card) return;
       const c = this.card;
       if (act === 'close') this.closeCard();
-      else if (act === 'say') { const h = this.tts?.speak(c.word, { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) }); void h; }
+      else if (act === 'say') { const h = this.wordOut?.speak(c.word, { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) }); void h; }
       else if (act === 'known') { if (this.callStop) this.answerKnow(); else { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); if (this.controller?.stopWindow) this.answerKnow(); this.closeCard(); } }
       else if (act === 'dontknow') { if (this.callStop || this.controller?.stopWindow) this.answerDontKnow(); else if (this.mode === 'tutor') { void this.changeStatus(c.lemma, 'learning'); this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } }
       else if (act === 'ignore') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'ignored'); this.closeCard(); if (this.controller?.stopWindow) this.answerGoOn(); }
@@ -1721,7 +1759,7 @@ class Session {
     const en = this.visibleRoot()?.querySelector<HTMLElement>('.card .en');
     if (!en) return;
     if (e.status === 'error') en.textContent = e.error ?? 'The explanation failed.';
-    else en.textContent = e.text ? firstSentences(e.text, 180) : e.status === 'thinking' ? 'Explaining…' : '';
+    else en.textContent = e.text ? firstSentences(shown(e.text), 180) : e.status === 'thinking' ? 'Explaining…' : '';
   }
 
   private closeCardSoon(): void {
@@ -1768,7 +1806,7 @@ class Session {
         const head = e.kind === 'question' ? `You: ${esc(e.question ?? '')}` : e.kind === 'passage' ? 'The last part' : esc(e.target);
         const st = e.status === 'thinking' ? 'thinking…' : e.status === 'speaking' ? 'speaking' : e.status === 'error' ? 'error' : '';
         const zh = e.chinese ? `<div class="zh">${esc(e.chinese.split('\n')[0])}</div>` : '';
-        return `<div class="entry ${e.status === 'error' ? 'error' : ''}"><div class="target">${head} <span class="st">${st}</span></div>${zh}<div class="body">${esc(e.status === 'error' ? e.error ?? '' : e.text)}</div></div>`;
+        return `<div class="entry ${e.status === 'error' ? 'error' : ''}"><div class="target">${head} <span class="st">${st}</span></div>${zh}<div class="body">${esc(e.status === 'error' ? e.error ?? '' : shown(e.text))}</div></div>`;
       });
       box.innerHTML = items.join('');
       box.scrollTop = box.scrollHeight;
@@ -1778,7 +1816,7 @@ class Session {
     if (say) {
       const last = this.transcript[this.transcript.length - 1];
       const live = last && (last.status === 'thinking' || last.status === 'speaking');
-      say.innerHTML = live ? `<b>${last.kind === 'question' ? 'Tutor' : last.kind === 'passage' ? 'Your teacher' : esc(last.target)}</b> ${esc(last.text || 'thinking…')}` : last?.status === 'error' ? `<span class="bad">${esc(last.error ?? 'The explanation failed.')}</span>` : '';
+      say.innerHTML = live ? `<b>${last.kind === 'question' ? 'Tutor' : last.kind === 'passage' ? 'Your teacher' : esc(last.target)}</b> ${esc(shown(last.text) || 'thinking…')}` : last?.status === 'error' ? `<span class="bad">${esc(last.error ?? 'The explanation failed.')}</span>` : '';
       say.scrollTop = say.scrollHeight;
       this.stage!.el.querySelectorAll<HTMLElement>('.sayrow .hand').forEach((b) => { b.hidden = !live || this.mode !== 'tutor'; });
     }
@@ -1823,7 +1861,7 @@ class Session {
     const say = this.band?.el.querySelector<HTMLElement>('.say');
     if (!say) return;
     const last = this.transcript[this.transcript.length - 1];
-    say.textContent = last && (last.status === 'thinking' || last.status === 'speaking') ? (last.text ? firstSentences(last.text, 220) : 'Thinking…') : '';
+    say.textContent = last && (last.status === 'thinking' || last.status === 'speaking') ? (last.text ? firstSentences(shown(last.text), 220) : 'Thinking…') : '';
   }
 
   toast(text: string, ms = 3500): void {
@@ -1854,6 +1892,7 @@ class Session {
 
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
+    if (prev.teacherVolume !== extras.teacherVolume || prev.followVideoVolume !== extras.followVideoVolume) { const v = this.volumeOf('teacher'); this.talk?.live?.setVolume(v); this.pre?.setVolume(v); }
     if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) this.applyVoice();
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
@@ -1903,7 +1942,7 @@ class Session {
       return;
     }
     // the rest; in the website-call mode only the look changes (YouTube keeps ← and the others)
-    const lookOnly = ['listening', 'page', 'bigger', 'smaller', 'zh'];
+    const lookOnly = ['listening', 'page', 'bigger', 'smaller', 'zh', 'band'];
     if (!tutor && !lookOnly.includes(a.id)) return;
     swallow();
     if (a.id === 'explainSentence') this.explainSentence();
@@ -1913,6 +1952,7 @@ class Session {
     else if (a.id === 'page') { if (this.stageVisible()) this.hideStage(); else this.showStage(this.partAt(video()?.currentTime ?? 0, settings.listen.lastSecondsWindow)); }
     else if (a.id === 'bigger' || a.id === 'smaller') this.resize(a.id === 'bigger' ? 1 : -1);
     else if (a.id === 'zh') void store.patchExtras({ zhLines: !extras.zhLines });
+    else if (a.id === 'band') { const on = !this.bandVisible(); void store.patchExtras({ band: on ? 'on' : 'off' }); this.toast(on ? 'Subtitles on the video: on' : 'Subtitles on the video: off'); }
   }
 
   dispose(): void {
@@ -1931,6 +1971,7 @@ class Session {
     this.band?.host.remove();
     this.stage?.host.remove();
     document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-stage');
+    applyPageLook(false);
   }
 
   diag(): Record<string, unknown> {
@@ -1966,6 +2007,7 @@ class Session {
       mode: this.mode, sentences: this.vb?.order.length ?? 0, state: this.playback?.state ?? null, cur: this.cur, window: this.cmdWin, card: this.card,
       transcript: this.transcript.map((e) => ({ kind: e.kind, target: e.target, status: e.status, text: e.text.slice(0, 80) })),
       spoken: (this.mac as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
+      spokenVol: (this.mac as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
       cloud: cloudSpoken.slice(-30),
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
@@ -1977,6 +2019,20 @@ class Session {
 }
 
 function normalView(): boolean { return extras.view !== 'listening'; }
+
+/** page-wide choices while the tutor is on: YouTube's own captions always hidden, your video size */
+function applyPageLook(on = !!session): void {
+  const html = document.documentElement;
+  html.classList.toggle('dr-hide-cc-always', on && extras.hideYtAlways);
+  const size = on ? clamp(extras.videoSize || 0, 0, 90) : 0;
+  if (size === appliedVideoSize) return;
+  appliedVideoSize = size;
+  html.classList.toggle('dr-vsize', size > 0);
+  if (size > 0) html.style.setProperty('--dr-vsize', `${Math.max(35, size)}%`); else html.style.removeProperty('--dr-vsize');
+  // the player measures its box again (it listens to the window size)
+  window.dispatchEvent(new Event('resize'));
+}
+let appliedVideoSize = 0;
 
 function keyToPos(key: string): Position | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(key);
@@ -2032,8 +2088,16 @@ async function setTutor(on: boolean): Promise<void> {
   refresh();
 }
 
+/** (unpacked) a newer build is in the extension's folder: it reloads itself and then this page */
+function devCheck(): void {
+  try { void chrome.runtime.sendMessage({ type: 'dream-dev-check', build: typeof __DREAM_BUILD__ === 'string' ? __DREAM_BUILD__ : '' }).catch(() => undefined); } catch { /* the extension was reloaded */ }
+}
+
 async function boot(): Promise<void> {
+  devCheck();
   [settings, extras, vocab] = await Promise.all([store.getSettings(), store.getExtras(), store.getVocab()]);
+  const mig = store.migrateExtras(extras);
+  if (mig) extras = await store.patchExtras(mig);
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
     heard: (text, final, key) => (session ? session.heard(text, final, key) : false),
@@ -2071,7 +2135,7 @@ async function boot(): Promise<void> {
     session?.keydown(e);
   }, true);
   // YouTube is a single-page app: a new video = a new session
-  document.addEventListener('yt-navigate-finish', () => setTimeout(refresh, 300));
+  document.addEventListener('yt-navigate-finish', () => { setTimeout(refresh, 300); devCheck(); });
   setInterval(() => { const id = location.pathname === '/watch' ? window.__ytcApi?.videoId() : null; if ((session?.videoId ?? null) !== (id && wantedMode() ? id : null)) refresh(); }, 1500);
   refresh();
 }

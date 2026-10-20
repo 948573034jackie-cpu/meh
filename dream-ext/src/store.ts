@@ -7,6 +7,8 @@ import { DEFAULT_SETTINGS, migrateSettings, type Settings, type VocabState, type
 import type { VocabEntry, VocabEntryInput } from '@shared/api';
 import { mergeEntry } from './vocab';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
+import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
+import type { StyleOverride } from '@shared/styles';
 
 /** YouTube-only choices (not in the Mac app). */
 export interface YtExtras {
@@ -58,6 +60,20 @@ export interface YtExtras {
   teacher: string;
   /** keyboard shortcuts: action id -> key combination ("Shift+KeyE") */
   shortcuts: Record<string, string>;
+  /** volume of the teacher's explanation, 0..100 (100 = as loud as the video when followVideoVolume) */
+  teacherVolume: number;
+  /** volume of the word / sentence being taught (said by the tutor's voice), 0..100 */
+  wordVolume: number;
+  /** the tutor's volume follows YouTube's volume slider (100 % = as loud as the video) */
+  followVideoVolume: boolean;
+  /** where the subtitles over the video sit: % of the player's height from its bottom edge */
+  bandBottom: number;
+  /** YouTube's own captions are always hidden while the tutor is on (not only while Dream subtitles show) */
+  hideYtAlways: boolean;
+  /** the video's width on the watch page, % of the page (0 = YouTube's own size) */
+  videoSize: number;
+  /** one-time changes of saved settings already made (see migrateExtras) */
+  migrated: number;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
@@ -66,9 +82,22 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: true, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, migrated: 0,
 };
+
+/**
+ * One-time changes to saved settings when the app learns better defaults:
+ * 1 = after an explanation the video goes on by itself (no talk, no live call waiting); talk only when you ask (📞).
+ */
+export const EXTRAS_VERSION = 1;
+export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
+  if ((x.migrated ?? 0) >= EXTRAS_VERSION) return null;
+  const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };
+  if ((x.migrated ?? 0) < 1) p.talkAfterExplain = false;
+  return p;
+}
 
 export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string }
 export type KeyName = keyof Keys;
@@ -92,6 +121,18 @@ export function mergeSettings(stored: Partial<Settings> | undefined | null): Set
   // YouTube: "My Custom Style" starts as the learner's own teacher rules (until they edit it)
   const storedStyles = (s.ai as { styles?: Record<string, unknown> } | undefined)?.styles;
   if (!storedStyles || !storedStyles.custom) merged.ai = { ...merged.ai, styles: { ...merged.ai.styles, custom: MY_TEACHER_STYLE } };
+  // the seven teaching ways, in the learner's level (beginner A1–A2, intermediate B1 and up); a prompt the learner
+  // edited is kept (a saved copy of a default prompt is not an edit, so a new level still changes it)
+  const ways: Record<string, StyleOverride> = {};
+  for (const w of TEACHING_WAYS) {
+    const mine = storedStyles?.[w.id] as StyleOverride | undefined;
+    const base = wayStyle(w, merged.learnerLevel);
+    const defaults = [wayPrompts(w, 'A2'), wayPrompts(w, 'B2')];
+    const word = mine?.wordPrompt && !defaults.some((d) => d.wordPrompt === mine.wordPrompt) ? { wordPrompt: mine.wordPrompt } : {};
+    const sentence = mine?.sentencePrompt && !defaults.some((d) => d.sentencePrompt === mine.sentencePrompt) ? { sentencePrompt: mine.sentencePrompt } : {};
+    ways[w.id] = { ...base, ...word, ...sentence, shape: { ...base.shape!, ...(mine?.shape ?? {}) } };
+  }
+  merged.ai = { ...merged.ai, styles: { ...merged.ai.styles, ...ways } };
   // only the Mac voices (and the video itself) exist in Chrome; the Dream voice (Kokoro) needs the Mac app
   merged.voice = { ...merged.voice, engine: 'webspeech', explainEngine: null, voiceId: merged.voice.engine === 'webspeech' ? merged.voice.voiceId : '' };
   return merged;
@@ -101,20 +142,40 @@ export async function getSettings(): Promise<Settings> {
   const o = await area().get(K.settings);
   return mergeSettings(o[K.settings] as Partial<Settings>);
 }
-export async function patchSettings(patch: Partial<Settings>): Promise<Settings> {
-  const cur = await getSettings();
-  const next = { ...cur, ...patch } as Settings;
-  await area().set({ [K.settings]: next });
-  return next;
+/** changes are saved one after the other: two at the same moment would otherwise overwrite each other */
+let queue: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(fn: () => Promise<T>): Promise<T> {
+  const p = queue.then(fn, fn);
+  queue = p.catch(() => undefined);
+  return p;
+}
+export function patchSettings(patch: Partial<Settings>): Promise<Settings> {
+  return oneAtATime(async () => {
+    const cur = await getSettings();
+    const next = { ...cur, ...patch } as Settings;
+    await area().set({ [K.settings]: next });
+    return next;
+  });
 }
 export async function getExtras(): Promise<YtExtras> {
   const o = await area().get(K.extras);
   return { ...DEFAULT_EXTRAS, ...(o[K.extras] as Partial<YtExtras> | undefined) };
 }
-export async function patchExtras(patch: Partial<YtExtras>): Promise<YtExtras> {
-  const next = { ...(await getExtras()), ...patch };
-  await area().set({ [K.extras]: next });
-  return next;
+/** a change made on the settings as they are at that moment (inside the queue) */
+export function updateSettings(fn: (cur: Settings) => Partial<Settings>): Promise<Settings> {
+  return oneAtATime(async () => {
+    const cur = await getSettings();
+    const next = { ...cur, ...fn(cur) } as Settings;
+    await area().set({ [K.settings]: next });
+    return next;
+  });
+}
+export function patchExtras(patch: Partial<YtExtras>): Promise<YtExtras> {
+  return oneAtATime(async () => {
+    const next = { ...(await getExtras()), ...patch };
+    await area().set({ [K.extras]: next });
+    return next;
+  });
 }
 
 export async function getVocab(): Promise<VocabState> {
