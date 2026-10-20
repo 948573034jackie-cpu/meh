@@ -63,7 +63,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const voiceRows = [
     missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
-    now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select></label>` : '',
+    now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
     now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',
     now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '',
   ].filter(Boolean).join('\n      ');
@@ -171,6 +171,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'talkAfter') void store.patchExtras({ talkAfterExplain: v === 'on' });
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
       else if (segName === 'liveModel') void store.patchExtras({ liveModel: v });
+      else if (segName === 'elevenQ') void store.patchExtras({ elevenQuality: v as store.YtExtras['elevenQuality'] });
       else if (segName === 'micAlways') void store.patchExtras({ micAlways: v === 'always' });
       else if (segName === 'callEngine') void store.patchExtras({ callEngine: v as store.YtExtras['callEngine'] });
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });

@@ -291,13 +291,15 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   }
   if (!keys.elevenlabs) throw new Error('Add your ElevenLabs API key (Dream Tutor settings) to use the ElevenLabs voice.');
   const base = urls.elevenlabs ?? 'https://api.elevenlabs.io';
-  const res = await fetch(`${base}/v1/text-to-speech/${encodeURIComponent(a.voice || 'JBFqnCBsd6RMkjVDRZzb')}/with-timestamps?output_format=mp3_44100_64`, {
+  // the most natural model by default (or the fast, cheaper one), full quality sound, a warm and steady delivery
+  const best = (await getExtras()).elevenQuality !== 'fast';
+  const res = await fetch(`${base}/v1/text-to-speech/${encodeURIComponent(a.voice || 'JBFqnCBsd6RMkjVDRZzb')}/with-timestamps?output_format=mp3_44100_128`, {
     method: 'POST', headers: { 'xi-api-key': keys.elevenlabs, 'content-type': 'application/json' },
-    body: JSON.stringify({ text, model_id: 'eleven_flash_v2_5' }),
+    body: JSON.stringify({ text, model_id: best ? 'eleven_multilingual_v2' : 'eleven_flash_v2_5', voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.1, use_speaker_boost: true } }),
   });
   if (!res.ok) throw new Error(res.status === 401 ? 'ElevenLabs rejected the key. Check it in the Dream Tutor settings.' : `ElevenLabs voice: HTTP ${res.status} ${(await res.text()).slice(0, 160)}`);
   const data = (await res.json()) as { audio_base64: string; alignment?: { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] } | null };
-  void addUsage({ date: new Date().toISOString(), provider: 'openai', model: 'elevenlabs-flash', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: text.length * 0.00005 }).catch(() => undefined);
+  void addUsage({ date: new Date().toISOString(), provider: 'openai', model: best ? 'elevenlabs-multilingual-v2' : 'elevenlabs-flash', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: text.length * (best ? 0.0001 : 0.00005) }).catch(() => undefined);
   return { b64: data.audio_base64, mime: 'audio/mpeg', timings: data.alignment ? charAlignmentToWords(data.alignment) : null };
 }
 

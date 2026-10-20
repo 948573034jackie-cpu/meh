@@ -257,6 +257,12 @@ export class WebSpeechEngine implements TtsEngine {
     return voices.find((v) => v.voiceURI === fallback) ?? null;
   }
 
+  /** diagnostics: what the engine is doing */
+  state(): { inflight: number; started: number; paused: boolean; lastVoice: string | null } {
+    const jobs = [...this.inflight];
+    return { inflight: jobs.length, started: jobs.filter((j) => j.started).length, paused: this._paused, lastVoice: this.lastVoiceURI };
+  }
+
   pause(): void { if (speechSynthesis.speaking && !speechSynthesis.paused) { speechSynthesis.pause(); this._paused = true; } }
   resume(): void { if (speechSynthesis.paused) { speechSynthesis.resume(); } this._paused = false; }
   cancelAll(): void {

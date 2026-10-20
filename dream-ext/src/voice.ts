@@ -47,7 +47,9 @@ export function cloudEngine(id: 'openai' | 'elevenlabs', lang: 'en' | 'zh'): Aud
     return { audio: fromBase64(r.b64), mime: r.mime ?? 'audio/mpeg', timings: r.timings ?? null, durationSec: null };
   };
   const list = async () => (id === 'openai' ? OPENAI_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
-  return new AudioTtsEngine(id, synth, list, id === 'elevenlabs', { segment: true });
+  // whole sentences (no cuts at commas): a cloud voice is fast, and each piece made separately breaks the tone and
+  // leaves small gaps between the pieces
+  return new AudioTtsEngine(id, synth, list, id === 'elevenlabs', { segment: false });
 }
 
 /** The voice actually used: 'auto' = OpenAI when its key is saved; a cloud voice without its key = the Mac voice. */

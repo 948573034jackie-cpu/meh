@@ -30,6 +30,8 @@ export interface YtExtras {
   openaiVoice: string;
   /** ElevenLabs voice id */
   elevenVoice: string;
+  /** ElevenLabs model: 'best' = Multilingual v2 (the most natural, about 2x the credits), 'fast' = Flash v2.5 */
+  elevenQuality: 'best' | 'fast';
   /** after each explanation the talk opens (real time with an OpenAI key; else speech recognition + the tutor) */
   talkAfterExplain: boolean;
   /** quiet seconds in the talk before the video goes on by itself; 0 = wait for me ("go on", Enter or play) */
@@ -90,7 +92,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, migrated: 0,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, elevenQuality: 'best', migrated: 0,
 };
 
 /**

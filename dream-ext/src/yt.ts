@@ -2112,6 +2112,12 @@ class Session {
     return { fits: out === 0 && page.scrollHeight <= page.clientHeight + 1, covered, words: words.length, fontPx: parseFloat(getComputedStyle(page).fontSize) };
   }
 
+  /** diagnostics for the 🩺 check and the developer (no keys): the voices and the call */
+  voiceState(): Record<string, unknown> {
+    const mac = this.mac as unknown as { state?: () => unknown } | null;
+    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic() };
+  }
+
   debug() {
     const stage = this.stage?.el;
     return {
@@ -2317,6 +2323,11 @@ async function boot(): Promise<void> {
     note.onclick = () => location.reload();
     document.body.appendChild(note);
   }, 2000);
+  // diagnostics on request from the page (developer tools): the voice and call state, nothing private
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || (e.data as { type?: string } | null)?.type !== 'dr-debug-request') return;
+    window.postMessage({ type: 'dr-debug', build: typeof __DREAM_BUILD__ === 'string' ? __DREAM_BUILD__ : '', voice: session?.voiceState() ?? null }, '*');
+  });
   // YouTube is a single-page app: a new video = a new session
   document.addEventListener('yt-navigate-finish', () => { setTimeout(refresh, 300); devCheck(); });
   setInterval(() => { const id = location.pathname === '/watch' ? window.__ytcApi?.videoId() : null; if ((session?.videoId ?? null) !== (id && wantedMode() ? id : null)) refresh(); }, 1500);
