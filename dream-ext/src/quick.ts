@@ -77,7 +77,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Playing line at ${slider('followAt', x.followAt, 15, 75, 1, '%')} <span class="muted">from the top</span></label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
       <label>Stops by itself ${seg('stopGap', x.stopGapSec ?? 45, [[-1, 'Off'], [90, 'Rarely'], [45, 'Sometimes'], [20, 'Often'], [0, 'Every hard word']])}</label>
-      <p class="muted">Off = it only stops when you pause. Rarely / Sometimes / Often = at most one stop every 90 / 45 / 20 seconds, the hardest word or sentence only.</p>
+      <p class="muted">Every phrase and sentence above your level is highlighted and explained. Single hard words: Rarely / Sometimes / Often = at most one every 90 / 45 / 20 seconds. Off = it only stops when you pause.</p>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
     <section><h4>Subtitles on the video</h4>
@@ -111,6 +111,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Voice call ${onOff('liveOn', x.liveOn)}</label>
       <label>Talk with ${seg('callEngine', x.callEngine ?? 'claude', [['claude', 'Claude + my tutor’s voice (no OpenAI)'], ['openai', 'OpenAI realtime']])}${(x.callEngine ?? 'claude') === 'openai' && !keys.openai ? ' <span class="warn">needs an OpenAI key with credit</span>' : ''}</label>
       ${(x.callEngine ?? 'claude') === 'openai' ? `<label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>` : '<p class="muted">You talk, Chrome writes down your words, Claude answers, and your tutor’s voice speaks. Say “stop” (or press Space) to interrupt, “go on” to go back to the video.</p>'}
+      <label>Microphone on ${seg('micAlways', x.micAlways ? 'always' : 'needed', [['needed', 'Only when the tutor waits for me'], ['always', 'Always (for “hi bro”)']])}</label>
+      <p class="muted">“Always” keeps the Mac’s microphone on, which makes the sound quieter and a little broken. “Only when…” is clean.</p>
       <label>Microphone ${seg('mic', x.micLevel ?? 2, [[1, 'Normal'], [2, 'Sensitive'], [3, 'Very sensitive']])}</label>
       <label>Go on ${seg('silence', x.talkSilenceSec > 0 ? 'auto' : 'wait', [['wait', 'Wait for me'], ['auto', 'After quiet seconds']])}${x.talkSilenceSec > 0 ? ` <input type="number" data-name="silenceSec" min="3" max="120" value="${x.talkSilenceSec}" style="width:64px"> s` : ''}</label>
       <p class="muted">After an explanation you have a moment to ask; then the video goes on by itself. Say “bye bye” (or press Esc) to stop the AI at any time; Space pauses the teacher so you can ask.</p>
@@ -169,6 +171,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'talkAfter') void store.patchExtras({ talkAfterExplain: v === 'on' });
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
       else if (segName === 'liveModel') void store.patchExtras({ liveModel: v });
+      else if (segName === 'micAlways') void store.patchExtras({ micAlways: v === 'always' });
       else if (segName === 'callEngine') void store.patchExtras({ callEngine: v as store.YtExtras['callEngine'] });
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });
       else if (segName === 'silence') void store.patchExtras({ talkSilenceSec: v === 'auto' ? 3 : 0 });

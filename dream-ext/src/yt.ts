@@ -62,6 +62,8 @@ interface YtcApi {
 interface DreamHook {
   /** the Dream Tutor handles the video now: youtube.js leaves pauses, plays and voice commands alone */
   owns(): boolean;
+  /** the tutor wants the microphone now (it waits for an answer or a talk is open) */
+  wantsMic?(): boolean;
   /** something the microphone heard; true = handled here */
   heard(text: string, final: boolean, key?: string): boolean;
   /** youtube.js built its bar: add the Tutor button */
@@ -75,7 +77,7 @@ declare global { interface Window { __ytcApi?: YtcApi; __ytcDream?: DreamHook; _
 
 const GREEN = '#1e8e3e', RED = '#d93025';
 const E2E = () => !!extras.fakeVoice;
-const HINTS_VERSION = 3;
+const HINTS_VERSION = 4; // 4: every hard sentence and phrase above the level (not a few per minute)
 
 let settings: Settings;
 let extras: store.YtExtras = { ...store.DEFAULT_EXTRAS };
@@ -243,6 +245,16 @@ class Session {
   get book(): Book | null { return this.vb?.book ?? null; }
   /** youtube.js must leave the video alone */
   owns(): boolean { return !this.disposed && (this.mode === 'tutor' || !!this.callStop); }
+
+  /**
+   * The microphone is needed: a window waits for "I know / I don't know", a talk is open (the OpenAI call has its own
+   * microphone), or you chose "always" (for "hi bro" while the video plays).
+   */
+  wantsMic(): boolean {
+    if (this.disposed) return false;
+    if (extras.micAlways) return true;
+    return !!this.cmdWin || this.windowOpen || !!this.callStop || !!(this.talk && !this.talk.live);
+  }
 
   async start(): Promise<void> {
     pageStyle();
@@ -445,6 +457,14 @@ class Session {
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
       // stopping now and then (not at every hard word): one item per stop, the hardest
       maxItemsPerStop: () => ((extras.stopGapSec ?? 45) > 0 ? 1 : 0),
+      // every phrase and hard sentence above your level stops; single words at most every stopGapSec seconds
+      stopFilter: (kind, pos) => {
+        const gap = extras.stopGapSec ?? 45;
+        if (gap < 0) return false;
+        if (kind !== 'word' || gap === 0 || this.lastStopAt === null) return true;
+        const at = this.vb?.timingOf(pos)?.start;
+        return at === undefined || Math.abs(at - this.lastStopAt) >= gap;
+      },
       onTranscript: (e) => this.onTranscript(e),
       onMarkLearning: (lemma) => { if (!vocab.words[lemma]) void this.changeStatus(lemma, 'learning'); },
       onBudget: (daily, monthly) => { if (settings.ai.dailyWarnUsd > 0 && daily >= settings.ai.dailyWarnUsd) this.toast(`AI spending today: $${daily.toFixed(2)} (this month $${monthly.toFixed(2)})`); },
@@ -458,11 +478,8 @@ class Session {
     const stopAt = pb.hooks.stopAt;
     pb.hooks.stopAt = (pos) => {
       if (this.quietUntil) { if (comparePositions(pos, this.quietUntil) <= 0) return null; this.quietUntil = null; }
-      // how often the video may stop by itself: never, or not again within stopGapSec seconds of the last stop
-      const gap = extras.stopGapSec ?? 45;
-      if (gap < 0) return null;
-      const at = this.vb?.timingOf(pos)?.start;
-      if (gap > 0 && this.lastStopAt !== null && at !== undefined && Math.abs(at - this.lastStopAt) < gap) return null;
+      // "Stops by itself: Off" = only when you pause
+      if ((extras.stopGapSec ?? 45) < 0) return null;
       return stopAt ? stopAt(pos) : null;
     };
     this.pbOffs.push(
@@ -1281,7 +1298,8 @@ class Session {
         }
       }
       const chunks = chunkChapter(book, 0);
-      const quota = phraseQuota(chunks);
+      // every phrase above the level: a generous cap per part (the AI picks only the ones above the level)
+      const quota = phraseQuota(chunks).map((q) => q * 3);
       const items = [];
       for (let i = 0; i < chunks.length; i++) {
         if (this.disposed || this.vb !== vbAtStart) return;
@@ -2232,6 +2250,7 @@ async function boot(): Promise<void> {
   if (mig) extras = await store.patchExtras(mig);
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
+    wantsMic: () => !!session && session.wantsMic(),
     heard: (text, final, key) => (session ? session.heard(text, final, key) : false),
     decorateBar: (bar) => {
       if (bar.querySelector('#yt2c-b-tutor')) return;

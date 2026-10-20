@@ -70,16 +70,24 @@ export class WebSpeechEngine implements TtsEngine {
       .sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name));
   }
 
-  /** Picks the best British voice when the user has not chosen one. */
+  /**
+   * Picks the best-sounding voice when the user has not chosen one: a downloaded Premium / Enhanced voice (natural,
+   * neural), else a full classic voice (Daniel, Samantha…). The newer names (Jamie, Serena, Stephanie…) without
+   * "Premium" are the small compact versions and sound distorted, so they come last. Never an online voice
+   * (Google's stop after about 15 seconds).
+   */
   static async defaultVoiceId(lang = 'en-gb'): Promise<string> {
     const voices = await waitForVoices();
-    const enGb = voices.filter((v) => v.lang.replace('_', '-').toLowerCase() === lang && v.localService);
-    const preferred = ['Serena', 'Jamie', 'Daniel', 'Stephanie', 'Kate', 'Oliver'];
-    for (const name of preferred) {
-      const hit = enGb.find((v) => v.name.includes(name) && /premium|enhanced/i.test(v.name)) ?? enGb.find((v) => v.name.includes(name));
+    const local = voices.filter((v) => /^en[-_]/i.test(v.lang) && v.localService);
+    const mine = (v: SpeechSynthesisVoice) => v.lang.replace('_', '-').toLowerCase() === lang;
+    const natural = (v: SpeechSynthesisVoice) => /premium|enhanced/i.test(v.name);
+    const best = local.find((v) => natural(v) && mine(v)) ?? local.find(natural);
+    if (best) return best.voiceURI;
+    for (const name of ['Daniel', 'Samantha', 'Karen', 'Moira', 'Tessa', 'Serena', 'Jamie', 'Stephanie', 'Kate', 'Oliver']) {
+      const hit = local.find((v) => v.name.startsWith(name) && mine(v)) ?? local.find((v) => v.name.startsWith(name));
       if (hit) return hit.voiceURI;
     }
-    return (enGb[0] ?? voices.find((v) => v.default) ?? voices[0])?.voiceURI ?? '';
+    return (local.find(mine) ?? local[0] ?? voices.find((v) => v.default) ?? voices[0])?.voiceURI ?? '';
   }
 
   speak(text: string, opts: SpeakOptions): SpeakHandle { return this.start(text, opts, 1); }
@@ -194,7 +202,9 @@ export class WebSpeechEngine implements TtsEngine {
         job.started = true;
         clearTimers();
         armEndWatchdog();
-        resumeTick = setInterval(() => { if (speechSynthesis.speaking && !this._paused) safe(() => speechSynthesis.resume()); }, RESUME_TICK_MS);
+        // (Chrome's online voices stop after about 15 s unless nudged; a Mac voice does not need it, and the nudge can
+        // make it stutter)
+        if (voice && !voice.localService) resumeTick = setInterval(() => { if (speechSynthesis.speaking && !this._paused) safe(() => speechSynthesis.resume()); }, RESUME_TICK_MS);
         startedAt = lastActivity = Date.now();
         idlePoll = setInterval(() => {
           if (job.finished || this._paused) { lastActivity = Date.now(); return; }

@@ -107,6 +107,8 @@ export interface ListenDeps {
   thinkPauseMs?: () => number;
   /** (YouTube) at most this many items at one stop, the hardest first (0 = all of them) */
   maxItemsPerStop?: () => number;
+  /** (YouTube) may this item stop the reading here (e.g. single words only now and then)? default: yes */
+  stopFilter?: (kind: 'word' | 'phrase' | 'sentence', pos: Position) => boolean;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
   /**
@@ -234,7 +236,8 @@ export class ListenController {
   }
 
   /** the items this stop teaches: all, or the hardest few (a whole hard sentence first, then by CEFR level) */
-  private pick(triggers: Trigger[]): Trigger[] {
+  private pick(all: Trigger[], pos?: Position): Trigger[] {
+    const triggers = pos && this.deps.stopFilter ? all.filter((t) => this.deps.stopFilter!(t.kind, pos)) : all;
     const max = this.deps.maxItemsPerStop?.() ?? 0;
     if (!(max > 0) || triggers.length <= max) return triggers;
     const RANK: Record<string, number> = { A1: 1, A2: 2, B1: 3, B2: 4, C1: 5, C2: 6 };
@@ -254,7 +257,7 @@ export class ListenController {
       this.stopTimes = this.stopTimes.filter((t) => t > cutoff);
       if (this.stopTimes.length >= s.listen.maxStopsPer10Min) return null;
     }
-    const triggers = this.pick(this.triggersFor(pos));
+    const triggers = this.pick(this.triggersFor(pos), pos);
     if (!triggers.length) return null;
     // stop right after the first word or phrase (a phrase after its last word); marked ranges at the sentence end
     const at = Math.min(...triggers.map((t) => (t.kind === 'word' ? t.token : t.kind === 'phrase' && t.lemma ? t.end : Infinity)));
@@ -262,7 +265,7 @@ export class ListenController {
   }
 
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
-    const triggers = this.pick(this.triggersFor(pos));
+    const triggers = this.pick(this.triggersFor(pos), pos);
     if (!triggers.length) return 'next';
     this.stopTimes.push(Date.now());
     void stoppedAtToken;

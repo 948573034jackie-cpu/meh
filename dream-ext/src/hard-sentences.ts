@@ -2,23 +2,23 @@
  * Hard sentences: before you watch, the cheap model reads the video's sentences and picks the ones that are hard
  * for your level when you only hear them (difficult grammar, idioms, an unusual word order, a cultural meaning,
  * fast slang). The tutor stops after each of them like after a hard word: it plays the sentence, explains it
- * (RULE TWO) and plays it again. At most about one per minute of video, so the video still flows.
+ * (RULE TWO) and plays it again. Every sentence above the learner's level is chosen (a cap only against a runaway answer).
  */
 import type { PromptBundle } from '@core/ai/prompts';
 
-export const HARD_PER_SECONDS = 70;
+export const HARD_PER_SECONDS = 8;
 
 export function buildHardSentencesPrompt(lines: string[], o: { level: string; title: string; max: number }): PromptBundle {
   return {
     system: 'You are an experienced teacher of English as a second language. You judge which spoken sentences a learner will not understand. Answer only with JSON.',
     user: `Video: ${o.title || 'YouTube video'}. The learner's English is about CEFR ${o.level}; their first language is Chinese.
 
-Here are numbered sentences from the video. Which of them would this learner NOT understand when they only hear them once, even if they know most single words? Think of difficult grammar, long sentences with several parts, idioms and phrasal verbs, an unusual word order, a cultural or hidden meaning, sarcasm, fast slang. Do not choose a sentence only because it has one hard word. Choose at most ${o.max}, the most useful ones, or none.
+Here are numbered sentences from the video. Which of them are above this learner's level, so they would NOT understand them when they only hear them once, even if they know most single words? Think of difficult grammar, long sentences with several parts, idioms and phrasal verbs, an unusual word order, a cultural or hidden meaning, sarcasm, fast slang. Short sentences count too, when their meaning is not plain. Choose every such sentence (at most ${o.max}); do not choose a sentence only because it has one hard word, and choose none if all are easy.
 
 Answer only with JSON like {"hard":[3,17]}.
 
 ${lines.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,
-    maxTokens: 120,
+    maxTokens: 300,
   };
 }
 

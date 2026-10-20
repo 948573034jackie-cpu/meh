@@ -844,12 +844,15 @@
     if (!ALWAYS_LISTEN) stopListening();
   }
 
+  // My tutor: the microphone only while the tutor waits for you (a question, a talk) unless you want it always:
+  // on a Mac a microphone in use with echo cancelling makes all other sound quieter and muffled, with small breaks
+  function dreamWantsMic() { try { const d = window.__ytcDream; return !d || !d.wantsMic || !!d.wantsMic(); } catch (e) { return true; } }
   if (ALWAYS_LISTEN) {
     setInterval(() => {
-      const want = settings.voiceOn && (settings.sendOn || dreamOwns()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
+      const want = settings.voiceOn && (settings.sendOn || (dreamOwns() && dreamWantsMic())) && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
-    }, 1500);
+    }, 500);
   }
 
   function startListening() {
