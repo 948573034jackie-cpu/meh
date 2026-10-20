@@ -251,6 +251,14 @@ class Session {
     let info: YtcInfo;
     try {
       [info, this.dict] = await Promise.all([window.__ytcApi!.loadTranscript(), getDictionary()]);
+      // YouTube draws the page (and its transcript) late, or answers slowly: try again a few times before giving up
+      for (const wait of [4000, 8000, 15000]) {
+        if (info.cues.length || this.disposed) break;
+        this.setStatus('Reading the subtitles… (trying again)');
+        await new Promise((r) => setTimeout(r, wait));
+        if (this.disposed) return;
+        info = await window.__ytcApi!.loadTranscript();
+      }
     } catch (e) { this.setStatus(`Could not start: ${(e as Error).message}`, true); return; }
     if (this.disposed) return;
     const sentences = info.cues.length ? window.__ytcApi!.buildSentences(info.cues) : [];
@@ -2203,7 +2211,17 @@ function backupSoon(): void {
 
 /** (unpacked) a newer build is in the extension's folder: it reloads itself and then this page */
 function devCheck(): void {
-  try { void chrome.runtime.sendMessage({ type: 'dream-dev-check', build: typeof __DREAM_BUILD__ === 'string' ? __DREAM_BUILD__ : '' }).catch(() => undefined); } catch { /* the extension was reloaded */ }
+  try {
+    void chrome.runtime.sendMessage({ type: 'dream-dev-check', build: typeof __DREAM_BUILD__ === 'string' ? __DREAM_BUILD__ : '' })
+      // the extension reloads itself now: this page then loads the new tutor
+      .then((r: { reloading?: boolean } | undefined) => { if (r?.reloading) setTimeout(() => location.reload(), 1500); })
+      .catch(() => undefined);
+  } catch { /* the extension was reloaded */ }
+}
+
+/** this page's tutor lost its extension (reloaded, updated or removed) */
+function extensionGone(): boolean {
+  try { return !chrome.runtime?.id || !chrome.runtime.getManifest(); } catch { return true; }
 }
 
 async function boot(): Promise<void> {
@@ -2252,7 +2270,7 @@ async function boot(): Promise<void> {
   // the extension was reloaded, updated or removed: this page's tutor can do nothing any more, so it takes itself off the
   // page (no dark reading page, no empty panel, YouTube's own look back); a reload of the page brings the new one
   const alive = setInterval(() => {
-    if (chrome.runtime?.id) return;
+    if (!extensionGone()) return;
     clearInterval(alive);
     try { session?.dispose(); } catch { /* already half gone */ }
     session = null;
@@ -2261,6 +2279,12 @@ async function boot(): Promise<void> {
     document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize');
     document.documentElement.style.removeProperty('--dr-vsize');
     window.dispatchEvent(new Event('resize'));
+    // a note: reloading the page brings the new tutor
+    const note = document.createElement('div');
+    note.style.cssText = 'position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:2147483000;background:#1f2328;color:#fff;border:1px solid #d9a441;border-radius:12px;padding:10px 16px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer';
+    note.textContent = 'My tutor was updated. Click here (or press ⌘R) to reload this page.';
+    note.onclick = () => location.reload();
+    document.body.appendChild(note);
   }, 2000);
   // YouTube is a single-page app: a new video = a new session
   document.addEventListener('yt-navigate-finish', () => { setTimeout(refresh, 300); devCheck(); });

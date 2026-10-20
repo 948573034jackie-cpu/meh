@@ -203,17 +203,18 @@
 
   // Method 5: open YouTube's own "Show transcript" panel and read it.
   async function fromTranscriptPanel() {
-    const expand = document.querySelector('#description-inline-expander #expand, ytd-text-inline-expander #expand');
+    // the description (with its "Show transcript" button) is drawn late on a fresh page: wait for it
+    const expand = await waitFor(() => document.querySelector('#description-inline-expander #expand, ytd-text-inline-expander #expand'), 8000);
     if (expand) expand.click();
     const btn = await waitFor(() => {
       const b = document.querySelector('ytd-video-description-transcript-section-renderer button');
       return b || Array.from(document.querySelectorAll('button')).find((x) => /show transcript/i.test(x.textContent || x.getAttribute('aria-label') || ''));
-    }, 3000);
+    }, 10000);
     if (!btn) throw new Error('no "Show transcript" button on this page');
     btn.click();
     // YouTube has two page designs for the panel lines; read both
     const SEG = 'ytd-transcript-segment-renderer, transcript-segment-view-model';
-    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 8000);
+    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 12000);
     if (!first) throw new Error('transcript panel did not load');
     // A long video fills the panel piece by piece: wait until it stops growing.
     let count = document.querySelectorAll(SEG).length, lastChange = Date.now();
