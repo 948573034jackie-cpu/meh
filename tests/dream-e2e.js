@@ -43,6 +43,9 @@ const ytHtml = `<!doctype html><title>Dream Lesson - YouTube</title><body style=
     <div id="below"><h1 class="ytd-watch-metadata">Dream Lesson</h1></div></div>
   <div id="secondary" style="width:420px"><div id="secondary-inner">related videos</div></div>
 </div></ytd-watch-flexy><script>var ytInitialPlayerResponse = ${pr};</script>`;
+// a slow page: YouTube builds its right column 2.5 s late (the subtitles are read before the panel can be placed)
+const ytHtmlLate = ytHtml.replace('<div id="secondary" style="width:420px"><div id="secondary-inner">related videos</div></div>', '').replace(/drm00000001/g, 'drm00000002')
+  + `<script>setTimeout(() => { const s = document.createElement('div'); s.id = 'secondary'; s.style.width = '420px'; s.innerHTML = '<div id="secondary-inner">related videos</div>'; document.getElementById('columns').appendChild(s); }, 2500);</script>`;
 const claudeHtml = `<!doctype html><title>Claude</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" id="files" multiple><div id="slot"></div>
 <script>window.__sent=[];const b=document.getElementById('box'),slot=document.getElementById('slot');b.addEventListener('input',()=>{ if(b.textContent.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','Send message');x.textContent='Send';x.onclick=()=>{__sent.push(b.textContent);b.textContent='';slot.innerHTML='';};slot.appendChild(x);} });</script>`;
 // the fake OpenAI realtime server: answers the WebRTC offer, keeps the data channel, plays a tone as the voice
@@ -135,7 +138,7 @@ const api = http.createServer((req, res) => {
     const u = route.request().url();
     if (u.includes('/v.wav')) { const rg = route.request().headers()['range']; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; return route.fulfill({ status: 206, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-range': `bytes ${a}-${e}/${wav.length}` }, body: wav.slice(a, e + 1) }); } return route.fulfill({ status: 200, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes' }, body: wav }); }
     if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
-    return route.fulfill({ status: 200, contentType: 'text/html', body: ytHtml });
+    return route.fulfill({ status: 200, contentType: 'text/html', body: u.includes('drm00000002') ? ytHtmlLate : ytHtml });
   });
   await ctx.route('https://claude.ai/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: claudeHtml }));
   const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
@@ -363,6 +366,26 @@ const api = http.createServer((req, res) => {
   ok('My tutor on → Claude off', !!tutorAgain, JSON.stringify(tutorAgain));
   const report = await sw.evaluate(() => diagnose());
   ok('🩺 Check (Chrome): reports My tutor (keys saved, voice, live talk), no Safari advice', /My tutor: \{"on":true/.test(report) && /"keys":\["anthropic","openai"\]/.test(report) && !/Split View|Safari window|Safari pauses|Safari stops/.test(report) && /"tutor":\{/.test(report), report.slice(0, 400));
+
+  // ---- 11b. a slow page: the right column comes late, the panel still shows the subtitles and the status ----
+  const slow = await ctx.newPage();
+  await slow.goto('https://www.youtube.com/watch?v=drm00000002');
+  const late = await until(() => slow.evaluate(() => { const h = document.getElementById('dr-panel-host'); if (!h || !h.isConnected) return null; const r = h.shadowRoot; const n = r.querySelectorAll('.lines .s').length; const st = (r.querySelector('.status') || {}).textContent || ''; return n === 10 && /sentences/.test(st) ? { n, st } : null; }), 15000);
+  ok('slow page (right column 2.5 s late): the panel still shows all subtitles and the status', !!late, JSON.stringify(late || await slow.evaluate(() => { const h = document.getElementById('dr-panel-host'); return h ? { n: h.shadowRoot.querySelectorAll('.lines .s').length, st: h.shadowRoot.querySelector('.status').textContent } : 'no panel'; })));
+  // the click that paused the video must not tap a word on the page that just appeared under the mouse
+  await slow.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 9; return v.play(); });
+  await sleep(1500);
+  const nTap = apiLog.length;
+  await slow.evaluate(() => document.querySelector('video').pause());
+  const wpos = await until(() => slow.evaluate(() => { const h = document.getElementById('dr-stage-host'); if (!h || h.hidden) return null; const w = h.shadowRoot.querySelector('.page .s.in-part .w[data-lemma]'); if (!w) return null; const r = w.getBoundingClientRect(); return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2, lemma: w.dataset.lemma } : null; }), 3000, 30);
+  if (wpos) await slow.mouse.click(wpos.x, wpos.y);
+  await sleep(900);
+  const ghost = await slow.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .card'); return !!(c && !c.hidden); });
+  ok('the click that paused the video does not tap a word on the page that appears under the mouse', wpos && !ghost && !apiLog.slice(nTap).some((r) => r.kind === 'explain' && /said aloud|The word|word/.test(r.user) && r.user.includes(wpos.lemma) && !/paused the video/.test(r.user)), JSON.stringify({ wpos, ghost }));
+  if (wpos) await slow.mouse.click(wpos.x, wpos.y);
+  const real = await until(() => slow.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .card'); return c && !c.hidden ? c.innerText.slice(0, 40) : null; }), 3000);
+  ok('a click a moment later opens the word card as before', !!real, real);
+  await slow.close();
 
   // ---- 12. the settings page and My Vocabulary ----
   const opt = await ctx.newPage();

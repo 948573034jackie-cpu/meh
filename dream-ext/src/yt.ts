@@ -171,6 +171,8 @@ class Session {
   private band: Ui | null = null;
   private stage: Ui | null = null;
   private stageShown = false;
+  /** when the page last appeared (a click right after that was meant for the video) */
+  private stageShownAt = 0;
   private partKeys: Set<string> | null = null;
   private cur: Position | null = null;
   private curWord = -1;
@@ -298,8 +300,10 @@ class Session {
     this.mac = getEngine('webspeech');
     this.macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.zhMac = await chineseVoiceId().catch(() => null);
+    // (the Mac's joke voices are left out, unless one is already yours)
+    const novelty = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Deranged|Hysterical|Pipe Organ)$/;
     this.macVoices = (await this.mac.listVoices().catch(() => []))
-      .filter((v) => /^en\b|^en[-_]/i.test(v.lang))
+      .filter((v) => /^en\b|^en[-_]/i.test(v.lang) && (!novelty.test(v.name) || v.id === this.macVoice))
       .map((v) => ({ id: v.id, name: v.name, lang: v.lang }))
       .sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
     this.applyVoice();
@@ -527,6 +531,8 @@ class Session {
   /** the panel follows the video when the teacher is not reading it (call mode, ads, paused, replays) */
   private follow(): void {
     if (this.disposed || !this.vb) return;
+    // YouTube redrew its right column and dropped the panel: put it back
+    if (this.panel && !this.panel.host.isConnected) { const sec = document.querySelector('#secondary'); if (sec) { sec.prepend(this.panel.host); this.scrollToCur(true); } }
     const v = video();
     if (!v) return;
     const ad = !!window.__ytcApi?.isAd();
@@ -1245,6 +1251,9 @@ class Session {
     lines.addEventListener('touchmove', () => { this.userScrollAt = Date.now(); }, { passive: true });
     this.wireWords(lines);
     this.wireAsk(el);
+    // YouTube built its right column late (a slow page load): the subtitles were read meanwhile, so show them now
+    if (this.statusText) this.setStatus(this.statusText, this.statusBad);
+    if (this.vb && this.dict) { this.render(); this.renderTranscript(); this.renderTalk(); }
   }
 
   private wireAsk(el: HTMLElement): void {
@@ -1272,6 +1281,8 @@ class Session {
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div>`;
     root.appendChild(el);
     this.stage = { host, root, el };
+    // you clicked the video to pause it and the page appeared under the mouse: that same click must not tap a word
+    for (const type of ['click', 'dblclick']) el.addEventListener(type, (e) => { if (Date.now() - this.stageShownAt < 600) { e.stopPropagation(); e.preventDefault(); } }, true);
     this.placeStage();
     const page = el.querySelector<HTMLElement>('.page')!;
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
@@ -1331,6 +1342,7 @@ class Session {
     if (normalView() && !extras.stageOn && part) return;
     this.partKeys = part && part.length ? new Set(part.map((p) => sentenceKey(p))) : null;
     this.stageShown = true;
+    if (this.stage.host.hidden) this.stageShownAt = Date.now();
     this.placeStage();
     this.stage.host.hidden = false;
     document.documentElement.classList.add('dr-stage');
