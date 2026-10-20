@@ -105,6 +105,8 @@ export interface ListenDeps {
   afterWindowMs?: () => number;
   /** (YouTube) the quiet moment after a question the style asks ([PAUSE]), ms */
   thinkPauseMs?: () => number;
+  /** (YouTube) at most this many items at one stop, the hardest first (0 = all of them) */
+  maxItemsPerStop?: () => number;
   /** called while the script waits for the learner (quiz question); true = waiting */
   onWaiting?: (waiting: boolean) => void;
   /**
@@ -231,6 +233,15 @@ export class ListenController {
     return out;
   }
 
+  /** the items this stop teaches: all, or the hardest few (a whole hard sentence first, then by CEFR level) */
+  private pick(triggers: Trigger[]): Trigger[] {
+    const max = this.deps.maxItemsPerStop?.() ?? 0;
+    if (!(max > 0) || triggers.length <= max) return triggers;
+    const RANK: Record<string, number> = { A1: 1, A2: 2, B1: 3, B2: 4, C1: 5, C2: 6 };
+    const rank = (t: Trigger) => (t.kind === 'sentence' ? 7 : RANK[String(t.dict?.level ?? '').toUpperCase()] ?? 3.5);
+    return [...triggers].sort((a, b) => rank(b) - rank(a) || a.token - b.token).slice(0, max).sort((a, b) => a.token - b.token);
+  }
+
   private stopAt(pos: Position): number | 'end' | null {
     // the re-read of a sentence after its stop: everything in it has been handled
     const guard = this.rereadGuard;
@@ -243,7 +254,7 @@ export class ListenController {
       this.stopTimes = this.stopTimes.filter((t) => t > cutoff);
       if (this.stopTimes.length >= s.listen.maxStopsPer10Min) return null;
     }
-    const triggers = this.triggersFor(pos);
+    const triggers = this.pick(this.triggersFor(pos));
     if (!triggers.length) return null;
     // stop right after the first word or phrase (a phrase after its last word); marked ranges at the sentence end
     const at = Math.min(...triggers.map((t) => (t.kind === 'word' ? t.token : t.kind === 'phrase' && t.lemma ? t.end : Infinity)));
@@ -251,7 +262,7 @@ export class ListenController {
   }
 
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
-    const triggers = this.triggersFor(pos);
+    const triggers = this.pick(this.triggersFor(pos));
     if (!triggers.length) return 'next';
     this.stopTimes.push(Date.now());
     void stoppedAtToken;

@@ -20,6 +20,7 @@ import type { AiProviderId, Settings } from '@shared/settings';
 import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
 import { PART_PROMPT } from './teacher-text';
 import { isWay } from './teaching-ways';
+import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
 const PRICES: Record<string, [number, number, number]> = {
@@ -368,6 +369,7 @@ async function afterDevReload(): Promise<void> {
 
 export function installDreamBackground(): void {
   void afterDevReload();
+  installVocabSync();
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'dream-ai') return;
     const ctrl = new AbortController();
@@ -387,6 +389,7 @@ export function installDreamBackground(): void {
   });
   chrome.runtime.onMessage.addListener((msg: { type?: string; provider?: AiProviderId }, _sender, sendResponse) => {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
+    if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
     if (msg?.type === 'dream-tts') { void synthesize(msg as unknown as TtsAsk).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }

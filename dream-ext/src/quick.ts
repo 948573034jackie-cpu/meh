@@ -76,6 +76,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[20, '20 s'], [30, '30 s'], [40, '40 s'], [60, '60 s']])}</label>
       <label>Playing line at ${slider('followAt', x.followAt, 15, 75, 1, '%')} <span class="muted">from the top</span></label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
+      <label>Stops by itself ${seg('stopGap', x.stopGapSec ?? 45, [[-1, 'Off'], [90, 'Rarely'], [45, 'Sometimes'], [20, 'Often'], [0, 'Every hard word']])}</label>
+      <p class="muted">Off = it only stops when you pause. Rarely / Sometimes / Often = at most one stop every 90 / 45 / 20 seconds, the hardest word or sentence only.</p>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
     <section><h4>Subtitles on the video</h4>
@@ -170,6 +172,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'silence') void store.patchExtras({ talkSilenceSec: v === 'auto' ? 3 : 0 });
       else if (segName === 'level') void store.patchSettings({ learnerLevel: v as Settings['learnerLevel'] });
       else if (segName === 'followVol') void store.patchExtras({ followVideoVolume: v === 'on' });
+      else if (segName === 'stopGap') void store.patchExtras({ stopGapSec: Number(v) });
       else if (segName === 'band') void store.patchExtras({ band: v as store.YtExtras['band'] });
       else if (segName === 'ytcc') void store.patchExtras({ hideYtAlways: v === 'always', hideYtCaptions: v !== 'never' });
       else if (segName === 'vsizeOn') void store.patchExtras({ videoSize: v === 'mine' ? (x.videoSize > 0 ? x.videoSize : 62) : 0 });

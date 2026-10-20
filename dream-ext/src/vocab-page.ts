@@ -2,7 +2,7 @@
 import type { CefrLevel } from '@core/model';
 import type { VocabEntry } from '@shared/api';
 import * as store from './store';
-import { toCsv, computeProgress, unknownAtLevel, videoLink } from './vocab';
+import { toCsv, computeProgress, unknownAtLevel, videoLink, estimateKnown } from './vocab';
 import { getDictData } from './ai-client';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -42,6 +42,32 @@ async function renderProgress(): Promise<void> {
   };
 }
 
+/**
+ * About how many words you know: every dictionary word at or below your level (except the ones you are still
+ * learning), plus the harder words you marked as known.
+ */
+async function renderKnow(): Promise<void> {
+  const [dict, vocab, entries, s] = await Promise.all([getDictData(), store.getVocab(), store.getEntries(), store.getSettings()]);
+  const p = computeProgress(dict, vocab.words, Object.values(entries));
+  const est = estimateKnown(p, s.learnerLevel);
+  const words = Object.entries(vocab.words).filter(([k]) => !k.startsWith('sentence:'));
+  const known = words.filter(([, st]) => st === 'known').length, learning = words.filter(([, st]) => st === 'learning').length;
+  $('know-big').innerHTML = `You know about <b>${est.toLocaleString()}</b> English words`;
+  $('know-small').textContent = `Your level ${s.learnerLevel} · ${known} harder words marked known · ${learning} words you are learning · ${p.learnedThisWeek} new this week`;
+}
+
+/** the online copy (Chrome sync, your Google account) */
+async function renderOnline(save = false): Promise<void> {
+  const el = $('online');
+  el.textContent = save ? 'Saving online…' : '';
+  const r = await chrome.runtime.sendMessage({ type: 'dream-vocab-online', save }).catch(() => null) as { at: string | null; words: number; sync: boolean } | null;
+  if (!r || !r.sync) { el.textContent = 'Online copy: not available in this browser.'; return; }
+  el.innerHTML = r.at
+    ? `☁ Saved online: ${esc(r.words.toLocaleString())} words · ${esc(new Date(r.at).toLocaleString())} <span class="muted">(your Google account, when Chrome sync is on)</span><button id="save-now">Save now</button>`
+    : 'Not saved online yet.<button id="save-now">Save now</button>';
+  $('save-now').onclick = () => void renderOnline(true);
+}
+
 function tab(name: string): void {
   document.querySelectorAll<HTMLButtonElement>('.tabs [data-tab]').forEach((b) => b.classList.toggle('sel', b.dataset.tab === name));
   $('tab-words').hidden = name !== 'words';
@@ -68,5 +94,7 @@ $('csv').addEventListener('click', async () => {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 });
-chrome.storage.onChanged.addListener(() => { if (!$('tab-words').hidden) void renderWords(); });
+chrome.storage.onChanged.addListener((_ch, area) => { if (area !== 'local') return; if (!$('tab-words').hidden) void renderWords(); void renderKnow(); });
 tab('words');
+void renderKnow();
+void renderOnline();

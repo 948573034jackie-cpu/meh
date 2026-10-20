@@ -148,7 +148,7 @@ const api = http.createServer((req, res) => {
   const patch = (k, v) => sw.evaluate(([key, val]) => chrome.storage.local.get(key).then((o) => chrome.storage.local.set({ [key]: { ...(o[key] || {}), ...val } })), [k, v]);
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' },
-    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1 },
+    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
     drTestBaseUrls: { anthropic: 'http://localhost:8790', openai: 'http://localhost:8790/v1' },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,
@@ -219,6 +219,8 @@ const api = http.createServer((req, res) => {
   const entries = await until(async () => { const e = await store('drEntries'); return e && e.meticulous ? e : null; }, 8000);
   ok('"meticulous" is in My Vocabulary with its sentence, explanation and the time in the video', entries && /very careful/.test(entries.meticulous.explanation) && entries.meticulous.sentence === LINES[1] && entries.meticulous.chapter === '0:04', JSON.stringify(entries && entries.meticulous).slice(0, 200));
   ok('it stays highlighted ("learning"): explained again next time', ((await store('drVocab')) || { words: {} }).words.meticulous === 'learning');
+  const online = await until(() => sw.evaluate(async () => { const m = (await chrome.storage.sync.get('drSyncMeta')).drSyncMeta; if (!m) return null; const parts = await chrome.storage.sync.get(Array.from({ length: m.n }, (_, i) => 'drSyncPart' + i)); return Object.values(parts).join('').includes('meticulous') ? m : null; }), 10000);
+  ok('My Vocabulary is also saved online (Chrome sync): "meticulous" is in the online copy', !!online, JSON.stringify(online));
 
   // ---- 3. "I know" (said aloud) at "ephemeral": unhighlighted, not explained, the sentence again, on ----
   const win2 = await until(async () => { const d = await dbg(); return d && d.window && d.window.target === 'ephemeral' ? d : null; }, 20000);
@@ -428,6 +430,13 @@ const api = http.createServer((req, res) => {
   const stopped = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; return d && d.window && d.window.target === 'meticulous' ? d : null; }, 15000, 100);
   const onAgain = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; const v = await slow.evaluate(() => ({ t: document.querySelector('video').currentTime, paused: document.querySelector('video').paused })); return d && !d.window && !v.paused && v.t > 8.2 ? v : null; }, 25000, 100);
   ok('no talk after explanations (new default): after the explanation the video goes on by itself', !!stopped && !!onAgain && !sawTalk, JSON.stringify({ stopped: !!stopped, onAgain, sawTalk }));
+  // "Stops by itself: Sometimes" (the default): after a stop, no new stop within 45 seconds of video
+  await patch('drExtras', { stopGapSec: 45 });
+  await slow.evaluate(() => { document.querySelector('video').playbackRate = 3; });
+  let early = null;
+  await until(async () => { const d = await sdbg(); const t = await slow.evaluate(() => document.querySelector('video').currentTime); if (d && d.window && t < 6.6 + 45) early = { t, w: d.window.target }; return t > 40 || early; }, 25000, 100);
+  await slow.evaluate(() => { document.querySelector('video').playbackRate = 1; });
+  ok('stops are spaced (Sometimes = at most one every 45 s): no stop at ephemeral / the hard sentence / gregarious right after', !early, JSON.stringify(early));
   const wayReq = apiLog.slice(nWay).find((r) => r.kind === 'explain' && /meticulous/.test(r.user));
   ok('the chosen teaching way (Little Story, intermediate for B2) is what the AI is asked to do', wayReq && /short new story, six to nine sentences/.test(wayReq.user) && /follow the teaching way in the task/.test(wayReq.sys), wayReq && wayReq.user.slice(-300));
   await slow.close();
@@ -450,6 +459,8 @@ const api = http.createServer((req, res) => {
   await voc.waitForTimeout(800);
   const vrows = await voc.evaluate(() => [...document.querySelectorAll('#rows tr')].map((r) => r.dataset.lemma));
   ok('My Vocabulary lists the explained words', vrows.includes('meticulous') && vrows.includes('gregarious'), JSON.stringify(vrows));
+  const knowLine = await until(() => voc.evaluate(() => { const b = document.getElementById('know-big').textContent, o = document.getElementById('online').textContent; return /You know about [\d,]+ English words/.test(b) && /Saved online/.test(o) ? { b, o } : null; }), 8000);
+  ok('My Vocabulary shows "You know about N English words" and "Saved online"', !!knowLine, JSON.stringify(knowLine));
   const [download] = await Promise.all([voc.waitForEvent('download', { timeout: 5000 }).catch(() => null), voc.click('#csv')]);
   let csv = '';
   if (download) { const p = await download.path(); csv = require('fs').readFileSync(p, 'utf8'); }

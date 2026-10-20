@@ -51,3 +51,10 @@ td.zh { font-family: var(--font-zh); color: var(--hl-learning); font-size: 15px;
 .tabs { display: flex; gap: 6px; margin: 0 0 14px; }
 .tabs button.sel { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 700px) { .field { grid-template-columns: 1fr; } .styles { grid-template-columns: 1fr; } .levels { grid-template-columns: repeat(3, 1fr); } }
+
+/* My Vocabulary: how many words you know, and the online copy */
+.knowbox { border: 1px solid var(--border, #333); border-radius: 14px; padding: 14px 18px; margin: 6px 0 14px; }
+.knowbox .big { font-size: 26px; font-weight: 700; }
+.knowbox .big b { color: var(--accent, #d9a441); font-size: 34px; }
+.knowbox .online { margin-top: 8px; font-size: 13px; }
+.knowbox .online button { margin-left: 8px; font-size: 12px; padding: 3px 9px; }

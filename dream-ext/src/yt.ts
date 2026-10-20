@@ -37,9 +37,9 @@ import { renderChapter, renderSentence, restyleLemma } from '../vendor/renderer/
 import { hintText } from '../vendor/renderer/hints';
 import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book';
 import { VideoEngine } from './video-engine';
-import { explain as aiExplain, complete, completeStream, getDictionary } from './ai-client';
+import { explain as aiExplain, complete, completeStream, getDictionary, getDictData } from './ai-client';
 import * as store from './store';
-import { clock } from './vocab';
+import { clock, computeProgress, estimateKnown } from './vocab';
 import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION } from './sentences-ai';
@@ -212,6 +212,23 @@ class Session {
   private zhSave: ReturnType<typeof setTimeout> | null = null;
   private quickRoot: HTMLElement | null = null;
   private lastHeardAt = 0;
+  /** about how many words the learner knows (shown on 📒) */
+  private knownEstimate = 0;
+  private knownTimer: ReturnType<typeof setTimeout> | null = null;
+  /** counts the words you know again (soon, once) */
+  countKnown(): void {
+    if (this.knownTimer) clearTimeout(this.knownTimer);
+    this.knownTimer = setTimeout(() => {
+      this.knownTimer = null;
+      void Promise.all([getDictData(), store.getEntries()]).then(([d, entries]) => {
+        if (this.disposed) return;
+        this.knownEstimate = estimateKnown(computeProgress(d, vocab.words, Object.values(entries)), settings.learnerLevel);
+        this.renderHead();
+      }).catch(() => undefined);
+    }, 1500);
+  }
+  /** video time of the last automatic stop (stopGapSec counts from it) */
+  private lastStopAt: number | null = null;
   private lastTtsEnd = 0;
 
   constructor(videoId: string, mode: Mode) {
@@ -259,6 +276,7 @@ class Session {
     // tests only (the silent test voice is on): what the tutor is doing, readable from the page
     if (E2E()) { const t = setInterval(() => { if (this.disposed) clearInterval(t); else document.documentElement.dataset.drDebug = JSON.stringify(this.debug()); }, 150); }
     this.setStatus(this.readyText(info.source));
+    this.countKnown();
     this.applyView();
     if (this.mode === 'tutor') {
       const v = video();
@@ -414,6 +432,8 @@ class Session {
       // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
       afterWindowMs: () => (extras.talkAfterExplain ? (settings.listen.commandWindowMs || 5000) : 1500),
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
+      // stopping now and then (not at every hard word): one item per stop, the hardest
+      maxItemsPerStop: () => ((extras.stopGapSec ?? 45) > 0 ? 1 : 0),
       onTranscript: (e) => this.onTranscript(e),
       onMarkLearning: (lemma) => { if (!vocab.words[lemma]) void this.changeStatus(lemma, 'learning'); },
       onBudget: (daily, monthly) => { if (settings.ai.dailyWarnUsd > 0 && daily >= settings.ai.dailyWarnUsd) this.toast(`AI spending today: $${daily.toFixed(2)} (this month $${monthly.toFixed(2)})`); },
@@ -427,6 +447,11 @@ class Session {
     const stopAt = pb.hooks.stopAt;
     pb.hooks.stopAt = (pos) => {
       if (this.quietUntil) { if (comparePositions(pos, this.quietUntil) <= 0) return null; this.quietUntil = null; }
+      // how often the video may stop by itself: never, or not again within stopGapSec seconds of the last stop
+      const gap = extras.stopGapSec ?? 45;
+      if (gap < 0) return null;
+      const at = this.vb?.timingOf(pos)?.start;
+      if (gap > 0 && this.lastStopAt !== null && at !== undefined && Math.abs(at - this.lastStopAt) < gap) return null;
       return stopAt ? stopAt(pos) : null;
     };
     this.pbOffs.push(
@@ -1107,6 +1132,7 @@ class Session {
   private onStopTarget(t: { kind: string; target: string; lemma?: string } | null): void {
     if (!t) { this.closeCardSoon(); return; }
     const pos = this.playback?.position ?? this.cur;
+    this.lastStopAt = pos && this.vb ? this.vb.timingOf(pos)?.start ?? null : null;
     if (pos && this.vb && extras.stageOn) {
       const tm = this.vb.timingOf(pos);
       if (tm) this.showStage(this.partAt(tm.end - 0.01, settings.listen.lastSecondsWindow));
@@ -1511,7 +1537,7 @@ class Session {
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
-      <button data-act="vocab" title="My Vocabulary and progress">📒</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts">⚙</button>`;
+      <button data-act="vocab" title="My Vocabulary: you know about ${this.knownEstimate.toLocaleString()} English words">📒${this.knownEstimate ? ` ${this.knownEstimate.toLocaleString()}` : ''}</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts">⚙</button>`;
     head.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
       const act = b?.dataset.act;
@@ -1879,6 +1905,7 @@ class Session {
 
   settingsChanged(prev: Settings): void {
     this.applyLook();
+    if (prev.learnerLevel !== settings.learnerLevel) this.countKnown();
     if (prev.learnerLevel !== settings.learnerLevel || prev.appearance.showHints !== settings.appearance.showHints) {
       this.render();
       if (prev.learnerLevel !== settings.learnerLevel) void this.runHintsJob();
@@ -2162,7 +2189,7 @@ async function boot(): Promise<void> {
     if (BACKUP_PARTS.some((k) => ch[k])) backupSoon();
     if (ch[store.STORAGE_KEYS.settings]) { const prev = settings; settings = store.mergeSettings(ch[store.STORAGE_KEYS.settings].newValue); session?.settingsChanged(prev); }
     if (ch[store.STORAGE_KEYS.extras]) { const prev = extras; extras = { ...store.DEFAULT_EXTRAS, ...ch[store.STORAGE_KEYS.extras].newValue }; session?.extrasChanged(prev); refresh(); }
-    if (ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...(ch[store.STORAGE_KEYS.vocab].newValue?.words ?? {}) }, marked: {} }; }
+    if (ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...(ch[store.STORAGE_KEYS.vocab].newValue?.words ?? {}) }, marked: {} }; session?.countKnown(); }
     if (ch[store.STORAGE_KEYS.keys]) session?.keysChanged({ ...(ch[store.STORAGE_KEYS.keys].newValue ?? {}) });
     if (ch.sendOn || ch.target) setTimeout(refresh, 50); // youtube.js reads the same change first
   });

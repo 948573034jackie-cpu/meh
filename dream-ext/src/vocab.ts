@@ -130,3 +130,15 @@ export function clock(sec: number): string {
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
   return (h ? `${h}:${String(m).padStart(2, '0')}` : String(m)) + ':' + String(s).padStart(2, '0');
 }
+
+/**
+ * About how many English words the learner knows: every tagged dictionary word at or below their level (except the
+ * ones still being learned), plus the harder words they marked as known.
+ */
+export function estimateKnown(p: VocabProgress, level: CefrLevel | string): number {
+  const order = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+  const mine = Math.max(0, order.indexOf(String(level)));
+  let est = 0;
+  for (const l of p.levels) est += order.indexOf(l.level) <= mine ? l.total - l.learning : l.known;
+  return est;
+}
