@@ -179,6 +179,10 @@ New in 3.2:
 - **Seven teaching ways** (⚙ → My teacher), each with a beginner (A1–A2) and an intermediate (B1+) version: Picture It
   (your rules in easy English), Chinese Bridge, Chunk Catcher, Guess First, Little Story, Ask Why, Echo Me. Edit any of
   them (✎) and Reset.
+- **Stops by itself** (⚙ → What you see): Off / Rarely / Sometimes (default) / Often / Every hard word. Spaced stops
+  teach only the hardest item (a hard sentence first, then the highest level).
+- **My Vocabulary** is saved online too (Chrome sync, your Google account) and in a backup for youtube.com; it comes back
+  by itself after a reinstall. It shows **"You know about N English words"**; 📒 on YouTube shows the number.
 - The extension updates itself when a newer build is put in its folder (unpacked installs).
 
 📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the
