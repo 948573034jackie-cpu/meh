@@ -34,7 +34,7 @@ Teach it with RULE TWO of the learner's instructions. The app plays the sentence
  * teacher instructions are chosen): the original words first, and no comments on pronunciation.
  */
 export const ALWAYS_RULES = `Always do these two things.
-First, before you explain anything, say the original words from the video exactly as they are, so the learner hears what you are talking about: the whole sentence for a sentence, and for a word or phrase the sentence it is in. When you break a sentence into pieces, say each piece exactly as it is in the sentence before you explain it.
+First, before you explain anything, say the original words from the video exactly as they are, so the learner hears what you are talking about: the whole sentence for a sentence, and for a word or phrase the sentence it is in (when it is not in the video, just say the word itself and go on to explain it). When you break a sentence into pieces, say each piece exactly as it is in the sentence before you explain it.
 Second, what the learner says comes from speech recognition, and they may pronounce words wrongly. Never comment on their pronunciation and never ask them to repeat. Work out from this part of the video what they meant. If they used a wrong word, say the correct word or sentence once, naturally, then answer in this exact context.`;
 
 /** "You stopped the video": the part just heard (whole sentences), taught as a whole. */
