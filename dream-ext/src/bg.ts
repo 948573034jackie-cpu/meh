@@ -95,7 +95,8 @@ async function streamAnthropic(apiKey: string, model: string, prompt: PromptBund
   const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).anthropic ? { baseURL: (await baseUrls()).anthropic } : {}) });
   const params = {
     model,
-    max_tokens: prompt.maxTokens,
+    // (+ room for the model's own thinking: the prompt keeps the answer's length; a tight limit can leave it empty)
+    max_tokens: prompt.maxTokens + 1000,
     system: [{ type: 'text' as const, text: prompt.system, cache_control: { type: 'ephemeral' as const } }],
     messages: [{ role: 'user' as const, content: prompt.user }],
     output_config: { effort: 'low' as const },
@@ -238,14 +239,16 @@ export async function runChat(system: string, messages: ChatTurn[], signal: Abor
     let r: StreamResult;
     if (provider === 'anthropic') {
       const client = new Anthropic({ apiKey: key, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).anthropic ? { baseURL: (await baseUrls()).anthropic } : {}) });
-      const stream = client.messages.stream({ model, max_tokens: 400, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: turns, output_config: { effort: 'low' } } as never, { signal });
+      // (room for the model's own thinking: a tight limit can leave the answer empty; the rules keep answers short)
+      const stream = client.messages.stream({ model, max_tokens: 2000, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: turns, output_config: { effort: 'low' } } as never, { signal });
       stream.on('text', (t: string) => onDelta(t));
       const fin = await stream.finalMessage();
+      if (fin.stop_reason === 'refusal') throw Object.assign(new Error('The AI declined to answer this request.'), { code: 'other' });
       const u = fin.usage;
       r = { text: fin.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join(''), inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens ?? 0, cachedTokens: u.cache_read_input_tokens ?? 0 };
     } else {
       const client = new OpenAI({ apiKey: key, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).openai ? { baseURL: (await baseUrls()).openai } : {}) });
-      const stream = await client.chat.completions.create({ model, messages: [{ role: 'system', content: system }, ...turns], stream: true, stream_options: { include_usage: true }, max_completion_tokens: 900, ...(/^(gpt-5|o[1-9])/.test(model) ? { reasoning_effort: 'low' as const } : {}) }, { signal });
+      const stream = await client.chat.completions.create({ model, messages: [{ role: 'system', content: system }, ...turns], stream: true, stream_options: { include_usage: true }, max_completion_tokens: 2000, ...(/^(gpt-5|o[1-9])/.test(model) ? { reasoning_effort: 'low' as const } : {}) }, { signal });
       let text = ''; let usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0 };
       for await (const chunk of stream) {
         const d = chunk.choices?.[0]?.delta?.content;

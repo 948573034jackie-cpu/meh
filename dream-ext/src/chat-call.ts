@@ -87,9 +87,14 @@ export class ChatCall {
     if (last?.role === 'user') last.content = `${last.content}\n${q}`;
     else this.history.push({ role: 'user', content: q });
     this.lastActivity = Date.now();
+    this.run(false);
+  }
+
+  /** Claude answers the conversation so far (once more when the answer came back empty) */
+  private run(again: boolean): void {
     const id = `a${++this.turn}`;
     this.thinking = true;
-    this.note('asking Claude');
+    this.note(again ? 'asking Claude again (the answer was empty)' : 'asking Claude');
     this.deps.changed();
     const splitter = new StreamSentenceSplitter();
     let written = '';
@@ -103,8 +108,16 @@ export class ChatCall {
     void job.done.then((text) => {
       if (this.job !== job) return;
       this.job = null;
-      this.thinking = false;
       this.note(`Claude answered (${text.length} characters)`);
+      if (!text.trim()) {
+        if (!again && !this.closed) { this.run(true); return; }
+        this.thinking = false;
+        this.lastError = 'Claude gave no answer';
+        this.deps.error(this.lastError);
+        this.deps.changed();
+        return;
+      }
+      this.thinking = false;
       for (const sentence of splitter.flush(text)) this.enqueue(sentence);
       this.history.push({ role: 'assistant', content: text });
       this.deps.line(id, cleanSpokenProse(text), true);
