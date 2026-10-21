@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 4;
+export const SPLIT_VERSION = 5;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -52,7 +52,7 @@ export function buildSplitPrompt(words: TimedWord[], from: number, to: number): 
     system: 'You turn the speech subtitles of a YouTube video into complete, well-punctuated sentences for an English learner. Answer only in the requested line format.',
     user: `These are the words of a YouTube video's subtitles, in order, each with its number (number:word). Speech-recognition subtitles often have no punctuation and are cut in the middle of sentences.
 
-Rebuild the complete sentences. A sentence is one complete thought, punctuated the way a careful writer would punctuate this speech; split long run-on speech into natural sentences (most sentences have 5 to 30 words). Keep every word in the same order and do not add or remove words: only add punctuation and capital letters, and fix an obvious speech-recognition spelling mistake of a single word. Leave sound tags like [Music] out of the sentence text.
+Rebuild the complete sentences. A sentence is one complete thought, punctuated the way a careful writer would punctuate this speech; split run-on speech (thoughts joined with "and", "so", "but" without a real end) into natural sentences, but never cut a real sentence: a long sentence stays whole (up to 60 words), and a sentence never ends at a comma. Keep every word in the same order and do not add or remove words: only add punctuation and capital letters, and fix an obvious speech-recognition spelling mistake of a single word. Leave sound tags like [Music] out of the sentence text.
 
 Answer with one line per sentence and nothing else (no notes, no thinking aloud), in this form:
 <number of the last word of the sentence>|<the sentence, punctuated>
@@ -205,7 +205,7 @@ export function regroup(words: TimedWord[], lines: SplitLine[], from = 0): Timed
 
 /** Two pieces of one sentence (cut where two chunks meet) as one sentence. */
 function joinSentences(a: TimedSentence, b: TimedSentence, punctuated: boolean): TimedSentence {
-  const t1 = a.text.replace(/[\s.!?…,;:]+$/, '');
+  const t1 = a.text.replace(/[\s.…]+$/, '');
   const first = b.text.split(/\s+/)[0] ?? '';
   const realFirst = b.words?.find((w) => !SOUND_TAG.test(w.w))?.w ?? '';
   // written subtitles: the real word says if it starts with a capital; speech subtitles: only "I" and names in capitals
@@ -248,12 +248,14 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
   // where two chunks meet, a sentence may be cut in two: its two pieces become one sentence again
   const punctuated = words.filter((w) => ENDS_SENTENCE.test(w.w)).length >= words.length * 0.02;
   const out: TimedSentence[] = [];
+  const aiMade = new Set<TimedSentence>();
   let carry: TimedSentence | null = null;
   bounds.forEach(([from, to], i) => {
     const r = results[i];
     // a failed chunk: the first guess (rule-based) for its time range
     const part = r ? regroup(words, r, from) : sentences.filter((s) => s.start >= words[from].t - 0.01 && s.start < (to < words.length ? words[to].t : Infinity));
-    if (carry) { if (r && part.length) part[0] = joinSentences(carry, part[0], punctuated); else out.push(carry); carry = null; }
+    if (r) for (const s of part) aiMade.add(s);
+    if (carry) { if (r && part.length) { part[0] = joinSentences(carry, part[0], punctuated); aiMade.add(part[0]); } else out.push(carry); carry = null; }
     if (r && i < bounds.length - 1 && part.length) {
       const lastS = part[part.length - 1];
       const lastWord = [...(lastS.words ?? [])].reverse().find((w) => !SOUND_TAG.test(w.w))?.w ?? '';
@@ -262,5 +264,28 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
     out.push(...part);
   });
   if (carry) out.push(carry);
+  return joinCut(out, aiMade, punctuated);
+}
+
+const ENDS_CLAUSE = /[,;:–—-]["”'’)]*$/;
+
+/**
+ * A sentence that ends at a comma (or with no full stop, from the AI or in written subtitles) followed by one that
+ * starts with a small letter is one sentence cut in two: joined again (the learner never gets half a sentence).
+ */
+export function joinCut(list: TimedSentence[], aiMade?: Set<TimedSentence>, punctuated = false): TimedSentence[] {
+  const out = [...list];
+  for (let i = 0; i < out.length - 1;) {
+    const a = out[i], b = out[i + 1];
+    const ta = a.text.trim(), tb = b.text.trim();
+    const open = ENDS_CLAUSE.test(ta) || ((punctuated || !!aiMade?.has(a)) && !ENDS_SENTENCE.test(ta));
+    if (open && /^[a-z]/.test(tb) && wordsOf(ta).length + wordsOf(tb).length <= 90) {
+      const joined = { start: a.start, end: b.end, text: `${ta} ${tb}`, words: [...(a.words ?? []), ...(b.words ?? [])] };
+      if (aiMade?.has(a) || aiMade?.has(b)) aiMade?.add(joined);
+      out.splice(i, 2, joined);
+      continue;
+    }
+    i++;
+  }
   return out;
 }

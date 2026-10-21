@@ -4,7 +4,7 @@
  * commands window, the explanation spoken while it streams in, the sentence again, back to its start).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines } from '../src/sentences-ai';
+import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines, joinCut } from '../src/sentences-ai';
 import { parseLines, parseWordMeanings } from '../src/zh';
 import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
@@ -60,6 +60,14 @@ describe('the AI finds the complete sentences', () => {
     expect(junk.map((l) => l.end)).toEqual([18, ws.length - 1]);
     // an AI text with words that are not there (it "finished" the sentence itself): the real words are shown
     expect(regroup(ws, [{ end: 7, text: 'So in college, I was a government major, which means I had to write a lot of papers.' }, { end: ws.length - 1, text: '' }])[0].text).toBe('So in college, I was a government major.');
+  });
+  it('a sentence cut at a comma becomes one sentence again', async () => {
+    const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];
+    const out = await splitWithAi(rule, async () => '4|So today, we are going,\n15|to talk about cooking, and I think you will love it.');
+    expect(out.map((s) => s.text)).toEqual(['So today, we are going, to talk about cooking, and I think you will love it.']);
+    // a real end stays an end; speech subtitles without punctuation are not joined
+    expect(joinCut([{ start: 0, end: 1, text: 'It works.' }, { start: 1, end: 2, text: 'iPhones too.' }]).length).toBe(2);
+    expect(joinCut([{ start: 0, end: 1, text: 'so today we' }, { start: 1, end: 2, text: 'are going' }]).length).toBe(2);
   });
   it('a sentence cut where two chunks meet becomes one sentence again', async () => {
     const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];
