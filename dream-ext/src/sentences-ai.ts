@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 5;
+export const SPLIT_VERSION = 6;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -215,21 +215,41 @@ function joinSentences(a: TimedSentence, b: TimedSentence, punctuated: boolean):
 }
 
 /** The whole video: chunks a few at a time; `onProgress(done, total)`. A failed chunk keeps the first guess there. */
+/** Written subtitles (with full stops): the sentences are where the full stops are. */
+export function punctuationLines(words: TimedWord[], from: number, to: number): SplitLine[] {
+  const out: SplitLine[] = [];
+  for (let i = from; i < to; i++) {
+    if (!ENDS_SENTENCE.test(words[i].w) || SOUND_TAG.test(words[i].w)) continue;
+    let e = i;
+    while (e + 1 < to && SOUND_TAG.test(words[e + 1].w)) e++;
+    out.push({ end: e, text: '' });
+    i = e;
+  }
+  if (!out.length || out[out.length - 1].end < to - 1) out.push({ end: to - 1, text: '' });
+  return out;
+}
+
+/** How the AI's split went, chunk by chunk (for the diagnostics). */
+export const splitReport: string[] = [];
+
+/** The whole video: chunks a few at a time; `onProgress(done, total)`. A failed chunk keeps the first guess there. */
 export async function splitWithAi(sentences: TimedSentence[], complete: (p: PromptBundle) => Promise<string>, onProgress?: (done: number, total: number) => void, parallel = 3, size = CHUNK_WORDS): Promise<TimedSentence[]> {
   const words = flatten(sentences);
   if (!words.length) return sentences;
   const bounds = chunkBounds(words, size);
   const results: (SplitLine[] | null)[] = new Array(bounds.length).fill(null);
-  const one = async (from: number, to: number): Promise<SplitLine[] | null> => {
-    const parsed = parseLines(await complete(buildSplitPrompt(words, from, to)));
-    if (!parsed.length) return null;
+  splitReport.length = 0;
+  const one = async (from: number, to: number): Promise<SplitLine[] | string> => {
+    const raw = await complete(buildSplitPrompt(words, from, to));
+    const parsed = parseLines(raw);
+    if (!parsed.length) return `no lines (${raw.slice(0, 60)})`;
     const lines = alignLines(words, parsed, from, to);
     // the answer stopped early (cut off) and most of the chunk is not covered: not usable
     const covered = [...lines].reverse().find((l) => l.text)?.end ?? from - 1;
-    if (covered - from + 1 < (to - from) * 0.6) return null;
+    if (covered - from + 1 < (to - from) * 0.6) return `covers ${covered - from + 1} of ${to - from} words`;
     // every sentence must be a real sentence (not most of the chunk in one piece)
     let prev = from - 1;
-    for (const l of lines) { const n = l.end - prev, secs = words[l.end].e - words[prev + 1].t; if (n > MAX_WORDS || secs > MAX_SECONDS) return null; prev = l.end; }
+    for (const l of lines) { const n = l.end - prev, secs = words[l.end].e - words[prev + 1].t; if (n > MAX_WORDS || secs > MAX_SECONDS) return `a sentence of ${n} words / ${Math.round(secs)} s`; prev = l.end; }
     return lines;
   };
   let next = 0, done = 0;
@@ -239,7 +259,11 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
       if (i >= bounds.length) return;
       const [from, to] = bounds[i];
       // a bad answer gets one more try
-      for (let attempt = 0; attempt < 2 && !results[i]; attempt++) { try { results[i] = await one(from, to); } catch { results[i] = null; } }
+      for (let attempt = 0; attempt < 2 && !results[i]; attempt++) {
+        try { const r = await one(from, to); if (typeof r === 'string') splitReport.push(`chunk ${i + 1} (words ${from}-${to - 1}): ${r}`); else results[i] = r; }
+        catch (e) { splitReport.push(`chunk ${i + 1}: error ${(e as Error).message}`); }
+      }
+      if (results[i]) splitReport.push(`chunk ${i + 1}: ok`);
       onProgress?.(++done, bounds.length);
     }
   };
@@ -252,8 +276,10 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
   let carry: TimedSentence | null = null;
   bounds.forEach(([from, to], i) => {
     const r = results[i];
-    // a failed chunk: the first guess (rule-based) for its time range
-    const part = r ? regroup(words, r, from) : sentences.filter((s) => s.start >= words[from].t - 0.01 && s.start < (to < words.length ? words[to].t : Infinity));
+    // a failed chunk: written subtitles are cut at their full stops; speech subtitles keep the first guess (rule-based)
+    const part = r ? regroup(words, r, from)
+      : punctuated ? regroup(words, punctuationLines(words, from, to), from)
+      : sentences.filter((s) => s.start >= words[from].t - 0.01 && s.start < (to < words.length ? words[to].t : Infinity));
     if (r) for (const s of part) aiMade.add(s);
     if (carry) { if (r && part.length) { part[0] = joinSentences(carry, part[0], punctuated); aiMade.add(part[0]); } else out.push(carry); carry = null; }
     if (r && i < bounds.length - 1 && part.length) {

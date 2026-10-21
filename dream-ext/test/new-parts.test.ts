@@ -4,7 +4,7 @@
  * commands window, the explanation spoken while it streams in, the sentence again, back to its start).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines, joinCut } from '../src/sentences-ai';
+import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines, joinCut, punctuationLines } from '../src/sentences-ai';
 import { parseLines, parseWordMeanings } from '../src/zh';
 import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
@@ -68,6 +68,9 @@ describe('the AI finds the complete sentences', () => {
     // a real end stays an end; speech subtitles without punctuation are not joined
     expect(joinCut([{ start: 0, end: 1, text: 'It works.' }, { start: 1, end: 2, text: 'iPhones too.' }]).length).toBe(2);
     expect(joinCut([{ start: 0, end: 1, text: 'so today we' }, { start: 1, end: 2, text: 'are going' }]).length).toBe(2);
+    // written subtitles (full stops): when the AI fails, the sentences are where the full stops are
+    const ws = [...W('I was a major, which means', 0), ...W('papers. (Laughter) Now when', 3), ...W('it ends.', 6)];
+    expect(punctuationLines(ws, 0, ws.length).map((l) => l.end)).toEqual([7, ws.length - 1]);
   });
   it('a sentence cut where two chunks meet becomes one sentence again', async () => {
     const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];

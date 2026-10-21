@@ -43,7 +43,7 @@ import { clock, computeProgress, estimateKnown } from './vocab';
 import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
-import { splitWithAi, flatten, regroup, SPLIT_VERSION } from './sentences-ai';
+import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
 import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from './zh';
 import { buildHardSentencesPrompt, parseHardSentences, HARD_PER_SECONDS } from './hard-sentences';
 import { actionFor, comboLabel, shortcutMap } from './shortcuts';
@@ -2380,7 +2380,7 @@ class Session {
   /** diagnostics for the 🩺 check and the developer (no keys): the voices and the call */
   voiceState(): Record<string, unknown> {
     const mac = this.mac as unknown as { state?: () => unknown } | null;
-    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic(), trail: this.trailLog.slice(-25) };
+    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic(), trail: this.trailLog.slice(-25), split: splitReport.slice(-30) };
   }
 
   debug() {
