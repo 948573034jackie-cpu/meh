@@ -1072,13 +1072,24 @@
     return { init: out[0].init, media: concat(out.map((c) => c.media)), start: out[0].start, container: 'mp4', mp4: out[0].mp4 };
   }
 
+  const AAC_RATES = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000];
+  // The stream's own sample rate (Opus is always 48 kHz): decoding at it keeps
+  // every decode of the same audio sample-identical, however it is cut.
+  function nativeRate(piece) {
+    if (piece.container === 'webm') return 48000;
+    const asc = piece.mp4 && piece.mp4.asc;
+    if (asc && AAC_RATES[asc.freqIndex]) return AAC_RATES[asc.freqIndex];
+    const ts = piece.mp4 && piece.mp4.timescale;
+    return ts >= 8000 && ts <= 96000 ? ts : 44100;
+  }
+
   let fullCtx = null;
   async function loopAudio(req) {
-    const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, ...extra });
+    const reply = (extra) => post({ type: 'loopAudio', id: req.id, vid: req.vid, tag: req.tag || '', ...extra });
     try {
-      const sr = req.sr > 0 ? req.sr : 48000;
       const piece = chunksFor(req.vid, req.a, req.b);
-      if (!piece) return reply({ ok: false, why: 'not loaded' });
+      if (!piece) return reply({ ok: false, why: 'not loaded', missing: req.tag ? missingAudio(req.vid, Math.max(0, req.a), req.b) : undefined });
+      const sr = nativeRate(piece);
       const media = piece.media;
       if (!fullCtx || fullCtx.sampleRate !== sr) {
         const Ctor = G.OfflineAudioContext || G.webkitOfflineAudioContext;
@@ -1103,7 +1114,8 @@
       if (from < 0 || to > buf.length || to - from < buf.sampleRate * 0.2) return reply({ ok: false, why: 'short' });
       const ch0 = buf.getChannelData(0).slice(from, to);
       const ch1 = (buf.numberOfChannels > 1 ? buf.getChannelData(1) : buf.getChannelData(0)).slice(from, to);
-      reply({ ok: true, sr: buf.sampleRate, a: req.a, b: req.b, ch0, ch1 });
+      // start: the exact time of sample 0 (a, to within half a sample)
+      reply({ ok: true, sr: buf.sampleRate, a: req.a, b: req.b, start: piece.start + from / buf.sampleRate, ch0, ch1 });
     } catch (e) {
       reply({ ok: false, why: String((e && e.message) || e) });
     }

@@ -104,6 +104,8 @@
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
     qRes: 1, // what Q snaps to, in beats: 1, 0.5, 0.25, or 4 (the start of a bar)
+    stemsOpen: false, // the Stems row (vocals / drums / bass / other on and off)
+    shadow: 'off', // shadowing: 'vocals' | 'drums' | 'bass' | 'other': one play with it, one without
     seamless: !IS_IOS, // loops play from memory: no gap at all between B and A
     mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
     waveStyle: TOUCH ? 'color' : 'drums', // 'drums': kick / snare / hi-hats stand out (3 bands)
@@ -153,6 +155,7 @@
     lastWrapAt: 0,
     adWas: false,
     lineLoop: null, // { a, b, idx }: one lyric line repeating
+    stemOn: { vocals: true, drums: true, bass: true, other: true }, // which stems you hear
     meta: { vid: null, title: '', author: '' },
     hintOverride: null,
     hintUntil: 0,
@@ -266,7 +269,8 @@
     } else if (m.type === 'peaks') {
       onPeaks(m);
     } else if (m.type === 'loopAudio') {
-      slOnAudio(m);
+      if (m.tag === 'stems') stemsOnAudio(m);
+      else slOnAudio(m);
     } else if (m.type === 'download') {
       onDownload(m);
     }
@@ -324,6 +328,477 @@
       const p = DL.pending;
       downloadAudio(p.what, p.fmt);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Stems: the song separated into vocals / drums / bass (+ the rest) by the
+  // MDX-Net models (KUIELab, Music Demixing Challenge 2021), run by the
+  // extension's offscreen page (src/offscreen.js). The song is done in parts
+  // of 9 s, the part you are looping first; each part's stems are kept (16-bit)
+  // for the whole song, so any loop or lyric line has its stems at once.
+  // ---------------------------------------------------------------------------
+  const STEM_NAMES = ['vocals', 'drums', 'bass', 'other'];
+  const STEM_MODELS = ['vocals', 'drums', 'bass']; // "other" = the song minus these
+  const STEM_MAX_DUR = 600; // seconds: the stems of a 10-minute song take about 500 MB
+  const STEM_SEG = 9; // seconds per part
+  const STEM_MARGIN = 1; // extra second each side, so the parts join without a seam
+  const STEM_MODEL_BASE = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/';
+  const ST = { song: null, seg: null, jobId: 0, retryAt: 0, err: '', threads: 0, loopKey: '', loopBufs: null, scanAsked: false, note: '' };
+
+  function stemsAvailable() {
+    return alive() && !IS_IOS;
+  }
+
+  // Are stems wanted right now (the row is open, a stem is off, or shadowing is on)?
+  function stemsWanted() {
+    return stemsAvailable() && !!S.vid && (settings.stemsOpen || settings.shadow !== 'off' || STEM_NAMES.some((k) => !S.stemOn[k]));
+  }
+
+  function stemsForget() {
+    if (ST.seg) stemsCancel();
+    ST.song = null;
+    ST.seg = null;
+    ST.err = '';
+    ST.loopKey = '';
+    ST.loopBufs = null;
+    ST.scanAsked = false;
+  }
+
+  function stemsCancel() {
+    if (ST.seg && ST.seg.stage === 'sep') {
+      try {
+        chrome.runtime.sendMessage({ type: 'ytl-stems', job: { op: 'cancel', id: ST.seg.id } }, () => chrome.runtime.lastError);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    ST.seg = null;
+  }
+
+  // The song's stems live at the stream's own sample rate (known from the
+  // first piece of audio), like the loop's sound: same decode, same grid.
+  function stemsSong(sr) {
+    const d = dur();
+    if (!S.vid || !d) return null;
+    if (ST.song && ST.song.vid === S.vid && (!sr || ST.song.sr === sr)) return ST.song;
+    if (!sr) return null;
+    if (d > STEM_MAX_DUR) {
+      ST.err = 'Stems work for songs up to 10 minutes.';
+      return null;
+    }
+    const n = Math.ceil(d * sr) + sr;
+    const stems = {};
+    for (const k of STEM_NAMES) stems[k] = [new Int16Array(n), new Int16Array(n)];
+    ST.song = { vid: S.vid, sr, n, dur: d, nSeg: Math.ceil(d / STEM_SEG), done: new Uint8Array(Math.ceil(d / STEM_SEG)), stems, mix: new Int16Array(n) };
+    ST.loopKey = '';
+    ST.loopBufs = null;
+    return ST.song;
+  }
+
+  // Parts (indexes) the loop needs.
+  function stemSegsFor(a, b) {
+    const out = [];
+    for (let k = Math.floor(a / STEM_SEG); k <= Math.floor(Math.max(a, b - 0.001) / STEM_SEG); k++) out.push(k);
+    return out;
+  }
+
+  // All the loop's parts are separated (and at the engine's sample rate)?
+  function stemsLoopReady(r) {
+    const song = ST.song;
+    r = r || slRegion();
+    if (!song || !r || !HQ.ctx || song.vid !== S.vid) return false;
+    return stemSegsFor(r.a, r.b).every((k) => k < song.nSeg && song.done[k]);
+  }
+
+  function stemsPct() {
+    const song = ST.song;
+    if (!song) return 0;
+    let n = 0;
+    for (let k = 0; k < song.nSeg; k++) n += song.done[k];
+    return n / song.nSeg;
+  }
+
+  // Next part to do: the loop's parts first, then onwards from there.
+  function stemsNextSeg(song) {
+    const r = loopRegion();
+    const t = S.video ? S.video.currentTime : 0;
+    const first = r ? Math.floor(r.a / STEM_SEG) : Math.floor(t / STEM_SEG);
+    for (let i = 0; i < song.nSeg; i++) {
+      const k = (first + i) % song.nSeg;
+      if (!song.done[k]) return k;
+    }
+    return -1;
+  }
+
+  function stemsTick() {
+    if (!stemsWanted()) return;
+    if (!HQ.ctx) {
+      hqGesture();
+      if (!HQ.ctx) return;
+    }
+    if (S.scan || ST.err && now() < ST.retryAt) return;
+    if (ST.seg) {
+      if (now() - ST.seg.at > 600000) stemsCancel(); // lost: ask again
+      return;
+    }
+    if (now() < ST.retryAt) return;
+    const d = dur();
+    if (d > STEM_MAX_DUR) {
+      ST.err = 'Stems work for songs up to 10 minutes.';
+      ST.retryAt = now() + 60000;
+      return;
+    }
+    const song = stemsSong(0);
+    const nSeg = Math.ceil(d / STEM_SEG);
+    let k = 0;
+    if (song) {
+      k = stemsNextSeg(song);
+      if (k < 0) return;
+    } else {
+      const r = loopRegion();
+      k = Math.min(nSeg - 1, Math.floor((r ? r.a : S.video ? S.video.currentTime : 0) / STEM_SEG));
+    }
+    // (the first piece of audio starts a hair after 0)
+    const a = Math.max(0.05, k * STEM_SEG - STEM_MARGIN);
+    const b = Math.min(d - 0.05, (k + 1) * STEM_SEG + STEM_MARGIN);
+    ST.jobId++;
+    ST.seg = { k, id: ST.jobId, stage: 'audio', at: now(), frac: 0, stem: '' };
+    postToPage({ type: 'loopAudio', id: ST.jobId, tag: 'stems', vid: S.vid, a, b });
+  }
+
+  function int16B64(f) {
+    const a = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) {
+      const v = Math.max(-1, Math.min(1, f[i]));
+      a[i] = v < 0 ? v * 32768 : v * 32767;
+    }
+    return C.bytesToBase64(new Uint8Array(a.buffer));
+  }
+
+  function b64Int16(b64) {
+    const u8 = C.base64ToBytes(b64);
+    return new Int16Array(u8.buffer, u8.byteOffset, u8.length >> 1);
+  }
+
+  function stemsOnAudio(m) {
+    const seg = ST.seg;
+    if (!seg || m.id !== seg.id || seg.stage !== 'audio') return;
+    if (m.vid !== S.vid) {
+      ST.seg = null;
+      return;
+    }
+    if (!m.ok || !(m.ch0 instanceof Float32Array)) {
+      ST.seg = null;
+      if (m.why === 'not loaded' && Array.isArray(m.missing) && m.missing.length && !S.scan && !ST.scanAsked) {
+        // The audio is not in the page (the wave came from memory): read it once, muted.
+        ST.scanAsked = true;
+        ST.note = 'Reading the song once to get its audio (muted)…';
+        startScan(m.missing.map(([x, y]) => ({ start: x, end: y })));
+      } else {
+        ST.err = m.why === 'not loaded' ? 'Part of the song is not loaded: play it once, or "Read whole song now" in ⚙.' : `Could not get the audio (${m.why}).`;
+      }
+      ST.retryAt = now() + 4000;
+      renderUI();
+      return;
+    }
+    const song = stemsSong(m.sr);
+    if (!song || m.sr !== song.sr) {
+      ST.seg = null;
+      ST.retryAt = now() + 2000;
+      return;
+    }
+    seg.stage = 'sep';
+    seg.start = m.start;
+    seg.len = m.ch0.length;
+    seg.mix = [m.ch0, m.ch1 instanceof Float32Array ? m.ch1 : m.ch0]; // for "other" = the part minus the stems
+    seg.got = {};
+    seg.at = now();
+    const job = { op: 'separate', id: seg.id, sr: m.sr, l: int16B64(m.ch0), r: int16B64(m.ch1 instanceof Float32Array ? m.ch1 : m.ch0), stems: STEM_MODELS,
+      modelBase: document.documentElement.dataset.ytlModelBase || STEM_MODEL_BASE };
+    try {
+      chrome.runtime.sendMessage({ type: 'ytl-stems', job }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) {
+          if (ST.seg === seg) {
+            ST.seg = null;
+            ST.err = `The separation page did not start (${(resp && resp.why) || (chrome.runtime.lastError && chrome.runtime.lastError.message) || 'no answer'}).`;
+            ST.retryAt = now() + 8000;
+            renderUI();
+          }
+        }
+      });
+    } catch (e) {
+      ST.seg = null;
+      ST.err = 'The extension was updated: reload the page for stems.';
+      ST.retryAt = now() + 15000;
+    }
+    renderUI();
+  }
+
+  // Results from the offscreen page (through the service worker).
+  function stemsOnResult(m) {
+    const seg = ST.seg;
+    const song = ST.song;
+    if (!seg || m.id !== seg.id || !song) return;
+    seg.at = now();
+    if (m.stage === 'download') {
+      seg.stem = m.stem;
+      seg.dl = m.total ? m.got / m.total : 0;
+      seg.dlMb = Math.round(m.got / 1048576);
+      seg.stage = 'download';
+    } else if (m.stage === 'load') {
+      seg.stage = 'sep';
+      seg.dl = 0;
+    } else if (m.stage === 'progress') {
+      seg.stage = 'sep';
+      seg.stem = m.stem;
+      seg.frac = m.frac;
+    } else if (m.stage === 'stem') {
+      seg.got[m.stem] = [b64Int16(m.l), b64Int16(m.r)];
+    } else if (m.stage === 'done') {
+      // Keep the part itself (the margins were only there for the model), and
+      // "other" = this very decode of the part minus the three stems, so the
+      // four always add up to the song exactly.
+      const a = Math.max(seg.k * STEM_SEG, seg.start);
+      const b = Math.min(song.dur, (seg.k + 1) * STEM_SEG);
+      let from = Math.max(0, Math.round((a - seg.start) * song.sr));
+      const to = Math.min(seg.len, Math.round((b - seg.start) * song.sr));
+      // Each decode may sit a few samples off (WebM times are whole
+      // milliseconds): the part is lined up with the parts already there.
+      let at = Math.round(a * song.sr) + stemsAlign(song, seg);
+      if (at < 0) {
+        from -= at;
+        at = 0;
+      }
+      const ok = STEM_MODELS.every((k) => seg.got[k] && seg.got[k][0].length === seg.len);
+      if (ok && to > from && at + (to - from) <= song.n) {
+        for (let c = 0; c < 2; c++) {
+          for (const k of STEM_MODELS) song.stems[k][c].set(seg.got[k][c].subarray(from, to), at);
+          const o = song.stems.other[c];
+          const mix = seg.mix[c];
+          for (let i = from; i < to; i++) {
+            const v = mix[i] * 32768 - seg.got.vocals[c][i] - seg.got.drums[c][i] - seg.got.bass[c][i];
+            o[at + i - from] = Math.max(-32768, Math.min(32767, Math.round(v)));
+            if (!c) song.mix[at + i - from] = Math.max(-32768, Math.min(32767, Math.round(mix[i] * 32768)));
+          }
+        }
+        song.done[seg.k] = 1;
+        ST.err = '';
+        ST.note = '';
+      } else {
+        ST.err = 'Separation came back incomplete; trying again.';
+        ST.retryAt = now() + 5000;
+      }
+      ST.threads = m.threads || ST.threads;
+      ST.seg = null;
+      if (ST.loopKey) {
+        // the loop's stems may have just become complete
+        ST.loopKey = '';
+        ST.loopBufs = null;
+      }
+      stemsTick(); // straight on to the next part
+    } else if (m.stage === 'error') {
+      ST.seg = null;
+      ST.err = /download failed|Failed to fetch|NetworkError/i.test(m.why || '') ? 'Could not download the AI model (internet?). It tries again in a moment.' : `Separation failed (${m.why}).`;
+      ST.retryAt = now() + 10000;
+    } else if (m.stage === 'pong') {
+      ST.threads = m.threads;
+    }
+    renderUI();
+  }
+
+  // The shift (samples, within +-range) of x against the song's stored mix
+  // that makes x[i] match mix[s0 + i + shift] over the given index ranges of
+  // the song: a coarse pass (every 4th sample), then every shift near the best.
+  function stemsShift(song, x, s0, ranges, range) {
+    const mix = song.mix;
+    const n = song.n;
+    const err = (off, step) => {
+      let e = 0;
+      for (const [lo, hi] of ranges) {
+        for (let j = lo; j < hi; j += step) {
+          const i = j - s0;
+          const m = j + off;
+          if (i < 0 || i >= x.length || m < 0 || m >= n) continue;
+          const d = x[i] - mix[m] / 32768;
+          e += d * d;
+        }
+      }
+      return e;
+    };
+    let best = 0;
+    let bestE = Infinity;
+    for (let off = -range; off <= range; off += 4) {
+      const e = err(off, 4);
+      if (e < bestE) {
+        bestE = e;
+        best = off;
+      }
+    }
+    let fine = best;
+    bestE = Infinity;
+    for (let off = best - 4; off <= best + 4; off++) {
+      const e = err(off, 1);
+      if (e < bestE) {
+        bestE = e;
+        fine = off;
+      }
+    }
+    return { shift: fine, err: bestE };
+  }
+
+  // A part that just came back: lined up (through its margins) with the
+  // neighbouring parts already in the song, so the parts join to the sample.
+  function stemsAlign(song, seg) {
+    const sr = song.sr;
+    const x = seg.mix[0];
+    const s0 = Math.round(seg.start * sr);
+    const R = Math.round(sr * 0.01);
+    const ranges = [];
+    for (const kk of [seg.k - 1, seg.k + 1]) {
+      if (kk < 0 || kk >= song.nSeg || !song.done[kk]) continue;
+      const lo = Math.max(s0 + R, Math.round(kk * STEM_SEG * sr));
+      const hi = Math.min(s0 + x.length - R, Math.round(Math.min(song.dur, (kk + 1) * STEM_SEG) * sr));
+      if (hi - lo > sr * 0.2) ranges.push([lo, hi]);
+    }
+    if (!ranges.length) return 0;
+    return stemsShift(song, x, s0, ranges, R).shift;
+  }
+
+  // The loop's stems as sound buffers (same length as the loop's own sound).
+  // The stems come from another decode of the same audio than the loop's own
+  // sound, which may sit a few samples off (WebM times are whole
+  // milliseconds): the shift that lines them up is searched for, so the
+  // hand-over from the song to its stems is seamless.
+  function stemLoopBufs(key, buf, a) {
+    if (ST.loopKey === key && ST.loopBufs) return ST.loopBufs;
+    const song = ST.song;
+    const nat = SL.nat;
+    const sr = song.sr;
+    const N = nat.l.length;
+    const i0 = Math.round(a * sr);
+    const st = song.stems;
+    const probe = Math.min(N, Math.round(sr * 1.5));
+    const found = stemsShift(song, nat.l, i0, [[i0, i0 + probe]], Math.round(sr * 0.01));
+    const best = found.shift;
+    const bestE = found.err;
+    const bufs = {};
+    const parts = {};
+    for (const k of STEM_NAMES) {
+      parts[k] = [];
+      for (let c = 0; c < 2; c++) {
+        const out = new Float32Array(N);
+        const src = st[k][c];
+        const s0 = i0 + best;
+        for (let i = 0; i < N; i++) {
+          const j = s0 + i;
+          out[i] = j >= 0 && j < src.length ? src[j] / 32768 : 0;
+        }
+        parts[k].push(out);
+      }
+      bufs[k] = toCtxBuffer(parts[k][0], parts[k][1], sr, buf.length);
+    }
+    ST.loopKey = key;
+    ST.loopBufs = bufs;
+    ST.loopShift = best;
+    if (document.documentElement.dataset.ytlDumpStems === '1') {
+      // Debug / tests: the loop's stems (left channel, 16-bit, at the stream's rate) to check them against the truth.
+      const d = { sr, a, shift: best, match: 10 * Math.log10(1e-9 + probe * 0.01 / (bestE + 1e-9)) };
+      for (const k of STEM_NAMES) d[k] = int16B64(parts[k][0]);
+      d.mix = int16B64(nat.l);
+      document.documentElement.dataset.ytlStems = JSON.stringify(d);
+      delete document.documentElement.dataset.ytlDumpStems;
+    }
+    return bufs;
+  }
+
+  // --- what you hear: stems on / off, and the shadowing turns ---
+  function shadowStem() {
+    return settings.shadow !== 'off' && STEM_NAMES.includes(settings.shadow) ? settings.shadow : null;
+  }
+
+  // The practice that takes turns: line practice / Practice, or the Trainer.
+  function shadowRun() {
+    if (S.lineLoop) return S.lineLoop;
+    if (S.trainer.running) return S.trainer;
+    return null;
+  }
+
+  // Is the stem being shadowed silent on this play (0 = the current play, 1 = the next)?
+  function shadowMutedAt(ahead) {
+    const run = shadowRun();
+    const k = shadowStem();
+    if (!k || !run || !SL.active || SL.mode !== 'stems') return false;
+    const half = run.half || 0;
+    return (ahead ? 1 - half : half) === 1;
+  }
+
+  function stemGainAt(k, ahead) {
+    if (!S.stemOn[k]) return 0;
+    return shadowStem() === k && shadowMutedAt(ahead) ? 0 : 1;
+  }
+
+  // Sets every stem's volume now, and at the next jump from B to A (so a
+  // stem goes silent exactly on the "1", not a moment later).
+  function applyStemGains() {
+    if (!SL.active || SL.mode !== 'stems' || !SL.stemSrcs) return;
+    const ctx = HQ.ctx;
+    const t = ctx.currentTime;
+    const wrapT = SL.ctx0 + ((SL.loops + 1) * SL.len - SL.pos0) / SL.rate;
+    for (const k of STEM_NAMES) {
+      const g = SL.stemSrcs[k].gain.gain;
+      const nowV = stemGainAt(k, 0);
+      const nextV = stemGainAt(k, 1);
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(g.value, t);
+      g.linearRampToValueAtTime(nowV, t + 0.008);
+      if (wrapT > t + 0.02) g.setValueAtTime(nextV, wrapT);
+    }
+  }
+
+  function toggleStem(k, solo) {
+    if (!stemsAvailable()) return;
+    if (solo) {
+      const alone = S.stemOn[k] && STEM_NAMES.every((j) => j === k || !S.stemOn[j]);
+      for (const j of STEM_NAMES) S.stemOn[j] = alone ? true : j === k;
+    } else S.stemOn[k] = !S.stemOn[k];
+    if (!HQ.ctx) hqGesture();
+    applyStemGains();
+    if (!stemsLoopReady() && !S.stemOn[k]) flash(stemsStatusText() || 'Separating the loop first…', 3000);
+    S.dirty = true;
+    renderUI();
+  }
+
+  function setShadow(v) {
+    settings.shadow = STEM_NAMES.includes(v) ? v : 'off';
+    saveSettings();
+    if (settings.shadow !== 'off') {
+      if (!settings.seamless) {
+        settings.seamless = true;
+        ui.seamChk.checked = true;
+        flash('Seamless loop turned on: shadowing needs it.', 4000);
+      }
+      if (settings.gap > 0) flash('Shadowing needs no pause between loops: set "Pause between loops" to none in ⚙.', 6000);
+      if (!HQ.ctx) hqGesture();
+      const run = shadowRun();
+      if (run) run.half = 0;
+    }
+    applyStemGains();
+    S.dirty = true;
+    renderUI();
+  }
+
+  function stemsStatusText() {
+    if (!stemsAvailable()) return '';
+    if (ST.err) return ST.err;
+    if (ST.note) return ST.note;
+    const song = ST.song;
+    if (!song) return 'Separating the song into vocals, drums, bass and the rest… (AI models, downloaded once)';
+    const seg = ST.seg;
+    const pct = Math.round(stemsPct() * 100);
+    if (seg && seg.stage === 'download') return `Downloading the ${seg.stem} AI model (once, 28 MB)… ${Math.round((seg.dl || 0) * 100)}%`;
+    if (seg) return `Separating the song… ${pct}% (part ${seg.k + 1} of ${song.nSeg}, ${seg.stem || 'vocals'})`;
+    if (pct >= 100) return 'Stems ready for the whole song.';
+    return `Separating the song… ${pct}%`;
   }
 
   function postToPage(msg) {
@@ -401,6 +876,8 @@
     S.gridCov = 0;
     S.follow = true;
     S.cues = [null, null, null, null];
+    S.stemOn = { vocals: true, drums: true, bass: true, other: true };
+    stemsForget();
     S.dirty = true;
     renderUI();
     if (vid) loadVideoData(vid);
@@ -774,6 +1251,7 @@
       return;
     }
     slFollow(v, r);
+    if (SL.active && SL.mode === 'mix' && stemsWanted() && stemsLoopReady(r)) slSwitchToStems();
   }
 
   function slOnAudio(m) {
@@ -786,9 +1264,11 @@
       return;
     }
     try {
-      const buf = HQ.ctx.createBuffer(2, m.ch0.length, m.sr);
-      buf.copyToChannel(m.ch0, 0);
-      buf.copyToChannel(m.ch1 instanceof Float32Array ? m.ch1 : m.ch0, 1);
+      const ch1 = m.ch1 instanceof Float32Array ? m.ch1 : m.ch0;
+      // The sound comes at the stream's own rate (48 kHz); the engine may run
+      // at another: then it is converted here, the same way as the stems are.
+      SL.nat = { sr: m.sr, l: m.ch0, r: ch1 };
+      const buf = toCtxBuffer(m.ch0, ch1, m.sr);
       SL.buf = buf;
       SL.bufKey = key;
       if (document.documentElement.dataset.ytlDebug === '1') {
@@ -802,6 +1282,23 @@
       SL.failKey = key;
       SL.failAt = now();
     }
+  }
+
+  // A sound buffer for the engine from samples at the stream's rate.
+  function toCtxBuffer(l, r, sr, outLen) {
+    const ctx = HQ.ctx;
+    const RS = globalThis.YTLStems;
+    if (sr !== ctx.sampleRate && RS) {
+      const n = outLen || Math.round((l.length * ctx.sampleRate) / sr);
+      const buf = ctx.createBuffer(2, n, ctx.sampleRate);
+      buf.copyToChannel(RS.resample(l, sr, ctx.sampleRate, n), 0);
+      buf.copyToChannel(RS.resample(r, sr, ctx.sampleRate, n), 1);
+      return buf;
+    }
+    const buf = ctx.createBuffer(2, l.length, sr); // (the engine converts on the way out)
+    buf.copyToChannel(l, 0);
+    buf.copyToChannel(r, 1);
+    return buf;
   }
 
   function slWire() {
@@ -825,40 +1322,114 @@
     const ctx = HQ.ctx;
     if (!SL.gain) SL.gain = ctx.createGain();
     if (document.documentElement.dataset.ytlDebug === '1' && !SL.analyser) slMonitor();
-    const src = ctx.createBufferSource();
-    src.buffer = SL.buf;
-    src.loop = true;
-    src.loopStart = 0;
-    src.loopEnd = SL.buf.duration;
     SL.rate = v.playbackRate || 1;
-    src.playbackRate.value = SL.rate;
-    src.connect(SL.gain);
     SL.wired = false;
     slWire();
     SL.gain.gain.value = v.muted ? 0 : v.volume;
     const when = ctx.currentTime + 0.005;
-    src.start(when, Math.min(offset, SL.buf.duration - 0.001));
     clearTimeout(S.wrapTimer);
     S.wrapTimer = 0;
-    Object.assign(SL, { src, active: true, a: r.a, len: SL.buf.duration, pos0: offset, ctx0: when, loops: 0 });
+    Object.assign(SL, { src: null, stemSrcs: null, mode: 'mix', active: true, a: r.a, len: SL.buf.duration, pos0: offset, ctx0: when, loops: 0 });
+    slStartSources(when, Math.min(offset, SL.buf.duration - 0.001), stemsLoopReady(r));
     updateHQ(); // the video's own sound goes quiet
   }
 
-  function slStop() {
-    if (!SL.active && !SL.src) return;
-    if (SL.src) {
+  // One looping source for the song, or one per stem (vocals / drums / bass /
+  // other, each with its own volume), all started on the same sample.
+  function slStartSources(when, offset, withStems) {
+    const ctx = HQ.ctx;
+    const mk = (buffer) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.loop = true;
+      src.loopStart = 0;
+      src.loopEnd = buffer.duration;
+      src.playbackRate.value = SL.rate;
+      return src;
+    };
+    let bufs = null;
+    if (withStems) {
       try {
-        SL.src.stop();
+        bufs = stemLoopBufs(SL.bufKey, SL.buf, SL.a);
+      } catch (e) {
+        ST.err = `The stems could not be played (${(e && e.message) || e}).`;
+        ST.retryAt = now() + 30000;
+      }
+    }
+    if (bufs) {
+      SL.stemSrcs = {};
+      for (const k of STEM_NAMES) {
+        const src = mk(bufs[k]);
+        const gain = ctx.createGain();
+        gain.gain.value = stemGainAt(k, 0);
+        src.connect(gain);
+        gain.connect(SL.gain);
+        SL.stemSrcs[k] = { src, gain };
+        src.start(when, offset);
+      }
+      SL.mode = 'stems';
+      applyStemGains();
+    } else {
+      const src = mk(SL.buf);
+      src.connect(SL.gain);
+      src.start(when, offset);
+      SL.src = src;
+      SL.mode = 'mix';
+    }
+  }
+
+  // The stems just became ready while the song itself was looping: hand
+  // over on the same sample (the stems add up to the song, so nothing is heard).
+  function slSwitchToStems() {
+    if (!SL.active || SL.mode !== 'mix' || !SL.src || !stemsLoopReady()) return;
+    if (ST.err && now() < ST.retryAt) return;
+    const ctx = HQ.ctx;
+    const t = ctx.currentTime + 0.05;
+    const pos = SL.pos0 + (t - SL.ctx0) * SL.rate;
+    const offset = ((pos % SL.len) + SL.len) % SL.len;
+    const old = SL.src;
+    SL.src = null;
+    slStartSources(t, offset, true);
+    if (SL.mode !== 'stems') {
+      // the stems could not start: the song keeps playing as it was
+      SL.src = old;
+      return;
+    }
+    try {
+      old.stop(t);
+    } catch (e) {
+      /* already stopped */
+    }
+    setTimeout(() => {
+      try {
+        old.disconnect();
+      } catch (e) {
+        /* ignore */
+      }
+    }, 200);
+    renderUI();
+  }
+
+  function slStop() {
+    if (!SL.active && !SL.src && !SL.stemSrcs) return;
+    const srcs = [];
+    if (SL.src) srcs.push(SL.src);
+    if (SL.stemSrcs) for (const k of STEM_NAMES) srcs.push(SL.stemSrcs[k].src, SL.stemSrcs[k].gain);
+    for (const n of srcs) {
+      try {
+        if (n.stop) n.stop();
       } catch (e) {
         /* already stopped */
       }
       try {
-        SL.src.disconnect();
+        n.disconnect();
       } catch (e) {
         /* ignore */
       }
     }
     SL.src = null;
+    SL.stemSrcs = null;
+    SL.mode = 'mix';
     SL.active = false;
     updateHQ(); // the video's own sound again
   }
@@ -877,9 +1448,11 @@
       SL.pos0 = slPos();
       SL.ctx0 = t;
       SL.rate = rate;
-      SL.src.playbackRate.setValueAtTime(rate, t);
+      if (SL.src) SL.src.playbackRate.setValueAtTime(rate, t);
+      if (SL.stemSrcs) for (const k of STEM_NAMES) SL.stemSrcs[k].src.playbackRate.setValueAtTime(rate, t);
       slWire();
       updateHQ();
+      applyStemGains(); // the next jump moved
     }
     SL.gain.gain.value = v.muted ? 0 : v.volume;
     const p = slPos();
@@ -895,6 +1468,7 @@
         /* ignore */
       }
       loopCount();
+      applyStemGains();
       renderUI();
       return;
     }
@@ -1102,33 +1676,52 @@
   // on (their speed for the next play). False when practice just finished.
   function loopCount() {
     S.reps++;
+    // Shadowing: every play happens twice, once with the stem (listen) and
+    // once without it (your turn), at the same speed; the stems must be
+    // playing for that (half: 0 = with, 1 = without).
+    const shadowing = !!shadowStem() && SL.active && SL.mode === 'stems';
     if (S.lineLoop) {
       const ll = S.lineLoop;
-      if (ll.rep >= ll.ramp + ll.full) {
-        finishLinePractice();
-        return false;
+      if (shadowing && !ll.half) ll.half = 1;
+      else {
+        if (ll.rep >= ll.ramp + ll.full) {
+          finishLinePractice();
+          return false;
+        }
+        ll.half = 0;
+        ll.rep++;
+        S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
+        applyRate();
       }
-      ll.rep++;
-      S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
-      applyRate();
     }
     if (S.trainer.running && !S.lineLoop) {
       const tr = S.trainer;
-      // Plays 1..reps speed up (the last one is at the goal speed), then
-      // `after` more plays at the goal speed, then it stops at the loop start.
-      if (tr.after > 0 && tr.rep >= tr.reps + tr.after) {
-        finishTrainer();
-        return false;
+      if (shadowStem() && !shadowing) {
+        // waiting for the stems: the same play again (with everything)
+        tr.half = 0;
+      } else if (shadowing && !tr.half) {
+        tr.half = 1;
+      } else {
+        tr.half = 0;
+        // Plays 1..reps speed up (the last one is at the goal speed), then
+        // `after` more plays at the goal speed, then it stops at the loop
+        // start. Shadowing never stops: full speed, turn after turn.
+        if (tr.after > 0 && tr.rep >= tr.reps + tr.after && !shadowStem()) {
+          finishTrainer();
+          return false;
+        }
+        tr.rep++;
+        if (tr.rep > tr.reps && !tr.done) {
+          tr.done = true;
+          flash(shadowStem()
+            ? `Reached ${Math.round(tr.goal * 100)}%! Shadowing goes on at full speed until you stop it.`
+            : tr.after > 0
+              ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
+              : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
+        }
+        S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
+        applyRate();
       }
-      tr.rep++;
-      if (tr.rep > tr.reps && !tr.done) {
-        tr.done = true;
-        flash(tr.after > 0
-          ? `Reached ${Math.round(tr.goal * 100)}%! Now ${tr.after} plays at full speed, then it stops.`
-          : `Reached ${Math.round(tr.goal * 100)}%! Keeps looping at this speed.`, 6000);
-      }
-      S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
-      applyRate();
     }
     return true;
   }
@@ -1716,6 +2309,7 @@
     tr.reps = settings.trainerReps;
     tr.after = trainerAfter(tr.reps);
     tr.rep = 1;
+    tr.half = 0;
     tr.done = false;
     tr.running = true;
     ui.trainerRow.hidden = false;
@@ -1765,6 +2359,7 @@
     } else {
       tr.rep = C.trainerRepFor(tr.start, tr.goal, tr.reps, r);
     }
+    tr.half = 0;
     tr.done = tr.rep > tr.reps;
     S.rate = C.trainerRate(tr.start, tr.goal, tr.reps, tr.rep);
     S.rateOwned = true;
@@ -1798,6 +2393,8 @@
   function stopTrainer(silent) {
     if (!S.trainer.running) return;
     S.trainer.running = false;
+    S.trainer.half = 0;
+    applyStemGains();
     if (!silent) renderUI();
   }
 
@@ -2491,7 +3088,7 @@
     // be put back exactly when the line practice ends.
     const saved = S.lineLoop ? S.lineLoop.saved : { rate: S.rate, rateOwned: S.rateOwned };
     const ramp = TRAINER_REPS.includes(settings.trainerReps) ? settings.trainerReps : TRAINER_DEFAULT_REPS; // same counts as the Trainer
-    S.lineLoop = { a: r.a, b: r.b, idx: k, idx2: k2, rep: 1, ramp, full: trainerAfter(ramp), saved };
+    S.lineLoop = { a: r.a, b: r.b, idx: k, idx2: k2, rep: 1, half: 0, ramp, full: trainerAfter(ramp), saved };
     S.rate = C.trainerRate(LINE_START, 1, ramp, 1);
     S.rateOwned = true;
     applyRate();
@@ -3228,6 +3825,16 @@
     const slower = btn(null, 'Slower by 5%', () => setRate(Math.round((S.rate - 0.05) * 100) / 100), 'icon hide-phone', 'minus');
     const faster = btn(null, 'Faster by 5%', () => setRate(Math.round((S.rate + 0.05) * 100) / 100), 'icon hide-phone', 'plus');
     ui.trainerBtn = btn('Trainer', 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop', toggleTrainer, '', 'bolt');
+    ui.stemsBtn = btn('Stems', 'Stems: hear the vocals, drums, bass or the rest on their own (AI separation), and shadowing: one play with a stem, one without', () => {
+      settings.stemsOpen = !settings.stemsOpen;
+      saveSettings();
+      if (settings.stemsOpen && !HQ.ctx) hqGesture();
+      ui.stemsRow.hidden = !settings.stemsOpen;
+      if (settings.collapsed && settings.stemsOpen) toggleCollapse();
+      applyLayout();
+      S.dirty = true;
+      renderUI();
+    }, 'stems-btn');
 
     ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon hide-phone', 'zoom');
     ui.zoomBtn = btn('Zoom in', ZOOM_IN_TITLE, toggleZoom, 'zoom-toggle', 'zoom');
@@ -3245,6 +3852,7 @@
       h('div', { class: 'group' }, h('span', { class: 'label hide-narrow', text: 'Speed' }), ...ui.speedBtns, slower, ui.rate, faster),
       h('div', { class: 'sep' }),
       ui.trainerBtn,
+      stemsAvailable() ? ui.stemsBtn : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'group size-btns' }, ui.smallerBtn, ui.biggerBtn),
       ui.zoomBtn,
@@ -3264,12 +3872,47 @@
     ui.tReps = select(TRAINER_REPS, (v) => `${v}× up + ${trainerAfter(v)}× at 100%`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
+    const SHADOW_TITLE = 'Shadowing: every play twice, first with this stem (listen), then without it (your turn), then faster. Needs the stems (Stems button).';
+    const shadowSelect = () => {
+      const el = h('select', { class: 'shadow-sel', title: SHADOW_TITLE, 'aria-label': SHADOW_TITLE });
+      for (const [v, name] of [['off', 'Shadowing off'], ['vocals', 'Shadow vocals'], ['drums', 'Shadow drums'], ['bass', 'Shadow bass'], ['other', 'Shadow other instruments']]) {
+        el.appendChild(h('option', { value: v, text: name }));
+      }
+      el.value = settings.shadow;
+      el.addEventListener('change', () => {
+        setShadow(el.value);
+        el.blur();
+      });
+      return el;
+    };
+    ui.shadowSel = shadowSelect();
+    ui.shadowSel2 = shadowSelect();
     ui.trainerRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label hide-phone', text: 'Speed trainer' }),
       h('span', { class: 'label', text: 'from' }), ui.tStart,
       h('span', { class: 'label', text: 'to 100% over' }), ui.tReps,
+      stemsAvailable() ? ui.shadowSel2 : null,
       h('div', { class: 'progress' }, ui.tBar),
       ui.tStat);
+
+    // --- stems row: each stem on / off, shadowing, and how the separation is going ---
+    const STEM_LABELS = { vocals: 'Vocals', drums: 'Drums', bass: 'Bass', other: 'Other' };
+    ui.stemBtns = {};
+    for (const k of STEM_NAMES) {
+      const b = btn(STEM_LABELS[k], `${STEM_LABELS[k]}: click to turn it off / on. Double-click (or Shift-click) to hear it alone.`, (e) => toggleStem(k, e.shiftKey), 'stem-btn');
+      b.dataset.stem = k;
+      b.addEventListener('dblclick', () => toggleStem(k, true));
+      ui.stemBtns[k] = b;
+    }
+    ui.stemStat = h('span', { class: 'tstat stem-stat' });
+    ui.stemBar = h('i');
+    ui.stemsRow = h('div', { class: 'row sub stems-row', hidden: !settings.stemsOpen || !stemsAvailable() },
+      h('span', { class: 'label hide-phone', text: 'Stems' }),
+      ...STEM_NAMES.map((k) => ui.stemBtns[k]),
+      h('span', { class: 'sep' }),
+      ui.shadowSel,
+      h('div', { class: 'progress stem-progress' }, ui.stemBar),
+      ui.stemStat);
 
     // --- settings row ---
     ui.gapSel = select(GAPS, (v) => (v ? `${v}s` : 'none'), settings.gap, (v) => { settings.gap = v; saveSettings(); }, 'Pause before each repeat (time to breathe)');
@@ -3349,7 +3992,8 @@
     ui.cancelBtn = btn('Cancel', 'Stop reading the song', () => endScan('cancel'));
     ui.overlay = h('div', { class: 'overlay', hidden: true }, ui.scanText, ui.scanBtn, ui.cancelBtn);
     ui.followBtn = btn('Follow', 'Follow: on = the wave moves with the song (the playhead stays in the middle). Off = the wave stays still: drag it anywhere, click a spot to play from there.', toggleFollow, 'follow-btn');
-    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.followBtn);
+    ui.shadowBadge = h('div', { class: 'shadow-badge', hidden: true });
+    ui.waveWrap = h('div', { class: 'wave-wrap' }, ui.canvas, ui.tip, ui.overlay, ui.followBtn, ui.shadowBadge);
     ui.lyrics = buildLyrics();
     ui.stage = h('div', { class: 'stage' }, ui.waveWrap, ui.lyrics);
 
@@ -3368,7 +4012,7 @@
       h('div', { class: 'group' }, ui.aMark, ui.bMark),
       buildBeatGroup());
     ui.gridRow = buildGridRow();
-    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.gridRow, transport, ui.stage, status, ui.help);
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.stemsRow, ui.settingsRow, ui.gridRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
     setupResize(resize);
@@ -3407,6 +4051,7 @@
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
         h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10, 30 or 50 loops, then 5 or 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
+        stemsAvailable() ? h('li', {}, h('b', { text: 'Stems and shadowing: ' }), 'press Stems: the song is split into vocals, drums, bass and the rest (AI, in your browser; the models download once). Click a stem to turn it off or on, double-click it to hear it alone. Shadowing (pick "Shadow vocals" or another stem, then start the Trainer, a line\'s ⟳ or Practice): every play comes twice, with the stem to listen, then without it for your turn, slow to fast, then nonstop at 100%. Needs an A–B loop with Seamless loop on.') : null,
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       TOUCH ? null : h('ul', {},
@@ -3760,13 +4405,15 @@
 
     // Trainer
     const tr = S.trainer;
+    const shadowK = shadowStem();
     if (tr.running) {
       const total = tr.reps + tr.after;
       ui.tBar.style.width = `${Math.round((Math.min(tr.rep, total) / total) * 100)}%`;
       let label;
       if (tr.rep <= tr.reps) label = `Speeding up: ${tr.rep} of ${tr.reps} at `;
-      else label = `Full speed: ${tr.rep - tr.reps} of ${tr.after} at `;
-      ui.tStat.replaceChildren(label, h('b', { text: `${Math.round(S.rate * 100)}%` }));
+      else label = shadowK ? 'Full speed, nonstop, at ' : `Full speed: ${tr.rep - tr.reps} of ${tr.after} at `;
+      const turn = shadowK ? (SL.active && SL.mode === 'stems' ? (tr.half ? ' · YOUR TURN' : ' · listen') : ` · getting the stems ready ${Math.round(stemsPct() * 100)}%`) : '';
+      ui.tStat.replaceChildren(label, h('b', { text: `${Math.round(S.rate * 100)}%` }), turn);
     } else {
       ui.tBar.style.width = '0%';
       const s = settings.trainerStart, g = TRAINER_GOAL, n = settings.trainerReps;
@@ -3774,6 +4421,35 @@
       const a = trainerAfter(n);
       ui.tStat.textContent = `${s}% → ${g}% (+${Math.max(0, stepPct).toFixed(1)}% per loop)` +
         (a ? `, then ${a}× at ${g}% and stop` : '');
+    }
+
+    // Stems and shadowing
+    if (stemsAvailable()) {
+      ui.stemsBtn.classList.toggle('on', settings.stemsOpen || !!shadowK || STEM_NAMES.some((k) => !S.stemOn[k]));
+      const ready = stemsLoopReady();
+      for (const k of STEM_NAMES) {
+        const b = ui.stemBtns[k];
+        b.classList.toggle('off', !S.stemOn[k]);
+        b.classList.toggle('ready', ready);
+        b.classList.toggle('shadow', shadowK === k);
+      }
+      for (const sel of [ui.shadowSel, ui.shadowSel2]) if (sel.value !== settings.shadow) sel.value = settings.shadow;
+      if (!ui.stemsRow.hidden) {
+        const pct = stemsPct();
+        ui.stemBar.style.width = `${Math.round(pct * 100)}%`;
+        ui.stemBar.parentNode.hidden = !stemsWanted() || pct >= 1;
+        const txt = !stemsWanted() ? 'Turn a stem off, or pick a stem to shadow.' : stemsStatusText();
+        ui.stemStat.textContent = txt + (stemsWanted() && ST.song && !ready && pct < 1 ? ' This loop: not yet.' : '');
+      }
+      const run = shadowRun();
+      const badge = ui.shadowBadge;
+      if (shadowK && run && S.video && !S.video.paused) {
+        badge.hidden = false;
+        const stems = SL.active && SL.mode === 'stems';
+        const name = shadowK === 'other' ? 'other instruments' : shadowK;
+        badge.textContent = !stems ? `Getting the stems ready… ${Math.round(stemsPct() * 100)}%` : run.half ? `YOUR TURN · ${name} off` : `LISTEN · ${name} on`;
+        badge.className = `shadow-badge ${!stems ? 'wait' : run.half ? 'yours' : 'listen'}`;
+      } else badge.hidden = true;
     }
 
     // Settings
@@ -3879,6 +4555,19 @@
     d.sections = L.sections.map((x) => `${x.name}@${x.i0}`).join('|');
     d.chords = CH.map ? String(CH.map.filter((x) => x.chords.length).length) : '';
     d.hq = HQ.failed ? 'failed' : HQ.mode;
+    {
+      const run = shadowRun();
+      d.stems = !stemsAvailable() ? 'na' : !stemsWanted() ? '' : ST.err ? 'error' : ST.seg ? `${ST.seg.stage}:${ST.seg.k}:${Math.round((ST.seg.stage === 'download' ? ST.seg.dl || 0 : ST.seg.frac || 0) * 100)}` : ST.song ? (stemsPct() >= 1 ? 'done' : 'idle') : 'start';
+      d.stemsSong = ST.song ? `${Array.from(ST.song.done).filter(Boolean).length}/${ST.song.nSeg}` : '';
+      d.stemsLoop = stemsLoopReady() ? 'ready' : '';
+      d.stemPlay = SL.active ? SL.mode : '';
+      d.stemOn = STEM_NAMES.map((k) => `${k}:${S.stemOn[k] ? 1 : 0}`).join(',');
+      d.shadow = settings.shadow;
+      d.shadowHalf = shadowStem() && run ? (run.half ? 'without' : 'with') : '';
+      d.stemThreads = String(ST.threads || '');
+      d.stemGains = SL.stemSrcs ? STEM_NAMES.map((k) => `${k}:${SL.stemSrcs[k].gain.gain.value.toFixed(2)}`).join(',') : '';
+      d.stemErr = ST.err || '';
+    }
     if (document.documentElement.dataset.ytlDebug === '1') d.hqHz = String(hqPeakHz());
     d.view = S.view ? `${S.view.s.toFixed(3)},${S.view.e.toFixed(3)}` : '';
   }
@@ -5172,6 +5861,7 @@
       liveTick();
       maybeComputeGrid();
       downloadTick();
+      stemsTick();
       if (hostEl && hostEl.style.display !== 'none') {
         followPlayhead();
         lyricsTick();
@@ -5255,6 +5945,8 @@
       if (msg && msg.type === 'ytl-toggle') {
         togglePanel();
         sendResponse({ ok: true, open: settings.open });
+      } else if (msg && msg.type === 'ytl-stems-out') {
+        stemsOnResult(msg);
       }
     });
   }

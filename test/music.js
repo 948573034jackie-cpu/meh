@@ -25,6 +25,42 @@ function synth(spec, SR = 16000) {
     crash: (t, a = 1) => { let p = 0; at(t, 2.0, (u) => { const nz = noise(); const hp = nz - 0.6 * p; p = nz; return a * 0.32 * hp * (Math.exp(-u / 0.7) * 0.8 + (u < 0.02 ? 0.5 : 0)); }); },
     ride: (t, a = 1) => { let p = 0; at(t, 0.9, (u) => { const nz = noise(); const hp = nz - p; p = nz; return a * (0.12 * hp * Math.exp(-u / 0.45) + 0.08 * Math.sin(2 * Math.PI * 3300 * u) * Math.exp(-u / 0.35)); }); },
     cowbell: (t, a = 1) => at(t, 0.25, (u) => a * 0.22 * (Math.sign(Math.sin(2 * Math.PI * 540 * u)) + Math.sign(Math.sin(2 * Math.PI * 800 * u))) * Math.exp(-u / 0.07)),
+    // A sung vowel: glottal pulses (a sawtooth, falling with each harmonic)
+    // through four resonances (the mouth; "ah" 700 / 1200 / 2600 / 3300 Hz),
+    // with the things that make a voice a voice for a listener (and for the
+    // stem models): vibrato of about half a semitone that sets in after the
+    // start, a scoop up into the note (or from the previous note), a little
+    // pitch jitter and breath, a soft start and a consonant-like burst in
+    // front. Every note comes out at the same loudness (RMS 0.14 * a)
+    // whatever the vowel or the sample rate.
+    sing: (t, len, f, a = 1, vowel = 'ah', from = f * 0.94) => {
+      const FORM = { ah: [700, 1200, 2600, 3300], oh: [450, 800, 2500, 3200], ee: [300, 2300, 3000, 3600], eh: [550, 1800, 2600, 3300] };
+      const bws = [90, 120, 160, 200];
+      const res = (FORM[vowel] || FORM.ah).map((F, i) => { const r = Math.exp(-Math.PI * bws[i] / SR); const th = (2 * Math.PI * F) / SR; return { a1: 2 * r * Math.cos(th), a2: -r * r, g: (1 - r) * 2 * Math.sin(th), y1: 0, y2: 0 }; });
+      const s0 = Math.round((t - 0.03) * SR);
+      const n = Math.round((len + 0.03) * SR);
+      const buf = new Float32Array(n);
+      let ph = 0;
+      let ss = 0;
+      let jit = 0;
+      for (let i = 0; i < n; i++) {
+        const uu = i / SR - 0.03;
+        const vib = 1 + 0.03 * Math.sin(2 * Math.PI * 5.5 * uu) * Math.min(1, Math.max(0, (uu - 0.15) / 0.3));
+        let f0 = uu >= 0 && uu < 0.12 ? from + (f - from) * (uu / 0.12) : f;
+        if (i % 64 === 0) jit = noise() * 0.006;
+        f0 *= 1 + jit;
+        ph += (2 * Math.PI * f0 * vib) / SR;
+        const saw = ((ph / (2 * Math.PI)) % 1) * 2 - 1;
+        const breath = noise() * 0.04;
+        let y = (uu < 0 ? 0 : saw) * 0.35 + breath * (uu < 0 ? 1 : 0.5) + (uu < 0 ? noise() * 0.12 : 0);
+        for (const q of res) { const z = q.g * y + q.a1 * q.y1 + q.a2 * q.y2; q.y2 = q.y1; q.y1 = z; y = z; }
+        const env = uu < 0 ? Math.min(1, (uu + 0.03) / 0.03) : Math.min(1, uu / 0.06) * Math.min(1, (len - uu) / 0.08);
+        buf[i] = y * Math.max(0, env);
+        ss += buf[i] * buf[i];
+      }
+      const g = (a * 0.14) / Math.max(1e-9, Math.sqrt(ss / n));
+      for (let i = 0; i < n; i++) { const j = s0 + i; if (j >= 0 && j < N) x[j] += buf[i] * g; }
+    },
     voice: (t, len, f, a = 1) => { let ph = 0; at(t, len, (u) => { ph += 2 * Math.PI * f * (1 + 0.01 * Math.sin(2 * Math.PI * 5.5 * u)) / SR; return a * 0.25 * (Math.sin(ph) + 0.5 * Math.sin(2 * ph) + 0.25 * Math.sin(3 * ph)) * Math.min(1, u / 0.04) * Math.min(1, (len - u) / 0.05); }); },
   };
   const beats = spec.make(S, r); // truth beat times (drum region), downbeats = every 4th starting at index spec.firstDown||0

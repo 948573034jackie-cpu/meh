@@ -92,5 +92,33 @@ fs.writeFileSync(raw, Buffer.from(kitSong.x.buffer));
 const kit = build('kit', ['-f', 'f32le', '-ar', '48000', '-ac', '1', '-i', raw], ['-c:a', 'libopus', '-b:a', '128k', '-ac', '2'], 'webm', 'webm', 'audio/webm; codecs="opus"', 2);
 fs.rmSync(raw);
 
-fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4, drums, drumBpm: 96, drumFirstBeat: 0.8, tempo, tempoBeats: tempoSong.beats, kit, kitHits: kitSpec.hits }, null, 2));
+// A band (voice, drums, bass, chords) for the stem separation test: the mix
+// goes through Opus like YouTube's audio; each part is also written on its own
+// (32-bit floats, 48 kHz, mono) as the truth to check the stems against.
+const beat = 0.5;
+const t0 = 0.5;
+const nBeats = Math.floor((DUR - 1) / beat);
+const bandParts = {
+  vocals: (S) => { for (let i = 0; i < nBeats; i += 4) { const t = t0 + i * beat; S.sing(t, beat * 1.6, [262, 294, 330, 392][(i / 4) % 4], 1, ['ah', 'oh', 'ee', 'ah'][(i / 4) % 4]); S.sing(t + beat * 2, beat * 1.2, [330, 349, 392, 440][(i / 4) % 4], 0.9, ['oh', 'ah', 'ah', 'ee'][(i / 4) % 4]); } },
+  drums: (S) => { for (let i = 0; i < nBeats; i++) { const t = t0 + i * beat; if (i % 2 === 0) S.kick(t); else S.snare(t); S.hat(t, 0.7); S.hat(t + beat / 2, 0.5); if (i % 16 === 0) S.crash(t, 0.7); } },
+  bass: (S) => { for (let i = 0; i < nBeats; i++) { const t = t0 + i * beat; S.bass(t, beat * 0.9, [55, 55, 65, 49][Math.floor(i / 4) % 4], 0.9); } },
+  other: (S) => { for (let i = 0; i < nBeats; i += 2) { const t = t0 + i * beat; S.chord(t, beat * 2, [[262, 330, 392], [262, 349, 440], [294, 392, 494], [247, 330, 392]][Math.floor(i / 4) % 4], 0.9); } S.pad(0.5, DUR - 1, [131, 165, 196], 0.6); },
+};
+const bandStems = {};
+for (const k of Object.keys(bandParts)) bandStems[k] = synth({ dur: DUR, seed: 5, make(S) { bandParts[k](S); return []; } }, 48000).x;
+const bandMix = new Float32Array(bandStems.vocals.length);
+for (const k of Object.keys(bandStems)) for (let i = 0; i < bandMix.length; i++) bandMix[i] += bandStems[k][i];
+let bandPeak = 0;
+for (let i = 0; i < bandMix.length; i++) bandPeak = Math.max(bandPeak, Math.abs(bandMix[i]));
+const bandGain = 0.8 / bandPeak;
+for (let i = 0; i < bandMix.length; i++) bandMix[i] *= bandGain;
+for (const k of Object.keys(bandStems)) {
+  for (let i = 0; i < bandMix.length; i++) bandStems[k][i] *= bandGain;
+  fs.writeFileSync(path.join(out, `band_${k}.f32`), Buffer.from(bandStems[k].buffer));
+}
+fs.writeFileSync(raw, Buffer.from(bandMix.buffer));
+const band = build('band', ['-f', 'f32le', '-ar', '48000', '-ac', '1', '-i', raw], ['-c:a', 'libopus', '-b:a', '128k', '-ac', '2'], 'webm', 'webm', 'audio/webm; codecs="opus"', 2);
+fs.rmSync(raw);
+
+fs.writeFileSync(path.join(out, 'manifest.json'), JSON.stringify({ duration: DUR, audio, video, mp4, drums, drumBpm: 96, drumFirstBeat: 0.8, tempo, tempoBeats: tempoSong.beats, kit, kitHits: kitSpec.hits, band, bandBeat: beat, bandFirst: t0 }, null, 2));
 console.log('fixtures written to', out, `audio segs=${audio.segs.length} video segs=${video.segs.length}`);

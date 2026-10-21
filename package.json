@@ -5,17 +5,19 @@
   "description": "Chrome extension: DJ waveform A-B looper and speed trainer for YouTube",
   "scripts": {
     "fixtures": "node tools/make-fixtures.js",
+    "fixtures:models": "node tools/get-models.js",
     "icons": "node tools/make-icons.js",
-    "test": "node --test test/unit.test.js test/beats.test.js",
+    "test": "node --test test/unit.test.js test/beats.test.js test/stems.test.js",
     "e2e": "node test/e2e.mjs",
     "zip": "node tools/build-userscript.js && node tools/package.js",
     "build:userscript": "node tools/build-userscript.js",
     "e2e:userscript": "node tools/build-userscript.js && USERSCRIPT=1 node test/e2e.mjs",
     "e2e:mobile": "node tools/build-userscript.js && node test/e2e-mobile.mjs",
     "e2e:ipad": "node tools/build-userscript.js && IPAD=1 node test/e2e-mobile.mjs",
-    "e2e:ipad": "node tools/build-userscript.js && IPAD=1 node test/e2e-mobile.mjs"
+    "test:stems": "node --test test/stems-model.test.js"
   },
   "devDependencies": {
+    "onnxruntime-web": "^1.30.0",
     "playwright": "^1.56.0"
   }
 }

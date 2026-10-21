@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "DJ Wave Looper for YouTube",
   "short_name": "Wave Looper",
-  "version": "2.3.0",
-  "description": "See the whole song as a DJ waveform, click to set an A–B loop, slow it down (50/75/100%) and auto speed-up trainer. Built for singers and players.",
+  "version": "2.4.0",
+  "description": "See the whole song as a DJ waveform, loop any part with zero gap, slow it down, auto speed-up trainer, beat grid, drum chart, lyrics and chords, and AI stems (vocals / drums / bass / other) for shadowing practice. Built for singers and players.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -22,23 +22,63 @@
   },
   "commands": {
     "toggle-panel": {
-      "suggested_key": { "default": "Alt+L" },
+      "suggested_key": {
+        "default": "Alt+L"
+      },
       "description": "Open or close the Wave Looper panel"
     }
   },
-  "permissions": ["storage", "unlimitedStorage", "scripting"],
-  "host_permissions": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*", "https://lrclib.net/*"],
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "scripting",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://music.youtube.com/*",
+    "https://lrclib.net/*",
+    "https://github.com/*",
+    "https://release-assets.githubusercontent.com/*",
+    "https://objects.githubusercontent.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"],
-      "js": ["src/inject.js"],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "src/inject.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://www.youtube.com/*", "https://m.youtube.com/*", "https://music.youtube.com/*"],
-      "js": ["src/core.js", "src/panel-css.js", "src/vendor/signalsmith-stretch.js", "src/content.js"],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "src/core.js",
+        "src/stems.js",
+        "src/panel-css.js",
+        "src/vendor/signalsmith-stretch.js",
+        "src/content.js"
+      ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "cross_origin_embedder_policy": {
+    "value": "credentialless"
+  },
+  "cross_origin_opener_policy": {
+    "value": "same-origin"
+  }
 }

@@ -338,6 +338,22 @@ button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
 .q-pair { display: inline-flex; align-items: center; gap: 0; }
 .q-pair button.q-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 select.q-res { height: 30px; margin-left: -1px; padding: 0 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+/* Stems: vocals / drums / bass / other on and off, and shadowing */
+button.stem-btn { min-width: 64px; font-weight: 700; color: var(--stem); border-color: color-mix(in srgb, var(--stem) 45%, transparent); background: color-mix(in srgb, var(--stem) 14%, transparent); }
+button.stem-btn[data-stem="vocals"] { --stem: #ff6ec7; }
+button.stem-btn[data-stem="drums"] { --stem: #ff5436; }
+button.stem-btn[data-stem="bass"] { --stem: #4da3ff; }
+button.stem-btn[data-stem="other"] { --stem: #7ee081; }
+button.stem-btn.off { color: #6b7686; background: transparent; border-color: var(--line); text-decoration: line-through; }
+button.stem-btn.shadow::after { content: ' ⇆'; font-weight: 400; }
+button.stems-btn.on { background: #2a1836; border-color: #ff6ec7; color: #ffb3e4; }
+select.shadow-sel { font-weight: 700; }
+.stem-stat { max-width: 48ch; white-space: normal; line-height: 1.2; }
+.stems-row .progress { width: 90px; }
+.shadow-badge { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); z-index: 3; padding: 4px 14px; border-radius: 14px; font-size: 13px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; pointer-events: none; background: rgba(12,15,21,.82); border: 1px solid var(--line); backdrop-filter: blur(4px); }
+.shadow-badge.listen { color: #3ddc84; border-color: #3ddc84; }
+.shadow-badge.yours { color: #ffb000; border-color: #ffb000; box-shadow: 0 0 14px rgba(255,176,0,.35); }
+.shadow-badge.wait { color: #9aa6b8; }
 button.q-btn { min-width: 32px; font-weight: 800; letter-spacing: .02em; }
 button.q-btn.on { background: #ff8a3d; border-color: #ff8a3d; color: #1d0d00; }
 button.grid-btn { min-width: 30px; padding: 0 6px; font-weight: 700; }

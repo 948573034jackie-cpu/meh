@@ -13,8 +13,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { installFakeLyrics } from './fake-lyrics.mjs';
+import http from 'http';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const Stems = createRequire(import.meta.url)('../src/stems.js');
 const FX = path.join(ROOT, 'test', 'fixtures');
 const SHOTS = process.env.SHOTS || path.join(os.tmpdir(), 'ytl-shots');
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -90,6 +92,22 @@ await ctx.route('https://www.youtube.com/**', (route) => {
 });
 
 const lyricsRequests = await installFakeLyrics(ctx);
+
+// The AI models for the stems, served like GitHub does (the extension's own
+// offscreen page downloads them, so Playwright's routes don't see it).
+const MODELS = path.join(FX, 'models');
+const modelServer = http.createServer((req, res) => {
+  const f = path.join(MODELS, path.basename(decodeURIComponent(new URL(req.url, 'http://x').pathname)));
+  if (!f.endsWith('.onnx') || !fs.existsSync(f)) {
+    res.writeHead(404);
+    return res.end();
+  }
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': fs.statSync(f).size, 'access-control-allow-origin': '*' });
+  fs.createReadStream(f).pipe(res);
+});
+await new Promise((r) => modelServer.listen(0, '127.0.0.1', r));
+const MODEL_BASE = `http://127.0.0.1:${modelServer.address().port}/`;
+const haveModels = ['vocals', 'drums', 'bass'].every((k) => fs.existsSync(path.join(MODELS, `kuielab_a_${k}.onnx`)));
 let page = ctx.pages()[0] || (await ctx.newPage());
 const consoleErrors = [];
 page.on('console', (m) => {
@@ -1326,6 +1344,142 @@ await step('download: the whole song and the loop as WAV, and the original file'
   await shadowClick('button', 'Settings');
 });
 
+await step('stems: the song separated into vocals / drums / bass / other (AI), each stem clean, on and off while it loops', async () => {
+  if (!haveModels) throw new Error('no models in test/fixtures/models (see README: npm run fixtures:models)');
+  await page.evaluate(() => window.__navigate('BAND0001'));
+  await waitFor(async () => (await host()).vid === 'BAND0001', 5000, 'band video');
+  await waitFor(async () => Number((await host()).cov) > 0.97 && (await host()).scanning !== 'true', 40000, 'the song is read');
+  await page.evaluate((base) => { document.documentElement.dataset.ytlModelBase = base; document.documentElement.dataset.ytlDumpStems = '1'; }, MODEL_BASE);
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  // a loop over two parts of the song (parts are 9 s)
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 4; });
+  await page.keyboard.press('BracketLeft');
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 10; });
+  await page.keyboard.press('BracketRight');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4.1; v.play().catch(() => {}); });
+  let h = await host();
+  assert(Math.abs(Number(h.a) - 4) < 0.05 && Math.abs(Number(h.b) - 10) < 0.05, `loop 4-10 (${h.a}-${h.b})`);
+  await shadowClick('button', 'Stems');
+  assert(await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.stems-row').hidden), 'Stems row open');
+  const t0 = Date.now();
+  let lastStage = '';
+  await waitFor(async () => {
+    const x = await host();
+    if (x.stems !== lastStage) {
+      lastStage = x.stems;
+      if (process.env.DEBUG) console.log('  stems', x.stems, x.stemsSong, x.stemErr || '');
+    }
+    if (x.stems === 'error') throw new Error(`stems error: ${x.stemErr}`);
+    return x.stemsLoop === 'ready';
+  }, 420000, 'the loop\'s stems ready');
+  const secs = (Date.now() - t0) / 1000;
+  await waitFor(async () => (await host()).stemPlay === 'stems', 8000, 'the loop plays from the stems');
+  h = await host();
+  console.log(`  separated 2 parts (18 s) in ${secs.toFixed(0)} s with ${h.stemThreads} thread(s)`);
+  // Every stem checked against the truth (the parts the song was made of).
+  const dump = JSON.parse(await page.evaluate(() => document.documentElement.dataset.ytlStems || 'null'));
+  assert(dump && dump.sr, 'the stems were dumped for checking');
+  if (process.env.DEBUG) fs.writeFileSync(path.join(SHOTS, 'stems-dump.json'), JSON.stringify(dump));
+  const i16 = (b64) => { const u8 = Buffer.from(b64, 'base64'); return Float32Array.from(new Int16Array(u8.buffer, u8.byteOffset, u8.length >> 1), (v) => v / 32768); };
+  const got = {};
+  for (const k of ['vocals', 'drums', 'bass', 'other', 'mix']) got[k] = i16(dump[k]);
+  const n = got.mix.length;
+  const truth = {};
+  for (const k of ['vocals', 'drums', 'bass', 'other']) {
+    const raw = fs.readFileSync(path.join(FX, `band_${k}.f32`));
+    let f = new Float32Array(raw.buffer, raw.byteOffset, raw.length >> 2);
+    if (dump.sr !== 48000) f = Stems.resample(f, 48000, dump.sr);
+    truth[k] = f;
+  }
+  const truthMix = new Float32Array(truth.vocals.length);
+  for (const k of ['vocals', 'drums', 'bass', 'other']) for (let i = 0; i < truthMix.length; i++) truthMix[i] += truth[k][i];
+  // line the loop up with the truth (the decoder may sit a few samples off)
+  const i0 = Math.round(dump.a * dump.sr);
+  let bestS = 0;
+  let bestC = -Infinity;
+  for (let sft = -600; sft <= 600; sft += 1) {
+    let c = 0;
+    for (let i = 0; i < Math.min(n, dump.sr * 2); i += 1) c += got.mix[i] * (truthMix[i0 + sft + i] || 0);
+    if (c > bestC) { bestC = c; bestS = sft; }
+  }
+  const sdr = (ref, est) => { let s = 0, e = 0; for (let i = 0; i < n; i++) { s += ref[i] * ref[i]; e += (ref[i] - est[i]) ** 2; } return 10 * Math.log10((s + 1e-9) / (e + 1e-9)); };
+  const slice = (k) => truth[k].subarray(i0 + bestS, i0 + bestS + n);
+  const q = {};
+  for (const k of ['vocals', 'drums', 'bass', 'other']) q[k] = sdr(slice(k), got[k]);
+  const mixQ = sdr(truthMix.subarray(i0 + bestS, i0 + bestS + n), got.mix);
+  const sum = new Float32Array(n);
+  for (const k of ['vocals', 'drums', 'bass', 'other']) for (let i = 0; i < n; i++) sum[i] += got[k][i];
+  const exact = sdr(got.mix, sum);
+  console.log(`  SDR dB: vocals ${q.vocals.toFixed(1)}, drums ${q.drums.toFixed(1)}, bass ${q.bass.toFixed(1)}, other ${q.other.toFixed(1)} (the loop itself vs the truth: ${mixQ.toFixed(1)}, the codec's own noise; stems vs the loop ${exact.toFixed(1)}; shift ${bestS} samples, hand-over ${dump.shift})`);
+  assert(mixQ > 8, `the loop's sound matches the truth (${mixQ.toFixed(1)} dB)`);
+  // (the stems come from another decode than the loop's own sound: lined up to the sample, not the sub-sample)
+  assert(exact > 20, `the four stems add up to the loop (${exact.toFixed(1)} dB)`);
+  assert(q.vocals > 7 && q.drums > 6 && q.bass > 7, `clean stems: vocals ${q.vocals.toFixed(1)} drums ${q.drums.toFixed(1)} bass ${q.bass.toFixed(1)} dB`);
+  // On and off: the vocals off, then the drums alone, then everything back.
+  await shadowClick('button', 'Vocals: click to turn it off / on. Double-click (or Shift-click) to hear it alone.');
+  await sleep(100);
+  h = await host();
+  assert(h.stemOn === 'vocals:0,drums:1,bass:1,other:1', `vocals off (${h.stemOn})`);
+  // (the volume is set by the audio thread, which may be a moment behind while a part is being separated)
+  await waitFor(async () => { h = await host(); return /vocals:0\.00/.test(h.stemGains) && /drums:1\.00/.test(h.stemGains); }, 3000, `vocals silent (${h.stemGains})`);
+  await page.evaluate(() => { const b = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.stem-btn')].find((x) => x.dataset.stem === 'drums'); b.dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })); });
+  await sleep(100);
+  h = await host();
+  assert(h.stemOn === 'vocals:0,drums:1,bass:0,other:0', `drums alone (${h.stemOn})`);
+  await page.evaluate(() => { const b = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.stem-btn')].find((x) => x.dataset.stem === 'drums'); b.dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })); });
+  await sleep(100);
+  assert((await host()).stemOn === 'vocals:1,drums:1,bass:1,other:1', 'everything back on');
+  await waitFor(async () => (await host()).stems === 'done', 420000, 'the whole song separated in the background');
+  await page.screenshot({ path: path.join(SHOTS, '15-stems.png') });
+});
+
+await step('shadowing: with the trainer, every speed twice: once with the vocals (listen), once without (your turn), then faster; nonstop at 100%', async () => {
+  if (!haveModels) throw new Error('no models');
+  const SHADOW = 'Shadowing: every play twice, first with this stem (listen), then without it (your turn), then faster. Needs the stems (Stems button).';
+  // a short loop inside the separated song
+  await shadowClick('button', 'Clear the loop');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 5; });
+  await page.keyboard.press('BracketLeft');
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 7; });
+  await page.keyboard.press('BracketRight');
+  await shadowSelect(SHADOW, 'vocals');
+  assert((await host()).shadow === 'vocals', 'shadowing vocals');
+  await shadowClick('button', 'Trainer');
+  await shadowSelect('Starting speed', 75); // 75% over 10 loops: quick enough to watch
+  await waitFor(async () => (await host()).stemPlay === 'stems', 10000, 'the loop plays from the stems');
+  // Watch four plays: with, without, with, without; the speed only moves after a pair.
+  const seen = [];
+  let last = '';
+  await waitFor(async () => {
+    const x = await host();
+    const v = await vstate();
+    const key = `${x.reps}:${x.shadowHalf}`;
+    if (key !== last) {
+      last = key;
+      seen.push({ reps: Number(x.reps), half: x.shadowHalf, rate: Math.round(v.rate * 1000) / 1000, gains: x.stemGains, badge: await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.shadow-badge').textContent) });
+    }
+    return seen.length >= 5;
+  }, 60000, 'five plays');
+  const halves = seen.map((s) => s.half).join(' ');
+  assert(/^with without with without with/.test(halves), `with / without in turns (${halves})`);
+  assert(seen[0].rate === seen[1].rate && seen[2].rate === seen[3].rate && seen[2].rate > seen[0].rate, `the speed holds for a pair, then rises (${seen.map((s) => s.rate).join(' ')})`);
+  assert(/vocals:0\.00/.test(seen[1].gains) && /vocals:1\.00/.test(seen[2].gains), `the vocals go silent on "without" (${seen[1].gains} / ${seen[2].gains})`);
+  assert(/YOUR TURN/.test(seen[1].badge) && /LISTEN/.test(seen[2].badge), `the badge says whose turn it is (${seen[1].badge} / ${seen[2].badge})`);
+  // Jump to 100%: with shadowing the trainer never stops.
+  await shadowClick('button.speed', '100%');
+  const r0 = Number((await host()).reps);
+  await waitFor(async () => Number((await host()).reps) >= r0 + 8, 40000, 'eight more plays at 100%');
+  const h = await host();
+  assert(h.trainer !== '' && Math.abs((await vstate()).rate - 1) < 0.001, `still training at 100% (${h.trainer})`);
+  await page.screenshot({ path: path.join(SHOTS, '16-shadowing.png') });
+  await shadowClick('button', 'Trainer');
+  await shadowSelect(SHADOW, 'off');
+  await shadowClick('button', 'Stems');
+  await shadowClick('button', 'Clear the loop');
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
+});
+
 await step('a cappella video: lyrics line up with where the singing starts, by themselves', async () => {
   await page.evaluate(() => window.__navigate('ACAPELLA'));
   await waitFor(async () => (await lyr()).meta.startsWith('Song — Test Artist'), 6000, 'lyrics found without the word "acapella"');
@@ -1406,6 +1560,7 @@ await step('no errors in the console (Trusted Types etc.)', async () => {
 });
 
 await ctx.close();
+modelServer.close();
 fs.rmSync(userDir, { recursive: true, force: true });
 console.log('\n' + results.join('\n'));
 console.log(`\n${failures ? 'FAILED' : 'PASSED'}: ${results.length - failures}/${results.length} steps. Screenshots: ${SHOTS}`);

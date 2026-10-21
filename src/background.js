@@ -15,7 +15,7 @@ async function toggle(tab) {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/inject.js'], world: 'MAIN' });
       await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        files: ['src/core.js', 'src/panel-css.js', 'src/vendor/signalsmith-stretch.js', 'src/content.js'],
+        files: ['src/core.js', 'src/stems.js', 'src/panel-css.js', 'src/vendor/signalsmith-stretch.js', 'src/content.js'],
       });
       setTimeout(() => {
         chrome.tabs.sendMessage(tab.id, { type: 'ytl-toggle' }).catch(() => {});
@@ -36,6 +36,47 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     .then((data) => sendResponse({ ok: true, data }))
     .catch(() => sendResponse({ ok: false }));
   return true;
+});
+
+// Stem separation runs in an offscreen page (ONNX Runtime, wasm): the content
+// script sends it the loop's audio through here, and the results come back
+// the same way. Every message carries the tab id, so a restart of this
+// worker loses nothing.
+let offscreenReady = null;
+async function ensureOffscreen() {
+  if (!offscreenReady) {
+    offscreenReady = (async () => {
+      const has = chrome.offscreen.hasDocument ? await chrome.offscreen.hasDocument() : false;
+      if (!has) {
+        await chrome.offscreen.createDocument({
+          url: 'src/offscreen.html',
+          reasons: ['WORKERS'],
+          justification: 'Separates the song into vocals, drums and bass with an AI model (heavy computation, off the page).',
+        });
+      }
+    })().catch((e) => {
+      offscreenReady = null;
+      throw e;
+    });
+  }
+  return offscreenReady;
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return false;
+  if (msg.type === 'ytl-stems' && sender.tab && sender.tab.id != null) {
+    const tabId = sender.tab.id;
+    ensureOffscreen()
+      .then(() => chrome.runtime.sendMessage({ type: 'ytl-stems-job', tabId, job: msg.job }))
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, why: String((e && e.message) || e) }));
+    return true;
+  }
+  if (msg.type === 'ytl-stems-out' && msg.tabId != null) {
+    chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
+    return false;
+  }
+  return false;
 });
 
 chrome.commands.onCommand.addListener(async (command, tab) => {
