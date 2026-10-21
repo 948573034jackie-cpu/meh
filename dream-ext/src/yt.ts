@@ -1953,6 +1953,16 @@ class Session {
     const host = container.closest<HTMLElement>('.stage, .panel');
     const btn = host?.querySelector<HTMLButtonElement>(':scope > .selx');
     if (!host || !btn) return;
+    // a selection that starts or ends inside a word takes the whole word ("k it up" -> "kick it up")
+    if (sel && !sel.isCollapsed && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const wordOf = (n: Node) => (n.nodeType === 1 ? n as Element : n.parentElement)?.closest<HTMLElement>('.w') ?? null;
+      const a = wordOf(range.startContainer), b = wordOf(range.endContainer);
+      const whole = range.cloneRange();
+      if (a && container.contains(a)) whole.setStartBefore(a);
+      if (b && container.contains(b)) whole.setEndAfter(b);
+      if (whole.compareBoundaryPoints(Range.START_TO_START, range) !== 0 || whole.compareBoundaryPoints(Range.END_TO_END, range) !== 0) { sel.removeAllRanges(); sel.addRange(whole); }
+    }
     const text = sel && !sel.isCollapsed ? sel.toString().replace(/▶ Explain/g, ' ').replace(/\s+/g, ' ').trim() : '';
     const node = sel?.anchorNode ?? null;
     const sEl = node ? (node.nodeType === 1 ? node as Element : node.parentElement)?.closest<HTMLElement>('.s') ?? null : null;

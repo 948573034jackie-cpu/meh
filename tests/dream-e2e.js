@@ -441,14 +441,15 @@ const api = http.createServer((req, res) => {
   ok('every explanation starts with the original words and never comments on pronunciation', !!sxReq && /say the original words from the video exactly as they are/.test(sxReq.sys) && /Never comment on their pronunciation/.test(sxReq.sys));
   await yt.keyboard.press('Escape');
   await sleep(800);
-  // select two words on the page: a button "Explain …" appears; it explains exactly them
+  // select two words on the page (from the middle of the first to the middle of the last, as hands do): a button
+  // "Explain …" appears with the whole words; it explains exactly them
   const nSel = apiLog.length;
   await sroot(() => {
     const root = document.getElementById('dr-stage-host').shadowRoot;
     const s = [...root.querySelectorAll('.page .s')].find((x) => /gregarious man/.test(x.textContent));
     const ws = [...s.querySelectorAll('.w')];
     const a = ws.find((w) => w.textContent === 'gregarious'), b = ws.find((w) => w.textContent === 'man');
-    const range = document.createRange(); range.setStart(a.firstChild, 0); range.setEnd(b.firstChild, b.firstChild.length);
+    const range = document.createRange(); range.setStart(a.firstChild, 3); range.setEnd(b.firstChild, 2);
     const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
     root.querySelector('.page').dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
   });
