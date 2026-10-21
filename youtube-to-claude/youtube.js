@@ -316,6 +316,8 @@
     settings: () => ({ sendOn: settings.sendOn, target: settings.target, voiceOn: settings.voiceOn }),
     buildSentences: (cues) => buildSentences(cues, { words: true }),
     setBarStatus: (text, bad) => setBarStatus(text, bad),
+    // what the microphone hears now is closed (Chrome gives it as final), then it listens again
+    finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
   };
 
   window.__ytcDebug = {
@@ -868,6 +870,17 @@
       const session = ++recSession;
       r.onresult = (e) => {
         if (rec !== r) return; // an old listener
+        if (dreamOwns()) {
+          // the tutor gets each closed sentence, then everything still being heard as ONE line (Chrome sends the
+          // unfinished words in two or more pieces)
+          let tail = '', tailKey = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            if (e.results[i].isFinal) onHeard(e.results[i][0].transcript, true, session + ':' + i);
+            else { if (!tailKey) tailKey = session + ':' + i; tail += ' ' + e.results[i][0].transcript; }
+          }
+          if (tailKey) onHeard(tail.replace(/\s+/g, ' ').trim(), false, tailKey);
+          return;
+        }
         for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal, session + ':' + i);
       };
       r.onerror = (e) => {

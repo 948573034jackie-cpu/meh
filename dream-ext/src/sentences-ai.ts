@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 2;
+export const SPLIT_VERSION = 3;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -97,12 +97,60 @@ const MAX_WORDS = 70, MAX_SECONDS = 40;
 
 const SOUND_TAG = /^\[[^\]]*\]$|^\([^)]*\)$/;
 const wordsOf = (s: string) => s.split(/\s+/).filter(Boolean);
+const norm = (w: string) => w.toLowerCase().replace(/[’‘]/g, "'").replace(/[^a-z0-9']/g, '').replace(/^'+|'+$/g, '');
+
+/**
+ * The AI's word numbers drift (models count badly) but its sentences are right: every line's end is found again from
+ * its own words (its last words, near where its word count says it ends), so a sentence is never cut in the middle
+ * ("…a government major," | "which means…"). When its words cannot be found, the word count decides.
+ */
+export function alignLines(words: TimedWord[], lines: SplitLine[], from: number, to: number): SplitLine[] {
+  const out: SplitLine[] = [];
+  let start = from;
+  const spoken = (i: number) => !SOUND_TAG.test(words[i].w) && norm(words[i].w) !== '';
+  for (let li = 0; li < lines.length && start < to; li++) {
+    const l = lines[li];
+    const lw = wordsOf(l.text).filter((w) => !SOUND_TAG.test(w)).map(norm).filter(Boolean);
+    if (!lw.length) continue; // an empty line (the words the AI left out): closed below
+    // where the word count says the line ends (sound tags are not in the AI's text)
+    let e0 = start, n = 0;
+    for (let i = start; i < to && n < lw.length; i++) { if (spoken(i)) n++; e0 = i; }
+    // the line's last words, compared with the words that end at each place near there
+    const tail = lw.slice(-3);
+    let best = -1, bestScore = -1;
+    for (let e = Math.max(start, e0 - 10); e <= Math.min(to - 1, e0 + 10); e++) {
+      if (!spoken(e)) continue;
+      let score = 0, j = e;
+      for (let k = tail.length - 1; k >= 0; k--) {
+        while (j >= start && !spoken(j)) j--;
+        if (j < start) break;
+        if (norm(words[j].w) === tail[k]) score++;
+        j--;
+      }
+      const s = score - Math.abs(e - e0) * 0.01; // of equal matches, the nearest
+      if (score >= Math.min(2, tail.length) && s > bestScore) { bestScore = s; best = e; }
+    }
+    const end = best >= 0 ? best : e0;
+    // sound tags right after a sentence belong to it
+    let e = end;
+    while (e + 1 < to - 1 && SOUND_TAG.test(words[e + 1].w)) e++;
+    out.push({ end: e, text: l.text });
+    start = e + 1;
+  }
+  // the end is closed: a few words left belong to the last sentence, more are a sentence of their own
+  const last = out.length ? out[out.length - 1].end : from - 1;
+  if (last < to - 1) {
+    if (out.length && to - 1 - last <= 3) out[out.length - 1] = { ...out[out.length - 1], end: to - 1 };
+    else out.push({ end: to - 1, text: '' });
+  }
+  return out;
+}
 
 /** Plain words as a sentence: capital first letter, closing full stop. */
 export function plainSentence(ws: string[]): string {
   const t = ws.filter((w) => !SOUND_TAG.test(w)).join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
   if (!t) return ws.join(' ');
-  const cap = t[0].toUpperCase() + t.slice(1);
+  const cap = (t[0].toUpperCase() + t.slice(1)).replace(/[\s,;:–—-]+$/, '');
   return /[.!?…"'”’)]$/.test(cap) ? cap : `${cap}.`;
 }
 
@@ -137,7 +185,8 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
       if (i >= bounds.length) return;
       const [from, to] = bounds[i];
       try {
-        const lines = parseSplitOrNull(await complete(buildSplitPrompt(words, from, to)), from, to);
+        const parsed = parseSplitOrNull(await complete(buildSplitPrompt(words, from, to)), from, to);
+        const lines = parsed && alignLines(words, parsed, from, to);
         // every sentence must be a real sentence (not most of the chunk in one piece)
         let prev = from - 1, ok = !!lines;
         for (const l of lines ?? []) { const n = l.end - prev, secs = words[l.end].e - words[prev + 1].t; if (n > MAX_WORDS || secs > MAX_SECONDS) ok = false; prev = l.end; }

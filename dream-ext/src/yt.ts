@@ -58,6 +58,8 @@ interface YtcApi {
   settings(): { sendOn: boolean; target: string; voiceOn: boolean };
   buildSentences(cues: unknown[]): TimedSentence[];
   setBarStatus(text: string, bad?: boolean): void;
+  /** the microphone closes what it is hearing now (it comes as final) and listens again */
+  finishSpeech?(): void;
 }
 interface DreamHook {
   /** the Dream Tutor handles the video now: youtube.js leaves pauses, plays and voice commands alone */
@@ -942,6 +944,7 @@ class Session {
     if (!t) return;
     this.talk = null;
     clearInterval(t.timer);
+    if (this.still) { clearTimeout(this.still.timer); this.still = null; }
     t.live?.close();
     t.chat?.close();
     if (this.pre) { this.pre.close(); this.pre = null; }
@@ -985,9 +988,14 @@ class Session {
       const state = chat ? (chat.lastError && !chat.busy ? `Claude did not answer: ${chat.lastError} · try again or type` : chat.thinking && !chat.speaking ? 'Asking Claude… (one moment)' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : 'Type your question (voice: turn on Voice commands in the extension window)')
         : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
+      // you are being heard (the words still change): Send gives them to the tutor now
+      const lastLine = t.log[t.log.length - 1];
+      const hearingYou = !!chat && !chat.busy && lastLine?.who === 'you' && !lastLine.final;
       box.hidden = false;
       box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${(live && live.state === 'ready') || (chat && voiceOn) ? 'on' : ''} ${t.hearing || (chat && !chat.busy && voiceOn) ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
-        <button data-act="go" class="primary">Go on ▶ <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)">✕</button></div>`;
+        ${hearingYou ? '<button data-act="send" class="primary" title="Send what I heard to your tutor now">Send ➤</button>' : ''}<button data-act="go" class="${hearingYou ? '' : 'primary'}">Go on ▶ <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)">✕</button></div>`;
+      // (Send on press: the bar is drawn again with every word heard, a click could land on a button that is gone)
+      box.onpointerdown = (ev) => { if ((ev.target as HTMLElement).closest('button')?.dataset.act === 'send') { ev.preventDefault(); this.sendHeard(); } };
       box.onclick = (ev) => {
         const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
         if (act === 'go') this.goOn();
@@ -1203,10 +1211,39 @@ class Session {
 
   /** recognition results already acted on (a result grows while you speak; it acts once) */
   private acted = new Set<string>();
+  /** what the microphone is hearing now (not closed yet by Chrome) */
+  private still: { key: string; text: string; timer: ReturnType<typeof setTimeout> } | null = null;
+
+  /**
+   * Chrome sometimes never closes what you said (sound around you, a fan, a TV): when the words stand still for a
+   * moment, the microphone is told to close them (they come back as final); if nothing comes, they count as final here.
+   */
+  private watchStill(text: string, final: boolean, key?: string): void {
+    if (this.still) { clearTimeout(this.still.timer); this.still = null; }
+    if (final || !key || this.mode !== 'tutor') return;
+    const still = { key, text, timer: setTimeout(() => {
+      if (this.still !== still || this.disposed) return;
+      window.__ytcApi?.finishSpeech?.();
+      still.timer = setTimeout(() => { if (this.still === still && !this.acted.has(key)) { this.still = null; this.heard(text, true, key); } }, 1200);
+    }, 1300) };
+    this.still = still;
+  }
+
+  /** Send ➤ in the call: what is being heard now goes to the tutor at once */
+  private sendHeard(): void {
+    const t = this.talk;
+    const line = t?.log[t.log.length - 1];
+    if (!t || !line || line.who !== 'you' || line.final) return;
+    const key = this.still?.key ?? line.id.replace(/^u/, '');
+    if (this.still) { clearTimeout(this.still.timer); this.still = null; }
+    window.__ytcApi?.finishSpeech?.();
+    this.heard(line.text, true, key);
+  }
   heard(text: string, final: boolean, key?: string): boolean {
     const t = text.trim();
     if (!t) return false;
     if (key && this.acted.has(key)) return true;
+    this.watchStill(t, final, key);
     const act = (fn: () => void) => { if (key) { this.acted.add(key); if (this.acted.size > 300) this.acted.clear(); } fn(); };
     const lower = t.toLowerCase();
     if (this.mode !== 'tutor' && !this.callStop) return false; // call mode: youtube.js handles "hi bro" / "shut up"

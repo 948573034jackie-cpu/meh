@@ -56,7 +56,7 @@ export class ChatCall {
 
   note(event: string): void {
     const d = new Date();
-    this.events.push(`${d.toTimeString().slice(0, 8)} ${event.slice(0, 140)}`);
+    this.events.push(`${d.toTimeString().slice(0, 8)}.${String(d.getMilliseconds()).padStart(3, '0')} ${event.slice(0, 140)}`);
     if (this.events.length > 60) this.events.splice(0, this.events.length - 60);
   }
 
@@ -69,6 +69,7 @@ export class ChatCall {
     // the conversation must start with the learner: the call button counts as their first turn
     this.history.push({ role: 'user', content: '(The learner pressed the call button to talk to you.)' }, { role: 'assistant', content: g });
     this.deps.line(`a${++this.turn}`, g, true);
+    this.note('greeting');
     this.enqueue(g);
   }
 
@@ -141,7 +142,9 @@ export class ChatCall {
         if (!h) { this.note(`not spoken (no ${next.lang} voice): ${next.text.slice(0, 30)}`); continue; }
         this.handle = h;
         if (!this.speaking) { this.speaking = true; this.deps.changed(); }
+        this.note(`say: ${next.text.slice(0, 50)}`);
         const outcome = await h.done;
+        this.note(`said (${outcome})`);
         if (outcome === 'error') { this.note(`voice error: ${h.error?.message ?? '?'}`); this.lastError = `the voice failed (${h.error?.message ?? 'no details'})`; }
         this.handle = null;
         this.lastActivity = Date.now();

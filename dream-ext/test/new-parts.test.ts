@@ -4,7 +4,7 @@
  * commands window, the explanation spoken while it streams in, the sentence again, back to its start).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence } from '../src/sentences-ai';
+import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines } from '../src/sentences-ai';
 import { parseLines, parseWordMeanings } from '../src/zh';
 import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
@@ -46,6 +46,15 @@ describe('the AI finds the complete sentences', () => {
     expect(out[0].end).toBeCloseTo(words[8].e);
     expect(out[1].text).toBe('And i think you will love it.'); // the AI text did not fit: the words themselves
     expect(plainSentence(['[Music]', 'hello', 'there'])).toBe('Hello there.');
+  });
+  it('never cuts a sentence in the middle when the AI counts the words wrong (its text decides)', () => {
+    const ws = [...W('So in college, I was a government major,', 0), ...W('which means I had to write a lot of papers.', 3.3), ...W('(Laughter) Now, when a normal student writes a paper,', 7.8), ...W('they might spread the work out.', 11.5)];
+    // the AI's numbers are wrong (7 and 20), its sentences are right
+    const lines = alignLines(ws, parseSplit('7|So in college, I was a government major, which means I had to write a lot of papers.\n20|Now, when a normal student writes a paper, they might spread the work out.', 0, ws.length), 0, ws.length);
+    expect(lines.map((l) => l.end)).toEqual([18, ws.length - 1]); // after "papers." and the (Laughter)
+    const out = regroup(ws, lines);
+    expect(out.map((s) => s.text)).toEqual(['So in college, I was a government major, which means I had to write a lot of papers.', 'Now, when a normal student writes a paper, they might spread the work out.']);
+    expect(plainSentence(['I', 'was', 'a', 'major,'])).toBe('I was a major.');
   });
   it('a nonsense answer keeps the first guess (never one giant sentence)', async () => {
     const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];

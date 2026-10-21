@@ -417,6 +417,13 @@ const api = http.createServer((req, res) => {
   ok('Claude\'s answer is spoken by the tutor\'s voice and shown in the call', !!answered, JSON.stringify((await dbg()).talk));
   await until(async () => (await dbg()).talk?.chat === 'listening', 10000);
   await sleep(1000);
+  // Chrome never closes the words (sound around you): when they stand still for a moment they still reach Claude
+  const nStill = apiLog.length;
+  await sw.evaluate(async () => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: 'and what about ephemeral', final: false, key: 'c3:0' }); });
+  const stillReq = await until(() => apiLog.slice(nStill).find((r) => r.kind === 'chat' && /ephemeral/.test(r.user)), 8000);
+  ok('words Chrome never closes still reach Claude after a short stillness (no endless waiting)', !!stillReq && Date.now() - stillReq.at < 8000);
+  await until(async () => (await dbg()).talk?.chat === 'listening', 10000);
+  await sleep(1000);
   await say('ok let\'s go', 'c2:0');
   const backToVideo = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 8000);
   ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo));
