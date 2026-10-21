@@ -114,6 +114,7 @@ async function streamAnthropic(apiKey: string, model: string, prompt: PromptBund
   }
   const text = (final.content as { type: string; text?: string }[]).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
   if (final.stop_reason === 'refusal') throw Object.assign(new Error('The AI declined to answer this request.'), { code: 'other' });
+  if (!text.trim() && final.stop_reason === 'max_tokens') throw Object.assign(new Error(`The AI used all ${prompt.maxTokens} tokens before answering.`), { code: 'other' });
   const u = final.usage;
   return { text, inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens ?? 0, cachedTokens: u.cache_read_input_tokens ?? 0 };
 }
@@ -211,7 +212,10 @@ export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, o
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error('Monthly AI budget reached.'), { code: 'budget' });
   try {
     const onText = onDelta ?? ((): void => undefined);
-    const r = provider === 'anthropic' ? await streamAnthropic(key, model, prompt, signal, onText) : await streamOpenAI(key, model, prompt, signal, onText);
+    // background jobs: room for the model's own thinking (a tight limit can leave the answer empty; only what is
+    // written is paid for)
+    const roomy = { ...prompt, maxTokens: Math.max(prompt.maxTokens, 1500) };
+    const r = provider === 'anthropic' ? await streamAnthropic(key, model, roomy, signal, onText) : await streamOpenAI(key, model, roomy, signal, onText);
     const u = await record(provider, model, r);
     return { text: r.text, usd: u.usd };
   } catch (e) { const c = classifyError(e, { model }); throw Object.assign(new Error(c.message), { code: c.code }); }

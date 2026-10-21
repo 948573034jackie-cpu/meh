@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 6;
+export const SPLIT_VERSION = 7;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -60,7 +60,8 @@ Your last line must end at word ${to - 1}. These words may stop in the middle of
 
 Words:
 ${list}`,
-    maxTokens: Math.min(8000, Math.round((to - from) * 2.2) + 200),
+    // (room for the model's own thinking too: with too little, the answer comes back empty)
+    maxTokens: Math.min(16000, Math.round((to - from) * 4) + 1500),
   };
 }
 
