@@ -607,6 +607,7 @@ class Session {
         if (this.flow) { if (this.flow.wake) this.flow.wake(); return; } // paused during the replay: straight to the explanation
         if (pb.state !== 'playing') return; // already stopped (an explanation, a stop)
         // you stopped the video: the part plays again on the page, the teacher breaks it down (or just pause)
+        this.trail('you paused the video');
         if (extras.explainOnStop) void this.partFlow(v.currentTime);
         else pb.pause();
       }, 120);
@@ -686,6 +687,7 @@ class Session {
     this.closeTalk();
     if (c.busy || this.cmdWin) c.skip();
     const at = time ?? v.currentTime;
+    this.trail(`part at ${at.toFixed(1)}${playFirst ? ' (replay)' : ''}`);
     const part = this.partAt(at, settings.listen.lastSecondsWindow);
     if (!part.length) { pb.pause(); return; }
     pb.pause();
@@ -763,6 +765,7 @@ class Session {
   /** 📞 / Shift+T: talk to the tutor about what is on the screen now */
   async callTutor(): Promise<void> {
     if (this.mode !== 'tutor' || !this.vb) return;
+    this.trail('call');
     if (this.talk) { this.goOn(); return; }
     const v = video();
     const c = this.controller!;
@@ -787,6 +790,7 @@ class Session {
   /** back to the video: from the start of `pos`, no stops up to `quietTo` */
   private continueFrom(pos: Position, quietTo?: Position): void {
     if (!this.playback || this.disposed) return;
+    this.trail(`continue from ${this.vb?.timingOf(pos)?.start.toFixed(1) ?? '?'}`);
     this.quietUntil = quietTo ?? null;
     this.engine.resumeHere = false;
     this.playback.play(pos);
@@ -805,6 +809,7 @@ class Session {
     const c = this.controller;
     if (!c) return;
     const t = this.talk;
+    this.trail(`go on${this.heldTalk ? ' (held)' : ''}${this.talkWaiter ? ' (waiter)' : ''}${this.flow ? ` (flow ${this.flow.kind})` : ''}`);
     if (this.heldTalk) { this.heldTalk = false; this.closeTalk(); c.release(true); if (this.playback?.state !== 'playing' && t?.pos) this.continueFrom(t.pos); return; }
     if (this.talkWaiter) { const w = this.talkWaiter; this.talkWaiter = null; this.closeTalk(); w(); return; }
     if (this.flow?.wake) { this.flow.wake(); return; } // the replay: on to the explanation
@@ -942,6 +947,7 @@ class Session {
   private closeTalk(): void {
     const t = this.talk;
     if (!t) return;
+    this.trail('the talk closes');
     this.talk = null;
     clearInterval(t.timer);
     if (this.still) { clearTimeout(this.still.timer); this.still = null; }
@@ -1211,6 +1217,13 @@ class Session {
 
   /** recognition results already acted on (a result grows while you speak; it acts once) */
   private acted = new Set<string>();
+  /** what the tutor did last (flows, the call, back to the video), for the diagnostics */
+  private trailLog: string[] = [];
+  private trail(what: string): void {
+    const v = video();
+    this.trailLog.push(`${new Date().toTimeString().slice(0, 8)} ${v ? v.currentTime.toFixed(1) : '-'}${v?.paused ? 'P' : '>'} ${what}`);
+    if (this.trailLog.length > 40) this.trailLog.splice(0, this.trailLog.length - 40);
+  }
   /** what the microphone is hearing now (not closed yet by Chrome) */
   private still: { key: string; text: string; timer: ReturnType<typeof setTimeout> } | null = null;
 
@@ -1269,7 +1282,11 @@ class Session {
         if (!final) return true;
         if (nWords < 3) { chat.note(`ignored while thinking: ${t}`); return true; }
       }
-      if (Date.now() - this.lastTtsEnd < 900) { if (final) chat.note(`ignored (just after the tutor spoke): ${t}`); return true; }
+      // "let's go" right after the tutor stops is you (unless the tutor itself just said it: then it is its echo)
+      const goOnWords = /\b(let'?s go|go on|continue|back to the video|play the video)\b/.test(lower) && nWords <= 6;
+      const tutorLast = talk.log.filter((l) => l.who === 'tutor').slice(-1)[0]?.text.toLowerCase() ?? '';
+      const goOnNow = goOnWords && !/\b(let'?s go|go on|continue)\b/.test(tutorLast);
+      if (Date.now() - this.lastTtsEnd < 900 && !goOnNow) { if (final) chat.note(`ignored (just after the tutor spoke): ${t}`); return true; }
       // the microphone heard the end of the tutor's own voice from the speaker (an echo), not you
       if (Date.now() - this.lastTtsEnd < 4000) {
         const said = new Set(talk.log.filter((l) => l.who === 'tutor').slice(-2).map((l) => l.text).join(' ').toLowerCase().match(/[a-z']+/g) ?? []);
@@ -2363,7 +2380,7 @@ class Session {
   /** diagnostics for the 🩺 check and the developer (no keys): the voices and the call */
   voiceState(): Record<string, unknown> {
     const mac = this.mac as unknown as { state?: () => unknown } | null;
-    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic() };
+    return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic(), trail: this.trailLog.slice(-25) };
   }
 
   debug() {
@@ -2378,7 +2395,8 @@ class Session {
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
-      talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null } : null,
+      talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
+      trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
     };
   }

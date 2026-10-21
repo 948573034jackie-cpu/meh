@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 3;
+export const SPLIT_VERSION = 4;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -25,7 +25,8 @@ export function flatten(sentences: TimedSentence[]): TimedWord[] {
   return out;
 }
 
-/** Chunk boundaries [from, to): about CHUNK_WORDS words each, ending at the longest pause near the end. */
+/** Chunk boundaries [from, to): about CHUNK_WORDS words each, ending at the longest pause near the end (best after a
+ * word that ends a written sentence, when the subtitles have punctuation). */
 export function chunkBounds(words: TimedWord[], size = CHUNK_WORDS): [number, number][] {
   const out: [number, number][] = [];
   let from = 0;
@@ -34,7 +35,7 @@ export function chunkBounds(words: TimedWord[], size = CHUNK_WORDS): [number, nu
     if (to < words.length) {
       let best = to, bestGap = -1;
       for (let i = Math.max(from + Math.floor(size * 0.6), from + 1); i < Math.min(words.length, from + Math.floor(size * 1.25)); i++) {
-        const gap = words[i].t - words[i - 1].e;
+        const gap = words[i].t - words[i - 1].e + (ENDS_SENTENCE.test(words[i - 1].w) ? 2 : 0);
         if (gap > bestGap) { bestGap = gap; best = i; }
       }
       to = best;
@@ -53,9 +54,9 @@ export function buildSplitPrompt(words: TimedWord[], from: number, to: number): 
 
 Rebuild the complete sentences. A sentence is one complete thought, punctuated the way a careful writer would punctuate this speech; split long run-on speech into natural sentences (most sentences have 5 to 30 words). Keep every word in the same order and do not add or remove words: only add punctuation and capital letters, and fix an obvious speech-recognition spelling mistake of a single word. Leave sound tags like [Music] out of the sentence text.
 
-Answer with one line per sentence and nothing else, in this form:
+Answer with one line per sentence and nothing else (no notes, no thinking aloud), in this form:
 <number of the last word of the sentence>|<the sentence, punctuated>
-Your last line must end at word ${to - 1}.
+Your last line must end at word ${to - 1}. These words may stop in the middle of a sentence (the video goes on): then write that unfinished last sentence with ~ in front of it, like this: ${to - 1}|~And then we
 
 Words:
 ${list}`,
@@ -63,7 +64,25 @@ ${list}`,
   };
 }
 
-export interface SplitLine { end: number; text: string }
+export interface SplitLine {
+  end: number;
+  text: string;
+  /** the words stop in the middle of this sentence (the next chunk finishes it) */
+  open?: boolean;
+}
+
+/** Every "<number>|<sentence>" line in order (numbers are not trusted: alignLines finds the ends from the words). */
+export function parseLines(raw: string): SplitLine[] {
+  const out: SplitLine[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = /^\s*(\d+)\s*\|\s*(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    const open = /^~/.test(m[2]);
+    const text = m[2].replace(/^~\s*/, '');
+    if (text) out.push({ end: Number(m[1]), text, ...(open ? { open } : {}) });
+  }
+  return out;
+}
 
 /** Lines "<end>|<text>" -> sentence ends inside [from, to); bad or out-of-order lines are dropped, the end is closed. */
 export function parseSplit(raw: string, from: number, to: number): SplitLine[] {
@@ -98,50 +117,63 @@ const MAX_WORDS = 70, MAX_SECONDS = 40;
 const SOUND_TAG = /^\[[^\]]*\]$|^\([^)]*\)$/;
 const wordsOf = (s: string) => s.split(/\s+/).filter(Boolean);
 const norm = (w: string) => w.toLowerCase().replace(/[’‘]/g, "'").replace(/[^a-z0-9']/g, '').replace(/^'+|'+$/g, '');
+const ENDS_SENTENCE = /[.!?…]["”'’)\]]*$/;
+
+/** The longest common subsequence of two word lists: for each word of `a`, the index of the word of `b` it is (or -1). */
+function lcsMatch(a: string[], b: string[]): Int32Array {
+  const A = a.length, B = b.length, W = B + 1;
+  const dp = new Uint16Array((A + 1) * W);
+  for (let i = A - 1; i >= 0; i--) for (let j = B - 1; j >= 0; j--) dp[i * W + j] = a[i] === b[j] ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+  const m = new Int32Array(A).fill(-1);
+  let i = 0, j = 0;
+  while (i < A && j < B) {
+    if (a[i] === b[j]) { m[i] = j; i++; j++; }
+    else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) i++;
+    else j++;
+  }
+  return m;
+}
+
+const spokenWords = (ws: string[]) => ws.filter((w) => !SOUND_TAG.test(w)).map(norm).filter(Boolean);
+
+/** The AI's text is still these words (punctuation, capitals, a fixed spelling): at least 80% the same. */
+export function sameWords(text: string, real: string[]): boolean {
+  const a = spokenWords(wordsOf(text)), b = spokenWords(real);
+  if (!a.length || !b.length) return false;
+  let n = 0;
+  for (const x of lcsMatch(a, b)) if (x >= 0) n++;
+  return n / Math.max(a.length, b.length) >= 0.8;
+}
 
 /**
- * The AI's word numbers drift (models count badly) but its sentences are right: every line's end is found again from
- * its own words (its last words, near where its word count says it ends), so a sentence is never cut in the middle
- * ("…a government major," | "which means…"). When its words cannot be found, the word count decides.
+ * The AI's word numbers drift (models count badly) but its sentences are right: its text is matched word by word with
+ * the real words, and every sentence ends where its own last word is, so a sentence is never cut in the middle
+ * ("…a government major," | "which means…"). A line that is not these words (the AI thinking aloud, a sentence it
+ * made up) is dropped: its words go to the next sentence.
  */
 export function alignLines(words: TimedWord[], lines: SplitLine[], from: number, to: number): SplitLine[] {
-  const out: SplitLine[] = [];
-  let start = from;
   const spoken = (i: number) => !SOUND_TAG.test(words[i].w) && norm(words[i].w) !== '';
-  for (let li = 0; li < lines.length && start < to; li++) {
-    const l = lines[li];
-    const lw = wordsOf(l.text).filter((w) => !SOUND_TAG.test(w)).map(norm).filter(Boolean);
-    if (!lw.length) continue; // an empty line (the words the AI left out): closed below
-    // where the word count says the line ends (sound tags are not in the AI's text)
-    let e0 = start, n = 0;
-    for (let i = start; i < to && n < lw.length; i++) { if (spoken(i)) n++; e0 = i; }
-    // the line's last words, compared with the words that end at each place near there
-    const tail = lw.slice(-3);
-    let best = -1, bestScore = -1;
-    for (let e = Math.max(start, e0 - 10); e <= Math.min(to - 1, e0 + 10); e++) {
-      if (!spoken(e)) continue;
-      let score = 0, j = e;
-      for (let k = tail.length - 1; k >= 0; k--) {
-        while (j >= start && !spoken(j)) j--;
-        if (j < start) break;
-        if (norm(words[j].w) === tail[k]) score++;
-        j--;
-      }
-      const s = score - Math.abs(e - e0) * 0.01; // of equal matches, the nearest
-      if (score >= Math.min(2, tail.length) && s > bestScore) { bestScore = s; best = e; }
-    }
-    const end = best >= 0 ? best : e0;
-    // sound tags right after a sentence belong to it
-    let e = end;
-    while (e + 1 < to - 1 && SOUND_TAG.test(words[e + 1].w)) e++;
-    out.push({ end: e, text: l.text });
-    start = e + 1;
-  }
+  const real: number[] = [];
+  for (let i = from; i < to; i++) if (spoken(i)) real.push(i);
+  const ai: string[] = [], lineOf: number[] = [];
+  lines.forEach((l, li) => { for (const w of spokenWords(wordsOf(l.text))) { ai.push(w); lineOf.push(li); } });
+  const m = lcsMatch(ai, real.map((i) => norm(words[i].w)));
+  const last = new Array<number>(lines.length).fill(-1), found = new Array<number>(lines.length).fill(0), total = new Array<number>(lines.length).fill(0);
+  ai.forEach((_, k) => { const li = lineOf[k]; total[li]++; if (m[k] >= 0) { found[li]++; last[li] = m[k]; } });
+  const out: SplitLine[] = [];
+  let prev = -1; // the last real word of the sentence before (index in real)
+  lines.forEach((l, li) => {
+    if (last[li] <= prev || found[li] < total[li] * 0.5) return;
+    let end = real[last[li]];
+    while (end + 1 < to && !spoken(end + 1)) end++; // sound tags right after a sentence belong to it
+    out.push({ end, text: l.text, ...(l.open ? { open: true } : {}) });
+    prev = last[li];
+  });
   // the end is closed: a few words left belong to the last sentence, more are a sentence of their own
-  const last = out.length ? out[out.length - 1].end : from - 1;
-  if (last < to - 1) {
-    if (out.length && to - 1 - last <= 3) out[out.length - 1] = { ...out[out.length - 1], end: to - 1 };
-    else out.push({ end: to - 1, text: '' });
+  const end = out.length ? out[out.length - 1].end : from - 1;
+  if (end < to - 1) {
+    if (out.length && to - 1 - end <= 3) out[out.length - 1] = { ...out[out.length - 1], end: to - 1 };
+    else out.push({ end: to - 1, text: '', open: lines[lines.length - 1]?.open });
   }
   return out;
 }
@@ -164,45 +196,71 @@ export function regroup(words: TimedWord[], lines: SplitLine[], from = 0): Timed
     if (!ws.length) continue;
     const spoken = ws.filter((w) => !SOUND_TAG.test(w.w));
     if (!spoken.length) { if (out.length) { out[out.length - 1].words!.push(...ws); out[out.length - 1].end = ws[ws.length - 1].e; } continue; }
-    const n = wordsOf(l.text).length;
     // the AI's text must still be these words (punctuation and capitals added); otherwise the words themselves
-    const fits = n > 0 && Math.abs(n - spoken.length) <= Math.max(2, Math.round(spoken.length * 0.25));
+    const fits = !!l.text && sameWords(l.text, spoken.map((w) => w.w));
     out.push({ start: ws[0].t, end: ws[ws.length - 1].e, text: fits ? l.text : plainSentence(ws.map((w) => w.w)), words: ws });
   }
   return out;
 }
 
+/** Two pieces of one sentence (cut where two chunks meet) as one sentence. */
+function joinSentences(a: TimedSentence, b: TimedSentence, punctuated: boolean): TimedSentence {
+  const t1 = a.text.replace(/[\s.!?…,;:]+$/, '');
+  const first = b.text.split(/\s+/)[0] ?? '';
+  const realFirst = b.words?.find((w) => !SOUND_TAG.test(w.w))?.w ?? '';
+  // written subtitles: the real word says if it starts with a capital; speech subtitles: only "I" and names in capitals
+  const lower = punctuated ? /^[a-z]/.test(realFirst) : !/^(I|I'm|I'll|I've|I'd)\b/.test(first) && !/^[A-Z]{2,}/.test(first);
+  const t2 = lower ? b.text.charAt(0).toLowerCase() + b.text.slice(1) : b.text;
+  return { start: a.start, end: b.end, text: `${t1} ${t2}`, words: [...(a.words ?? []), ...(b.words ?? [])] };
+}
+
 /** The whole video: chunks a few at a time; `onProgress(done, total)`. A failed chunk keeps the first guess there. */
-export async function splitWithAi(sentences: TimedSentence[], complete: (p: PromptBundle) => Promise<string>, onProgress?: (done: number, total: number) => void, parallel = 3): Promise<TimedSentence[]> {
+export async function splitWithAi(sentences: TimedSentence[], complete: (p: PromptBundle) => Promise<string>, onProgress?: (done: number, total: number) => void, parallel = 3, size = CHUNK_WORDS): Promise<TimedSentence[]> {
   const words = flatten(sentences);
   if (!words.length) return sentences;
-  const bounds = chunkBounds(words);
+  const bounds = chunkBounds(words, size);
   const results: (SplitLine[] | null)[] = new Array(bounds.length).fill(null);
+  const one = async (from: number, to: number): Promise<SplitLine[] | null> => {
+    const parsed = parseLines(await complete(buildSplitPrompt(words, from, to)));
+    if (!parsed.length) return null;
+    const lines = alignLines(words, parsed, from, to);
+    // the answer stopped early (cut off) and most of the chunk is not covered: not usable
+    const covered = [...lines].reverse().find((l) => l.text)?.end ?? from - 1;
+    if (covered - from + 1 < (to - from) * 0.6) return null;
+    // every sentence must be a real sentence (not most of the chunk in one piece)
+    let prev = from - 1;
+    for (const l of lines) { const n = l.end - prev, secs = words[l.end].e - words[prev + 1].t; if (n > MAX_WORDS || secs > MAX_SECONDS) return null; prev = l.end; }
+    return lines;
+  };
   let next = 0, done = 0;
   const worker = async () => {
     for (;;) {
       const i = next++;
       if (i >= bounds.length) return;
       const [from, to] = bounds[i];
-      try {
-        const parsed = parseSplitOrNull(await complete(buildSplitPrompt(words, from, to)), from, to);
-        const lines = parsed && alignLines(words, parsed, from, to);
-        // every sentence must be a real sentence (not most of the chunk in one piece)
-        let prev = from - 1, ok = !!lines;
-        for (const l of lines ?? []) { const n = l.end - prev, secs = words[l.end].e - words[prev + 1].t; if (n > MAX_WORDS || secs > MAX_SECONDS) ok = false; prev = l.end; }
-        results[i] = ok ? lines : null;
-      } catch { results[i] = null; }
+      // a bad answer gets one more try
+      for (let attempt = 0; attempt < 2 && !results[i]; attempt++) { try { results[i] = await one(from, to); } catch { results[i] = null; } }
       onProgress?.(++done, bounds.length);
     }
   };
   await Promise.all(Array.from({ length: Math.min(parallel, bounds.length) }, worker));
   if (results.every((r) => r === null)) throw new Error('The AI could not find the sentences.');
+  // where two chunks meet, a sentence may be cut in two: its two pieces become one sentence again
+  const punctuated = words.filter((w) => ENDS_SENTENCE.test(w.w)).length >= words.length * 0.02;
   const out: TimedSentence[] = [];
+  let carry: TimedSentence | null = null;
   bounds.forEach(([from, to], i) => {
     const r = results[i];
-    if (r) { out.push(...regroup(words, r, from)); return; }
-    // this chunk failed: the first guess (rule-based) for its time range
-    for (const s of sentences) if (s.start >= words[from].t - 0.01 && s.start < (to < words.length ? words[to].t : Infinity)) out.push(s);
+    // a failed chunk: the first guess (rule-based) for its time range
+    const part = r ? regroup(words, r, from) : sentences.filter((s) => s.start >= words[from].t - 0.01 && s.start < (to < words.length ? words[to].t : Infinity));
+    if (carry) { if (r && part.length) part[0] = joinSentences(carry, part[0], punctuated); else out.push(carry); carry = null; }
+    if (r && i < bounds.length - 1 && part.length) {
+      const lastS = part[part.length - 1];
+      const lastWord = [...(lastS.words ?? [])].reverse().find((w) => !SOUND_TAG.test(w.w))?.w ?? '';
+      if (r[r.length - 1].open || (punctuated && !ENDS_SENTENCE.test(lastWord))) carry = part.pop()!;
+    }
+    out.push(...part);
   });
+  if (carry) out.push(carry);
   return out;
 }

@@ -12,7 +12,7 @@ const http = require('http');
 const EXT = path.resolve(__dirname, '../youtube-to-claude');
 let fails = 0;
 const trace = [];
-const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + String(x).slice(0, 400) : '')); if (!c) console.log('   trace: ' + trace.slice(-12).join(' | ')); };
+const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + String(x).slice(0, c ? 400 : 3000) : '')); if (!c) console.log('   trace: ' + trace.slice(-30).join(' | ')); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(cond, ms = 15000, step = 150) { const end = Date.now() + ms; for (;;) { const v = await cond(); if (v) return v; if (Date.now() > end) return null; await sleep(step); } }
 
@@ -422,11 +422,11 @@ const api = http.createServer((req, res) => {
   await sw.evaluate(async () => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: 'and what about ephemeral', final: false, key: 'c3:0' }); });
   const stillReq = await until(() => apiLog.slice(nStill).find((r) => r.kind === 'chat' && /ephemeral/.test(r.user)), 8000);
   ok('words Chrome never closes still reach Claude after a short stillness (no endless waiting)', !!stillReq && Date.now() - stillReq.at < 8000);
-  await until(async () => (await dbg()).talk?.chat === 'listening', 10000);
-  await sleep(1000);
+  // "let's go" the moment the tutor stops talking (not taken for the tutor's echo)
+  await until(async () => { const ev = (await dbg()).talk?.events || []; return ev.length && /said \(ended\)/.test(ev[ev.length - 1]) && ev.filter((e) => /said \(/.test(e)).length >= 7; }, 15000);
   await say('ok let\'s go', 'c2:0');
   const backToVideo = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 8000);
-  ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo));
+  ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo || { events: (await dbg()).talk?.events, v: await vstate(), api: apiLog.slice(nStill).map((r) => r.kind + '@' + (r.at - apiLog[nStill].at)) }));
 
   // ---- 10c. the page: an Explain button on every sentence, explain what you select; the original line first ----
   await patch('drExtras', { talkSilenceSec: 3 });

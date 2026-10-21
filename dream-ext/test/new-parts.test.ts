@@ -55,6 +55,17 @@ describe('the AI finds the complete sentences', () => {
     const out = regroup(ws, lines);
     expect(out.map((s) => s.text)).toEqual(['So in college, I was a government major, which means I had to write a lot of papers.', 'Now, when a normal student writes a paper, they might spread the work out.']);
     expect(plainSentence(['I', 'was', 'a', 'major,'])).toBe('I was a major.');
+    // the AI thinking aloud between its sentences: dropped, its words stay with the real sentences
+    const junk = alignLines(ws, parseSplit('5|So in college, I was a government major, which means I had to write a lot of papers.\n9|Actually the first line should start at word 1584. Let me do it.\n20|Now, when a normal student writes a paper, they might spread the work out.', 0, ws.length), 0, ws.length);
+    expect(junk.map((l) => l.end)).toEqual([18, ws.length - 1]);
+    // an AI text with words that are not there (it "finished" the sentence itself): the real words are shown
+    expect(regroup(ws, [{ end: 7, text: 'So in college, I was a government major, which means I had to write a lot of papers.' }, { end: ws.length - 1, text: '' }])[0].text).toBe('So in college, I was a government major.');
+  });
+  it('a sentence cut where two chunks meet becomes one sentence again', async () => {
+    const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];
+    const out = await splitWithAi(rule, async (p) => (p.user.includes('0:so') ? '7|~So today we are going to talk about' : '15|Cooking, and I think you will love it.'), undefined, 1, 10);
+    expect(out.map((s) => s.text)).toEqual(['So today we are going to talk about cooking, and I think you will love it.']);
+    expect(flatten(out)).toHaveLength(16);
   });
   it('a nonsense answer keeps the first guess (never one giant sentence)', async () => {
     const rule = [{ start: 0, end: 2.8, text: 'so today we are going to talk about', words: words.slice(0, 8) }, { start: 3.5, end: 6.7, text: 'cooking and i think you will love it', words: words.slice(8) }];
