@@ -89,6 +89,8 @@ export interface ListenDeps {
   voice: () => { voiceId: string; rate: number };
   explainVoice: () => { voiceId: string; rate: number };
   zhVoiceId: () => string | null;
+  /** (cloud voices) the teacher's voice says English with Chinese in it in one go: no small pieces */
+  mixedVoice?: () => boolean;
   /** engine used for Chinese fragments (normally the system voices) */
   zhEngine: () => TtsEngine;
   explain: (req: ExplainRequest, onDelta: (full: string) => void) => { done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void };
@@ -656,7 +658,8 @@ export class ListenController {
       for (const part of raw.split(/\[PAUSE\]/i)) {
         const text = cleanSpokenProse(part).trim();
         if (!text) continue;
-        const runs = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text) ? splitByScript(text) : [{ text, zh: false }];
+        const whole = !!this.deps.mixedVoice?.() && !!this.deps.zhVoiceId();
+        const runs = !whole && /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text) ? splitByScript(text) : [{ text, zh: false }];
         for (const run of runs) if (!run.zh && run.text.trim()) eng.prefetch(run.text, v.voiceId, v.rate);
       }
     };
@@ -682,7 +685,7 @@ export class ListenController {
       if (cancelled || !text.trim()) return !cancelled;
       // any English text that still contains Chinese (answers to questions, older styles): Chinese parts go to the
       // Chinese voice, or are left out when Chinese is off; an English voice would read them as "Chinese letter"
-      if (lang === 'en' && /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text)) {
+      if (lang === 'en' && /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text) && !(this.deps.mixedVoice?.() && this.deps.zhVoiceId())) {
         for (const run of splitByScript(text)) {
           if (!(await say(run.text, run.zh ? 'zh' : 'en', run.zh ? 'chinese' : role))) return false;
         }

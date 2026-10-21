@@ -17,6 +17,8 @@ export interface ChatCallDeps {
   system(): string;
   /** speaks one piece (English with the teacher's voice, Chinese with the Chinese voice); null = cannot be spoken */
   speak(text: string, lang: 'en' | 'zh'): SpeakHandle | null;
+  /** (cloud voices) the teacher's voice says English with Chinese in it in one go (no small pieces) */
+  mixed?(): boolean;
   /** (cloud voices) starts making the audio of a piece now, so it plays without a gap when its turn comes */
   prefetch?(text: string, lang: 'en' | 'zh'): void;
   cancelSpeech(): void;
@@ -122,7 +124,7 @@ export class ChatCall {
   private enqueue(sentence: string): void {
     const t = cleanSpokenProse(sentence).trim();
     if (!t || this.closed) return;
-    for (const run of splitByScript(t)) {
+    for (const run of this.deps.mixed?.() ? [{ text: t, zh: false }] : splitByScript(t)) {
       const text = run.text.trim();
       if (!text) continue;
       const lang = run.zh ? 'zh' as const : 'en' as const;

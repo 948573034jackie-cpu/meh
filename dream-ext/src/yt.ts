@@ -451,6 +451,7 @@ class Session {
       explainVoice: () => ({ voiceId: this.voiceKind === 'mac' ? (settings.voice.explainVoiceId || this.voiceId) : this.voiceId, rate: Math.min(settings.voice.rate, 1.2) }),
       // (Chinese Bridge speaks Chinese on purpose)
       zhVoiceId: () => (settings.ai.speakChinese || settings.ai.activeStyle === 'way-bridge' ? this.zhVoice : null),
+      mixedVoice: () => this.voiceKind !== 'mac',
       contextZh: (lemma) => this.hints[lemma],
       explain: (req, onDelta) => {
         (window as unknown as { __drRequests?: ExplainRequest[] }).__drRequests?.push(structuredClone(req));
@@ -837,6 +838,7 @@ class Session {
         if (lang === 'zh') return this.zhVoice ? this.zhOut?.speak(text, { voiceId: this.zhVoice, rate: settings.voice.rate }) ?? null : null;
         return this.teachOut?.speak(text, { voiceId: this.voiceId, rate: settings.voice.rate }) ?? null;
       },
+      mixed: () => this.voiceKind !== 'mac' && !!this.zhVoice,
       prefetch: (text, lang) => {
         if (lang === 'zh') { if (this.zhVoice) this.zhOut?.prefetch(text, this.zhVoice, settings.voice.rate); }
         else this.teachOut?.prefetch(text, this.voiceId, settings.voice.rate);

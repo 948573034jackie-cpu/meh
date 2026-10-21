@@ -264,7 +264,7 @@ interface TtsAsk { engine: 'openai' | 'elevenlabs'; text: string; voice: string;
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
-  en: 'Speak clear, warm, natural English at a calm teaching pace, like a kind English teacher talking to a student.',
+  en: 'Speak clear, warm, natural English at a calm teaching pace, like a kind English teacher talking to a student. Say any Chinese words in natural Mandarin Chinese.',
   zh: 'Speak Mandarin Chinese (Putonghua) clearly and warmly, at a calm pace.',
 };
 
