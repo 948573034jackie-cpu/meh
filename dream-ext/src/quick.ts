@@ -111,6 +111,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Voice call ${onOff('liveOn', x.liveOn)}</label>
       <label>Talk with ${seg('callEngine', x.callEngine ?? 'claude', [['claude', 'Claude + my tutor’s voice (no OpenAI)'], ['openai', 'OpenAI realtime']])}${(x.callEngine ?? 'claude') === 'openai' && !keys.openai ? ' <span class="warn">needs an OpenAI key with credit</span>' : ''}</label>
       ${(x.callEngine ?? 'claude') === 'openai' ? `<label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>` : '<p class="muted">You talk, Chrome writes down your words, Claude answers, and your tutor’s voice speaks. Say “stop” (or press Space) to interrupt, “go on” to go back to the video.</p>'}
+      <label>Voice mode ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">(say “hello” = explain the last part, “stop”, “play”, ask anything, “bye bye” = off)</span></label>
       <label>Microphone on ${seg('micAlways', x.micAlways ? 'always' : 'needed', [['needed', 'Only when the tutor waits for me'], ['always', 'Always (for “hi bro”)']])}</label>
       <p class="muted">“Always” keeps the Mac’s microphone on, which makes the sound quieter and a little broken. “Only when…” is clean.</p>
       <label>Microphone ${seg('mic', x.micLevel ?? 2, [[1, 'Normal'], [2, 'Sensitive'], [3, 'Very sensitive']])}</label>
@@ -172,6 +173,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
       else if (segName === 'liveModel') void store.patchExtras({ liveModel: v });
       else if (segName === 'elevenQ') void store.patchExtras({ elevenQuality: v as store.YtExtras['elevenQuality'] });
+      else if (segName === 'voiceMode') void store.patchExtras({ voiceMode: v === 'on' });
       else if (segName === 'micAlways') void store.patchExtras({ micAlways: v === 'always' });
       else if (segName === 'callEngine') void store.patchExtras({ callEngine: v as store.YtExtras['callEngine'] });
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });

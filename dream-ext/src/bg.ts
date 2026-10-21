@@ -18,7 +18,7 @@ import { buildPrompt, buildStyledPrompt, type PromptBundle } from '@core/ai/prom
 import { resolveStyle, type StyleId } from '@shared/styles';
 import type { AiProviderId, Settings } from '@shared/settings';
 import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
-import { PART_PROMPT } from './teacher-text';
+import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
 
@@ -83,12 +83,12 @@ export function pickProvider(s: Settings, keys: Keys): { provider: AiProviderId;
 /** The learner's own teacher instructions go into the system prompt (cached with it). */
 async function withTeacher(prompt: PromptBundle, styleId?: string): Promise<PromptBundle> {
   const t = (await getExtras()).teacher?.trim();
-  if (!t) return prompt;
+  if (!t) return { ...prompt, system: `${prompt.system}\n\n${ALWAYS_RULES}` };
   // one of the seven teaching ways (other than the learner's own Picture It) decides the steps; the rules keep the tone
   const way = isWay(styleId) && styleId !== 'way-picture'
     ? '\nThe learner chose a different teaching way for this explanation. Where these instructions and the teaching way in the task disagree about the steps, follow the teaching way in the task; keep everything else.'
     : '';
-  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}${way}` };
+  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}${way}\n\n${ALWAYS_RULES}` };
 }
 
 async function streamAnthropic(apiKey: string, model: string, prompt: PromptBundle, signal: AbortSignal, onText: (t: string) => void): Promise<StreamResult> {

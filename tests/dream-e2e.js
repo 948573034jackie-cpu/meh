@@ -355,7 +355,7 @@ const api = http.createServer((req, res) => {
 
   // ---- 9. a typed question ----
   const nQ = apiLog.length;
-  await panel(() => { const r = document.getElementById('dr-panel-host').shadowRoot; r.querySelector('form.ask input').value = 'What is a gregarious man?'; r.querySelector('form.ask button').click(); });
+  await panel(() => { const r = document.getElementById('dr-panel-host').shadowRoot; r.querySelector('form.ask input').value = 'What is a gregarious man?'; r.querySelector('form.ask button[type="submit"]').click(); });
   const q = await until(() => apiLog.slice(nQ).find((r) => r.user.includes('What is a gregarious man?')), 8000);
   ok('a typed question goes to the tutor with the video context', !!q);
   await sleep(3000);
@@ -373,7 +373,7 @@ const api = http.createServer((req, res) => {
   ok('the explanation is spoken by the OpenAI voice (gpt-4o-mini-tts, marin), through the background', tts && tts.model === 'gpt-4o-mini-tts' && tts.voice === 'marin' && /Bearer sk-openai-test/.test(tts.key), JSON.stringify(tts && { m: tts.model, v: tts.voice, i: tts.input }));
   const live = await until(() => liveLog[0], 20000);
   ok('the live call connects to OpenAI realtime with the key (from the background), the part, your rules, the tools', live && /Bearer sk-openai-test/.test(live.auth) && live.session.model === 'gpt-realtime-2.1' && live.session.audio.output.voice === 'marin' && /RULE ONE/.test(live.session.instructions) && /number six/.test(live.session.instructions) && live.session.tools.some((t) => t.name === 'continue_video'), JSON.stringify(live && { m: live.session.model, v: live.session.audio.output.voice }));
-  ok('the microphone is sensitive (lower speech threshold, laptop-microphone noise setting)', live && live.session.audio.input.turn_detection.type === 'server_vad' && live.session.audio.input.turn_detection.threshold === 0.35 && live.session.audio.input.noise_reduction.type === 'far_field');
+  ok('the microphone is most sensitive by default (lowest speech threshold, laptop-microphone noise setting)', live && live.session.audio.input.turn_detection.type === 'server_vad' && live.session.audio.input.turn_detection.threshold === 0.25 && live.session.audio.input.noise_reduction.type === 'far_field');
   const ready2 = await until(async () => { const d = await dbg(); return d && d.talk && d.talk.live === 'ready' ? d : null; }, 15000);
   ok('the WebRTC call is up (data channel open)', !!ready2, JSON.stringify((await dbg()).talk));
   const send = (ev) => peer.evaluate((e) => window.send(e), ev);
@@ -420,6 +420,65 @@ const api = http.createServer((req, res) => {
   await say('ok let\'s go', 'c2:0');
   const backToVideo = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 8000);
   ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo));
+
+  // ---- 10c. the page: an Explain button on every sentence, explain what you select; the original line first ----
+  await patch('drExtras', { talkSilenceSec: 3 });
+  await yt.keyboard.press('Shift+KeyL'); // listening mode: all sentences on the page
+  await until(async () => (await dbg()).stage.shown, 5000);
+  await sleep(900); // (a click in the first 0.6 s after the page opens is a ghost click and is ignored)
+  const nSx = apiLog.length;
+  const sxCount = await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelectorAll('.page .s .sx').length);
+  await sroot(() => { const s = [...document.getElementById('dr-stage-host').shadowRoot.querySelectorAll('.page .s')].find((x) => /number eight/.test(x.textContent)); s.querySelector('.sx').click(); });
+  const sxReq = await until(() => apiLog.slice(nSx).find((r) => r.kind === 'explain' && /The sentence being read now:\\nThis is complete sentence number eight/.test(r.user)), 8000);
+  ok('every sentence on the page has an Explain button; it explains that sentence (RULE TWO)', sxCount === 10 && !!sxReq && /RULE TWO/.test(sxReq.user + sxReq.sys), JSON.stringify({ sxCount, found: !!sxReq, after: apiLog.slice(nSx).map((r) => r.kind + ': ' + String(r.user || r.input || '').slice(-160)) }));
+  ok('every explanation starts with the original words and never comments on pronunciation', !!sxReq && /say the original words from the video exactly as they are/.test(sxReq.sys) && /Never comment on their pronunciation/.test(sxReq.sys));
+  await yt.keyboard.press('Escape');
+  await sleep(800);
+  // select two words on the page: a button "Explain …" appears; it explains exactly them
+  const nSel = apiLog.length;
+  await sroot(() => {
+    const root = document.getElementById('dr-stage-host').shadowRoot;
+    const s = [...root.querySelectorAll('.page .s')].find((x) => /gregarious man/.test(x.textContent));
+    const ws = [...s.querySelectorAll('.w')];
+    const a = ws.find((w) => w.textContent === 'gregarious'), b = ws.find((w) => w.textContent === 'man');
+    const range = document.createRange(); range.setStart(a.firstChild, 0); range.setEnd(b.firstChild, b.firstChild.length);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    root.querySelector('.page').dispatchEvent(new MouseEvent('mouseup', { bubbles: true, composed: true }));
+  });
+  const selBtn = await until(() => sroot(() => { const b = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .selx'); return b && !b.hidden ? b.textContent : null; }), 3000);
+  if (selBtn) await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .selx').click());
+  const selReq = await until(() => apiLog.slice(nSel).find((r) => r.kind === 'explain' && /gregarious man/.test(r.user)), 8000);
+  ok('select words on the page: "Explain …" explains exactly what you selected', !!selBtn && /gregarious man/.test(selBtn) && !!selReq, JSON.stringify({ selBtn, found: !!selReq }));
+  ok('🎤 Speak button next to Ask (page and panel)', await sroot(() => !!document.getElementById('dr-stage-host').shadowRoot.querySelector('form.ask [data-act="speak"]') && !!document.getElementById('dr-panel-host').shadowRoot.querySelector('form.ask [data-act="speak"]')));
+  await yt.keyboard.press('Escape');
+  await sleep(500);
+  await yt.keyboard.press('Shift+KeyL'); // back to the normal video
+  await until(async () => { const d = await dbg(); return d.view === 'normal'; }, 5000);
+
+  // ---- 10d. voice mode: "stop", "play", "hello" (explain the part), "bye bye" ----
+  await patch('drExtras', { voiceMode: true });
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 30.5; return v.play(); });
+  await until(async () => !(await vstate()).paused, 4000);
+  await sleep(800);
+  await say('stop', 'vm:1');
+  const vmStopped = await until(async () => { const v = await vstate(); const d = await dbg(); return v.paused && d.talk ? { v, talk: !!d.talk } : null; }, 5000);
+  ok('voice mode: "stop" stops the video, the tutor listens (ask anything)', !!vmStopped, JSON.stringify(vmStopped || await vstate()));
+  await say('play', 'vm:2');
+  const vmPlayed = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.talk ? v : null; }, 5000);
+  ok('voice mode: "play" plays the video (and the tutor stops talking)', !!vmPlayed, JSON.stringify(vmPlayed || await vstate()));
+  await sleep(1500);
+  const nHello = apiLog.length;
+  await yt.evaluate(() => { document.querySelector('video').playbackRate = 3; }); // the part plays again first
+  await say('hello', 'vm:3');
+  const helloPart = await until(async () => { const d = await dbg(); return d.flow === 'part' ? d : null; }, 5000);
+  const helloReq = await until(() => apiLog.slice(nHello).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 30000);
+  await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
+  ok('voice mode: "hello" stops the video, plays the last part again and explains it (what is happening first)', !!helloPart && !!helloReq && /tell the learner what is happening in this part/.test(helloReq.user), JSON.stringify({ flow: helloPart && helloPart.flow, req: !!helloReq }));
+  await say('bye bye', 'vm:4');
+  const vmOff = await until(async () => (await store('drExtras')).voiceMode === false, 5000);
+  ok('voice mode: "bye bye" turns voice mode off', !!vmOff);
+  await patch('drExtras', { voiceMode: false });
+  await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 15000);
 
   // ---- 11. one voice at a time; the check report ----
   await yt.evaluate(() => document.getElementById('yt2c-b-claude').click());

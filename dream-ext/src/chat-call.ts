@@ -17,6 +17,8 @@ export interface ChatCallDeps {
   system(): string;
   /** speaks one piece (English with the teacher's voice, Chinese with the Chinese voice); null = cannot be spoken */
   speak(text: string, lang: 'en' | 'zh'): SpeakHandle | null;
+  /** (cloud voices) starts making the audio of a piece now, so it plays without a gap when its turn comes */
+  prefetch?(text: string, lang: 'en' | 'zh'): void;
   cancelSpeech(): void;
   /** what the tutor is saying, for the page (grows while it is written) */
   line(id: string, text: string, final: boolean): void;
@@ -119,7 +121,13 @@ export class ChatCall {
   private enqueue(sentence: string): void {
     const t = cleanSpokenProse(sentence).trim();
     if (!t || this.closed) return;
-    for (const run of splitByScript(t)) if (run.text.trim()) this.queue.push({ text: run.text.trim(), lang: run.zh ? 'zh' : 'en' });
+    for (const run of splitByScript(t)) {
+      const text = run.text.trim();
+      if (!text) continue;
+      const lang = run.zh ? 'zh' as const : 'en' as const;
+      this.queue.push({ text, lang });
+      this.deps.prefetch?.(text, lang);
+    }
     void this.pump();
   }
 

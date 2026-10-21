@@ -7,6 +7,8 @@
  * continue_video when the learner wants to watch on, and mark_word when they say they know a word.
  */
 
+import { ALWAYS_RULES } from './teacher-text';
+
 export type LiveState = 'connecting' | 'ready' | 'ended' | 'error';
 
 export interface LiveTool { type: 'function'; name: string; description: string; parameters: Record<string, unknown> }
@@ -315,6 +317,7 @@ export function liveInstructions(o: { teacher: string; level: string; title: str
       ? 'This call works through text: speech recognition writes down what the learner says (it may mishear, so work out what they meant and never ask them to repeat), and a voice reads your answer aloud. Write only plain spoken sentences: no lists, symbols, brackets or emojis. Keep each answer short, one to four sentences and under about 60 words, unless the learner asks for more. Sometimes end with a short, friendly question to keep the talk going. When the learner wants to go back to the video, tell them to say go on.'
       : 'When the learner wants to watch on (go on, let\'s go, continue, next, play, OK got it, bye bye), call continue_video right away. When they say they know a word now, call mark_word with status known.',
     o.teacher ? `The learner's own instructions for their teacher (follow them):\n${o.teacher}` : '',
+    ALWAYS_RULES,
     `Video: "${o.title}"`,
     `On the screen now (${o.from} to ${o.to} in the video):\n${o.part.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,
     o.hints ? `Hard words on the screen, with their Chinese meaning here: ${o.hints}` : '',

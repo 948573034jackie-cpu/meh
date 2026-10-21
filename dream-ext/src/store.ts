@@ -78,6 +78,9 @@ export interface YtExtras {
   videoSize: number;
   /** the microphone listens the whole time (voice commands like "hi bro") instead of only when the tutor waits for you */
   micAlways: boolean;
+  /** voice mode: the microphone is on; "hello" explains / opens the call, "stop", "play", anything else is a question,
+   *  "bye bye" turns it off */
+  voiceMode: boolean;
   /** automatic stops: at most one every N seconds of video (0 = at every hard word, -1 = never by itself) */
   stopGapSec: number;
   /** one-time changes of saved settings already made (see migrateExtras) */
@@ -90,9 +93,9 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, elevenQuality: 'best', migrated: 0,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0,
 };
 
 /**

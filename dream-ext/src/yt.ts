@@ -74,6 +74,14 @@ interface DreamHook {
   diag(): Record<string, unknown> | null;
 }
 declare global { interface Window { __ytcApi?: YtcApi; __ytcDream?: DreamHook; __drDebug?: unknown } }
+/** the parts of Chrome's SpeechRecognition the 🎤 button uses */
+interface SpeechRecognitionLike {
+  lang: string; interimResults: boolean; continuous: boolean; maxAlternatives: number;
+  onresult: ((e: { results: { length: number; [i: number]: { 0: { transcript: string }; isFinal: boolean } } }) => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
+  start(): void; stop(): void;
+}
 
 const GREEN = '#1e8e3e', RED = '#d93025';
 const E2E = () => !!extras.fakeVoice;
@@ -253,8 +261,8 @@ class Session {
    * microphone), or you chose "always" (for "hi bro" while the video plays).
    */
   wantsMic(): boolean {
-    if (this.disposed) return false;
-    if (extras.micAlways) return true;
+    if (this.disposed || this.pttActive) return false;
+    if (extras.micAlways || extras.voiceMode) return true;
     return !!this.cmdWin || this.windowOpen || !!this.callStop || !!(this.talk && !this.talk.live);
   }
 
@@ -455,7 +463,7 @@ class Session {
       onPauseWindow: (open) => { this.windowOpen = open; },
       onStopTarget: (t) => this.onStopTarget(t),
       // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
-      afterWindowMs: () => (extras.talkAfterExplain ? (settings.listen.commandWindowMs || 5000) : 1500),
+      afterWindowMs: () => (talkAfter() ? (settings.listen.commandWindowMs || 5000) : 1500),
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
       // stopping now and then (not at every hard word): one item per stop, the hardest
       maxItemsPerStop: () => ((extras.stopGapSec ?? 45) > 0 ? 1 : 0),
@@ -687,7 +695,7 @@ class Session {
     const text = part.map((p) => getSentence(this.vb!.book, p)?.text ?? '').filter(Boolean).join(' ');
     await c.explainNow('passage', text, part[0], null, undefined, undefined, false);
     if (flow.abort || this.flow !== flow) return;
-    if (extras.talkAfterExplain && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(part[part.length - 1], undefined, this.lastExplanation());
+    if (talkAfter() && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(part[part.length - 1], undefined, this.lastExplanation());
     if (flow.abort || this.flow !== flow) return;
     this.flow = null;
     this.continueFrom(part[0], part[part.length - 1]);
@@ -717,12 +725,23 @@ class Session {
     let pos = vb.positionAt(v.currentTime) ?? vb.order[0];
     const t = vb.timingOf(pos)!;
     if (v.currentTime - t.start < 1.2) pos = prevPosition(vb.book, pos) ?? pos;
+    this.explainSentenceAt(pos, this.playback?.state === 'playing' || !v.paused, true);
+  }
+
+  /**
+   * One sentence, taught: played from the video, explained (RULE TWO, the original line first), played again. From ←
+   * (the page shows the part around it) or from the Explain button of a sentence on the page (the page stays).
+   */
+  explainSentenceAt(pos: Position, wasPlaying = false, showPart = false): void {
+    const v = video(), c = this.controller, vb = this.vb;
+    if (!v || !c || !vb || this.mode !== 'tutor') return;
     const s = getSentence(vb.book, pos);
     if (!s) return;
-    const wasPlaying = this.playback?.state === 'playing' || !v.paused;
+    this.endFlow();
+    this.closeTalk();
     if (c.busy || this.cmdWin) c.skip();
     this.playback?.pause();
-    this.showStage(this.partAt(vb.timingOf(pos)!.end - 0.01, settings.listen.lastSecondsWindow));
+    if (showPart || !this.stageVisible()) this.showStage(this.partAt(vb.timingOf(pos)!.end - 0.01, settings.listen.lastSecondsWindow));
     this.setCurrent(pos);
     this.engine.target = pos;
     const next = nextPosition(vb.book, pos) ?? pos;
@@ -730,12 +749,12 @@ class Session {
     this.preconnect();
     void c.explainNow('sentence', s.text, pos, null, undefined, undefined, false).then(async () => {
       if (flow.abort || this.flow !== flow) return;
-      if (extras.talkAfterExplain && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(pos, undefined, this.lastExplanation());
+      if (talkAfter() && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(pos, undefined, this.lastExplanation());
       if (flow.abort || this.flow !== flow) return;
       this.flow = null;
       // bye bye: from the start of the sentence; otherwise on after it (it was just played twice)
       if ((flow as { bye?: boolean }).bye) this.continueFrom(pos);
-      else if (wasPlaying || extras.talkAfterExplain) this.continueFrom(next);
+      else if (wasPlaying || talkAfter()) this.continueFrom(next);
     });
   }
 
@@ -811,6 +830,10 @@ class Session {
         if (lang === 'zh') return this.zhVoice ? this.zhOut?.speak(text, { voiceId: this.zhVoice, rate: settings.voice.rate }) ?? null : null;
         return this.teachOut?.speak(text, { voiceId: this.voiceId, rate: settings.voice.rate }) ?? null;
       },
+      prefetch: (text, lang) => {
+        if (lang === 'zh') { if (this.zhVoice) this.zhOut?.prefetch(text, this.zhVoice, settings.voice.rate); }
+        else this.teachOut?.prefetch(text, this.voiceId, settings.voice.rate);
+      },
       cancelSpeech: () => { this.tts?.cancelAll(); this.zhTts?.cancelAll(); },
       line: (id, text, final) => { const t = this.talk; if (t?.chat === chat) this.putLine(t, { id, who: 'tutor', text, final }); },
       changed: () => { if (this.talk?.chat === chat) this.renderTalk(); },
@@ -873,7 +896,7 @@ class Session {
 
   /** the explanation is starting: connect the live call now (mic off), so it is ready when the talk opens */
   private preconnect(): void {
-    if (!extras.talkAfterExplain || !this.liveAvailable() || this.pre || (this.talk && this.talk.live)) return;
+    if (!talkAfter() || !this.liveAvailable() || this.pre || (this.talk && this.talk.live)) return;
     this.pre = this.newCall();
   }
 
@@ -1062,6 +1085,7 @@ class Session {
   byeBye(): void {
     const c = this.controller;
     if (!c || this.mode !== 'tutor') return;
+    if (extras.voiceMode) { void store.patchExtras({ voiceMode: false }); this.toast('Voice mode off. Say “hello” (or click 🎙) to turn it on again.', 6000); }
     this.dropPrefetch();
     if (this.flow) (this.flow as { bye?: boolean }).bye = true;
     if (this.talkWaiter) { const w = this.talkWaiter; this.talkWaiter = null; this.closeTalk(); w(); return; }
@@ -1069,6 +1093,84 @@ class Session {
     if (this.flow?.wake) { this.flow.wake(); return; }
     if (c.busy || c.stopWindow) { this.engine.forceStart = true; c.skip(); return; } // a stop: back to the start of its sentence (played again)
     this.goOn();
+  }
+
+  // ---- voice mode: you talk, the tutor listens all the time ------------------------------------------------------
+  /** a short command said alone; not when the video or the tutor itself just said that word */
+  private voiceCommand(lower: string, final: boolean): (() => void) | null {
+    if (!final) return null;
+    const words = lower.replace(/[^a-z' ]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    if (!words.length || words.length > 4) return null;
+    const first = words[0], two = words.slice(0, 2).join(' ');
+    const echo = (re: RegExp) => this.videoSaying(re) || this.tutorSaying(re);
+    if (/^(hello|hallo|hi|hey)$/.test(first) && (extras.voiceMode || extras.micAlways) && !echo(/\b(hello|hallo|hi|hey)\b/i)) return () => this.voiceHello();
+    if (!extras.voiceMode) return null;
+    if (/^(stop|pause)$/.test(first) && !echo(/\b(stop|pause)\b/i)) return () => this.voiceStop();
+    if ((/^(play|continue|resume)$/.test(first) || /^(go on|let'?s go)$/.test(two)) && !echo(/\b(play|continue|resume|go on|let'?s go)\b/i)) return () => this.voicePlay();
+    return null;
+  }
+
+  /** the video's own subtitles around now contain this word (the microphone heard the video) */
+  private videoSaying(re: RegExp): boolean {
+    const v = video(), vb = this.vb;
+    if (!v || !vb || v.paused) return false;
+    const now = v.currentTime;
+    return vb.order.some((p) => { const tm = vb.timingOf(p); return !!tm && tm.start <= now + 1 && tm.end >= now - 6 && re.test(getSentence(vb.book, p)?.text ?? ''); });
+  }
+
+  /** the tutor is saying (or just said) this word (the microphone heard the speaker) */
+  private tutorSaying(re: RegExp): boolean {
+    if (!(this.controller?.busy || this.talk?.chat?.busy || Date.now() - this.lastTtsEnd < 4000)) return false;
+    const last = this.transcript[this.transcript.length - 1]?.text ?? '';
+    const said = this.talk?.log.filter((l) => l.who === 'tutor').slice(-1)[0]?.text ?? '';
+    return re.test(last.slice(-400)) || re.test(said.slice(-400));
+  }
+
+  /** "hello": voice mode on; the video playing = stop, play the part again, explain it, play it again; stopped = the call */
+  voiceHello(): void {
+    if (!extras.voiceMode) {
+      extras.voiceMode = true;
+      void store.patchExtras({ voiceMode: true });
+      this.toast('Voice mode on: “hello” = explain, “stop”, “play”, ask anything, “bye bye” = off.', 9000);
+    }
+    const v = video();
+    if (v && !v.paused && !this.flow) void this.partFlow(v.currentTime, true);
+    else if (!this.talk) void this.callTutor();
+  }
+
+  /** 🎙 button: voice mode on / off */
+  toggleVoiceMode(): void {
+    const on = !extras.voiceMode;
+    extras.voiceMode = on;
+    void store.patchExtras({ voiceMode: on });
+    this.toast(on ? 'Voice mode on: “hello” = explain, “stop”, “play”, ask anything, “bye bye” = off.' : 'Voice mode off.', on ? 9000 : 3000);
+  }
+
+  /** "stop": the video and the tutor stop; you can ask now ("play" goes on) */
+  voiceStop(): void {
+    const c = this.controller;
+    this.talk?.chat?.interrupt();
+    if (c?.busy) { this.interrupt(); return; } // the teacher stops; the talk opens
+    this.tts?.cancelAll();
+    this.endFlow();
+    const v = video();
+    if (v && !v.paused) { this.engine.markOwn('pause'); v.pause(); }
+    this.playback?.pause();
+    const pos = this.playback?.position ?? this.cur;
+    if (pos && !this.talk) this.openTalk(pos);
+    if (this.talk) this.talk.call = true;
+    this.toast('Stopped. Ask me anything, or say “play”.', 4000);
+  }
+
+  /** "play": the tutor stops talking and the video plays */
+  voicePlay(): void {
+    const c = this.controller;
+    this.talk?.chat?.interrupt();
+    this.tts?.cancelAll();
+    if (this.talk || this.flow || this.cmdWin || c?.busy) { this.goOn(); return; }
+    const v = video();
+    const pos = this.vb?.positionAt(v?.currentTime ?? 0);
+    if (pos && this.playback) { this.engine.resumeHere = true; this.playback.play(pos); }
   }
 
   /** ✋ / Space while the teacher explains: the explanation stops and you can ask (then the video goes on) */
@@ -1108,6 +1210,9 @@ class Session {
     const act = (fn: () => void) => { if (key) { this.acted.add(key); if (this.acted.size > 300) this.acted.clear(); } fn(); };
     const lower = t.toLowerCase();
     if (this.mode !== 'tutor' && !this.callStop) return false; // call mode: youtube.js handles "hi bro" / "shut up"
+    // voice mode: hello / stop / play (said alone, not the video's or the tutor's own words)
+    const cmd = this.mode === 'tutor' ? this.voiceCommand(lower, final) : null;
+    if (cmd) { act(cmd); return true; }
     // the live call hears you itself (with echo cancelling); the page's recognition could hear the tutor
     if (this.talk?.live && this.talk.live.state !== 'error') return true;
     // the call with Claude: while the tutor talks only "stop" / "bye bye" count (its own voice must not be taken for yours)
@@ -1294,7 +1399,7 @@ class Session {
     this.showCommandWindow(w);
     if (!w || this.mode !== 'tutor') return;
     if (w.phase === 'before') { this.muteTalk(); return; }
-    if (w.phase === 'after' && extras.talkAfterExplain && !this.flow) {
+    if (w.phase === 'after' && talkAfter() && !this.flow) {
       // (keeping the window open while we talk reports it again: the talk is only opened once)
       if (this.talk) { this.talk.live?.setMic(true); return; }
       const pos = this.playback?.position ?? this.cur;
@@ -1396,8 +1501,8 @@ class Session {
     const el = document.createElement('div');
     el.className = 'panel';
     el.innerHTML = `<div class="head"></div><div class="status"></div><div class="lines"><div class="doc-inner"></div></div><div class="talk" hidden></div><div class="transcript"></div>
-      <form class="ask"><input type="text" placeholder="Type a question (pronunciation does not matter)" aria-label="Question for the tutor"><button type="submit">Ask</button></form>
-      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div>`;
+      <form class="ask"><input type="text" placeholder="Type a question (pronunciation does not matter)" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit">Ask</button></form>
+      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     sec.prepend(host);
     document.documentElement.classList.add('dr-panel');
@@ -1415,6 +1520,7 @@ class Session {
   }
 
   private wireAsk(el: HTMLElement): void {
+    el.querySelector('form.ask [data-act="speak"]')?.addEventListener('click', (ev) => { ev.preventDefault(); this.pushToTalk(el); });
     el.querySelector('form.ask')!.addEventListener('submit', (ev) => {
       ev.preventDefault();
       const inp = el.querySelector<HTMLInputElement>('form.ask input')!;
@@ -1435,8 +1541,8 @@ class Session {
     const el = document.createElement('div');
     el.className = 'stage';
     el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div>
-      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="Type a question for your tutor" aria-label="Question for the tutor"><button type="submit">Ask</button></form></div>
-      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div>`;
+      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit">Ask</button></form></div>
+      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     this.stage = { host, root, el };
     // you clicked the video to pause it and the page appeared under the mouse: that same click must not tap a word
@@ -1477,7 +1583,7 @@ class Session {
       <span class="seg" data-name="secs">${[20, 30, 40, 60].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
-      ${this.mode === 'tutor' ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button>` : ''}
+      ${this.mode === 'tutor' ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
       <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? '🎬 Video' : '📖 Listening'}</button>
       <button data-act="quick" title="Quick settings">⚙</button>${listening ? '' : '<button data-act="close" class="quiet" title="Back to the video">✕</button>'}`;
     top.onclick = (ev) => {
@@ -1488,6 +1594,7 @@ class Session {
       if (act === 'smaller' || act === 'bigger') this.resize(act === 'bigger' ? 1 : -1);
       else if (act === 'zh') void store.patchExtras({ zhLines: !extras.zhLines });
       else if (act === 'talk') void this.callTutor();
+      else if (act === 'voice') this.toggleVoiceMode();
       else if (act === 'view') void store.patchExtras({ view: listening ? 'normal' : 'listening' });
       else if (act === 'quick') this.toggleQuick(this.stage!.el);
       else if (act === 'close') { if (this.talk || this.flow || this.cmdWin) this.goOn(); else this.hideStage(); }
@@ -1633,6 +1740,7 @@ class Session {
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
+      <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙${extras.voiceMode ? ' on' : ''}</button>
       <button data-act="vocab" title="My Vocabulary: you know about ${this.knownEstimate.toLocaleString()} English words">📒${this.knownEstimate ? ` ${this.knownEstimate.toLocaleString()}` : ''}</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts">⚙</button>`;
     head.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
@@ -1644,6 +1752,7 @@ class Session {
       else if (act === 'zh') void store.patchSettings({ ai: { ...settings.ai, speakChinese: !settings.ai.speakChinese } });
       else if (act === 'smaller' || act === 'bigger') void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + (act === 'bigger' ? 1 : -1), 12, 48) } });
       else if (act === 'vocab') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' });
+      else if (act === 'voice') this.toggleVoiceMode();
       else if (act === 'quick') this.toggleQuick(this.panel!.el);
     };
   }
@@ -1679,6 +1788,13 @@ class Session {
     const sdoc = this.stage?.el.querySelector<HTMLElement>('.doc-inner');
     if (sdoc) {
       sdoc.innerHTML = html;
+      // every sentence on the page has its own Explain button (play it, explain it, play it again)
+      sdoc.querySelectorAll<HTMLElement>('.s').forEach((s) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'sx'; b.textContent = '▶ Explain';
+        b.title = 'Explain this sentence: it plays, the teacher explains it, it plays again';
+        s.prepend(b);
+      });
       for (const p of this.vb.order) { const zh = this.zh[this.zhKey(p)]; if (zh) this.paintZh(p, zh); }
       this.markPart();
     }
@@ -1742,7 +1858,19 @@ class Session {
   /** clicks on the text: a word = explain it (card + voice), double click = I know, a sentence = go there */
   private wireWords(container: HTMLElement): void {
     let clickTimer: ReturnType<typeof setTimeout> | null = null;
+    const selectionOf = (): Selection | null => { const r = container.getRootNode() as ShadowRoot & { getSelection?: () => Selection | null }; return r.getSelection?.() ?? document.getSelection(); };
+    container.addEventListener('mouseup', () => setTimeout(() => this.onSelection(container, selectionOf()), 0));
     container.addEventListener('click', (ev) => {
+      const sx = (ev.target as HTMLElement).closest<HTMLElement>('.sx');
+      if (sx) {
+        ev.stopPropagation();
+        const p = keyToPos(sx.closest<HTMLElement>('.s')?.dataset.key ?? '');
+        if (p) this.explainSentenceAt(p);
+        return;
+      }
+      // the end of selecting words is not a tap on a word
+      const sel = selectionOf();
+      if (sel && !sel.isCollapsed && sel.toString().trim().length > 1) return;
       const w = (ev.target as HTMLElement).closest<HTMLElement>('.w[data-lemma]');
       const s = (ev.target as HTMLElement).closest<HTMLElement>('.s');
       if (!s) return;
@@ -1762,6 +1890,77 @@ class Session {
       this.toast(`“${lemma}” marked known`);
       if (this.card?.lemma === lemma) this.closeCard();
     });
+  }
+
+  /** words selected on the page or in the panel: a button "Explain …" appears next to them */
+  private onSelection(container: HTMLElement, sel: Selection | null): void {
+    const host = container.closest<HTMLElement>('.stage, .panel');
+    const btn = host?.querySelector<HTMLButtonElement>(':scope > .selx');
+    if (!host || !btn) return;
+    const text = sel && !sel.isCollapsed ? sel.toString().replace(/▶ Explain/g, ' ').replace(/\s+/g, ' ').trim() : '';
+    const node = sel?.anchorNode ?? null;
+    const sEl = node ? (node.nodeType === 1 ? node as Element : node.parentElement)?.closest<HTMLElement>('.s') ?? null : null;
+    const pos = sEl ? keyToPos(sEl.dataset.key ?? '') : null;
+    if (!text || text.length < 2 || text.length > 300 || !pos || !sel?.rangeCount) { btn.hidden = true; return; }
+    const r = sel.getRangeAt(0).getBoundingClientRect(), hr = host.getBoundingClientRect();
+    btn.textContent = `Explain “${text.length > 30 ? `${text.slice(0, 28)}…` : text}”`;
+    btn.hidden = false;
+    btn.style.left = `${Math.max(8, Math.min(hr.width - btn.offsetWidth - 8, r.left - hr.left))}px`;
+    btn.style.top = `${Math.max(8, r.top - hr.top - btn.offsetHeight - 8)}px`;
+    btn.onclick = (ev) => { ev.stopPropagation(); btn.hidden = true; sel.removeAllRanges(); this.explainSelection(text, pos); };
+  }
+
+  /** exactly what you selected: one word (its card and RULE ONE) or a phrase / part of a sentence (RULE TWO) */
+  explainSelection(text: string, pos: Position): void {
+    const c = this.controller;
+    if (!c || !this.vb || this.mode !== 'tutor') return;
+    this.endFlow();
+    this.closeTalk();
+    if (c.busy || this.cmdWin) c.skip();
+    this.playback?.pause();
+    this.engine.target = pos;
+    this.setCurrent(pos);
+    const word = text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (word && !/\s/.test(word)) {
+      const entry = this.dict?.lookup(word)?.entry;
+      void c.explainNow('word', word, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, this.dict?.lemmaOf(word) || word.toLowerCase());
+    } else void c.explainNow('phrase', text, pos, null, text.toLowerCase());
+  }
+
+  /** 🎤 Speak: one question by voice (Chrome writes it down into the box), sent when you stop talking */
+  private ptt: { stop(): void } | null = null;
+  private pttActive = false;
+  private pushToTalk(el: HTMLElement): void {
+    if (this.ptt) { this.ptt.stop(); return; }
+    const SR = (window as unknown as { SpeechRecognition?: new () => SpeechRecognitionLike; webkitSpeechRecognition?: new () => SpeechRecognitionLike }).SpeechRecognition
+      ?? (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognitionLike }).webkitSpeechRecognition;
+    if (!SR) { this.toast('Speech recognition is not available in this browser. Type your question.', 6000); return; }
+    const btn = el.querySelector<HTMLButtonElement>('form.ask [data-act="speak"]');
+    const inp = el.querySelector<HTMLInputElement>('form.ask input');
+    this.pttActive = true; // the page's other listening pauses meanwhile (one microphone user at a time)
+    if (btn) btn.textContent = '● Listening… (click = send)';
+    this.talk?.chat?.interrupt();
+    this.tts?.cancelAll();
+    let said = '';
+    const r = new SR();
+    r.lang = 'en-US'; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+    r.onresult = (e) => {
+      said = Array.from({ length: e.results.length }, (_, i) => e.results[i][0].transcript).join(' ').replace(/\s+/g, ' ').trim();
+      if (inp) inp.value = said;
+    };
+    r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') this.toast('The microphone is blocked for youtube.com: click the icon left of the address bar → Microphone → Allow.', 9000); };
+    r.onend = () => {
+      this.ptt = null; this.pttActive = false;
+      if (btn) btn.textContent = '🎤 Speak';
+      const q = said.trim();
+      if (q) { if (inp) inp.value = ''; this.ask(q, true); }
+    };
+    const handle = { stop: () => { try { r.stop(); } catch { /* already over */ } } };
+    this.ptt = handle;
+    // a moment for the page's own listening to let go of the microphone
+    setTimeout(() => { try { r.start(); } catch { r.onend?.(); } }, 350);
+    // never keep the microphone longer than one question (a recognizer that never ends)
+    setTimeout(() => { if (this.ptt === handle) { try { r.stop(); } catch { /* over */ } setTimeout(() => { if (this.ptt === handle) r.onend?.(); }, 1500); } }, 20000);
   }
 
   private seekTo(pos: Position): void {
@@ -2149,6 +2348,9 @@ class Session {
 }
 
 function normalView(): boolean { return extras.view !== 'listening'; }
+
+/** after an explanation a moment to talk: your setting, or always in voice mode */
+function talkAfter(): boolean { return extras.talkAfterExplain || extras.voiceMode; }
 
 /** page-wide choices while the tutor is on: YouTube's own captions always hidden, your video size */
 function applyPageLook(on = !!session): void {

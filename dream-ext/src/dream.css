@@ -204,3 +204,12 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .quick .keys button.on { border-color: var(--accent); color: var(--accent); }
 .quick .links { flex-direction: row; gap: 8px; }
 .panel .quick { top: 44px; right: 6px; width: calc(100% - 12px); }
+
+/* every sentence on the reading page: its own Explain button */
+.stage .page .sx { font: 600 max(12px, 0.4em)/1 var(--font-sans); padding: 0.45em 0.8em; margin: 0 0.55em 0 0; vertical-align: 0.15em; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); cursor: pointer; opacity: 0.85; }
+.stage .page .sx:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+/* words selected: explain exactly them */
+.selx { position: absolute; z-index: 55; padding: 7px 12px; border-radius: 10px; border: 1px solid var(--accent); background: var(--bg-elevated); color: var(--fg); font: 600 14px/1.2 var(--font-sans); box-shadow: var(--shadow); cursor: pointer; max-width: 320px; }
+.selx[hidden] { display: none; }
+/* 🎤 Speak next to Ask */
+.ask .speak { white-space: nowrap; }

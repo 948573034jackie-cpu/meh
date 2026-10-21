@@ -647,9 +647,22 @@ export class ListenController {
     const splitter = new StreamSentenceSplitter();
     const ready: string[] = [];
     let notify: (() => void) | null = null;
+    // (cloud voices) each sentence is synthesized as soon as the AI has written it, so it plays right after the one
+    // before it (otherwise every sentence waits a second or more for its audio): the same pieces say() will speak
+    const prefetchSay = (raw: string) => {
+      const eng = this.deps.explainEngine();
+      if (!eng.prefetch) return;
+      const v = this.deps.explainVoice();
+      for (const part of raw.split(/\[PAUSE\]/i)) {
+        const text = cleanSpokenProse(part).trim();
+        if (!text) continue;
+        const runs = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(text) ? splitByScript(text) : [{ text, zh: false }];
+        for (const run of runs) if (!run.zh && run.text.trim()) eng.prefetch(run.text, v.voiceId, v.rate);
+      }
+    };
     const ai = this.deps.explain(req, (full) => {
       entry.text = full; this.deps.onTranscript({ ...entry });
-      if (streamed || proseStream) { const got = splitter.push(full); if (got.length) { ready.push(...got); notify?.(); } }
+      if (streamed || proseStream) { const got = splitter.push(full); if (got.length) { ready.push(...got); got.forEach(prefetchSay); notify?.(); } }
     });
     ai.done.catch(() => undefined); // a cancelled reply may never be awaited (interrupted before the AI step)
     let wake: (() => void) | null = null;
