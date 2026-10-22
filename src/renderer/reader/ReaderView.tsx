@@ -88,7 +88,8 @@ export interface ScreenShared {
   playPause: () => void;
   prev: () => void;
   next: () => void;
-  seek: (pos: Position) => void;
+  /** moves the reading there; `prime` false: no synthesis ahead (the position follows silent page turns) */
+  seek: (pos: Position, opts?: { prime?: boolean }) => void;
   goToChapter: (i: number) => void;
   setRate: (r: number) => void;
   switchMode: () => void;
@@ -331,8 +332,9 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         know: () => answerKnow(),
         dontKnow: () => answerDontKnow(),
         ask: (text, spoken) => {
-          // in the window right after the word was said, anything the learner says goes with its explanation
-          if (ctl()?.answerWindow({ text })) return;
+          // a commands window of a Listening stop takes only commands: anything else said there is ignored (never sent
+          // to the AI), and the voice line keeps listening for a command
+          if (ctl()?.answerWindow({ text })) return false;
           const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, text, undefined, undefined, spoken);
         },
         hold: () => { ctl()?.hold(); },
@@ -340,6 +342,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         keepWaiting: () => ctl()?.keepWaiting(),
         windowSpeechEnded: () => ctl()?.windowSpeechEnded(),
         continueBook: () => { const c = ctl(); if (c && !c.answerWindow('bye') && modeRef.current === 'listening') c.continueNow(); },
+        inStopWindow: () => !!ctl()?.stopWindow,
       },
     });
     voiceRef.current = chat;
@@ -705,11 +708,11 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const pb = () => playbackRef.current;
   const ctl = () => controllerRef.current;
   /** navigation always interrupts a running explanation first */
-  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; ctl()?.skip(); fn(p); primeAfterSeek(p); };
+  const nav = (fn: (p: Playback) => void, prime = true) => { const p = pb(); if (!p) return; ctl()?.skip(); fn(p); if (prime) primeAfterSeek(p); };
   /**
    * A seek while paused (or before Play in Listening mode): the new position is synthesized ahead once the seeking
-   * stops (Timeline drags, arrow keys), so Play starts from the cache. Silent reading in Reading mode, where the
-   * position follows the pages, does not make the voice work for nothing.
+   * stops (Timeline drags, arrow keys, Go to), so Play starts from the cache. Silent reading in Reading mode, where the
+   * position follows the pages (seek with prime: false), does not make the voice work for nothing.
    */
   const primeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const primeAfterSeek = (p: Playback) => {
@@ -718,7 +721,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     primeTimer.current = setTimeout(() => { primeTimer.current = null; pb()?.prime(); }, PRIME_AFTER_SEEK_MS);
   };
   useEffect(() => () => { if (primeTimer.current) { clearTimeout(primeTimer.current); primeTimer.current = null; } }, [book]);
-  const seek = (pos: Position) => { posRef.current = pos; setPosition(pos); setChapter(pos.chapter); nav((p) => p.seek(pos)); if (pb()?.state === 'idle') { highlightSentence(pos); scheduleSave(pos); } };
+  const seek = (pos: Position, { prime = true }: { prime?: boolean } = {}) => { posRef.current = pos; setPosition(pos); setChapter(pos.chapter); nav((p) => p.seek(pos), prime); if (pb()?.state === 'idle') { highlightSentence(pos); scheduleSave(pos); } };
   const playPause = () => {
     const p = pb(); if (!p) return;
     if (ctl()?.busy) { ctl()!.skip(); return; }
@@ -731,12 +734,26 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   /** "I don't know": the last explanation again, deeper; else the first hard word of the sentence, else the sentence. */
   const dontKnow = () => {
     const c = ctl(); if (!c) return;
+    // a window of a Listening stop is open (the card may have gone already): the button answers the stop
+    if (c.stopWindow) { answerDontKnow(); return; }
     const open = cardRef.current;
     if (open) { void changeStatus(open.lemma, 'learning', false); if (!c.busy) void c.explainAgain(); return; }
     const hard = docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(posRef.current)}"] .w.hl-unknown, .s[data-key="${keyOf(posRef.current)}"] .w.hl-learning`);
     if (hard) tapWord(hard); else if (!c.busy && transcript.length && transcript[transcript.length - 1].status !== 'thinking') void c.explainAgain(); else explainCurrentSentence();
   };
-  const sayCard = () => { const c = cardRef.current; if (!c) return; ctl()?.skip(); const e = getEngine(readEngineId()); e.cancelAll(); e.speak(c.word, { voiceId: readVoiceId(), rate: 0.8 }); };
+  /**
+   * ▶ / S on the card: the word once more with the reading voice. It is not an answer to a Listening stop: in a window
+   * of the stop the word is said and the window keeps its end; while the stop says the word itself, nothing more.
+   * Otherwise what is being said stops first.
+   */
+  const sayCard = () => {
+    const c = cardRef.current; if (!c) return;
+    const k = ctl();
+    if (k?.sayingStopWord) return;
+    const e = getEngine(readEngineId());
+    if (!k?.stopWindow) { k?.skip(); e.cancelAll(); }
+    e.speak(c.word, { voiceId: readVoiceId(), rate: 0.8 });
+  };
   const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in Listening mode'); };
   /**
    * A new speed is heard at once: the sentence goes on at it (Playback.rateChanged; the Mac voice re-reads the sentence)

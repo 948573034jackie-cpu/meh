@@ -136,6 +136,14 @@ export class JsonStore<T> {
     if (next !== cur) this.set(next);
     return next;
   }
+  /**
+   * Writes the latest value now, synchronously: a change that must survive a crash right after it (a book added to or
+   * removed from the library, whose book file changes at once). When the write fails it is left to the background
+   * write, and the error is thrown.
+   */
+  writeNow(): void {
+    try { this.out.writeSync(); } catch (e) { this.out.markDirty(); throw e; }
+  }
   /** a change is not on disk yet (tests) */
   get pending(): boolean { return this.out.pending; }
 }

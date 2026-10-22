@@ -241,6 +241,23 @@ describe('kokoro:prepare at priority soon (an explanation the learner will hear 
     void handlePrepare(e, [{ text: '', replace: true }]); // pause / the next read-ahead list
     expect(await dropped).toBe(false);
   });
+
+  it('a stop cut in the first segment of a long sentence (the renderer releases its waits): the stop word goes before the rest of that sentence', async () => {
+    const synth = new FakeSynth();
+    const e = engine(synth);
+    const long = 'The gentleman, who had spent the better part of the afternoon wandering among the hedgerows of the estate, returned at last to the house, where his sisters were waiting for him with considerable impatience, though none of them, it must be said, had the least idea of how he would answer their questions at all.';
+    const segs = synthesisSegments(long).map((x) => x.text);
+    expect(segs.length).toBeGreaterThanOrEqual(3);
+    for (const seg of segs) void e.synthesize(seg).catch(() => undefined); // the sentence's speak(): every segment at 'now'
+    void handlePrepare(e, [{ text: '', replace: true }, { text: S[1], priority: PRIORITY.ahead - 1 }, { text: 'sanguine', priority: PRIORITY.soon, wait: true }]);
+    expect(await synth.finishOne()).toBe(segs[0]); // segment 1 plays; segment 2 is synthesized meanwhile
+    expect(synth.running).toBe(segs[1]);
+    // the cut: the speak() was cancelled with a fade, its unresolved segments are released
+    void handlePrepare(e, [{ text: '', release: true }]);
+    void e.synthesize('sanguine'); // the first of the 3 repeats
+    // the rest of the cut sentence became read-ahead (its re-read after the stop asks for it at 'now' again)
+    expect(await synth.drain()).toEqual([segs[1], 'sanguine', S[1], ...segs.slice(2)]);
+  });
 });
 
 describe('Kokoro queue: an explanation prepared ahead (priority soon) and its drop', () => {

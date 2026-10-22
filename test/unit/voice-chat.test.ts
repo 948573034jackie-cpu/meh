@@ -27,10 +27,13 @@ function setup(initial: SttStatus['state'] = 'ready', opts: { alwaysOn?: boolean
     onProgress: (cb) => { progListeners.add(cb); return () => progListeners.delete(cb); },
   };
   const tutorCalls: string[] = [];
+  /** as ReaderView answers: a Listening stop's commands window is open (it ignores everything but a command) */
+  const stop = { window: false };
   const tutor: TutorActions = {
     know: () => tutorCalls.push('know'),
     dontKnow: () => tutorCalls.push('dontKnow'),
-    ask: (t, spoken) => tutorCalls.push(`ask:${t}:${spoken ? 'spoken' : 'typed'}`),
+    ask: (t, spoken) => { tutorCalls.push(`ask:${t}:${spoken ? 'spoken' : 'typed'}`); return stop.window ? false : undefined; },
+    inStopWindow: () => stop.window,
     hold: () => tutorCalls.push('hold'),
     release: () => tutorCalls.push('release'),
     keepWaiting: () => tutorCalls.push('keepWaiting'),
@@ -53,7 +56,7 @@ function setup(initial: SttStatus['state'] = 'ready', opts: { alwaysOn?: boolean
   };
   const runTimers = () => { for (const t of timers.splice(0)) t.fn(); };
   const finishDownload = () => { st = status('ready'); downloadResolve?.(st); for (const l of progListeners) l(st); };
-  return { chat, mic, calls, tutorCalls, send, runTimers, timers, finishDownload };
+  return { chat, mic, calls, tutorCalls, send, runTimers, timers, finishDownload, stop };
 }
 
 describe('VoiceChat state machine', () => {
@@ -110,6 +113,59 @@ describe('VoiceChat state machine', () => {
     t.send({ type: 'final', text: 'why is he sad' });
     expect(t.tutorCalls).toContain('ask:why is he sad:spoken');
     expect(t.chat.snapshot.line).toBe('closed');
+  });
+
+  it('a stop\'s window ignores the learner repeating the word and keeps listening: a later "I know" still counts', async () => {
+    const t = setup();
+    await flush();
+    t.stop.window = true;
+    t.chat.pauseWindow(true); await flush();
+    t.send({ type: 'speechStart' });
+    t.send({ type: 'speechEnd' });
+    t.send({ type: 'final', text: 'sanguine' });
+    expect(t.tutorCalls).toEqual(['keepWaiting', 'windowSpeechEnded', 'ask:sanguine:spoken']); // ignored by the window
+    expect(t.chat.snapshot.line).toBe('window');
+    expect(t.chat.session.mode).toBe('commands');
+    expect(t.mic.active).toBe(true);
+    t.send({ type: 'speechStart' });
+    t.send({ type: 'speechEnd' });
+    t.send({ type: 'final', text: 'I know' });
+    expect(t.tutorCalls.at(-1)).toBe('know');
+    expect(t.chat.snapshot.line).toBe('closed');
+  });
+
+  it('words begun in a stop\'s window that arrive after it closed never reach the AI (window line and call)', async () => {
+    // the window line: the learner was still talking when the window ended; the line waited for the words
+    const t = setup();
+    await flush();
+    t.stop.window = true;
+    t.chat.pauseWindow(true); await flush();
+    t.send({ type: 'speechStart' });
+    t.stop.window = false; // the controller ended the window (its grace is over)
+    t.chat.pauseWindow(false);
+    expect(t.chat.snapshot.line).toBe('window');
+    t.send({ type: 'speechEnd' });
+    t.send({ type: 'final', text: 'sanguine sanguine is it happy' });
+    expect(t.tutorCalls).toEqual(['keepWaiting', 'windowSpeechEnded']); // no ask: not a question for the AI
+    expect(t.chat.snapshot.line).toBe('closed'); // the line it was kept open for is done
+    // a call: the words of the window (here "I know", decoded late) arrive in conversation mode
+    const c = setup();
+    await flush();
+    c.chat.toggle(); await flush();
+    c.stop.window = true;
+    c.chat.pauseWindow(true);
+    c.send({ type: 'speechStart' });
+    c.send({ type: 'speechEnd' });
+    c.stop.window = false;
+    c.chat.pauseWindow(false);
+    expect(c.chat.session.mode).toBe('conversation');
+    c.send({ type: 'final', text: 'I know' });
+    expect(c.tutorCalls).toEqual(['keepWaiting', 'windowSpeechEnded']);
+    expect(c.chat.snapshot.line).toBe('call');
+    // the next utterance of the call is a question as usual
+    c.send({ type: 'speechStart' });
+    c.send({ type: 'final', text: 'why is he happy' });
+    expect(c.tutorCalls.slice(2)).toEqual(['hold', 'ask:why is he happy:spoken']);
   });
 
   it('no window without the speech model, and never a download prompt by itself', async () => {

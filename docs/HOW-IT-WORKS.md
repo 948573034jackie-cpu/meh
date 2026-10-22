@@ -120,13 +120,17 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
      the reply streams in silently, nothing is shown, saved or added to the chapter history yet) and say the word
      3 times;
   3. a 5-second **commands-only** window with a fixed end (I know / I don't know / Go on; other speech is ignored,
-     never sent to the AI and never makes the window longer; "I know" and "Go on" drop the prepared request). The
+     never sent to the AI and never makes the window longer; "I know" and "Go on" drop the prepared request; words
+     begun in the window that arrive after it closed are dropped by VoiceChat, never sent as a question). The
      first sentences of the reply are synthesized meanwhile (`TtsEngine.prepareSoon`, Kokoro priority 'soon');
   4. the prepared explanation at once ("I don't know", or when the window ends), spoken sentence by sentence as it
      streams with every arrived sentence synthesized ahead, then another 5-second window ("I don't know" = a new,
-     deeper request, spoken as it streams);
-  5. read the interrupted sentence again from its start and go on. A stop interrupted before its explanation was
-     heard (pause, seek, Reading) stops at the word again when the reading comes back.
+     deeper request, spoken as it streams). Every "I don't know" during the stop answers it: the voice, D, the
+     buttons on the bar, the card and the Listening controls, E, and a tap on the word (after a 250 ms wait for a
+     double tap = "I know"); a tap while the word is still being said skips the first window;
+  5. read the interrupted sentence again from its start and go on. A stop interrupted before any of its explanation
+     was heard (pause, seek, replay, Reading, barge-in) stops at the word again when the reading comes back. An
+     explanation the AI cuts short after some of it was said counts as heard (learning, saved with what was said).
   It also handles manual explanations (taps, selection, Up/Down arrows = previous/next sentence, "explain the last
   30 seconds"; they stream the same way), the quiz pause, barge-in (the learner starts talking), and saving words
   as learning/known. Only explanations that were heard enter the chapter history and My Vocabulary.
@@ -186,7 +190,8 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 - Settings, library and reading positions, word statuses: JSON files in the app data folder (`src/main/settings.ts`,
   `src/main/library.ts`). `src/main/storage.ts` keeps them in memory and writes them in the background (500 ms after
   the last change, at the latest 2 s after the first; a temporary file renamed over the old one), and writes anything
-  still unsaved synchronously when the app quits. The reading position is saved at most every 5 s and when the book
+  still unsaved synchronously when the app quits. A book added to or removed from the library writes library.json at
+  once (its book file changes at once too); importing a book whose file is there without its library item puts it back. The reading position is saved at most every 5 s and when the book
   or the app closes.
 - **My Vocabulary** (`src/main/vocabulary.ts`, `src/renderer/views/Vocabulary.tsx`): every explained word with its
   sentence, explanation, Chinese, book and date; status learning/known (one `vocab:explained` call per heard

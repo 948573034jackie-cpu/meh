@@ -1046,3 +1046,190 @@ describe('prefetch: more stops (the controller in Listening mode)', () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe('answers inside a Listening stop (every "I don\'t know", taps, replays and failures keep the stop\'s rules)', () => {
+  const POS0 = { chapter: 0, paragraph: 0, sentence: 0 };
+  const DICT = { ipa: '', zh: '乐观的', level: 'C1' as const };
+  const S0 = 'He was sanguine and calm today.';
+  const words = (t: ReturnType<typeof setup>) => t.reader.spoken.map((s) => s.text);
+
+  it('"I don\'t know" from the card, the Listening button or E (explainAgain): the prepared explanation at once in the first window, again and deeper in the second; one request each; then the interrupted sentence again', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.ai.calls[0].delta('Sanguine means hopeful. In');
+    expect(t.controller.busy).toBe(false); // what lets ReaderView call explainAgain() in the window
+    const t0 = Date.now();
+    await t.controller.explainAgain();
+    await until(() => t.explainer.spoken.length === 1);
+    expect(Date.now() - t0).toBeLessThan(1000); // did not wait for the 5 s window
+    expect(t.ai.calls.length).toBe(1);
+    expect(t.ai.calls[0].cancelled).toBe(false);
+    expect(t.ai.calls[0].req.again).toBeUndefined();
+    expect(t.playback.state).toBe('explaining'); // not paused for a manual explanation
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 3);
+    expect(t.controller.stopWindow).toBe('after');
+    await t.controller.explainAgain();
+    await until(() => t.ai.calls.length === 2);
+    expect(t.ai.calls[1].req).toMatchObject({ kind: 'word', target: 'sanguine', again: true });
+    t.ai.calls[1].resolve('It means cheerful about what is to come.');
+    await until(() => t.windows.length === 5); // the window again
+    t.controller.answerWindow('bye');
+    await finished;
+    expect(t.ai.calls.length).toBe(2);
+    expect(words(t)).toEqual([S0, 'sanguine', 'sanguine', 'sanguine', S0, 'Then he left.']); // never the next sentence first
+    expect([...new Set(t.learning)]).toEqual(['sanguine']);
+  });
+
+  it('tapping the stop word in the window after the explanation is "I don\'t know" there too: again and deeper, inside the stop', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    t.controller.answerWindow('dont_know');
+    await until(() => t.windows.length === 3);
+    void t.controller.explainNow('word', 'sanguine', POS0, DICT, 'sanguine'); // ReaderView's tapWord
+    await until(() => t.ai.calls.length === 2);
+    expect(t.ai.calls[1].req.again).toBe(true);
+    t.ai.calls[1].resolve('It means cheerful.');
+    await until(() => t.windows.length === 5);
+    t.controller.answerWindow('bye');
+    await finished;
+    expect(words(t).slice(-2)).toEqual([S0, 'Then he left.']);
+  });
+
+  it('a tap on the stop word just before its window ends still counts: the window waits for the double-tap time', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 400 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.windows.length === 3); // the window after the explanation
+    await sleep(300);
+    void t.controller.explainNow('word', 'sanguine', POS0, DICT, 'sanguine'); // 100 ms before its end
+    await until(() => t.ai.calls.length === 2);
+    expect(t.ai.calls[1].req.again).toBe(true);
+    t.playback.stop();
+  });
+
+  it('tapping the stop word while it is said ("I don\'t know"): the repeats end, no window, the prepared explanation, one request, the sentence again', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    t.reader.msPerChar = 20;
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => words(t).length >= 2); // the first repeat
+    expect(t.controller.sayingStopWord).toBe(true); // the card's ▶ adds nothing now
+    t.ai.calls[0].delta('Sanguine means hopeful. In');
+    void t.controller.explainNow('word', 'sanguine', POS0, DICT, 'sanguine');
+    await until(() => t.explainer.spoken.length === 1);
+    expect(t.ai.calls.length).toBe(1);
+    expect(t.ai.calls[0].cancelled).toBe(false);
+    expect(t.bars.filter((b) => b?.phase === 'before')).toEqual([]); // no window before it
+    expect(words(t).filter((x) => x === 'sanguine').length).toBeLessThan(3);
+    t.ai.calls[0].resolve(REPLY);
+    await until(() => t.controller.stopWindow === 'after'); // the window after it
+    expect(t.controller.sayingStopWord).toBe(false);
+    t.controller.answerWindow('bye');
+    await finished;
+    expect(words(t).slice(-2)).toEqual([S0, 'Then he left.']);
+    expect(t.learning).toEqual(['sanguine']);
+  });
+
+  it('a double tap on the stop word in the window is "I know": the first tap does not start the prepared explanation meanwhile', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.ai.calls[0].resolve(REPLY); // complete and ready: a single tap would play it at once
+    void t.controller.explainNow('word', 'sanguine', POS0, DICT, 'sanguine'); // click 1
+    await sleep(120);
+    t.controller.markKnown('sanguine'); // the dblclick
+    await finished;
+    expect(t.explainer.spoken).toEqual([]);
+    expect(t.entries).toEqual([]);
+    expect(t.learning).toEqual([]);
+    expect(words(t).slice(-2)).toEqual([S0, 'Then he left.']);
+  });
+
+  it('R (replay) or a seek to the same sentence in the window or while the word is said: it stops at the word again (nothing was explained)', async () => {
+    for (const when of ['window', 'repeats'] as const) {
+      const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+      t.reader.msPerChar = when === 'repeats' ? 20 : 1;
+      t.playback.play();
+      if (when === 'window') await until(() => t.windows.length === 1);
+      else await until(() => words(t).length >= 2);
+      t.controller.skip(); t.playback.replay(); // ReaderView's nav() for R
+      await until(() => t.ai.calls.length === 2);
+      expect(t.ai.calls[0].cancelled).toBe(true);
+      await until(() => t.controller.stopWindow === 'before');
+      expect(words(t).filter((x) => x === S0)).toHaveLength(2);
+      expect(t.controller.answerWindow('know')).toBe(true);
+      t.controller.markKnown('sanguine');
+      await until(() => words(t).at(-1) === 'Then he left.');
+      t.playback.stop();
+    }
+  });
+
+  it('interrupted after "I don\'t know" while the AI has not answered yet (nothing heard): it stops at the word again on resume', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.controller.answerWindow('dont_know'); // taken: 'thinking', nothing to say yet
+    await until(() => t.entries.length === 1);
+    expect(t.controller.hold()).toBe(true); // voice chat: the learner (or noise) speaks
+    await sleep(30);
+    t.controller.release(true); // nothing came: the reading resumes
+    await until(() => t.windows.length === 3); // the same stop again
+    expect(t.ai.calls.length).toBe(2);
+    expect(t.ai.calls[0].cancelled).toBe(true);
+    expect(t.learning).toEqual([]);
+    t.playback.stop();
+  });
+
+  it('the AI fails after two sentences were said: what was heard counts (learning, saved as done with what was said), no dictionary fallback, the window after it', async () => {
+    const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.ai.calls[0].delta('Sanguine means hopeful. He stays cheerful. And');
+    t.controller.answerWindow('dont_know');
+    await until(() => t.explainer.spoken.length === 2);
+    t.ai.calls[0].fail('network');
+    await until(() => t.windows.length === 3);
+    expect(t.controller.stopWindow).toBe('after');
+    expect(t.learning).toEqual(['sanguine']);
+    expect(t.entries.at(-1)).toMatchObject({ lemma: 'sanguine', status: 'done', text: 'Sanguine means hopeful. He stays cheerful.' });
+    expect(t.explainer.spoken.map((s) => s.text)).toEqual(['Sanguine means hopeful.', 'He stays cheerful.']);
+    t.controller.answerWindow('bye');
+    await finished;
+    // it never joins the history (not complete): the next request has none
+    expect(words(t).slice(-2)).toEqual([S0, 'Then he left.']);
+  });
+
+  it('the learner repeating the word does not make the window longer: once its words came (ignored), the window ends at its end', async () => {
+    vi.useFakeTimers();
+    try {
+      for (const late of [true, false]) {
+        const t = setup([S0, 'Then he left.'], { commandWindowMs: 5000 });
+        const opened: number[] = [], closed: number[] = [];
+        t.controller['deps'].onCommandWindow = (w) => (w ? opened : closed).push(Date.now());
+        t.playback.play();
+        for (let i = 0; i < 1000 && !opened.length; i++) await vi.advanceTimersByTimeAsync(5);
+        // late: said from 4.0 s, speech end at 5.2 s, words at 5.4 s; early: all before 5 s (end 4.2 s, words 4.4 s)
+        await vi.advanceTimersByTimeAsync(late ? 4200 : 3000);
+        t.controller.keepWaiting();
+        await vi.advanceTimersByTimeAsync(late ? 1000 : 1200);
+        t.controller.windowSpeechEnded();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(t.controller.answerWindow({ text: 'sanguine' })).toBe(true);
+        for (let i = 0; i < 400 && closed.length < 1; i++) await vi.advanceTimersByTimeAsync(5);
+        expect(closed[0] - opened[0]).toBeGreaterThanOrEqual(late ? 5400 : 5000);
+        expect(closed[0] - opened[0]).toBeLessThanOrEqual(late ? 5410 : 5010);
+        t.playback.stop();
+        t.controller.dispose();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+});

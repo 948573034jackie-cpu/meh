@@ -92,6 +92,33 @@ function touchBook(id: string): void {
   libraryStore.update((lib) => (lib.items.some((it) => it.id === id) ? { items: lib.items.map((it) => (it.id === id ? { ...it, lastOpenedAt: new Date().toISOString() } : it)) } : lib));
 }
 
+function itemFor(book: Book): LibraryItem {
+  return {
+    id: book.id, title: book.title, author: book.author, kind: book.source.kind,
+    addedAt: book.source.importedAt, lastOpenedAt: new Date().toISOString(), position: null, percent: 0, words: book.stats.words,
+  };
+}
+
+/**
+ * A book imported again: opened now, and back in the library when its item is missing (the app ended between writing
+ * the book file and writing library.json, or between removing the item and removing the file).
+ */
+function ensureItem(book: Book): void {
+  if (!libraryStore.get().items.some((it) => it.id === book.id)) {
+    libraryStore.update((lib) => ({ items: [...lib.items, itemFor(book)] }));
+    writeLibraryNow();
+  } else touchBook(book.id);
+}
+
+/**
+ * library.json written at once (it is otherwise written 0.5-2 s after a change): a book added or removed changes its
+ * book file at once, and a crash in between must not leave one without the other. A failed write is left to the
+ * background write.
+ */
+function writeLibraryNow(): void {
+  try { libraryStore.writeNow(); } catch (e) { console.error('library: could not write library.json now; it is written later', e); }
+}
+
 /** Opening a book (library:load): its JSON text for the renderer, which parses it; null when it is not in the library. */
 export async function loadBook(id: string): Promise<string | null> {
   const json = await readBookJson(id);
@@ -101,8 +128,11 @@ export async function loadBook(id: string): Promise<string | null> {
 
 export function removeBook(id: string): void {
   forgetBook(id);
-  try { fs.unlinkSync(bookFile(id)); } catch { /* ignore */ }
+  // the item first, on disk at once: a crash before the file goes leaves only a stray book file (importing the book
+  // again takes it back), never a library card that opens nothing
   libraryStore.update((lib) => ({ items: lib.items.filter((it) => it.id !== id) }));
+  writeLibraryNow();
+  try { fs.unlinkSync(bookFile(id)); } catch { /* ignore */ }
 }
 
 export function saveProgress(id: string, position: Position, percent: number): void {
@@ -115,11 +145,9 @@ async function finishImport(book: Book): Promise<Book> {
   book.names = mods.detectNames(book, dict);
   forgetBook(book.id);
   writeAtomic(bookFile(book.id), zlib.gzipSync(Buffer.from(JSON.stringify(book), 'utf8')));
-  const item: LibraryItem = {
-    id: book.id, title: book.title, author: book.author, kind: book.source.kind,
-    addedAt: book.source.importedAt, lastOpenedAt: new Date().toISOString(), position: null, percent: 0, words: book.stats.words,
-  };
+  const item = itemFor(book);
   libraryStore.update((lib) => ({ items: [...lib.items.filter((it) => it.id !== book.id), item] }));
+  writeLibraryNow();
   return book;
 }
 
@@ -128,7 +156,7 @@ export async function importFile(filePath: string): Promise<Book> {
   const bytes = fs.readFileSync(filePath);
   const id = createHash('sha256').update(bytes).digest('hex').slice(0, 24);
   const existing = await readBook(id);
-  if (existing) { touchBook(id); return existing; }
+  if (existing) { ensureItem(existing); return existing; }
   const ext = path.extname(filePath).toLowerCase();
   const importer = ext === '.epub' ? mods.importers.epub : ext === '.pdf' ? mods.importers.pdf : mods.importers.text;
   const ctx = { segmenter: mods.createSegmenter(), id, sourcePath: filePath };
@@ -141,7 +169,7 @@ export async function importText(title: string, text: string): Promise<Book> {
   const mods = await loadTextModules();
   const id = createHash('sha256').update(text).digest('hex').slice(0, 24);
   const existing = await readBook(id);
-  if (existing) { touchBook(id); return existing; }
+  if (existing) { ensureItem(existing); return existing; }
   const book = await mods.textToBook(title || 'Pasted text', text, { segmenter: mods.createSegmenter(), id });
   return finishImport(book);
 }

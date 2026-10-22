@@ -108,9 +108,12 @@ RTF ~0.1–0.2). The CoreML execution provider is available in onnxruntime-node 
    (about 22 frames, 0.55 s), so the durations alone left ~0.6 s of silence at the end of every clip (15% of all
    audio). Speech = 10 ms RMS frames above max(−58 dBFS, peak − 45 dB) (not higher: the "f" of "wife." runs
    ~150 ms at −41 to −48 dBFS); 30 ms are kept before the first such frame and 80 ms after the last, plus a 15 ms
-   linear fade-out. Word times are clamped to the kept audio. The result names the text's end punctuation
+   linear fade-out. The first frame is looked for from 150 ms before the pad trim's start: Kokoro's first sound comes
+   up to ~100-125 ms before the end of the pad its durations predict, and trusting them cut 25-90 ms of a word's first
+   consonant (the "s" of "sanguine", said 3 times at every stop). A 5 ms fade-in follows. Word times are clamped to the
+   kept audio. The result names the text's end punctuation
    (`endPunct`), and the renderer adds that pause before the next segment (`SEGMENT_PAUSE_MS`: , 180 ms; ; : — 280 ms;
-   . ? ! 350 ms; `joinResults` does the same for a whole text). The cache key carries `AUDIO_FORMAT` (`trim2`), so
+   . ? ! 350 ms; `joinResults` does the same for a whole text). The cache key carries `AUDIO_FORMAT` (`trim3`), so
    WAVs made before are not reused (they age out under the 300 MB limit).
 5. `ipc.ts` returns a WAV (16-bit) plus timings; the renderer's `AudioTtsEngine` plays it and fires `onWord`.
 

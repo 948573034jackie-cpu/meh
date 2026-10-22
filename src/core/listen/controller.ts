@@ -34,6 +34,8 @@ const TRANSCRIPT_MS = 200;
 const SPEECH_GRACE_MS = 1200;
 const MAX_GRACE_MS = 2500;
 const GRACE_POLL_MS = 200;
+/** a tap on the word of a Listening stop is "I don't know" once this passed without a second tap (a double tap = "I know") */
+const DOUBLE_TAP_MS = 250;
 
 /** runExplanation's optional inputs */
 interface RunOpts {
@@ -45,6 +47,8 @@ interface RunOpts {
   spoken?: boolean;
   /** Listening stop: the request started when the book paused at the word (it is not sent again) */
   prepared?: PreparedExplanation;
+  /** the first of its sentences starts being said (the learner heard some of it) */
+  onHeard?: () => void;
 }
 
 function scriptSettings(s: Settings): ScriptSettings { return { ...s.listen, speakChinese: s.ai.speakChinese }; }
@@ -73,8 +77,11 @@ function listenScriptFor(kind: ExplainKind, target: string, sentence: string, s:
 /** What the learner answered in a commands window (voice, K / D / Esc, or the buttons); `text` = anything else they said. */
 export type WindowAnswer = 'know' | 'dont_know' | 'bye' | { text: string };
 type WindowResult = WindowAnswer | 'timeout' | 'aborted';
-/** an open commands window of a Listening stop: resolve() ends it; speech(active) = the learner is talking / stopped */
-interface FlowWindow { phase: 'before' | 'after'; resolve: (r: WindowResult) => void; speech: (active: boolean) => void }
+/**
+ * an open commands window of a Listening stop: resolve() ends it; speech(active) = the learner is talking / stopped;
+ * heard() = the words of an utterance arrived and were not a command (ignored)
+ */
+interface FlowWindow { phase: 'before' | 'after'; resolve: (r: WindowResult) => void; speech: (active: boolean) => void; heard: () => void }
 
 /**
  * A commands window is open: 'before' = the word was just said (Listening), 'after' = an explanation just
@@ -181,6 +188,11 @@ export class ListenController {
   private stopPrepared: PreparedExplanation | null = null;
   /** ends the word repeats of the stop at once (the stop was aborted) */
   private sayStop: (() => void) | null = null;
+  /** "I don't know" (the word tapped) while the stop's word was still being said: no window, the prepared explanation at once */
+  private stopEarly = false;
+  /** a tap on the stop's word waits DOUBLE_TAP_MS for a second tap before it counts as "I don't know" (until tapDue) */
+  private tapTimer: ReturnType<typeof setTimeout> | null = null;
+  private tapDue = 0;
   /** ends the Listening stop in progress at once (the controller was switched off: Reading, or auto-stop off) */
   private stopInterrupt: (() => void) | null = null;
   /**
@@ -334,8 +346,21 @@ export class ListenController {
     let aborted = false;
     let interrupted = false;
     let prepared: PreparedExplanation | null = null;
-    // over at once: the prepared request is dropped (synchronously), the word is not said again, the window ends
-    const interrupt = () => { interrupted = true; prepared?.cancel(); this.sayStop?.(); this.flowWin?.resolve('aborted'); };
+    /** the trigger being handled, and whether any of its explanation was heard */
+    let trigger: Trigger | null = null;
+    let heard = false;
+    // over at once: the prepared request is dropped (synchronously), the word is not said again, the window ends. A
+    // trigger none of whose explanation was heard yet is not explained: the reading stops at it again when it comes back
+    // here (a resume re-reads the sentence), instead of skipping it for the repeat window. Done here, not later: a seek or
+    // replay to this same sentence asks stopAt() synchronously, before this loop's finally runs.
+    const interrupt = () => {
+      interrupted = true;
+      if (trigger && !heard) {
+        if (trigger.lemma) this.lastExplainedAt.delete(trigger.lemma);
+        if (this.rereadGuard && samePosition(this.rereadGuard, pos)) this.rereadGuard = null;
+      }
+      prepared?.cancel(); this.sayStop?.(); this.flowWin?.resolve('aborted');
+    };
     // pause, seek, stop, play from elsewhere, hold (barge-in) or a manual explanation; or (stopInterrupt) the
     // controller was switched off: Reading, or auto-stop off
     const off = this.playback.on('state', (st) => { if (st !== 'explaining') { aborted = true; interrupt(); } });
@@ -352,9 +377,12 @@ export class ListenController {
         // only this trigger is asked for now: the next one of the sentence is asked for when its own stop starts, with
         // this explanation in the history if it was heard
         prepared = null;
+        trigger = t; heard = false;
+        const onHeard = () => { heard = true; };
         try {
           this.last = { kind: t.kind, target: t.target, pos, dict: t.dict ?? null, lemma: t.lemma };
           this.stopLemma = t.lemma ?? null;
+          this.stopEarly = false;
           // recorded now: whatever the learner answers, this word does not stop again within the repeat window
           if (t.lemma) this.lastExplainedAt.set(t.lemma, this.offsetOf(pos));
           if (t.lemma) {
@@ -363,8 +391,11 @@ export class ListenController {
             prepared = this.stopPrepared = this.prepareExplanation(t, pos, cur.text);
             const said = await this.sayTarget(t.target, t.lemma, Math.max(0, s.listen.wordRepeats), over);
             if (over()) break;
-            if (said === 'skipped') continue; // tapped away (known) while it was said
-            const a = await this.commandWindow('before', t);
+            // "I don't know" (the word tapped) while it was said: no window, the prepared explanation at once
+            const early = this.stopEarly && !this.dismissed.has(t.lemma);
+            this.stopEarly = false;
+            if (said === 'skipped' && !early) continue; // tapped away (known) while it was said
+            const a: WindowResult = early ? 'dont_know' : await this.commandWindow('before', t);
             if (a === 'aborted' || over()) break;
             // "I know" (or the word tapped away / marked known meanwhile): no explanation, the prepared one is dropped
             if (a === 'know' || this.dismissed.has(t.lemma) || this.deps.vocab().words[t.lemma] === 'known') { this.dismissed.add(t.lemma); continue; }
@@ -372,7 +403,7 @@ export class ListenController {
             if (a === 'bye') { this.deps.onMarkLearning(t.lemma); continue; }
             // "I don't know" (at once), silence or anything else (when the window ends): the prepared explanation
           }
-          let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, { prepared: prepared ?? undefined });
+          let res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, { prepared: prepared ?? undefined, onHeard });
           if (res === 'aborted' || over()) break;
           if (res === 'skipped') continue;
           for (;;) {
@@ -380,7 +411,7 @@ export class ListenController {
             if (a === 'aborted' || over()) break;
             if (a === 'dont_know') {
               // again, harder and deeper: a new request, spoken as it streams
-              res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, { again: true });
+              res = await this.runExplanation(t.kind, t.target, pos, cur.text, t.dict ?? null, listenScriptFor(t.kind, t.target, cur.text, s, t.lemma), t.lemma, { again: true, onHeard });
               if (res !== 'done' || over()) break;
               continue;
             }
@@ -388,11 +419,13 @@ export class ListenController {
             break; // "go on", nothing, or "I know": the word stays as it is (learning unless known now)
           }
         } finally {
-          // interrupted before its explanation was heard: the reading stops at this word again when it comes back here
-          // (a resume re-reads the sentence), instead of skipping it for the repeat window with nothing explained
-          if (interrupted && t.lemma && prepared && prepared.status !== 'taken') { this.lastExplainedAt.delete(t.lemma); this.rereadGuard = null; }
+          // interrupted before any of its explanation was heard (interrupt() made the reading stop at it again):
+          // runExplanation, ending after that, recorded the word as explained once more
+          if (interrupted && t.lemma && !heard) this.lastExplainedAt.delete(t.lemma);
           prepared?.cancel(); // not taken: "I know", "go on", tapped away, or the stop was aborted (no-op once taken)
-          this.stopLemma = null; this.stopPrepared = null;
+          this.stopLemma = null; this.stopPrepared = null; this.stopEarly = false;
+          if (this.tapTimer) { clearTimeout(this.tapTimer); this.tapTimer = null; }
+          trigger = null;
           this.deps.onStopTarget?.(null);
         }
       }
@@ -450,17 +483,30 @@ export class ListenController {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let speaking = false;
       let lastSpeechEnd = -Infinity;
+      /** utterances that ended during the window, and how many of them brought words that were not a command */
+      let ended = 0;
+      let ignored = 0;
       const check = () => {
         timer = undefined;
-        const graceEnd = Math.min(speaking ? Infinity : lastSpeechEnd + SPEECH_GRACE_MS, deadline + MAX_GRACE_MS);
         const now = Date.now();
+        // a tap on the word waits for its double-tap time (at most DOUBLE_TAP_MS): the window ends with its answer
+        if (this.tapTimer) { timer = setTimeout(check, Math.max(1, Math.min(GRACE_POLL_MS, this.tapDue - now))); return; }
+        const graceEnd = Math.min(speaking ? Infinity : lastSpeechEnd + SPEECH_GRACE_MS, deadline + MAX_GRACE_MS);
         if (now >= graceEnd) win.resolve('timeout');
         else timer = setTimeout(check, Math.min(GRACE_POLL_MS, graceEnd - now));
       };
       const win: FlowWindow = {
         phase,
         resolve: (r: WindowResult) => { if (timer) clearTimeout(timer); timer = undefined; if (this.flowWin === win) this.flowWin = null; resolve(r); },
-        speech: (active: boolean) => { speaking = active; if (!active) lastSpeechEnd = Date.now(); },
+        speech: (active: boolean) => { speaking = active; if (!active) { lastSpeechEnd = Date.now(); ended++; } },
+        heard: () => {
+          ignored = Math.min(ignored + 1, ended);
+          // the words of every utterance are in and none was a command: no reason to wait past the end (repeating the
+          // word does not make the window longer); past it, the window ends now
+          if (speaking || ignored < ended) return;
+          lastSpeechEnd = -Infinity;
+          if (Date.now() >= deadline) { if (timer) clearTimeout(timer); check(); }
+        },
       };
       this.flowWin = win;
       timer = setTimeout(check, ms);
@@ -483,7 +529,7 @@ export class ListenController {
     if (!w) return false;
     // anything other than the three commands (the learner repeating the word, a question) is swallowed: the window
     // only takes commands and never sends speech to the AI
-    if (typeof a === 'object') return true;
+    if (typeof a === 'object') { w.heard(); return true; }
     w.resolve(a);
     return true;
   }
@@ -543,6 +589,7 @@ export class ListenController {
     this.skip();
     this.wakeAfter?.(); this.wakeWait?.();
     this.flowWin?.resolve('aborted');
+    if (this.tapTimer) { clearTimeout(this.tapTimer); this.tapTimer = null; }
     if (this.readingWindowTimer) { clearTimeout(this.readingWindowTimer); this.readingWindowTimer = null; this.deps.onPauseWindow?.(false); this.deps.onCommandWindow?.(null); }
     this.disposed = true;
     this.rereadGuard = null;
@@ -603,10 +650,10 @@ export class ListenController {
 
   /** Manual explanation from the popup, the E key or a selection. Pauses reading, explains, resumes. */
   async explainNow(kind: ExplainKind, target: string, pos: Position, dict: ExplainRequest['dict'], lemma?: string, question?: string, resumeAfter?: boolean, again?: boolean, spoken?: boolean): Promise<void> {
-    // the word of the stop tapped while its first window is open: that is "I don't know", the prepared explanation at
-    // once (pausing for a manual explanation would drop it and ask again)
-    const w = this.flowWin;
-    if (w?.phase === 'before' && lemma && lemma === this.stopLemma && !question && !again && (kind === 'word' || kind === 'phrase')) { w.resolve('dont_know'); return; }
+    // the word of a Listening stop tapped while it is said or a window of the stop is open: that is "I don't know"
+    // inside the stop (before the explanation the prepared one at once, after it again and deeper; then the sentence
+    // again). Pausing for a manual explanation would drop the prepared reply, ask again and go on at the next sentence.
+    if (lemma && lemma === this.stopLemma && !question && (kind === 'word' || kind === 'phrase') && (this.flowWin || this.stopRepeating)) { this.tapStopWord(lemma); return; }
     if (this.held) { resumeAfter = (resumeAfter ?? false) || this.heldResume; this.held = false; this.heldResume = false; }
     this.closeReadingWindow();
     const wasPlaying = this.beginManual(resumeAfter);
@@ -666,11 +713,42 @@ export class ListenController {
     this.playback.play(readOn);
   }
 
-  /** "I don't know": the last explanation again, deeper; the word stays learning and will be explained again later. */
+  /**
+   * "I don't know": the last explanation again, deeper; the word stays learning and will be explained again later.
+   * During a Listening stop (the card's button, the Listening button, E) it answers the stop instead.
+   */
   async explainAgain(): Promise<void> {
+    if (this.stopDontKnow()) return;
     const l = this.last;
     if (!l) return;
     await this.explainNow(l.kind, l.target, l.pos, l.dict, l.lemma, undefined, undefined, true);
+  }
+
+  /** the stop's word is being said (its repeats), the prepared explanation not taken yet */
+  private get stopRepeating(): boolean { return this.sayStop !== null && this.stopPrepared?.status === 'running'; }
+
+  /** The word of a Listening stop is being said (its repeats), so the card's ▶ has nothing to add. */
+  get sayingStopWord(): boolean { return this.sayStop !== null; }
+
+  /**
+   * "I don't know" during a Listening stop: an open window of the stop ends with it (before the explanation: the
+   * prepared one at once; after it: again and deeper, inside the stop); while the word is still being said the repeats
+   * end and the window is skipped. False when no stop waits for an answer.
+   */
+  private stopDontKnow(): boolean {
+    if (this.flowWin) { this.flowWin.resolve('dont_know'); return true; }
+    if (this.stopRepeating) { this.stopEarly = true; this.sayStop?.(); return true; }
+    return false;
+  }
+
+  /** A tap on the stop's word: "I don't know" once DOUBLE_TAP_MS passed without the second tap of a double tap ("I know"). */
+  private tapStopWord(lemma: string): void {
+    if (this.tapTimer) clearTimeout(this.tapTimer);
+    this.tapDue = Date.now() + DOUBLE_TAP_MS;
+    this.tapTimer = setTimeout(() => {
+      this.tapTimer = null;
+      if (this.stopLemma === lemma && !this.dismissed.has(lemma) && this.deps.vocab().words[lemma] !== 'known') this.stopDontKnow();
+    }, DOUBLE_TAP_MS);
   }
 
   /** "I know": known now, never explained or highlighted again. */
@@ -803,7 +881,7 @@ export class ListenController {
     const streamed = kind === 'question' || prose;
     const splitter = new StreamSentenceSplitter({ firstMaxChars: FIRST_PIECE_CHARS });
     const plan = new SpokenPlan({ pauses: prose });
-    const ready: { parts: SpokenPart[]; paragraph: boolean }[] = [];
+    const ready: { parts: SpokenPart[]; paragraph: boolean; text: string }[] = [];
     let notify: (() => void) | null = null;
     // whose sentences are synthesized ahead: the prepared request's (the window already sent the first ones)
     const owner: object = opts.prepared ?? {};
@@ -811,7 +889,7 @@ export class ListenController {
     const lookAhead = () => this.presynth(owner, ready.flatMap((r) => englishTexts(r.parts)));
     const arrive = (pieces: SentencePiece[]) => {
       if (!pieces.length) return;
-      for (const p of pieces) ready.push({ parts: plan.parts(p.text), paragraph: p.paragraph });
+      for (const p of pieces) ready.push({ parts: plan.parts(p.text), paragraph: p.paragraph, text: p.text });
       lookAhead();
       notify?.();
     };
@@ -839,6 +917,7 @@ export class ListenController {
     // its first sentence has started (a reply dropped by "I know" never reaches the next request)
     let reply: string | null = null;
     let heard = false;
+    const hear = () => { if (heard) return; heard = true; opts.onHeard?.(); };
     let committed = false;
     const commit = () => {
       if (committed || reply === null || !heard) return;
@@ -888,7 +967,7 @@ export class ListenController {
     /**
      * The reply is spoken sentence by sentence as it arrives: a short pause between sentences (longer at a new
      * paragraph), [PAUSE] waits for the learner (prose), Chinese goes to the Chinese voice. A reply that fails before
-     * anything was said falls back to the dictionary meaning; after that it just stops.
+     * anything was said falls back to the dictionary meaning; after that it just stops (what was heard counts).
      */
     const runStreamed = async (): Promise<boolean> => {
       let finished = false;
@@ -900,18 +979,22 @@ export class ListenController {
         reply = res.text; commit();
       }, (e: Error & { code?: string }) => { failure = e; }).finally(() => { finished = true; notify?.(); });
       let saidAny = false;
+      /** the sentences the learner has heard (begun), what is kept of a reply the AI cut short */
+      let saidText = '';
       for (;;) {
         if (cancelled) return false;
         const next = ready.shift();
         if (next) {
           let gap = saidAny ? (next.paragraph ? PARAGRAPH_PAUSE_MS : SENTENCE_PAUSE_MS) : 0;
+          let begun = false;
           for (const part of next.parts) {
             if (part === null) { await wait(); if (cancelled) return false; gap = 0; continue; }
             for (const st of part) {
               if (st.type !== 'say' || (st.lang === 'zh' && !chineseOn())) continue;
               if (gap) { await pause(gap); gap = 0; if (cancelled) return false; }
               if (entry.status === 'thinking') { entry.status = 'speaking'; publish(true); }
-              heard = true; commit();
+              hear(); commit();
+              if (!begun) { begun = true; saidText += (saidText ? (next.paragraph ? '\n\n' : ' ') : '') + next.text.trim(); }
               if (st.lang === 'en') { this.presynthSaid(owner, st.text); lookAhead(); }
               if (!(await say(st.text, st.lang, st.role))) return false;
               saidAny = true;
@@ -925,6 +1008,9 @@ export class ListenController {
       }
       const err = failure as (Error & { code?: string }) | null;
       if (err) {
+        // cut short by the AI after some of it was said (it failed or stopped answering): like an explanation the learner
+        // cut short, it was heard. It stays 'speaking' (the word is learning) and what was said is what is saved.
+        if (heard && err.code !== 'cancelled') { entry.error = err.message; entry.text = saidText || entry.text; entry.parts = { free: entry.text }; return false; }
         entry.status = err.code === 'cancelled' ? 'skipped' : 'error'; entry.error = err.message;
         publish(true);
         // nothing of it was said (no key, offline, the AI stopped answering): at least the dictionary meaning
@@ -954,7 +1040,7 @@ export class ListenController {
       entry.text = res.text; entry.usd = res.usage.usd;
       entry.parts = parseExplanation(res.text, kind); entry.status = 'speaking';
       publish(true);
-      reply = res.text; heard = !cancelled; commit();
+      reply = res.text; if (!cancelled) hear(); commit();
       return runSteps(aiSteps(entry.parts, scriptSettings(s), !!this.deps.zhVoiceId()));
     };
     const runSteps = async (steps: AnyStep[]): Promise<boolean> => {

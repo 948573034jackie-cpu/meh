@@ -194,6 +194,19 @@ export class AudioTtsEngine implements TtsEngine {
     };
   }
 
+  /**
+   * A speak() was cut: its segments still being synthesized are forgotten here, and the local queue is told that nobody
+   * waits for them any more (they drop to read-ahead; held jobs such as the stop word keep their place).
+   */
+  private releaseUnplayed(segs: SynthesisSegment[], voiceId: string): void {
+    let any = false;
+    for (const s of segs) {
+      const k = this.key(s.text, voiceId);
+      if (this.unresolved.has(k)) { this.unresolved.delete(k); this.cache.delete(k); any = true; }
+    }
+    if (any) void this.opts.prepare?.([{ text: '', release: true }])?.catch(() => undefined);
+  }
+
   /** Playback paused or stopped: drop the read-ahead (local synthesis stops working for nothing). */
   stopReadAhead(): void {
     this.aheadGen++;
@@ -243,6 +256,10 @@ export class AudioTtsEngine implements TtsEngine {
       this.pending.delete(handle);
       cleanup?.(fade); cleanup = null;
       if (this.current?.cancel === handle.cancel) this.current = null;
+      // the stop at a hard word cuts the sentence without a cancelAll(): its segments not synthesized yet are not needed
+      // now (the re-read after the stop asks again), so the local queue must not keep them before the stop word and the
+      // explanation (they wait at 'now' for this speak() otherwise)
+      if (fade) this.releaseUnplayed(segs, opts.voiceId);
       resolve(o);
     };
     this.pending.add(handle);

@@ -54,19 +54,28 @@ export function DiagnosticsView(): JSX.Element {
   ].join('\n');
   const text = textOf(d, usage);
   const speed = speedLines(d, usage);
-  const copy = async () => {
+  /**
+   * The fresh facts are copied. The clipboard write starts in the click itself, with the text still coming (Safari on
+   * the iPad allows a write only while the tap is handled; a write after awaiting the facts is refused there).
+   */
+  const copy = () => {
     setCopied('Copying…');
-    let fresh: { diag: Diagnostics; records: UsageRecord[] } | null = null;
-    try { fresh = await refresh(); } catch { /* copy what is shown */ }
-    try { await navigator.clipboard.writeText(textOf(fresh?.diag ?? d, fresh?.records ?? usage)); setCopied('Copied. Paste it in your message.'); }
-    catch (e) { setCopied(`Could not copy: ${(e as Error).message}`); }
+    const fresh = refresh().then((f) => textOf(f.diag, f.records), () => textOf(d, usage)); // or what is shown
+    const later = () => fresh.then((t) => navigator.clipboard.writeText(t));
+    let write: Promise<void>;
+    try {
+      write = typeof ClipboardItem !== 'undefined' && typeof navigator.clipboard.write === 'function'
+        ? navigator.clipboard.write([new ClipboardItem({ 'text/plain': fresh.then((t) => new Blob([t], { type: 'text/plain' })) })])
+        : later();
+    } catch { write = later(); } // a browser whose ClipboardItem takes no promise
+    write.then(() => setCopied('Copied. Paste it in your message.'), (e: Error) => setCopied(`Could not copy: ${e.message}`));
   };
   return (
     <div className="library">
       <h1>Diagnostics</h1>
       <div className="row">
         <button onClick={runProbe}>Test speech voice</button>
-        <button onClick={() => { void copy(); }} data-testid="diagnostics-copy">Copy diagnostics</button>
+        <button onClick={copy} data-testid="diagnostics-copy">Copy diagnostics</button>
         {copied && <span className="hint">{copied}</span>}
       </div>
       <div className="field" style={{ marginTop: 16 }}>

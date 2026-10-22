@@ -115,6 +115,18 @@ describe('trimChunk: one model output to the kept audio and its word times', () 
     expect(wt[1].end).toBeCloseTo(hi, 6);
     for (const w of wt) { expect(w.start).toBeGreaterThanOrEqual(1); expect(w.end).toBeLessThanOrEqual(hi + 1e-9); }
   });
+
+  it('a soft first consonant that sounds before the pad\'s predicted end is kept whole, with 30 ms before it, faded in', () => {
+    const { wave, durations, tokens } = modelOutput(6);
+    // Kokoro's audible onset comes up to ~100 ms before the end of the leading pad: an /s/-like sound at -30 dBFS there
+    const onset = 10 * 600 - ms(100);
+    wave.set(tone(ms(100), -30, 5000), onset);
+    const { pcm } = trimChunk(wave, durations, tokens, [0, 0, 0, 1, 1, 1, -1], [{ charIndex: 0, charLength: 3 }, { charIndex: 4, charLength: 3 }], 0);
+    expect(pcm.byteOffset / 4).toBe(onset - ms(30)); // trimRange alone started 50 ms before the pad's end: inside the sound
+    expect(rmsDb(pcm, ms(30), ms(130))).toBeGreaterThan(-31); // all of it is there
+    expect(Math.abs(pcm[0])).toBeLessThan(1e-4); // and the clip starts from silence (5 ms fade-in)
+    for (let i = 1; i < ms(5); i++) expect(Math.abs(pcm[i])).toBeLessThan(0.001);
+  });
 });
 
 describe('end punctuation and the cache', () => {
@@ -138,9 +150,11 @@ describe('end punctuation and the cache', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kokoro-trim-'));
     const e = new KokoroEngine({ modelDir: dir, cacheDir: dir, persist: false, warmUp: false });
     const old = crypto.createHash('sha1').update(`${MODEL_VERSION}\0bf_emma\0${(1).toFixed(2)}\0Hello.`).digest('hex');
-    expect(AUDIO_FORMAT).toBe('trim2');
+    expect(AUDIO_FORMAT).toBe('trim3');
     expect(e.cacheKey('Hello.', 'bf_emma', 1)).not.toBe(old);
-    expect(e.cacheKey('Hello.', 'bf_emma', 1)).toBe(crypto.createHash('sha1').update(`${MODEL_VERSION}/trim2\0bf_emma\0${(1).toFixed(2)}\0Hello.`).digest('hex'));
+    // trim2 WAVs (their first consonant cut) are not reused either
+    expect(e.cacheKey('Hello.', 'bf_emma', 1)).not.toBe(crypto.createHash('sha1').update(`${MODEL_VERSION}/trim2\0bf_emma\0${(1).toFixed(2)}\0Hello.`).digest('hex'));
+    expect(e.cacheKey('Hello.', 'bf_emma', 1)).toBe(crypto.createHash('sha1').update(`${MODEL_VERSION}/trim3\0bf_emma\0${(1).toFixed(2)}\0Hello.`).digest('hex'));
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

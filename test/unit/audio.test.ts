@@ -107,6 +107,39 @@ describe('AudioTtsEngine', () => {
     expect(b.volumes).toEqual([]);
   });
 
+  it('a stop cut in the first segment of a long sentence: its segments not synthesized yet stop waiting at "now" (released), so the stop word goes first', async () => {
+    const { synthesisSegments } = await import('@core/tts/segments');
+    const prepared: { text: string; release?: boolean }[][] = [];
+    const synth: string[] = [];
+    const held = new Map<string, () => void>();
+    const long = 'The gentleman, who had spent the better part of the afternoon wandering among the hedgerows of the estate, returned at last to the house, where his sisters were waiting for him with considerable impatience, though none of them, it must be said, had the least idea of how he would answer their questions at all.';
+    const segs = synthesisSegments(long).map((x) => x.text);
+    expect(segs.length).toBeGreaterThanOrEqual(3);
+    // the first segment is ready, the others are still being synthesized
+    const e = new AudioTtsEngine('kokoro', (_e, text) => { synth.push(text); return text === segs[0] || !segs.includes(text) ? Promise.resolve(result(null)) : new Promise((r) => { held.set(text, () => r(result(null))); }); }, async () => [], true, { prepare: async (items) => { prepared.push(items); return true; }, segment: true });
+    const h = e.speak(long, { voiceId: 'bf_emma', rate: 1 });
+    await sleep(5);
+    expect(synth).toEqual(segs); // every segment is asked for at once (the main process queues them at 'now')
+    expect(FakeAudio.instances[0].played).toBe(1);
+    h.cancel({ fade: true }); // the word after the hard word started: the stop
+    expect(await h.done).toBe('cancelled');
+    expect(prepared).toEqual([[{ text: '', release: true }]]);
+    for (const go of held.values()) go();
+    // the re-read after the stop asks for them again (the forgotten requests are not waited on)
+    const h2 = e.speak(long, { voiceId: 'bf_emma', rate: 1 });
+    await sleep(5);
+    expect(synth.filter((t) => t === segs[1])).toHaveLength(2);
+    expect(synth.filter((t) => t === segs[0])).toHaveLength(1);
+    h2.cancel();
+    // a cut whose segments are all here already sends nothing
+    prepared.length = 0;
+    const h3 = e.speak('He was sanguine about it.', { voiceId: 'bf_emma', rate: 1 });
+    await sleep(5);
+    h3.cancel({ fade: true });
+    await h3.done;
+    expect(prepared).toEqual([]);
+  });
+
   it('cancelAll() while the audio is still being synthesized prevents it from playing later', async () => {
     let resolve!: (r: CloudTtsResult) => void;
     const e = new AudioTtsEngine('edge', () => new Promise((r) => { resolve = r; }), async () => [], true);

@@ -42,8 +42,11 @@ export interface TutorActions {
   know(): void;
   /** "I don't know": the last explanation again, deeper */
   dontKnow(): void;
-  /** a question about the current sentence, sent with the chapter's history; the reply is spoken as it streams */
-  ask(text: string, spoken: boolean): void;
+  /**
+   * a question about the current sentence, sent with the chapter's history; the reply is spoken as it streams. Returns
+   * false when it was not taken: a Listening stop's commands window is open, and ignores anything but a command.
+   */
+  ask(text: string, spoken: boolean): boolean | void;
   /** the learner started talking: the tutor goes quiet and the book pauses */
   hold(): void;
   /** the learner said nothing after all: the book goes on if it was going (Listening) */
@@ -54,6 +57,8 @@ export interface TutorActions {
   windowSpeechEnded?(): void;
   /** "bye bye" during the pause: the book goes on (Listening); Reading stays where it is */
   continueBook(): void;
+  /** a Listening stop's commands window is open: nothing said in it may reach the AI, also when its words come late */
+  inStopWindow?(): boolean;
 }
 
 export interface VoiceTurn { id: number; who: 'you' | 'tutor'; text: string; spoken: boolean }
@@ -97,6 +102,8 @@ export interface VoiceChatOptions {
 }
 
 let nextSession = 0;
+/** window utterances remembered at most (the oldest is forgotten) */
+const WINDOW_SEGS_MAX = 16;
 
 export class VoiceChat extends Emitter<VoiceChatEvents> {
   readonly session: VoiceSession;
@@ -120,6 +127,11 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
   private noQuestionTimer: unknown = null;
   private graceTimer: unknown = null;
   private offs: (() => void)[] = [];
+  /**
+   * utterances (segment ids) begun while a Listening stop's commands window was open: their words follow the window's
+   * rules even when they arrive after it closed (late: dropped, never a question for the AI)
+   */
+  private windowSegs: string[] = [];
   private disposed = false;
   private readonly st: (fn: () => void, ms: number) => unknown;
   private readonly ct: (t: unknown) => void;
@@ -137,11 +149,11 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
       opts.mic.on('frame', (pcm) => { const id = this.sid; if (id) void opts.stt.push(id, pcm).catch(() => undefined); }),
       opts.mic.on('level', (l) => { this.level = l; this.changed(); }),
       opts.mic.on('ended', () => { this.error = 'The microphone was disconnected.'; this.closeLine(); }),
-      this.session.on('speechStart', () => this.onSpeechStart()),
+      this.session.on('speechStart', (e) => this.onSpeechStart(String(e.segmentId))),
       this.session.on('speechEnd', () => this.onSpeechEnd()),
       this.session.on('partial', (p) => { this.partial = p.text; this.changed(); }),
-      this.session.on('question', (q) => this.onQuestion(q.text)),
-      this.session.on('command', (c) => this.onCommand(c.intent, c.text)),
+      this.session.on('question', (q) => this.onQuestion(q.text, String(q.segmentId))),
+      this.session.on('command', (c) => this.onCommand(c.intent, c.text, String(c.segmentId))),
       this.session.on('error', (e) => { this.error = `Speech recognition failed (${e.message}).`; this.changed(); }),
     );
     void opts.stt.status().then((s) => { this.model = s; this.afterModelChange(); this.changed(); }).catch(() => undefined);
@@ -312,11 +324,14 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
     this.session.setMode(mode);
   }
 
-  private onSpeechStart(): void {
+  private onSpeechStart(segmentId: string): void {
     this.userSpeaking = true;
     this.partial = '';
     this.clearNoQuestion();
-    if (this.session.mode === 'commands') this.opts.tutor.keepWaiting();
+    if (this.session.mode === 'commands') {
+      if (this.opts.tutor.inStopWindow?.()) { this.windowSegs.push(segmentId); if (this.windowSegs.length > WINDOW_SEGS_MAX) this.windowSegs.shift(); }
+      this.opts.tutor.keepWaiting();
+    }
     else if (this.line === 'call' && !this.holding) { this.holding = true; this.opts.tutor.hold(); }
     this.changed();
   }
@@ -333,22 +348,25 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
 
   private clearNoQuestion(): void { if (this.noQuestionTimer !== null) { this.ct(this.noQuestionTimer); this.noQuestionTimer = null; } }
 
-  private onQuestion(text: string): void {
+  private onQuestion(text: string, segmentId: string): void {
     const t = text.trim();
     this.userSpeaking = false;
     this.partial = '';
+    if (this.lateWindowWords(segmentId)) return;
     this.clearNoQuestion();
     if (!t) { this.changed(); return; }
     this.holding = false;
     this.emit('heard', { text: t });
-    this.opts.tutor.ask(t, true);
-    this.afterTurnInWindow();
+    // ignored by an open stop window (not a command): the line keeps listening for one until the window ends
+    if (this.opts.tutor.ask(t, true) !== false) this.afterTurnInWindow();
     this.changed();
   }
 
-  private onCommand(intent: 'know' | 'dont_know' | 'bye', text: string): void {
+  private onCommand(intent: 'know' | 'dont_know' | 'bye', text: string, segmentId: string): void {
     this.userSpeaking = false;
     this.partial = '';
+    // "I know" / "I don't know" begun in a stop's window that has ended since: too late (the window waited what it may)
+    if (intent !== 'bye' && this.lateWindowWords(segmentId)) return;
     this.clearNoQuestion();
     this.emit('heard', { text, command: intent });
     if (intent === 'know') { this.opts.tutor.know(); this.afterTurnInWindow(); }
@@ -365,6 +383,21 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
       if (inWindow) this.opts.tutor.continueBook();
     }
     this.changed();
+  }
+
+  /**
+   * The words of an utterance begun in a Listening stop's commands window that has closed since (the learner went on
+   * talking past its end, or the recogniser was slow): they are not a command the window can still take, so they are
+   * ignored like everything else said there, never sent to the AI. A window line kept open for them is done.
+   */
+  private lateWindowWords(segmentId: string): boolean {
+    const i = this.windowSegs.indexOf(segmentId);
+    if (i < 0) return false;
+    this.windowSegs.splice(i, 1);
+    if (this.opts.tutor.inStopWindow?.()) return false;
+    if (this.windows === 0) this.afterTurnInWindow();
+    this.changed();
+    return true;
   }
 
   /** a window line has done its job once the learner answered: the next pause opens a new one */

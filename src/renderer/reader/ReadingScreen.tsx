@@ -123,7 +123,7 @@ export function ReadingScreen({ shared, settings, popover, setPopover }: Props):
     for (const el of pagesRef.current?.querySelectorAll<HTMLElement>('.s[data-key]') ?? []) {
       const r = el.getClientRects()[0]; if (!r) continue;
       const abs = r.left - viewRect.left + page.index * step;
-      if (Math.floor((abs + 2) / step) === page.index) { const pos = shared.posOf(el); if (pos && keyOf(pos) !== keyOf(positionRef.current)) shared.seek(pos); break; }
+      if (Math.floor((abs + 2) / step) === page.index) { const pos = shared.posOf(el); if (pos && keyOf(pos) !== keyOf(positionRef.current)) shared.seek(pos, { prime: false }); break; }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page.index]);

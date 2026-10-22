@@ -38,9 +38,17 @@ export interface SynthesisResult {
 
 /**
  * Part of every cache key: bumped when the audio made for the same text changes, so older files are not reused
- * (they are left to pruneDisk's size limit). trim2 = silence trimmed by energy (speechRange), pauses added on purpose.
+ * (they are left to pruneDisk's size limit). trim2 = silence trimmed by energy (speechRange), pauses added on purpose;
+ * trim3 = the start found by energy too (trim2 cut 25-90 ms of a word's first consonant).
  */
-export const AUDIO_FORMAT = 'trim2';
+export const AUDIO_FORMAT = 'trim3';
+/**
+ * Kokoro's first sound comes up to about 100-125 ms before the end of the leading pad its durations predict: the start
+ * is looked for by energy from this long before trimRange's start (which trusts the durations).
+ */
+const ONSET_SEARCH_SEC = 0.15;
+/** a short fade-in where the kept audio starts (no click when it starts inside a sound) */
+const FADE_IN_SEC = 0.005;
 
 export type EngineState = 'missing' | 'downloading' | 'loading' | 'ready' | 'error';
 
@@ -635,13 +643,15 @@ export function joinResults(parts: SynthesisResult[], starts: number[]): Synthes
 }
 
 /**
- * One model output -> the audio kept and its word times: trimRange (the pad tokens), then speechRange (the silence
- * Kokoro gives the last phoneme, by energy; faded out); word times start at `offset` samples and are clamped to the
- * kept audio. Exported for tests.
+ * One model output -> the audio kept and its word times: trimRange (the pad tokens), then speechRange (by energy: the
+ * first sound, which may come before the pad's predicted end, and the silence Kokoro gives the last phoneme, faded
+ * out); a 5 ms fade-in; word times start at `offset` samples and are clamped to the kept audio. Exported for tests.
  */
 export function trimChunk(wave: Float32Array, durations: ArrayLike<number | bigint>, tokens: number[], owner: number[], chunkWords: { charIndex: number; charLength: number }[], offset: number): { pcm: Float32Array; words: WordTime[] } {
   const [s0, e0] = trimRange(durations, tokens, wave.length, SAMPLE_RATE);
-  const [s, e] = speechRange(wave, s0, e0, SAMPLE_RATE);
+  const [s, e] = speechRange(wave, Math.max(0, s0 - Math.round(ONSET_SEARCH_SEC * SAMPLE_RATE)), e0, SAMPLE_RATE);
+  const fadeIn = Math.min(e - s, Math.round(FADE_IN_SEC * SAMPLE_RATE));
+  for (let i = 0; i < fadeIn; i++) wave[s + i] *= (i + 1) / (fadeIn + 1);
   const lo = offset / SAMPLE_RATE;
   const hi = (offset + e - s) / SAMPLE_RATE;
   const words = wordTimes(durations, owner, chunkWords, wave.length, SAMPLE_RATE, offset - s);
