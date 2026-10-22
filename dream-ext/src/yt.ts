@@ -186,7 +186,7 @@ class Session {
   private wordOut: WithVolume | null = null;
   private teachOut: WithVolume | null = null;
   private zhOut: WithVolume | null = null;
-  private voiceKind: 'mac' | 'openai' | 'elevenlabs' = 'mac';
+  private voiceKind: 'mac' | 'openai' | 'elevenlabs' | 'azure' = 'mac';
   private voiceId = '';
   private zhVoice: string | null = null;
   private keys: store.Keys = {};
@@ -382,10 +382,10 @@ class Session {
     if (kind === 'mac') {
       this.tts = this.mac; this.zhTts = this.mac; this.voiceId = this.macVoice; this.zhVoice = this.zhMac;
     } else {
-      const name = kind === 'openai' ? 'OpenAI' : 'ElevenLabs';
+      const name = kind === 'openai' ? 'OpenAI' : kind === 'azure' ? 'Microsoft' : 'ElevenLabs';
       this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, (e) => this.toast(`The ${name} voice failed (${e.message}) · the Mac voice speaks now.`, 9000));
       this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', () => undefined);
-      this.voiceId = kind === 'openai' ? extras.openaiVoice : extras.elevenVoice;
+      this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
       this.zhVoice = this.voiceId;
     }
     // the sentence plays again from the video (after the explanation): the word card has done its job
@@ -1446,7 +1446,8 @@ class Session {
 
   /** the hard words of the sentence that starts now: their voice is made ahead (said 3 times at the stop) */
   private prefetchVoice(pos: Position): void {
-    if (this.voiceKind === 'mac' || this.mode !== 'tutor' || !this.controller) return;
+    // (not Microsoft's free plan: 20 requests a minute are kept for what the tutor really says)
+    if (this.voiceKind === 'mac' || this.voiceKind === 'azure' || this.mode !== 'tutor' || !this.controller) return;
     for (const t of this.controller.triggersFor(pos)) if (t.lemma && t.kind !== 'sentence') this.tts?.prefetch?.(t.target, this.voiceId, Math.min(settings.voice.rate, 0.9));
   }
 
@@ -1760,7 +1761,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t) => this.toast(t) });
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -2281,7 +2282,7 @@ class Session {
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
     if (prev.teacherVolume !== extras.teacherVolume || prev.followVideoVolume !== extras.followVideoVolume) { const v = this.volumeOf('teacher'); this.talk?.live?.setVolume(v); this.pre?.setVolume(v); }
-    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) this.applyVoice();
+    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion) this.applyVoice();
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
     if (prev.zhLines !== extras.zhLines && extras.zhLines && this.stageVisible() && this.vb) {

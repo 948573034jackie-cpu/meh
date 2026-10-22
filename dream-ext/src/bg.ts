@@ -21,6 +21,7 @@ import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodSt
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
+import { splitByScript } from '@core/listen/script';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
 const PRICES: Record<string, [number, number, number]> = {
@@ -67,9 +68,23 @@ export function hintsModelFor(s: Settings): { provider: AiProviderId; model: str
 export interface StreamResult { text: string; inputTokens: number; outputTokens: number; cachedTokens: number }
 
 /** Test hook: the extension tests point the SDKs at a local fake server (never set in normal use). */
-async function baseUrls(): Promise<{ anthropic?: string; openai?: string; elevenlabs?: string }> {
+async function baseUrls(): Promise<{ anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }> {
   const o = await chrome.storage.local.get('drTestBaseUrls');
-  return (o.drTestBaseUrls as { anthropic?: string; openai?: string; elevenlabs?: string } | undefined) ?? {};
+  return (o.drTestBaseUrls as { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string } | undefined) ?? {};
+}
+
+/**
+ * Chrome stops an idle extension worker after 30 seconds, even while it waits for the AI (thinking, no words yet) or
+ * for a voice: the page then sees "The extension stopped". While any job runs, a cheap extension call keeps it awake.
+ */
+let busyJobs = 0;
+let awake: ReturnType<typeof setInterval> | null = null;
+export function keepAwake<T>(job: Promise<T>): Promise<T> {
+  busyJobs++;
+  if (!awake && typeof chrome !== 'undefined' && chrome.runtime?.getPlatformInfo) awake = setInterval(() => { void chrome.runtime.getPlatformInfo().catch(() => undefined); }, 20_000);
+  const done = () => { busyJobs--; if (busyJobs <= 0 && awake) { clearInterval(awake); awake = null; busyJobs = 0; } };
+  job.then(done, done);
+  return job;
 }
 
 /** The chosen provider, or the other one when only its key is saved (one key is enough to start). */
@@ -263,7 +278,7 @@ export async function runChat(system: string, messages: ChatTurn[], signal: Abor
 }
 
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
-interface TtsAsk { engine: 'openai' | 'elevenlabs'; text: string; voice: string; lang?: 'en' | 'zh' }
+interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure'; text: string; voice: string; lang?: 'en' | 'zh' }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
@@ -278,11 +293,91 @@ function toBase64(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 
+const xmlEsc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+/**
+ * The SSML for one Microsoft (Azure) request: the multilingual voice says English, and the Chinese in it in Mandarin
+ * (<lang xml:lang="zh-CN">). `langTags` false = plain text (a voice that does not take <lang>).
+ */
+export function azureSsml(text: string, voice: string, lang: 'en' | 'zh' = 'en', langTags = true): string {
+  const locale = /^[a-z]{2}-[A-Z]{2}/.exec(voice)?.[0] ?? 'en-US';
+  const zh = (t: string) => (langTags ? `<lang xml:lang="zh-CN">${xmlEsc(t)}</lang>` : xmlEsc(t));
+  const body = lang === 'zh' ? zh(text) : splitByScript(text).map((r) => (r.zh ? zh(r.text) : xmlEsc(r.text))).join('');
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${locale}"><voice name="${xmlEsc(voice)}">${body}</voice></speak>`;
+}
+
+/** Azure's free plan (F0) takes 20 voice requests a minute: the requests wait their turn instead of failing. */
+const azureSent: number[] = [];
+let azureLine: Promise<void> = Promise.resolve();
+export const AZURE_PER_MINUTE = 19;
+export function azureTurn(): Promise<void> {
+  const mine = azureLine.then(async () => {
+    for (;;) {
+      const now = Date.now();
+      while (azureSent.length && now - azureSent[0] >= 60_000) azureSent.shift();
+      if (azureSent.length < AZURE_PER_MINUTE) { azureSent.push(now); return; }
+      await new Promise((r) => setTimeout(r, 60_000 - (now - azureSent[0]) + 50));
+    }
+  });
+  azureLine = mine.catch(() => undefined);
+  return mine;
+}
+
+async function azureSpeak(key: string, base: string, ssml: string): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    await azureTurn();
+    const res = await fetch(`${base}/cognitiveservices/v1`, {
+      method: 'POST',
+      headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-48khz-192kbitrate-mono-mp3' },
+      body: ssml,
+    });
+    // too many requests (or the voice is busy for a moment): wait and try again
+    if (res.status === 429 && attempt < 4) { const s = Number(res.headers.get('retry-after')) || 2; await new Promise((r) => setTimeout(r, Math.min(10, s) * 1000)); continue; }
+    return res;
+  }
+}
+
+function azureBase(region: string, test?: string): string { return test ?? `https://${region || 'eastus'}.tts.speech.microsoft.com`; }
+
+async function azureFail(res: Response): Promise<Error> {
+  const body = (await res.text().catch(() => '')).slice(0, 160);
+  if (res.status === 401) return new Error('Microsoft rejected the key. Check the key and the region (for example eastus) in ⚙ → API keys.');
+  if (res.status === 403 && /quota/i.test(body)) return new Error('Your free Microsoft voice time for this month is used up (500,000 characters). It starts again next month.');
+  if (res.status === 404) return new Error('Microsoft voice: the region looks wrong. Copy the "Location/Region" from your Azure Speech resource (for example eastus).');
+  return new Error(`Microsoft voice: HTTP ${res.status} ${body}`);
+}
+
+/** The key and region work (the voice list costs nothing). */
+export async function testAzure(): Promise<{ ok: boolean; message: string }> {
+  const keys = await getKeys();
+  if (!keys.azure) return { ok: false, message: 'No Microsoft key is saved yet.' };
+  const region = (await getExtras()).azureRegion;
+  try {
+    const res = await fetch(`${azureBase(region, (await baseUrls()).azure)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': keys.azure } });
+    if (!res.ok) return { ok: false, message: (await azureFail(res)).message };
+    const list = (await res.json()) as { ShortName?: string }[];
+    return { ok: true, message: `The Microsoft voice works (${list.length} voices, region ${region}).` };
+  } catch (e) { return { ok: false, message: `Microsoft voice: ${(e as Error).message}. Check the region (for example eastus).` }; }
+}
+
 export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   const keys = await getKeys();
   const text = a.text.trim();
   if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };
   const urls = await baseUrls();
+  if (a.engine === 'azure') {
+    if (!keys.azure) throw new Error('Add your Microsoft (Azure Speech) key in ⚙ → API keys to use the Microsoft voice.');
+    const base = azureBase((await getExtras()).azureRegion, urls.azure);
+    const voice = a.voice || 'en-US-AvaMultilingualNeural';
+    let res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang));
+    // a voice that does not take <lang> (not multilingual): the plain text
+    if (res.status === 400 && /[\u3400-\u9FFF]/.test(text)) res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang, false));
+    if (!res.ok) throw await azureFail(res);
+    const audio = await res.arrayBuffer();
+    // free up to 500,000 characters a month (F0); after that $15 per million (a Standard resource)
+    void addUsage({ date: new Date().toISOString(), provider: 'openai', model: 'azure-neural', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: 0 }).catch(() => undefined);
+    return { b64: toBase64(audio), mime: 'audio/mpeg', timings: null };
+  }
   if (a.engine === 'openai') {
     if (!keys.openai) throw new Error('Add your OpenAI API key (Dream Tutor settings) to use the OpenAI voice.');
     const client = new OpenAI({ apiKey: keys.openai, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...(urls.openai ? { baseURL: urls.openai } : {}) });
@@ -424,17 +519,17 @@ export function installDreamBackground(): void {
     const post = (m: unknown) => { try { port.postMessage(m); } catch { /* the page went away */ } };
     port.onMessage.addListener((msg: { type: string; req?: ExplainRequest; prompt?: PromptBundle; stream?: boolean; system?: string; messages?: ChatTurn[] }) => {
       if (msg?.type === 'chat' && msg.system && msg.messages) {
-        runChat(msg.system, msg.messages, ctrl.signal, (t) => post({ type: 'delta', text: t }))
+        keepAwake(runChat(msg.system, msg.messages, ctrl.signal, (t) => post({ type: 'delta', text: t })))
           .then((r) => post({ type: 'done', text: r.text, usd: r.usd }))
           .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
         return;
       }
       if (msg?.type === 'explain' && msg.req) {
-        runExplain(msg.req, ctrl.signal, (t) => post({ type: 'delta', text: t }))
+        keepAwake(runExplain(msg.req, ctrl.signal, (t) => post({ type: 'delta', text: t })))
           .then((r) => post({ type: 'done', text: r.text, usage: r.usage }))
           .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
       } else if (msg?.type === 'complete' && msg.prompt) {
-        runCompletion(msg.prompt, ctrl.signal, msg.stream ? (t) => post({ type: 'delta', text: t }) : undefined)
+        keepAwake(runCompletion(msg.prompt, ctrl.signal, msg.stream ? (t) => post({ type: 'delta', text: t }) : undefined))
           .then((r) => post({ type: 'done', text: r.text, usd: r.usd }))
           .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
       }
@@ -444,7 +539,8 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
     if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
-    if (msg?.type === 'dream-tts') { void synthesize(msg as unknown as TtsAsk).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
+    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
+    if (msg?.type === 'dream-test-azure') { void testAzure().then(sendResponse); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
     if (msg?.type === 'dream-open' && (msg as { page?: string }).page) { void chrome.tabs.create({ url: chrome.runtime.getURL(`dream/${(msg as { page: string }).page}.html`) }); return false; }

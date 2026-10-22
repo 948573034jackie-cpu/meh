@@ -3,12 +3,12 @@
  * call's settings and cost, and the hard-sentence stop through Dream Read's teacher (played from the video, the
  * commands window, the explanation spoken while it streams in, the sentence again, back to its start).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { chunkBounds, parseSplit, regroup, splitWithAi, flatten, plainSentence, alignLines, joinCut, punctuationLines } from '../src/sentences-ai';
 import { parseLines, parseWordMeanings } from '../src/zh';
 import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
-import { realtimeUsd, liveSessionLadder, pickProvider } from '../src/bg';
+import { realtimeUsd, liveSessionLadder, pickProvider, azureSsml, azureTurn } from '../src/bg';
 import { sessionFor, liveInstructions } from '../src/live';
 import { resolveVoice, SentenceFromVideo } from '../src/voice';
 import { Playback } from '@core/listen/playback';
@@ -18,6 +18,7 @@ import { DEFAULT_SETTINGS, type Settings, type VocabState } from '@shared/settin
 import type { ExplainRequest } from '@shared/api';
 import { getSentence } from '@core/nav';
 import { buildVideoBook } from '../src/video-book';
+import { azureRegionOf } from '../src/store';
 import { VideoEngine } from '../src/video-engine';
 import { FakeVideo, realDictionary } from './helpers';
 import type { TimedWord } from '../src/video-book';
@@ -139,6 +140,30 @@ describe('the live call and the voice', () => {
     const s = structuredClone(DEFAULT_SETTINGS);
     expect(pickProvider(s, { openai: 'k' }).provider).toBe('openai');
     expect(pickProvider(s, { anthropic: 'k', openai: 'k' }).provider).toBe(s.ai.provider);
+  });
+  it('the Microsoft voice: Auto picks it with its key (free); the request says Chinese in Mandarin', () => {
+    expect(resolveVoice('auto', { azure: 'k', openai: 'o' })).toBe('azure');
+    expect(resolveVoice('azure', { openai: 'o' })).toBe('mac');
+    expect(resolveVoice('azure', { azure: 'k' })).toBe('azure');
+    const ssml = azureSsml('It means 主修 & more <now>.', 'en-GB-AdaMultilingualNeural');
+    expect(ssml).toContain('xml:lang="en-GB"');
+    expect(ssml).toContain('<voice name="en-GB-AdaMultilingualNeural">');
+    expect(ssml).toContain('<lang xml:lang="zh-CN">主修</lang>');
+    expect(ssml).toContain('&amp; more &lt;now&gt;.');
+    expect(azureSsml('主修', 'en-US-AvaMultilingualNeural', 'zh', false)).toContain('<voice name="en-US-AvaMultilingualNeural">主修</voice>');
+    expect(azureRegionOf('East US')).toBe('eastus');
+    expect(azureRegionOf('https://westeurope.api.cognitive.microsoft.com/')).toBe('westeurope');
+  });
+  it('Microsoft free plan: at most 19 voice requests a minute, the others wait their turn (no error, no Mac voice)', async () => {
+    vi.useFakeTimers();
+    try {
+      const done: number[] = [];
+      for (let i = 0; i < 21; i++) void azureTurn().then(() => done.push(i));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(done.length).toBe(19);
+      await vi.advanceTimersByTimeAsync(60_100);
+      expect(done).toEqual([...Array(21).keys()]);
+    } finally { vi.useRealTimers(); }
   });
   it('auto voice = OpenAI with its key, else the Mac voice', () => {
     expect(resolveVoice('auto', { openai: 'k' })).toBe('openai');

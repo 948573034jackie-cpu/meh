@@ -27,6 +27,17 @@ export const ELEVEN_VOICES: { id: string; name: string }[] = [
   { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah (American, friendly)' },
 ];
 
+/** Microsoft (Azure Speech) voices that also speak Chinese (multilingual): free 500,000 characters a month (F0) */
+export const AZURE_VOICES: { id: string; name: string }[] = [
+  { id: 'en-US-AvaMultilingualNeural', name: 'Ava (American woman, warm)' },
+  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew (American man, warm)' },
+  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (American woman, cheerful)' },
+  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (American man, relaxed)' },
+  { id: 'en-GB-AdaMultilingualNeural', name: 'Ada (British woman)' },
+  { id: 'en-GB-OllieMultilingualNeural', name: 'Ollie (British man)' },
+  { id: 'en-AU-WilliamMultilingualNeural', name: 'William (Australian man)' },
+];
+
 /** test hook and diagnostics: what the cloud voice was asked to say */
 export const cloudSpoken: string[] = [];
 
@@ -38,7 +49,7 @@ function fromBase64(b64: string): ArrayBuffer {
 }
 
 /** A cloud voice; `lang` 'zh' asks the voice to speak Mandarin (the Chinese meanings). */
-export function cloudEngine(id: 'openai' | 'elevenlabs', lang: 'en' | 'zh'): AudioTtsEngine {
+export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 'zh'): AudioTtsEngine {
   const synth = async (_engine: unknown, text: string, voiceId: string): Promise<CloudTtsResult> => {
     cloudSpoken.push(text);
     if (cloudSpoken.length > 400) cloudSpoken.splice(0, 200);
@@ -46,15 +57,19 @@ export function cloudEngine(id: 'openai' | 'elevenlabs', lang: 'en' | 'zh'): Aud
     if (!r || r.error || r.b64 === undefined) throw new Error(r?.error ?? 'The voice service did not answer.');
     return { audio: fromBase64(r.b64), mime: r.mime ?? 'audio/mpeg', timings: r.timings ?? null, durationSec: null };
   };
-  const list = async () => (id === 'openai' ? OPENAI_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
+  const list = async () => (id === 'openai' ? OPENAI_VOICES : id === 'azure' ? AZURE_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
   // whole sentences (no cuts at commas): a cloud voice is fast, and each piece made separately breaks the tone and
   // leaves small gaps between the pieces
   return new AudioTtsEngine(id, synth, list, id === 'elevenlabs', { segment: false });
 }
 
-/** The voice actually used: 'auto' = OpenAI when its key is saved; a cloud voice without its key = the Mac voice. */
-export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string }): 'mac' | 'openai' | 'elevenlabs' {
-  if (choice === 'auto') return keys.openai ? 'openai' : 'mac';
+/**
+ * The voice actually used: 'auto' = Microsoft (free) when its key is saved, else OpenAI with its key; a cloud voice
+ * without its key = the Mac voice.
+ */
+export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string }): 'mac' | 'openai' | 'elevenlabs' | 'azure' {
+  if (choice === 'auto') return keys.azure ? 'azure' : keys.openai ? 'openai' : 'mac';
+  if (choice === 'azure') return keys.azure ? 'azure' : 'mac';
   if (choice === 'openai') return keys.openai ? 'openai' : 'mac';
   if (choice === 'elevenlabs') return keys.elevenlabs ? 'elevenlabs' : 'mac';
   return 'mac';

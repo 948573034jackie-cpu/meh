@@ -17,7 +17,7 @@
     "https://chatgpt.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
-    "https://api.elevenlabs.io/*"
+    "https://api.elevenlabs.io/*", "https://*.tts.speech.microsoft.com/*"
   ],
   "background": {
     "service_worker": "background.js"

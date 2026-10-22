@@ -24,8 +24,12 @@ export interface YtExtras {
   band: 'auto' | 'on' | 'off';
   /** hide YouTube's own captions while the Dream subtitles show (no double text) */
   hideYtCaptions: boolean;
-  /** the tutor's voice: 'auto' = the OpenAI voice when an OpenAI key is saved, else the Mac voice */
+  /** the tutor's voice: 'auto' = Microsoft when its key is saved, else OpenAI with its key, else the Mac voice */
   voice: VoiceChoice;
+  /** Microsoft (Azure Speech) voice name, e.g. en-US-AvaMultilingualNeural */
+  azureVoice: string;
+  /** the region of the learner's Azure Speech resource, e.g. eastus */
+  azureRegion: string;
   /** OpenAI voice (gpt-4o-mini-tts and the live call): marin, cedar, … */
   openaiVoice: string;
   /** ElevenLabs voice id */
@@ -89,11 +93,11 @@ export interface YtExtras {
   fakeVoice?: boolean;
 }
 
-export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
+export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-US-AvaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
   teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0,
 };
@@ -110,7 +114,7 @@ export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   return p;
 }
 
-export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string }
+export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }
 export type KeyName = keyof Keys;
 
 const K = { settings: 'drSettings', extras: 'drExtras', vocab: 'drVocab', entries: 'drEntries', usage: 'drUsage', keys: 'drKeys' } as const;
@@ -247,6 +251,13 @@ export async function getKeys(): Promise<Keys> {
   const o = await area().get(K.keys);
   return { ...((o[K.keys] as Keys | undefined) ?? {}) };
 }
+/** "East US", "eastus" or an endpoint like https://eastus.api.cognitive.microsoft.com/ -> eastus */
+export function azureRegionOf(input: string): string {
+  const t = input.trim().toLowerCase();
+  const host = /^https?:\/\/([^./]+)\./.exec(t);
+  return (host ? host[1] : t).replace(/[^a-z0-9]/g, '');
+}
+
 export async function setKey(provider: KeyName, key: string): Promise<void> {
   const keys = await getKeys();
   const k = key.trim();

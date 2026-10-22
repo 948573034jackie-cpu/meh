@@ -86,7 +86,7 @@ const sse = (req, res, text) => {
   };
   tick();
 };
-const kindOf = (sys, url) => (url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
+const kindOf = (sys, url) => (url.includes('/azure/') ? (url.includes('/voices/list') ? 'azure-list' : 'azure') : url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
 const api = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-max-age': '600' }); res.end(); return; }
   if (req.url === '/peer.html') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(peerHtml); return; }
@@ -99,8 +99,9 @@ const api = http.createServer((req, res) => {
     const sys = JSON.stringify(j.system || '');
     const user = JSON.stringify(j.messages || '');
     const kind = kindOf(sys, req.url);
-    apiLog.push({ path: req.url, kind, model: j.model, user, sys, key: req.headers['x-api-key'] || req.headers.authorization, stream: j.stream, cache: sys.includes('ephemeral'), effort: j.output_config && j.output_config.effort, fallbacks: j.fallbacks, voice: j.voice, input: j.input, at: Date.now() });
-    if (kind === 'tts') { res.writeHead(200, { 'content-type': 'audio/mpeg', ...cors(req) }); res.end(ttsWav); return; }
+    apiLog.push({ path: req.url, kind, model: j.model, user, sys, key: req.headers['x-api-key'] || req.headers.authorization || req.headers['ocp-apim-subscription-key'], ssml: kind === 'azure' ? body : undefined, format: req.headers['x-microsoft-outputformat'], stream: j.stream, cache: sys.includes('ephemeral'), effort: j.output_config && j.output_config.effort, fallbacks: j.fallbacks, voice: j.voice, input: j.input, at: Date.now() });
+    if (kind === 'tts' || kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg', ...cors(req) }); res.end(ttsWav); return; }
+    if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json', ...cors(req) }); res.end(JSON.stringify([{ ShortName: 'en-US-AvaMultilingualNeural' }])); return; }
     if (kind === 'live') {
       const sdp = (/name="sdp"\r\n\r\n([\s\S]*?)\r\n--/.exec(body) || [])[1];
       const session = (/name="session"\r\n\r\n([\s\S]*?)\r\n--/.exec(body) || [])[1];
@@ -331,7 +332,7 @@ const api = http.createServer((req, res) => {
   const reset = await until(async () => /tell a short new story/i.test((((await store('drSettings')).ai.styles || {})['way-story'] || {}).wordPrompt || ''), 3000);
   ok('a teaching way can be edited (saved) and reset to the original', !!edited && !!reset, JSON.stringify({ edited, reset }));
   // the voice: without an OpenAI key the panel says so and offers the Mac voices; a real click changes it at once
-  const qv = () => sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const on = q.querySelector('.seg[data-name="voice"] .on'); const mac = q.querySelector('select[data-name="macVoice"]'); return { on: on && on.dataset.v, warn: /No OpenAI key is saved/.test(q.innerText), mac: mac ? Array.from(mac.options).map((o) => o.text) : null, live: !!q.querySelector('select[data-name="openaiVoice"]') }; });
+  const qv = () => sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const on = q.querySelector('.seg[data-name="voice"] .on'); const mac = q.querySelector('select[data-name="macVoice"]'); return { on: on && on.dataset.v, warn: /key is saved, so you hear the Mac voice/.test(q.innerText), mac: mac ? Array.from(mac.options).map((o) => o.text) : null, live: !!q.querySelector('select[data-name="openaiVoice"]') }; });
   const qv0 = await qv();
   ok('quick settings, no OpenAI key: "you hear the Mac voice" + a Mac voice list + the live call voice', qv0.on === 'auto' && qv0.warn && qv0.mac && qv0.mac.some((t) => /Fake Daniel/.test(t)) && qv0.live, JSON.stringify(qv0));
   await yt.locator('#dr-stage-host .quick .seg[data-name="voice"] button[data-v="mac"]').click();
@@ -487,6 +488,21 @@ const api = http.createServer((req, res) => {
   ok('voice mode: "bye bye" turns voice mode off', !!vmOff);
   await patch('drExtras', { voiceMode: false });
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 15000);
+
+  // ---- 10e. the Microsoft voice (Azure Speech, free plan): with its key Auto uses it; the tutor speaks with it ----
+  await patch('drTestBaseUrls', { azure: 'http://localhost:8790/azure' });
+  await patch('drKeys', { azure: 'az-test-key' });
+  await until(async () => (await dbg()).voice === 'azure', 5000);
+  ok('with a Microsoft key, Auto uses the Microsoft voice (free)', (await dbg()).voice === 'azure', (await dbg()).voice);
+  const nAz = apiLog.length;
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 12.5; return v.play(); });
+  await until(async () => (await vstate()).t > 14.5, 8000);
+  await yt.keyboard.press('ArrowLeft');
+  const az = await until(() => apiLog.slice(nAz).find((r) => r.kind === 'azure'), 15000);
+  ok('the explanation is spoken by the Microsoft voice (Ava, high-quality sound, the key stays in the background)', !!az && az.key === 'az-test-key' && /name="en-US-AvaMultilingualNeural"/.test(az.ssml) && /xml:lang="en-US"/.test(az.ssml) && az.format === 'audio-48khz-192kbitrate-mono-mp3', JSON.stringify(az && { key: az.key, f: az.format, s: az.ssml.slice(0, 220) }));
+  await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 20000);
+  await patch('drKeys', { azure: undefined });
+  await until(async () => (await dbg()).voice === 'openai', 5000);
 
   // ---- 11. one voice at a time; the check report ----
   await yt.evaluate(() => document.getElementById('yt2c-b-claude').click());

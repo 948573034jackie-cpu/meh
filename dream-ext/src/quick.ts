@@ -6,7 +6,7 @@
 import type { Settings } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import * as store from './store';
-import { OPENAI_VOICES, ELEVEN_VOICES } from './voice';
+import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES } from './voice';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { isWay, wayOf, wayStyle, bandOf } from './teaching-ways';
 import { SHORTCUTS, shortcutMap, comboLabel, comboOf } from './shortcuts';
@@ -17,7 +17,7 @@ export interface QuickCtx {
   extras: store.YtExtras;
   keys: store.Keys;
   /** the voice really speaking now (a cloud voice without its key = the Mac voice) */
-  voiceNow: 'mac' | 'openai' | 'elevenlabs';
+  voiceNow: 'mac' | 'openai' | 'elevenlabs' | 'azure';
   /** the Mac's English voices, and the one the tutor uses */
   macVoices: { id: string; name: string; lang: string }[];
   macVoice: string;
@@ -25,7 +25,7 @@ export interface QuickCtx {
   testVoice(): void;
   testWord(): void;
   close(): void;
-  toast(text: string): void;
+  toast(text: string, ms?: number): void;
 }
 
 /** the teaching way whose prompts are open for editing (kept while the panel is redrawn) */
@@ -59,9 +59,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const options = (list: { id: string; name: string }[], val: string) => list.map((v) => `<option value="${esc(v.id)}"${v.id === val ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
   // the voice you really hear: a cloud voice without its key falls back to the Mac voice, so say so
   const now = ctx.voiceNow;
-  const missing = now === 'mac' ? (x.voice === 'elevenlabs' ? 'ElevenLabs' : x.voice === 'openai' || x.voice === 'auto' ? 'OpenAI' : '') : '';
+  const missing = now === 'mac' ? (x.voice === 'elevenlabs' ? 'ElevenLabs' : x.voice === 'azure' ? 'Microsoft' : x.voice === 'openai' ? 'OpenAI' : '') : '';
   const voiceRows = [
     missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
+    now === 'mac' && x.voice === 'auto' ? '<p class="warn">No Microsoft or OpenAI key is saved, so you hear the Mac voice now. Paste a free Microsoft key below (API keys) for a natural voice.</p>' : '',
+    now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${options(AZURE_VOICES, x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(free: 500,000 characters a month, about 9 hours)</span></label>` : '',
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
     now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
     now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',
@@ -100,11 +102,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Teacher voice volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
       <label>Word voice volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
       <label>Follow the video's volume ${onOff('followVol', x.followVideoVolume !== false)} <span class="muted">(100 % = as loud as the video)</span></label>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
+      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
       ${voiceRows}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
-      <p class="muted">Auto = the OpenAI voice when your OpenAI key is saved, otherwise the Mac voice.</p>
+      <p class="muted">Auto = the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice.</p>
     </section>
     <section><h4>Talk to my tutor</h4>
       <label>After each explanation ${onOff('talkAfter', x.talkAfterExplain)}</label>
@@ -127,8 +129,9 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
     <section><h4>API keys</h4>
-      ${(['anthropic', 'openai', 'elevenlabs'] as const).map((k) => `<label>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
-      <p class="muted">Keys stay in Chrome on this computer. Claude explains; OpenAI gives the voice and the live call.</p>
+      ${(['anthropic', 'openai', 'elevenlabs', 'azure'] as const).map((k) => `<label>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech)' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
+      <label>Microsoft region <input type="text" data-name="azureRegion" value="${esc(x.azureRegion ?? 'eastus')}" placeholder="eastus" style="width:140px" autocomplete="off"> <button type="button" data-act="test-azure">Test</button> <span class="muted">(“Location/Region” of your Speech resource)</span></label>
+      <p class="muted">Keys stay in Chrome on this computer. Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice.</p>
     </section>
     <section><h4>Shortcuts <span class="muted">(click one, then press the new keys)</span></h4>
       <div class="keys">${SHORTCUTS.map((a) => `<div><span>${esc(a.label)}</span><button type="button" data-sc="${a.id}">${esc(comboLabel(sc[a.id]))}</button></div>`).join('')}</div>
@@ -189,6 +192,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (act === 'close') ctx.close();
     else if (act === 'test') ctx.testVoice();
     else if (act === 'test-word') ctx.testWord();
+    else if (act === 'test-azure') void (chrome.runtime.sendMessage({ type: 'dream-test-azure' }) as Promise<{ ok: boolean; message: string }>).then((r) => ctx.toast(r?.message ?? 'No answer.', 9000), () => ctx.toast('No answer.'));
     else if (act === 'way-edit') { editingWay = editingWay === active.id ? null : active.id; renderQuick(el, ctx); }
     else if (act === 'way-reset') {
       const id = active.id, way = wayOf(id);
@@ -202,7 +206,14 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       const inp = el.querySelector<HTMLInputElement>(`input[data-key="${k}"]`);
       const v = inp?.value.trim() ?? '';
       if (!v) { ctx.toast('Paste the key first.'); return; }
-      void store.setKey(k, v).then(() => { if (inp) inp.value = ''; ctx.toast('Key saved.'); });
+      void store.setKey(k, v).then(async () => {
+        if (inp) inp.value = '';
+        if (k !== 'azure') { ctx.toast('Key saved.'); return; }
+        // the Microsoft key: the tutor speaks with it now, and we check it works
+        await store.patchExtras({ voice: 'azure' });
+        const r = (await chrome.runtime.sendMessage({ type: 'dream-test-azure' }).catch(() => null)) as { ok: boolean; message: string } | null;
+        ctx.toast(r ? (r.ok ? `Key saved. ${r.message} Your tutor speaks with it now.` : `Key saved, but: ${r.message}`) : 'Key saved.', 9000);
+      });
     } else if (act === 'sc-reset') void store.patchExtras({ shortcuts: {} });
     else if (act === 'all') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'options' });
     else if (act === 'vocab') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' });
@@ -243,6 +254,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (name === 'bandBottom') later(() => void store.patchExtras({ bandBottom: n }), 80);
     else if (name === 'videoSize') later(() => void store.patchExtras({ videoSize: n }), 200);
     else if (name === 'teacher') later(() => void store.patchExtras({ teacher: t.value }), 600);
+    else if (name === 'azureRegion') later(() => void store.patchExtras({ azureRegion: store.azureRegionOf(t.value) || 'eastus' }), 600);
     else if (name === 'wayWord' || name === 'waySentence') {
       const id = active.id, field = name === 'wayWord' ? 'wordPrompt' : 'sentencePrompt', value = t.value;
       later(() => patchS((cur) => ({ ai: { ...cur.ai, styles: { ...cur.ai.styles, [id]: { ...(cur.ai.styles[id] ?? {}), [field]: value } } } })), 600);
@@ -257,6 +269,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     const name = t.dataset.name;
     if (name === 'openaiVoice') void store.patchExtras({ openaiVoice: t.value }).then(() => ctx.toast('Voice changed.'));
     else if (name === 'elevenVoice') void store.patchExtras({ elevenVoice: t.value }).then(() => ctx.toast('Voice changed.'));
+    else if (name === 'azureVoice') void store.patchExtras({ azureVoice: t.value }).then(() => ctx.toast('Voice changed.'));
     else if (name === 'macVoice') { patchS((cur) => ({ voice: { ...cur.voice, voiceId: t.value } })); ctx.toast('Voice changed.'); }
     else if (name === 'model') {
       const [provider, model] = t.value.split(':') as ['anthropic' | 'openai', string];
