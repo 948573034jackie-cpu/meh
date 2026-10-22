@@ -1,0 +1,23 @@
+{
+  "name": "dream-youtube",
+  "private": true,
+  "version": "3.0.0",
+  "description": "Dream Read's listening teacher for YouTube, built into the YouTube to Claude / ChatGPT Chrome extension.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "openai": "^7.38.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.300",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

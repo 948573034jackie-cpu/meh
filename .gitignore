@@ -1,0 +1,6 @@
+ios/build*/
+ios/*.xcodeproj/
+ios/*.ipa
+ios/*.zip
+safari/build/
+dream-ext/node_modules/

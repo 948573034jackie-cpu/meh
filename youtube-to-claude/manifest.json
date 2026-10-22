@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube to Claude / ChatGPT",
+  "version": "3.3",
+  "description": "YouTube English: learn with your own AI tutor (stops at hard words, phrases and sentences, a natural voice, live voice call, Chinese) or send the part you paused at to Claude / ChatGPT.",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "unlimitedStorage",
+    "debugger",
+    "tts"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://api.elevenlabs.io/*",
+    "https://*.tts.speech.microsoft.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Send this video to Claude",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "mic-mix.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "js": [
+        "lib.js",
+        "youtube.js",
+        "dream/dream-yt.js"
+      ]
+    },
+    {
+      "matches": [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "chat.js"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dream/dict.json.gz"
+      ],
+      "matches": [
+        "https://www.youtube.com/*"
+      ]
+    }
+  ],
+  "options_page": "dream/options.html"
+}

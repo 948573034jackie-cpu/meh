@@ -1,0 +1,53 @@
+/* Dream Tutor pages (settings, My Vocabulary): Dream Read's Night look */
+:root {
+  --bg: #15171c; --bg-elevated: #1c1f25; --bg-hover: #242830; --bg-sunken: #111317;
+  --fg: #d7d2c8; --fg-muted: #8e8a82; --fg-faint: #5d5a54; --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.16);
+  --accent: #d9a066; --accent-fg: #15171c; --accent-soft: rgba(217,160,102,0.14); --danger: #e57373; --ok: #7fbf7f;
+  --hl-unknown: #59c7fa; --hl-learning: #ffd666;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --font-serif: "Iowan Old Style", Palatino, Georgia, serif; --font-zh: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-sans); }
+main { max-width: 900px; margin: 0 auto; padding: 24px 20px 80px; }
+h1 { font-family: var(--font-serif); color: var(--accent); font-size: 28px; margin: 0 0 4px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); margin: 0 0 12px; }
+.lead { color: var(--fg-muted); margin: 0 0 20px; }
+section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
+.field { display: grid; grid-template-columns: 220px 1fr; gap: 6px 14px; align-items: center; margin: 0 0 10px; }
+.field > label { color: var(--fg-muted); }
+.field .hint { grid-column: 2; color: var(--fg-faint); font-size: 12.5px; margin-top: -4px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button { font: inherit; color: var(--fg); background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--border-strong); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
+button.danger { color: var(--danger); }
+input, select, textarea { font: inherit; color: var(--fg); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+input[type="text"], input[type="password"], select { min-width: 260px; }
+input[type="number"] { width: 100px; }
+textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45; }
+label.check { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; cursor: pointer; }
+label.check input { margin-top: 3px; accent-color: var(--accent); }
+.msg { font-size: 12.5px; }
+.msg.ok { color: var(--ok); } .msg.bad { color: var(--danger); }
+.muted { color: var(--fg-muted); }
+.styles { display: grid; grid-template-columns: 220px 1fr; gap: 14px; }
+.style-list { display: flex; flex-direction: column; gap: 4px; }
+.style-list button { text-align: left; display: flex; justify-content: space-between; gap: 6px; }
+.style-list button.sel { border-color: var(--accent); }
+.badge { font-size: 11px; color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--fg-muted); font-weight: 500; position: sticky; top: 0; background: var(--bg-elevated); }
+td.word { font-family: var(--font-serif); font-weight: 700; font-size: 15px; }
+td.zh { font-family: var(--font-zh); color: var(--hl-learning); font-size: 15px; }
+.st-learning { color: var(--hl-learning); } .st-known { color: var(--ok); }
+.levels { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.level { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer; text-align: left; }
+.level b { font-size: 16px; }
+.bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; display: flex; margin: 6px 0 4px; }
+.bar .k { background: var(--ok); } .bar .l { background: var(--hl-learning); }
+.tabs { display: flex; gap: 6px; margin: 0 0 14px; }
+.tabs button.sel { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 700px) { .field { grid-template-columns: 1fr; } .styles { grid-template-columns: 1fr; } .levels { grid-template-columns: repeat(3, 1fr); } }
