@@ -3,31 +3,53 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
+import { promisify } from 'node:util';
 import type { Book, Position } from '@core/model';
 import type { LibraryItem } from '@shared/settings';
 import type { DictData } from '@shared/api';
 import type { Dictionary } from '@core/dict/types';
-import { JsonStore, booksDir, writeAtomic, readJsonFile } from './storage';
+import { JsonStore, booksDir, writeAtomic } from './storage';
 import { loadTextModules } from './text-modules';
 import { resourcesDir } from './paths';
 
 const libraryStore = new JsonStore<{ items: LibraryItem[] }>('library', () => ({ items: [] }));
 
-let dictData: DictData | null = null;
-let dictionary: Dictionary | null = null;
+const gunzip = promisify(zlib.gunzip);
 
-export async function getDictData(): Promise<DictData> {
-  if (dictData) return dictData;
-  const file = path.join(resourcesDir(), 'dict', 'dict.json.gz');
-  const raw = zlib.gunzipSync(fs.readFileSync(file)).toString('utf8');
-  dictData = JSON.parse(raw) as DictData;
+/*
+ * The book and the dictionary go to the renderer as JSON text, not as objects: one string crosses IPC and the context
+ * bridge in about 25-50 ms (plus 20-65 ms of JSON.parse in the page), the same data as objects in 300-700 ms, most of
+ * it one long deep copy on the renderer's main thread (measured with a 7.6 MB book and the 7 MB dictionary). Reading and
+ * unzipping are asynchronous, so the main process (Kokoro audio, AI text) is not blocked either.
+ */
+
+let dictJson: Promise<string> | null = null;
+let dictData: Promise<DictData> | null = null;
+let dictionary: Promise<Dictionary> | null = null;
+
+/** The dictionary as JSON text (what dict:load sends), read and unzipped once. */
+export function getDictJson(): Promise<string> {
+  if (!dictJson) {
+    dictJson = (async () => (await gunzip(await fs.promises.readFile(path.join(resourcesDir(), 'dict', 'dict.json.gz')))).toString('utf8'))();
+    dictJson.catch(() => { dictJson = null; });
+  }
+  return dictJson;
+}
+
+/** The dictionary parsed, for the main process's own uses (levels of saved words, Progress, the hints job). */
+export function getDictData(): Promise<DictData> {
+  if (!dictData) {
+    dictData = getDictJson().then((raw) => JSON.parse(raw) as DictData);
+    dictData.catch(() => { dictData = null; });
+  }
   return dictData;
 }
 
-export async function getDictionary(): Promise<Dictionary> {
-  if (dictionary) return dictionary;
-  const mods = await loadTextModules();
-  dictionary = mods.createDictionary(await getDictData());
+export function getDictionary(): Promise<Dictionary> {
+  if (!dictionary) {
+    dictionary = (async () => (await loadTextModules()).createDictionary(await getDictData()))();
+    dictionary.catch(() => { dictionary = null; });
+  }
   return dictionary;
 }
 
@@ -37,18 +59,48 @@ export function listLibrary(): LibraryItem[] {
 
 function bookFile(id: string): string { return path.join(booksDir(), `${id}.json.gz`); }
 
-export function loadBook(id: string): Book | null {
-  try {
-    const raw = zlib.gunzipSync(fs.readFileSync(bookFile(id))).toString('utf8');
-    const book = JSON.parse(raw) as Book;
-    libraryStore.update((lib) => ({ items: lib.items.map((it) => (it.id === id ? { ...it, lastOpenedAt: new Date().toISOString() } : it)) }));
-    return book;
-  } catch {
-    return null;
+/** The book read last, as JSON text and (when the hints job or an import asked) parsed: both read the book just opened. */
+let lastBook: { id: string; json: Promise<string | null>; parsed: Promise<Book | null> | null } | null = null;
+
+/** A stored book as JSON text, or null when it is not in the library. Does not count as opening it. */
+export function readBookJson(id: string): Promise<string | null> {
+  if (lastBook?.id === id) return lastBook.json;
+  const json = (async () => {
+    try { return (await gunzip(await fs.promises.readFile(bookFile(id)))).toString('utf8'); } catch { return null; }
+  })();
+  lastBook = { id, json, parsed: null };
+  return json;
+}
+
+/** A stored book parsed (the hints job, imports), shared with the last readBookJson. Does not count as opening it. */
+export function readBook(id: string): Promise<Book | null> {
+  const json = readBookJson(id);
+  const entry = lastBook!;
+  if (!entry.parsed) {
+    entry.parsed = json.then((raw) => {
+      if (!raw) return null;
+      try { return JSON.parse(raw) as Book; } catch { return null; }
+    });
   }
+  return entry.parsed;
+}
+
+function forgetBook(id: string): void { if (lastBook?.id === id) lastBook = null; }
+
+/** The library list puts the books opened last first (the store writes it in the background). */
+function touchBook(id: string): void {
+  libraryStore.update((lib) => (lib.items.some((it) => it.id === id) ? { items: lib.items.map((it) => (it.id === id ? { ...it, lastOpenedAt: new Date().toISOString() } : it)) } : lib));
+}
+
+/** Opening a book (library:load): its JSON text for the renderer, which parses it; null when it is not in the library. */
+export async function loadBook(id: string): Promise<string | null> {
+  const json = await readBookJson(id);
+  if (json) touchBook(id);
+  return json;
 }
 
 export function removeBook(id: string): void {
+  forgetBook(id);
   try { fs.unlinkSync(bookFile(id)); } catch { /* ignore */ }
   libraryStore.update((lib) => ({ items: lib.items.filter((it) => it.id !== id) }));
 }
@@ -61,6 +113,7 @@ async function finishImport(book: Book): Promise<Book> {
   const mods = await loadTextModules();
   const dict = await getDictionary();
   book.names = mods.detectNames(book, dict);
+  forgetBook(book.id);
   writeAtomic(bookFile(book.id), zlib.gzipSync(Buffer.from(JSON.stringify(book), 'utf8')));
   const item: LibraryItem = {
     id: book.id, title: book.title, author: book.author, kind: book.source.kind,
@@ -74,8 +127,8 @@ export async function importFile(filePath: string): Promise<Book> {
   const mods = await loadTextModules();
   const bytes = fs.readFileSync(filePath);
   const id = createHash('sha256').update(bytes).digest('hex').slice(0, 24);
-  const existing = loadBook(id);
-  if (existing) return existing;
+  const existing = await readBook(id);
+  if (existing) { touchBook(id); return existing; }
   const ext = path.extname(filePath).toLowerCase();
   const importer = ext === '.epub' ? mods.importers.epub : ext === '.pdf' ? mods.importers.pdf : mods.importers.text;
   const ctx = { segmenter: mods.createSegmenter(), id, sourcePath: filePath };
@@ -87,8 +140,8 @@ export async function importFile(filePath: string): Promise<Book> {
 export async function importText(title: string, text: string): Promise<Book> {
   const mods = await loadTextModules();
   const id = createHash('sha256').update(text).digest('hex').slice(0, 24);
-  const existing = loadBook(id);
-  if (existing) return existing;
+  const existing = await readBook(id);
+  if (existing) { touchBook(id); return existing; }
   const book = await mods.textToBook(title || 'Pasted text', text, { segmenter: mods.createSegmenter(), id });
   return finishImport(book);
 }
@@ -100,4 +153,4 @@ export async function importBookDialog(win: BrowserWindow | null): Promise<Book 
   return importFile(res.filePaths[0]);
 }
 
-export function libraryFileFor(id: string): string | null { return readJsonFile(bookFile(id)) ? bookFile(id) : null; }
+export function libraryFileFor(id: string): string | null { return fs.existsSync(bookFile(id)) ? bookFile(id) : null; }

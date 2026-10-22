@@ -199,6 +199,16 @@ export interface Diagnostics {
   userData: string; secretsFile: string; dictWords: number; secrets: SecretStatusMap;
 }
 
+/**
+ * Big data the reader asks for once (a book, the dictionary). The Mac app sends it as JSON text: one string crosses IPC
+ * and the context bridge about 10x faster than the same object (300-700 ms as objects, one long deep copy on the page's
+ * main thread). The web build, which has no IPC, hands over the object itself. Read it with fromJsonPayload.
+ */
+export type JsonPayload<T> = T | string;
+
+/** The value of a JsonPayload: parsed when it came as text. */
+export function fromJsonPayload<T>(v: JsonPayload<T>): T { return typeof v === 'string' ? JSON.parse(v) as T : v; }
+
 /** Contract between renderer and main; implemented in src/preload/index.ts and src/main/ipc.ts. */
 export interface ReadAlongApi {
   // library
@@ -208,11 +218,13 @@ export interface ReadAlongApi {
   pathForFile(file: File): string;
   importText(title: string, text: string): Promise<Book>;
   listLibrary(): Promise<LibraryItem[]>;
-  loadBook(id: string): Promise<Book | null>;
+  /** opens a stored book (the library puts it first); read it with fromJsonPayload */
+  loadBook(id: string): Promise<JsonPayload<Book> | null>;
   removeBook(id: string): Promise<void>;
   saveProgress(id: string, position: Position, percent: number): Promise<void>;
   // dictionary
-  loadDictionary(): Promise<DictData>;
+  /** read it with fromJsonPayload */
+  loadDictionary(): Promise<JsonPayload<DictData>>;
   // vocabulary
   getVocab(): Promise<VocabState>;
   setWordStatus(lemma: string, status: WordStatus | null): Promise<void>;
@@ -221,6 +233,11 @@ export interface ReadAlongApi {
   vocabEntries(): Promise<VocabEntry[]>;
   /** adds a word or merges into its entry: one more explanation, first sentence kept, latest explanation kept */
   vocabUpsertEntry(entry: VocabEntryInput): Promise<VocabEntry>;
+  /**
+   * an explanation the learner heard: vocabUpsertEntry plus the word saved as learning (entry and highlight map) unless
+   * it is known, in one call
+   */
+  vocabExplained(entry: VocabEntryInput): Promise<VocabEntry>;
   vocabSetEntryStatus(lemma: string, status: VocabEntryStatus): Promise<void>;
   vocabDeleteEntry(lemma: string): Promise<void>;
   /** writes ~/Documents/Dream Read/my-vocabulary.csv now, reveals it in Finder and resolves with the path */

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../state/store';
 import type { LibraryItem } from '@shared/settings';
 import { Tip } from '../ui/Tip';
+import { loadDictionaryWhenIdle } from '../reader/useDictionary';
 
 let setPasteOpen: ((v: boolean) => void) | null = null;
 
@@ -50,6 +51,8 @@ export function Library(): JSX.Element {
   const [busy, setBusy] = useState(false);
   setPasteOpen = _setPasteOpen;
   useEffect(() => { void useApp.getState().refreshLibrary(); }, []);
+  // the dictionary loads while the learner looks at the library, so the first book opens without waiting for it
+  useEffect(() => loadDictionaryWhenIdle(), []);
 
   const importPaste = async () => {
     if (!text.trim()) return;

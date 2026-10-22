@@ -37,7 +37,7 @@ interface Props {
   onToggleChinese?: () => void;
 }
 
-export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore, chineseOn, onToggleChinese }: Props): JSX.Element {
+export const WordCard = React.memo(function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore, chineseOn, onToggleChinese }: Props): JSX.Element {
   const glosses = data.zh ? parseGloss(data.zh).slice(0, 2) : [];
   const style: React.CSSProperties = { left: Math.max(8, data.x - 150), top: data.above ? undefined : data.y + 8, bottom: data.above ? `calc(100% - ${data.y}px + 8px)` : undefined };
   const ex = data.explain;
@@ -73,7 +73,7 @@ export function WordCard({ data, onClose, onSay, onKnown, onDontKnow, onIgnore, 
       </div>
     </div>
   );
-}
+});
 
 /** The first sentence or two of a streamed explanation, cut at a sentence end within `max` characters. */
 export function firstSentences(text: string, max: number): string {

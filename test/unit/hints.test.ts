@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createDictionary } from '@core/dict/dictionary';
 import type { DictData } from '@shared/api';
-import { collectHardWords, batchHardWords, buildHintsPrompt, parseHints, clipSentence, HINTS_BATCH_SIZE, HINT_TOKENS_PER_WORD } from '@core/ai/hints';
+import { collectHardWords, collectHardWordsAsync, batchHardWords, buildHintsPrompt, parseHints, clipSentence, HINTS_BATCH_SIZE, HINT_TOKENS_PER_WORD } from '@core/ai/hints';
 import { makeBook } from './helpers';
 
 const raw = (t: string, l: DictData['w'][string]['l'], f = 5000): DictData['w'][string] => ({ i: '', t, g: '', f, b: f, c: 3, o: 0, l, s: 'cefrj' });
@@ -31,6 +31,15 @@ describe('collectHardWords', () => {
     expect(collectHardWords(book, 0, dict, 'C2', new Set(), new Set())).toEqual([]);
     expect(collectHardWords(book, 1, dict, 'B2', new Set(), new Set())).toEqual([]);
     expect(collectHardWords(book, 9, dict, 'B2', new Set(), new Set())).toEqual([]);
+  });
+  it('collectHardWordsAsync gives the thread back after every paragraph and finds the same words', async () => {
+    const long = makeBook([{ title: 'Long', paragraphs: ['The house was serene.', 'Nothing here.', 'He was reluctant.', 'The serene trap snapped.'] }]);
+    let yields = 0;
+    const words = await collectHardWordsAsync(long, 0, dict, 'B2', new Set(), new Set(), async () => { yields++; });
+    expect(yields).toBe(4);
+    expect(words).toEqual(collectHardWords(long, 0, dict, 'B2', new Set(), new Set()));
+    expect(words.map((w) => w.lemma)).toEqual(['serene', 'reluctant']);
+    expect(await collectHardWordsAsync(long, 7, dict, 'B2', new Set(), new Set(), async () => { yields++; })).toEqual([]);
   });
   it('batches at most HINTS_BATCH_SIZE words per request', () => {
     const many = Array.from({ length: 170 }, (_, i) => ({ lemma: `w${i}`, word: `w${i}`, sentence: 's' }));

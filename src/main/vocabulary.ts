@@ -1,8 +1,9 @@
 /**
  * My Vocabulary: every word the learner had explained, with the sentence it was met in, the explanation and
- * where in which book. Stored in <userData>/data/vocabulary.json (JsonStore, atomic writes) and mirrored to
- * ~/Documents/Dream Read/my-vocabulary.csv, which is rewritten (debounced) after every change so the file is
- * always current. The status map used by highlighting (VocabState.words, settings.ts) is kept in sync.
+ * where in which book. Stored in <userData>/data/vocabulary.json (JsonStore: written in the background, atomically)
+ * and mirrored to ~/Documents/Dream Read/my-vocabulary.csv, which is rewritten in the background once the changes
+ * stop (and at quit when one is still pending), so the file is always current. The status map used by highlighting
+ * (VocabState.words, settings.ts) is kept in sync.
  *
  * Also computes the Progress page numbers from the dictionary data: per CEFR level how many of the
  * CEFR-tagged words are known / learning / unknown.
@@ -12,7 +13,7 @@ import type { CefrLevel } from '@core/model';
 import { CEFR_LEVELS } from '@core/model';
 import type { DictData, VocabEntry, VocabEntryInput, VocabEntryStatus, VocabProgress, LevelProgress, UnknownWord } from '@shared/api';
 import type { VocabState } from '@shared/settings';
-import { JsonStore, writeAtomic } from './storage';
+import { JsonStore, BackgroundFile } from './storage';
 import { exportDir } from './paths';
 import * as settings from './settings';
 
@@ -21,7 +22,8 @@ export interface VocabularyFile { version: 1; entries: Record<string, VocabEntry
 const store = new JsonStore<VocabularyFile>('vocabulary', () => ({ version: 1, entries: {} }));
 
 export const CSV_FILE_NAME = 'my-vocabulary.csv';
-export const CSV_DEBOUNCE_MS = 2000;
+/** the CSV is rewritten once the vocabulary had no change for this long (a stop changes it 1-3 times in a row) */
+export const CSV_DEBOUNCE_MS = 3000;
 
 /** The dictionary is loaded lazily by library.ts; the IPC layer hands it over so this module stays testable. */
 let dictProvider: (() => Promise<DictData>) | null = null;
@@ -83,6 +85,29 @@ export async function upsertEntry(input: VocabEntryInput, now: Date = new Date()
   return entry;
 }
 
+/**
+ * An explanation the learner heard (a Listening stop, a tap): the entry is added or merged as in upsertEntry, and the word
+ * is learning, in My Vocabulary and in the highlight map, unless the learner knows it (then both stay known). One call
+ * for what took three before (vocab:upsertEntry + vocab:setStatus + vocab:setEntryStatus).
+ */
+export async function explained(input: VocabEntryInput, now: Date = new Date()): Promise<VocabEntry> {
+  const lemma = String(input.lemma ?? '').trim();
+  if (!lemma) throw new Error('vocabulary: a lemma is required');
+  if (!input.level && dictProvider) {
+    try { input = { ...input, level: levelOf(await dictProvider(), lemma) ?? undefined }; } catch { /* dictionary missing */ }
+  }
+  const known = settings.getVocab().words[lemma] === 'known';
+  const nowIso = now.toISOString();
+  let entry!: VocabEntry;
+  store.update((f) => {
+    entry = { ...mergeEntry(f.entries[lemma] ?? null, { ...input, lemma }, nowIso), status: known ? 'known' : 'learning' };
+    return { ...f, entries: { ...f.entries, [lemma]: entry } };
+  });
+  if (!known) settings.setWordStatus(lemma, 'learning');
+  scheduleCsv();
+  return entry;
+}
+
 export function setEntryStatus(lemma: string, status: VocabEntryStatus): void {
   store.update((f) => {
     const e = f.entries[lemma];
@@ -125,28 +150,25 @@ export function toCsv(entries: VocabEntry[]): string {
   return `﻿${lines.join('\r\n')}\r\n`;
 }
 
-let csvTimer: ReturnType<typeof setTimeout> | null = null;
+/**
+ * The mirror file: rewritten in the background (async write + rename) once the vocabulary had no change for
+ * CSV_DEBOUNCE_MS (at the latest 20 s after the first change), and at quit when a change is not in it yet.
+ */
+const csvFile = new BackgroundFile(() => csvPath(), () => toCsv(listEntries()), { quietMs: CSV_DEBOUNCE_MS, maxDelayMs: 20_000, label: CSV_FILE_NAME });
 
-/** Writes the CSV now (used by the Export button) and cancels a pending debounced write. */
+/** Writes the CSV now (the Export button), synchronously; a pending background write is no longer needed. */
 export function writeCsv(): string {
-  if (csvTimer) { clearTimeout(csvTimer); csvTimer = null; }
-  const file = csvPath();
-  writeAtomic(file, toCsv(listEntries()));
-  return file;
+  csvFile.writeSync(true);
+  return csvPath();
 }
 
-function scheduleCsv(): void {
-  if (csvTimer) clearTimeout(csvTimer);
-  csvTimer = setTimeout(() => {
-    csvTimer = null;
-    try { writeCsv(); } catch (e) { console.error('vocabulary: could not write the CSV', e); }
-  }, CSV_DEBOUNCE_MS);
-  // never keep the app alive for the mirror file
-  (csvTimer as { unref?: () => void }).unref?.();
-}
+function scheduleCsv(): void { csvFile.markDirty(); }
 
-/** true while a debounced CSV write is pending (tests) */
-export function csvWritePending(): boolean { return csvTimer !== null; }
+/** true while a background CSV write waits for the changes to stop (tests) */
+export function csvWritePending(): boolean { return csvFile.scheduled; }
+
+/** Resolves when the CSV has the latest vocabulary (tests). */
+export function csvSettled(): Promise<void> { return csvFile.flush(); }
 
 /* ------------------------------------------------------------------------------------------------
  * Progress (dictionary + status map)

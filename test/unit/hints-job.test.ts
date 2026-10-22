@@ -126,6 +126,52 @@ describe('HintsJob', () => {
     expect(e2.at(-1)).toMatchObject({ state: 'error', code: 'auth' });
   });
 
+  it('does no work without a key: the book is not read, nothing is collected or asked', async () => {
+    const loadBook = vi.fn(() => book);
+    const getDictionary = vi.fn(async () => dict);
+    const { job, events, calls } = setup({ hasKey: (p) => p !== 'anthropic', loadBook, getDictionary });
+    job.request('book1', 0);
+    await job.idle();
+    expect(loadBook).not.toHaveBeenCalled();
+    expect(getDictionary).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({ state: 'error', code: 'no_key', error: 'Add your Anthropic API key in Settings.' });
+  });
+
+  it('reads the book once (an async loader is awaited) and reuses it for the next chapters', async () => {
+    const loadBook = vi.fn(async (id: string) => (id === 'book1' ? book : null));
+    const { job } = setup({ loadBook, hasKey: () => true });
+    job.request('book1', 0);
+    job.request('book1', 1);
+    await job.idle();
+    expect(loadBook).toHaveBeenCalledTimes(1);
+    expect(job.get('book1', 0)).toEqual({ serene: ['宁静的', '安详的'] });
+    expect(job.get('book1', 1)).toEqual({ reluctant: ['不情愿的', ''] });
+  });
+
+  it('writes the cache file in the background; readers use memory; clear() during a write leaves no file', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const wf = fs.promises.writeFile;
+    const spy = vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (f, d) => { await gate; return wf(f as string, d as string); });
+    try {
+      const { job, dir } = setup();
+      job.request('book1', 0);
+      while (!job.get('book1', 0)) await new Promise((r) => setTimeout(r, 2));
+      // stored in memory at once; the file write waits at the gate
+      const file = path.join(dir, 'book1.json');
+      expect(fs.existsSync(file)).toBe(false);
+      job.clear('book1');
+      release();
+      await job.idle();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(fs.existsSync(file)).toBe(false);
+      expect(job.get('book1', 0)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('picks the hints model from settings', () => {
     const s = structuredClone(DEFAULT_SETTINGS);
     expect(hintsModelFor(s)).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });

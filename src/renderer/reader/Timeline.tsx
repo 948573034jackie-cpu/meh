@@ -13,7 +13,7 @@ interface Props {
 }
 
 /** The whole-book timeline: estimated listening time, chapter marks with titles, drag to seek. */
-export function Timeline({ index, wpm, position, scrubbing, onScrub, onSeek }: Props): JSX.Element {
+export const Timeline = React.memo(function Timeline({ index, wpm, position, scrubbing, onScrub, onSeek }: Props): JSX.Element {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ x: number; title: string } | null>(null);
   const total = totalTime(index, wpm);
@@ -58,4 +58,4 @@ export function Timeline({ index, wpm, position, scrubbing, onScrub, onSeek }: P
       <span className="t total" data-testid="clock-total">{formatClock(total)}</span>
     </div>
   );
-}
+});

@@ -18,6 +18,7 @@ const api: ReadAlongApi = {
   setMarkedRanges: (bookId, ranges) => invoke('vocab:setMarked', bookId, ranges),
   vocabEntries: () => invoke('vocab:entries'),
   vocabUpsertEntry: (entry) => invoke('vocab:upsertEntry', entry),
+  vocabExplained: (entry) => invoke('vocab:explained', entry),
   vocabSetEntryStatus: (lemma, status) => invoke('vocab:setEntryStatus', lemma, status),
   vocabDeleteEntry: (lemma) => invoke('vocab:deleteEntry', lemma),
   vocabExportCsv: () => invoke('vocab:exportCsv'),

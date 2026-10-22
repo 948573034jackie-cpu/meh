@@ -22,8 +22,11 @@ One entry per dictionary lemma (`VocabEntry` in `src/shared/api.ts`):
 `lemma, word, sentence, explanation, chinese, bookId, bookTitle, chapter, position, createdAt, lastSeenAt,
 timesExplained, status ('learning' | 'known'), level?, again`
 
-The reader sends a `VocabEntryInput` through `vocabUpsertEntry` whenever a word was explained (the listening
-controller's `onTranscript` / `onMarkLearning` callbacks are the place). Merge rule, by lemma:
+The reader sends a `VocabEntryInput` through `vocabExplained` whenever the learner heard a word's explanation (the
+listening controller's `onTranscript` callback is the place): one call that merges the entry and saves the word as
+learning, entry and status map, unless it is known. `onMarkLearning` only shows the learning status at once; it saves
+it on its own (`vocabSetEntryStatus`) when no heard explanation follows in the same turn ("go on", an explanation cut
+short). `vocabUpsertEntry` (merge only) stays for other callers. Merge rule, by lemma:
 
 - new word: `timesExplained = 1`, `status = 'learning'`, `createdAt = lastSeenAt = now`;
 - seen before: `timesExplained + 1`, `lastSeenAt = now`, the **first** sentence (and book / chapter / position)
@@ -34,10 +37,14 @@ controller's `onTranscript` / `onMarkLearning` callbacks are the place). Merge r
 The status map `VocabState.words` is kept in sync so highlighting follows: upsert → `'learning'` unless the word
 is already `'known'`; `vocabSetEntryStatus` mirrors the status; `vocabDeleteEntry` removes the word from the map.
 
+Both files are written in the background (`JsonStore` in `src/main/storage.ts`: about half a second after the last
+change, anything unsaved synchronously at quit); every read comes from memory, so it always sees the latest change.
+
 ## CSV
 
 `vocabExportCsv()` writes the file now, reveals it in Finder and resolves with the path; the same file is also
-rewritten automatically two seconds after the last change, so it is always current. UTF-8 with a BOM (Excel and
+rewritten automatically in the background three seconds after the last change (and at quit when a change is not in
+it yet), so it is always current. UTF-8 with a BOM (Excel and
 Numbers then show the Chinese), CRLF line ends, oldest entry first, columns:
 
 `word, chinese, explanation, sentence, book, chapter, date, status`

@@ -6,14 +6,15 @@ import type { Dictionary } from '@core/dict/types';
 import type { HintMap, HintsProgress, PhraseMap } from '@shared/api';
 import type { Settings, UsageRecord, VocabState, AiProviderId } from '@shared/settings';
 import type { PromptBundle } from '@core/ai/prompts';
-import { collectHardWords, batchHardWords, buildHintsPrompt, parseHints, chunkChapter, phraseQuota, buildPhrasesPrompt, parsePhrases, validatePhrases, mapPhraseHits, chapterText, PHRASES_PER_CHAPTER } from '@core/ai/hints';
+import { collectHardWordsAsync, batchHardWords, buildHintsPrompt, parseHints, chunkChapter, phraseQuota, buildPhrasesPrompt, parsePhrases, validatePhrases, mapPhraseHits, chapterText, PHRASES_PER_CHAPTER } from '@core/ai/hints';
 import type { RawPhrase } from '@core/ai/hints';
 import { looksLikeFreeCombination } from '@core/dict/dictionary';
 import { runCompletion, estimateUsd, periodStarts, classifyError } from './ai';
 import type { StreamResult } from './ai';
 import { getSettings, getVocab, addUsage, usdSpent } from './settings';
-import { loadBook, getDictionary } from './library';
-import { dataDir, writeAtomic, readJsonFile } from './storage';
+import { readBook, getDictionary } from './library';
+import { hasSecret } from './secrets';
+import { dataDir, writeAtomicAsync, readJsonFile } from './storage';
 
 /**
  * Background "Word Wise in Chinese" job: for each chapter the learner opens, ask a cheap model for the
@@ -30,6 +31,10 @@ import { dataDir, writeAtomic, readJsonFile } from './storage';
  * Cache file: <userData>/data/hints/<bookId>.json =
  *   { version, chapters: { [index]: { [lemma]: [zh1, zh2] } }, phrases: { [index]: { [sentenceKey]: PhraseHit[] } } }.
  * A chapter is done when both are stored; a cache of an older version is dropped and recomputed on request.
+ *
+ * The job shares the main process with the voice's audio and the AI's text, so it stays out of their way: no key, no
+ * work (checked first); the book is the library's parsed copy (not read and parsed again); the hard words are
+ * collected a paragraph at a time with the thread given back in between; the cache file is written asynchronously.
  */
 
 export const HINTS_CACHE_VERSION = 2;
@@ -43,7 +48,10 @@ export interface HintsCache { version: number; chapters: Record<string, HintMap>
 /** Everything the job touches outside itself, so tests can run it without Electron, the network or the real stores. */
 export interface HintsJobDeps {
   complete: (provider: AiProviderId, model: string, prompt: PromptBundle) => Promise<StreamResult>;
-  loadBook: (id: string) => Book | null;
+  /** the parsed book (the library shares the copy it read last) */
+  loadBook: (id: string) => Promise<Book | null> | Book | null;
+  /** is a key saved for the provider? Without one the job does no work at all (missing = assume yes) */
+  hasKey?: (provider: AiProviderId) => boolean;
   getDictionary: () => Promise<Dictionary>;
   getSettings: () => Settings;
   getVocab: () => VocabState;
@@ -71,6 +79,10 @@ export class HintsJob {
   private focus: Pending | null = null;
   private failed = new Map<string, number>();
   private books = new Map<string, Book>();
+  /** the cache file write of each book (one at a time per book; each writes the latest cache) */
+  private writes = new Map<string, Promise<void>>();
+  /** bumped by clear(): a chapter that was running then is not stored */
+  private generation = new Map<string, number>();
 
   constructor(private deps: HintsJobDeps) {}
 
@@ -101,14 +113,22 @@ export class HintsJob {
   clear(bookId: string): void {
     this.caches.delete(bookId);
     this.books.delete(bookId);
+    this.generation.set(bookId, (this.generation.get(bookId) ?? 0) + 1);
     this.queue = this.queue.filter((p) => p.bookId !== bookId);
     for (const k of [...this.failed.keys()]) if (k.startsWith(`${bookId}:`)) this.failed.delete(k);
-    try { fs.unlinkSync(this.file(bookId)); } catch { /* nothing cached */ }
+    const file = this.file(bookId);
+    const unlink = () => { try { fs.unlinkSync(file); } catch { /* nothing cached */ } };
+    unlink();
+    // a write that was already running may put the file back: remove it again once it ended
+    void this.writes.get(bookId)?.then(unlink);
   }
 
-  /** Resolves when the queue is empty (tests). */
+  /** Resolves when the queue is empty and the cache files are written (tests). */
   async idle(): Promise<void> {
-    while (this.running || this.queue.length) await new Promise((r) => setTimeout(r, 5));
+    while (this.running || this.queue.length || this.writes.size) {
+      await Promise.all([...this.writes.values()]);
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
 
   get pending(): readonly Pending[] { return this.queue; }
@@ -130,8 +150,20 @@ export class HintsJob {
     const c = this.cache(bookId);
     c.chapters[String(chapter)] = hints;
     c.phrases[String(chapter)] = phrases;
-    fs.mkdirSync(this.deps.dir(), { recursive: true });
-    writeAtomic(this.file(bookId), JSON.stringify(c));
+    this.persist(bookId, c);
+  }
+
+  /** Writes the book's cache file in the background, after any write of it still running (readers use the memory copy). */
+  private persist(bookId: string, c: HintsCache): void {
+    const prev = this.writes.get(bookId) ?? Promise.resolve();
+    const next = prev.then(async () => {
+      // cleared (or replaced) meanwhile: this copy is not to be saved
+      if (this.caches.get(bookId) !== c) return;
+      await fs.promises.mkdir(this.deps.dir(), { recursive: true });
+      await writeAtomicAsync(this.file(bookId), JSON.stringify(c));
+    }).catch((e) => { console.error('hints: could not write the cache', e); });
+    this.writes.set(bookId, next);
+    void next.then(() => { if (this.writes.get(bookId) === next) this.writes.delete(bookId); });
   }
 
   /** The current chapter first, then the chapters after it, then earlier ones, then other books. */
@@ -159,10 +191,10 @@ export class HintsJob {
     }
   }
 
-  private book(id: string): Book | null {
+  private async book(id: string): Promise<Book | null> {
     const cached = this.books.get(id);
     if (cached) return cached;
-    const b = this.deps.loadBook(id);
+    const b = await this.deps.loadBook(id);
     if (b) { this.books.clear(); this.books.set(id, b); }
     return b;
   }
@@ -171,15 +203,18 @@ export class HintsJob {
     const { bookId, chapter } = p;
     const send = (ev: Omit<HintsProgress, 'bookId' | 'chapter'>) => this.deps.send({ bookId, chapter, ...ev });
     send({ state: 'running' });
+    const generation = this.generation.get(bookId) ?? 0;
     try {
       const s = this.deps.getSettings();
       const { provider, model } = hintsModelFor(s);
-      const book = this.book(bookId);
+      // without a key nothing can be asked: no reading, parsing or word collecting for nothing
+      if (this.deps.hasKey && !this.deps.hasKey(provider)) throw Object.assign(new Error(provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.'), { code: 'no_key' });
+      const book = await this.book(bookId);
       if (!book) throw Object.assign(new Error('The book is no longer in the library.'), { code: 'other' });
       if (!book.chapters[chapter]) throw Object.assign(new Error(`Chapter ${chapter + 1} does not exist.`), { code: 'other' });
       const dict = await this.deps.getDictionary();
       const known = new Set(Object.keys(this.deps.getVocab().words));
-      const words = collectHardWords(book, chapter, dict, s.learnerLevel, new Set(book.names), known);
+      const words = await collectHardWordsAsync(book, chapter, dict, s.learnerLevel, new Set(book.names), known, yieldNow);
       const hints: HintMap = {};
       const title = book.chapters[chapter].title;
       /** one budget-checked, usage-recorded request */
@@ -210,11 +245,15 @@ export class HintsJob {
         const prompt = buildPhrasesPrompt(chunks[i], { title: book.title, chapter: title, level: s.learnerLevel, max: quota[i], part: [i + 1, chunks.length] });
         raw.push(...parsePhrases(await ask(prompt)));
       }
+      await yieldNow();
       const items = validatePhrases(raw, chapterText(book, chapter), {
         max: PHRASES_PER_CHAPTER * Math.max(1, chunks.length),
         isFree: (ws, zh) => looksLikeFreeCombination(dict, ws, zh),
       });
+      await yieldNow();
       const phrases = mapPhraseHits(book, chapter, items, (w) => dict.lemmaOf(w));
+      // the learner cleared this book's hints while it ran: the result belongs to the old cache
+      if ((this.generation.get(bookId) ?? 0) !== generation) { send({ state: 'done' }); return; }
       this.store(bookId, chapter, hints, phrases);
       this.failed.delete(key(bookId, chapter));
       send({ state: 'done' });
@@ -228,6 +267,8 @@ export class HintsJob {
 }
 
 function key(bookId: string, chapter: number): string { return `${bookId}:${chapter}`; }
+/** gives the main process's event loop a turn (audio and AI messages waiting behind the job) */
+const yieldNow = (): Promise<void> => new Promise((r) => setImmediate(r));
 function same(a: Pending, b: Pending): boolean { return a.bookId === b.bookId && a.chapter === b.chapter; }
 
 export function hintsDir(): string {
@@ -243,7 +284,8 @@ export function getHintsJob(getWindow: () => BrowserWindow | null): HintsJob {
   if (job) return job;
   job = new HintsJob({
     complete: (provider, model, prompt) => runCompletion(provider, model, prompt),
-    loadBook,
+    loadBook: readBook,
+    hasKey: (provider) => hasSecret(provider),
     getDictionary,
     getSettings,
     getVocab,

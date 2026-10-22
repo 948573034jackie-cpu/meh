@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { Book } from '@core/model';
 import type { Settings, LibraryItem, VocabState, ReadMode } from '@shared/settings';
 import { DEFAULT_SETTINGS, isDarkTheme } from '@shared/settings';
+import { fromJsonPayload } from '@shared/api';
 
 export type View = 'library' | 'reader' | 'settings' | 'diagnostics' | 'vocabulary' | 'progress' | 'leveltest';
 
@@ -52,7 +53,9 @@ export const useApp = create<AppState>((set, get) => ({
   },
   refreshLibrary: async () => set({ library: withModes(await window.readalong.listLibrary(), get().settings) }),
   openBook: async (id) => {
-    const book = await window.readalong.loadBook(id);
+    // the Mac app sends the book as JSON text (much faster over IPC than the object); it is parsed here
+    const raw = await window.readalong.loadBook(id);
+    const book = raw ? fromJsonPayload(raw) : null;
     if (book) set({ book, view: 'reader', mode: modeForBook(get().settings, book.id) });
   },
   setBook: (book) => set({ book, mode: book ? modeForBook(get().settings, book.id) : get().mode }),

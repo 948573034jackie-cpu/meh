@@ -62,6 +62,24 @@ export async function upsertEntry(input: VocabEntryInput, now: Date = new Date()
   return entry;
 }
 
+/** Same as the Mac app's vocab:explained: the entry merged as in upsertEntry, and learning (entry and map) unless known. */
+export async function explained(input: VocabEntryInput, now: Date = new Date()): Promise<VocabEntry> {
+  const lemma = String(input.lemma ?? '').trim();
+  if (!lemma) throw new Error('vocabulary: a lemma is required');
+  if (!input.level) {
+    try { input = { ...input, level: levelOf(await getDictData(), lemma) ?? undefined }; } catch { /* dictionary missing */ }
+  }
+  const known = (await settings.getVocab()).words[lemma] === 'known';
+  const nowIso = now.toISOString();
+  let entry!: VocabEntry;
+  await store.update((f) => {
+    entry = { ...mergeEntry(f.entries[lemma] ?? null, { ...input, lemma }, nowIso), status: known ? 'known' : 'learning' };
+    return { ...f, entries: { ...f.entries, [lemma]: entry } };
+  });
+  if (!known) await settings.setWordStatus(lemma, 'learning');
+  return entry;
+}
+
 export async function setEntryStatus(lemma: string, status: VocabEntryStatus): Promise<void> {
   await store.update((f) => {
     const e = f.entries[lemma];

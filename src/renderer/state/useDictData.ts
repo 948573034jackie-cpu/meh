@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react';
 import type { DictData } from '@shared/api';
+import { fromJsonPayload } from '@shared/api';
 import type { LevelMaterials } from '@core/level/test';
 import { prepareMaterials } from '@core/level/test';
 
 /**
  * The raw dictionary data (DictData) for code that needs more than lookups, such as the level test's item
- * pools. Loaded once per renderer and cached in module scope, like reader/useDictionary.ts caches the
- * Dictionary built from the same data.
+ * pools. Loaded once per renderer and cached in module scope; reader/useDictionary.ts builds the Dictionary from
+ * this same copy. The Mac app sends it as JSON text (fast over IPC), parsed here once.
  */
 let dataPromise: Promise<DictData> | null = null;
 let materialsPromise: Promise<LevelMaterials> | null = null;
 
 export function loadDictData(): Promise<DictData> {
-  if (!dataPromise) dataPromise = window.readalong.loadDictionary();
+  if (!dataPromise) {
+    dataPromise = window.readalong.loadDictionary().then((d) => fromJsonPayload(d));
+    dataPromise.catch(() => { dataPromise = null; });
+  }
   return dataPromise;
 }
 

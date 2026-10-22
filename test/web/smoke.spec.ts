@@ -69,7 +69,7 @@ test('web build: paste a text, read it, switch Reading <-> Listening, data survi
   await onboard(page);
 
   // the gzipped dictionary inflates in the browser
-  const dictWords = await page.evaluate(async () => Object.keys((await window.readalong.loadDictionary()).w).length);
+  const dictWords = await page.evaluate(async () => { const d = await window.readalong.loadDictionary(); return Object.keys((typeof d === 'string' ? JSON.parse(d) : d).w).length; });
   expect(dictWords).toBeGreaterThan(10_000);
 
   // paste a text

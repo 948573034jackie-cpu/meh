@@ -25,7 +25,7 @@ interface Props {
 const LABEL: Record<VoiceSnapshot['ui'], string> = { off: 'Talk with the tutor', listening: 'Listening… just talk', thinking: 'Thinking…', speaking: 'Speaking… talk any time to interrupt' };
 
 /** The floating round mic button (right edge, mid-height) with its popover: status, Always on, typed box. */
-export function VoiceChatUI(p: Props): JSX.Element {
+export const VoiceChatUI = React.memo(function VoiceChatUI(p: Props): JSX.Element {
   const { snap } = p;
   const [text, setText] = useState('');
   const boxRef = useRef<HTMLTextAreaElement>(null);
@@ -98,7 +98,7 @@ export function VoiceChatUI(p: Props): JSX.Element {
       </button>
     </div>
   );
-}
+});
 
 export function MicIcon(): JSX.Element {
   return <svg className="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>;

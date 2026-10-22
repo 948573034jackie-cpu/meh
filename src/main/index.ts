@@ -6,6 +6,7 @@ import { registerSttIpc } from './stt/ipc';
 import { checkSecrets } from './secrets';
 import { rendererDir, preloadPath, migrateLegacyUserData } from './paths';
 import { buildMenu } from './menu';
+import { flushStoresSync } from './storage';
 
 // Tests and CI point userData at a scratch directory.
 if (process.env.READALONG_USER_DATA) app.setPath('userData', process.env.READALONG_USER_DATA);
@@ -55,3 +56,10 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+// Settings, library, vocabulary and usage are written in the background (storage.ts JsonStore): whatever is not on disk
+// yet is written synchronously when the app quits. Again at will-quit and exit, for changes the closing windows sent
+// after before-quit (the last reading position).
+app.on('before-quit', flushStoresSync);
+app.on('will-quit', flushStoresSync);
+process.on('exit', flushStoresSync);

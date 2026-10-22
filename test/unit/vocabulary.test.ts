@@ -17,6 +17,7 @@ vi.mock('electron', () => ({
 
 import * as vocab from '../../src/main/vocabulary';
 import * as settings from '../../src/main/settings';
+import { flushStores, flushStoresSync } from '../../src/main/storage';
 import type { DictData, VocabEntry, VocabEntryInput } from '../../src/shared/api';
 
 const input = (lemma: string, extra: Partial<VocabEntryInput> = {}): VocabEntryInput => ({
@@ -47,6 +48,9 @@ describe('My Vocabulary store', () => {
   it('saves an entry to data/vocabulary.json and marks the word learning', async () => {
     const e = await vocab.upsertEntry(input('serendipity'), new Date('2026-10-01T10:00:00Z'));
     expect(e).toMatchObject({ lemma: 'serendipity', timesExplained: 1, status: 'learning', again: 0, createdAt: '2026-10-01T10:00:00.000Z' });
+    // the file is written in the background (storage.ts JsonStore); readers see the new entry at once
+    expect(vocab.getEntry('serendipity')?.sentence).toBe('A sentence with serendipity.');
+    await flushStores();
     const file = path.join(ctx.userData, 'data', 'vocabulary.json');
     expect(fs.existsSync(file)).toBe(true);
     const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { entries: Record<string, VocabEntry> };
@@ -90,6 +94,25 @@ describe('My Vocabulary store', () => {
     expect(vocab.getEntry('nothing-here')).toBeNull();
   });
 
+  it('explained(): one call saves the entry and the learning status (map and entry); a known word stays known', async () => {
+    const e = await vocab.explained(input('quixotic', { explanation: 'idealistic in an impractical way' }), new Date('2026-10-03T10:00:00Z'));
+    expect(e).toMatchObject({ lemma: 'quixotic', status: 'learning', timesExplained: 1, explanation: 'idealistic in an impractical way' });
+    expect(settings.getVocab().words.quixotic).toBe('learning');
+    // a second explanation merges like upsertEntry
+    const e2 = await vocab.explained(input('quixotic', { explanation: 'deeper', again: true }));
+    expect(e2).toMatchObject({ timesExplained: 2, again: 1, explanation: 'deeper', status: 'learning' });
+    // the learner knows the word: the explanation is kept, the word stays known everywhere
+    settings.setWordStatus('lucid', 'known');
+    const k = await vocab.explained(input('lucid'));
+    expect(k.status).toBe('known');
+    expect(settings.getVocab().words.lucid).toBe('known');
+    // an entry made learning again by a new explanation after an "Ignore"
+    settings.setWordStatus('quixotic', 'ignored');
+    expect((await vocab.explained(input('quixotic'))).status).toBe('learning');
+    expect(settings.getVocab().words.quixotic).toBe('learning');
+    await expect(vocab.explained(input(' '))).rejects.toThrow(/lemma/);
+  });
+
   it('fills the level from the dictionary when the reader did not send one', async () => {
     vocab.setDictionaryProvider(async () => FAKE_DICT);
     const e = await vocab.upsertEntry(input('serene'));
@@ -125,18 +148,35 @@ describe('CSV mirror', () => {
     expect(csv).toBe('﻿word,chinese,explanation,sentence,book,chapter,date,status\r\nearly,c,e,s,B,1,2026-10-01,known\r\nlate,c,e,s,B,1,2026-10-05,known\r\n');
   });
 
-  it('rewrites the file automatically about two seconds after a change', async () => {
+  it('rewrites the file in the background once the changes stop', async () => {
     vi.useFakeTimers();
     const file = vocab.csvPath();
     fs.rmSync(file, { force: true });
     await vocab.upsertEntry(input('debounced'));
     expect(vocab.csvWritePending()).toBe(true);
-    expect(fs.existsSync(file)).toBe(false);
+    vi.advanceTimersByTime(vocab.CSV_DEBOUNCE_MS - 100);
+    // another change: the write waits for quiet again
+    await vocab.upsertEntry(input('second'));
     vi.advanceTimersByTime(vocab.CSV_DEBOUNCE_MS - 1);
+    expect(vocab.csvWritePending()).toBe(true);
     expect(fs.existsSync(file)).toBe(false);
     vi.advanceTimersByTime(1);
     expect(vocab.csvWritePending()).toBe(false);
-    expect(fs.readFileSync(file, 'utf8')).toContain('debounced,');
+    await vocab.csvSettled();
+    const text = fs.readFileSync(file, 'utf8');
+    expect(text).toContain('debounced,');
+    expect(text).toContain('second,');
+  });
+
+  it('writes a pending CSV change synchronously when the app quits', async () => {
+    const file = vocab.csvPath();
+    await vocab.csvSettled();
+    fs.rmSync(file, { force: true });
+    await vocab.upsertEntry(input('lastminute'));
+    expect(vocab.csvWritePending()).toBe(true);
+    flushStoresSync();
+    expect(vocab.csvWritePending()).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toContain('lastminute,');
   });
 });
 

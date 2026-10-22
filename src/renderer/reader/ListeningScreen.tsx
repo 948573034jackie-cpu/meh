@@ -58,9 +58,8 @@ export function ListeningScreen(p: Props): JSX.Element {
       const top = scroll.scrollTop + (r.top - s.top) + r.height / 2 - scroll.clientHeight * ANCHOR;
       scroll.scrollTo({ top: Math.max(0, top), behavior: force ? 'auto' : 'smooth' });
     };
+    // the current line takes its size at once (no transition), so one placement is enough
     place();
-    // the line grows when it becomes the current one: settle once the size transition has ended
-    if (!force) setTimeout(place, 260);
   }
   useEffect(() => { ensureRef.current = ensureVisible; return () => { ensureRef.current = () => undefined; }; });
   useEffect(() => {
@@ -107,7 +106,7 @@ export function ListeningScreen(p: Props): JSX.Element {
       </div>
       {p.waiting && <div className="waiting-chip" onClick={(e) => e.stopPropagation()}><span>Your turn: say or type the answer…</span><button onClick={p.onContinue}>Continue</button></div>}
       <div className="listen-bottom" onClick={(e) => e.stopPropagation()}>
-        <Timeline index={index} wpm={wpm} position={position} scrubbing={scrubbing} onScrub={setScrubbing} onSeek={(pos) => shared.seek(pos)} />
+        <Timeline index={index} wpm={wpm} position={position} scrubbing={scrubbing} onScrub={setScrubbing} onSeek={shared.seek} />
         <div className="controls" data-testid="controls">
           <div className="group transport">
             <Tip text="Previous sentence (←)" align="start"><button className="icon" onClick={shared.prev} aria-label="Previous sentence">⏮</button></Tip>

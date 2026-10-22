@@ -39,7 +39,10 @@ feature works, so another developer or AI can reuse the reading features in a di
 
 Electron has two sides. The **main process** (`src/main`) owns files, API keys, AI calls, the Kokoro voice model
 and speech recognition. The **renderer** (`src/renderer`, React) is the screen. They talk only through one
-bridge, `window.readalong` (type `ReadAlongApi` in `src/shared/api.ts`, implemented in `src/preload/index.ts`).
+bridge, `window.readalong` (type `ReadAlongApi` in `src/shared/api.ts`, implemented in `src/preload/index.ts`). Big
+data the reader asks for once (a book, the 7 MB dictionary) crosses it as JSON text, parsed in the page: a string is
+about 10x faster through IPC and the context bridge than the same object (`JsonPayload`, `fromJsonPayload`); the
+dictionary starts loading while the Library is shown.
 Everything in `src/core` is plain TypeScript with no Electron, so it can be reused anywhere (the iPad build
 reuses it with a browser version of the bridge in `src/web/api.ts`).
 
@@ -70,7 +73,9 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 - **AI phrase finder** (`src/core/ai/hints.ts`, `src/main/hints.ts`): for each chapter, a cheap model (Claude
   Haiku by default) lists the 2–5 word idioms, phrasal verbs and slang a learner at this level would not understand,
   each with a CEFR level and a Chinese meaning. Each phrase is checked against the text and mapped to token spans.
-  The same job gives a context-chosen Chinese meaning for each hard word. Results are cached per book.
+  The same job gives a context-chosen Chinese meaning for each hard word. Results are cached per book. The job stays
+  out of the voice's way in the main process: no key, no work; it reuses the library's parsed book, collects the
+  words a paragraph at a time with the thread given back in between, and writes its cache asynchronously.
 - **Word status** (LingQ style): unknown (highlighted), learning (yellow), known (no highlight), ignored.
 - **Level test** (`src/core/level`, `src/renderer/views/LevelTest.tsx`): a 2-stage yes/no word test with made-up
   words to catch guessing; it estimates vocabulary size and a CEFR level; daily "I know / I don't know" answers keep
@@ -88,7 +93,12 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 - **Word card** (`WordCard.tsx`): word, IPA, level, Chinese meaning in context (large), short English meaning,
   I know / I don't know / Ignore, 中文 on/off. It appears during a pause or tap and disappears after the explanation.
 - Rendering (`render.ts`): sentences and tokens become spans with data attributes, so highlighting the current
-  sentence/word and restyling a word after "I know" is cheap.
+  sentence/word and restyling a word after "I know" is cheap. A chapter's AI hints and phrases are loaded together
+  before it is shown (the next chapter's ahead), so a chapter change renders the chapter once; a new sentence moves
+  the highlight classes only on the lines between the old and the new one.
+- Listening mode paints little while the voice reads: the lines animate only their opacity, the spoken word is
+  coloured and underlined (not bold, which re-lays out the line), the bottom bar is opaque (no blur), the mic pulse is
+  an opacity/transform animation. `test/unit/css-lint.test.ts` keeps it that way.
 
 ## 5. Playback and the listening teaching flow
 
@@ -166,10 +176,14 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 ## 9. Saving and learning records
 
 - Settings, library and reading positions, word statuses: JSON files in the app data folder (`src/main/settings.ts`,
-  `src/main/library.ts`, atomic writes in `src/main/storage.ts`).
+  `src/main/library.ts`). `src/main/storage.ts` keeps them in memory and writes them in the background (500 ms after
+  the last change, at the latest 2 s after the first; a temporary file renamed over the old one), and writes anything
+  still unsaved synchronously when the app quits. The reading position is saved at most every 5 s and when the book
+  or the app closes.
 - **My Vocabulary** (`src/main/vocabulary.ts`, `src/renderer/views/Vocabulary.tsx`): every explained word with its
-  sentence, explanation, Chinese, book and date; status learning/known; mirrored to
-  `~/Documents/Dream Read/my-vocabulary.csv` after every change.
+  sentence, explanation, Chinese, book and date; status learning/known (one `vocab:explained` call per heard
+  explanation); mirrored to `~/Documents/Dream Read/my-vocabulary.csv` in the background a few seconds after each
+  change (and at quit).
 - **Progress** (`src/renderer/views/Progress.tsx`): known/learning/unknown counts per CEFR level; tap a level to see
   its unknown words.
 - **Review class** (`src/core/vocab/review.ts`, `reviewScript.ts`): after a session, a spoken review of today's

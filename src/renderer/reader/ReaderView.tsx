@@ -7,14 +7,14 @@ import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry, type CommandWindow } from '@core/listen/controller';
 import { getEngine, useFakeEngine, cancelAllEngines, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
 import { explain as aiExplain } from '@core/ai/client';
-import { firstPosition, getSentence, percentAt, nextPosition, prevPosition } from '@core/nav';
+import { firstPosition, getSentence, nextPosition, prevPosition } from '@core/nav';
 import { skippedSentences, stripInline } from '@core/import/skip';
 import { sentenceKey } from '@core/model';
 import { useApp } from '../state/store';
 import { useDictionary } from './useDictionary';
 import { renderChapter, renderSentence, restyleLemma, type TokenMeta } from './render';
 import { hintText } from './hints';
-import { indexBook, positionAtTime, timeAt, wordsPerMinute, clampRate, type BookIndex } from './progress';
+import { indexBook, positionAtTime, timeAt, wordsPerMinute, clampRate, fractionAt, type BookIndex } from './progress';
 import { WordCard, type CardData } from './WordCard';
 import { HelpSheet } from './HelpSheet';
 import { ReadingScreen, type ReadingPopover } from './ReadingScreen';
@@ -41,6 +41,24 @@ const CARD_LINGER_MS = 1500;
 const PRIME_AFTER_SEEK_MS = 300;
 /** speed clicks are saved to the settings file once none followed for this long */
 const RATE_SAVE_MS = 300;
+/** the reading position is saved at most this often while reading (and when the reader or the app closes) */
+const PROGRESS_SAVE_MS = 5000;
+/** a chapter waits this long at most for its hints and phrases before it is shown without them (a busy main process) */
+const CHAPTER_DATA_WAIT_MS = 400;
+
+/** What a chapter is rendered with besides its text: the AI's hints and the chapter phrase job's hits. */
+interface ChapterData { hints: HintMap | null; phrases: ChapterPhraseMap }
+const sameChapterData = (a: ChapterData, b: ChapterData): boolean => JSON.stringify(a.hints) === JSON.stringify(b.hints) && JSON.stringify(a.phrases) === JSON.stringify(b.phrases);
+
+/**
+ * A function whose identity never changes and that always runs the latest `fn` (this render's closure): memoized
+ * children (Timeline, WordCard, VoiceChatUI, Tip) keep equal props while the reader re-renders for other reasons.
+ */
+function useStable<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args: A) => ref.current(...args), []);
+}
 
 export type Card = CardData & { pos: Position; tokenIndex: number; entryId: number | null };
 export interface SelBar { x: number; y: number; text: string; kind: 'word' | 'phrase' | 'sentence' | 'passage'; ranges: MarkedRange[]; pos: Position }
@@ -139,9 +157,24 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const [voiceSnap, setVoiceSnap] = useState<VoiceSnapshot | null>(null);
   const [voicePop, setVoicePop] = useState(false);
   const savedEntriesRef = useRef(new Set<number>());
+  /** words onMarkLearning showed as learning whose status is not saved yet (see there) */
+  const learningSoonRef = useRef(new Set<string>());
   const [heard, setHeard] = useState<{ text: string; command: 'know' | 'dont_know' | 'bye' } | null>(null);
-  /** the AI's chapter hints (lemma -> [meaning as used here, other meaning]); null until the job has run */
-  const [hints, setHints] = useState<HintMap | null>(null);
+  /**
+   * Each chapter's hints and phrases, loaded together and before the chapter is shown, so a chapter change renders the
+   * chapter once (it rendered 2-3 times: with the old hints, without hints, with the new ones, then with the phrases).
+   * The next chapter's are fetched ahead.
+   */
+  const chapterDataRef = useRef(new Map<number, ChapterData>());
+  /** the last chapter whose data came (or that waited CHAPTER_DATA_WAIT_MS for it): on screen while `chapter`'s data is fetched */
+  const [settled, setSettled] = useState<number | null>(null);
+  /** bumps when the data of the chapter on screen changed (a finished hints job), so it is rendered again with it */
+  const [dataVersion, setDataVersion] = useState(0);
+  /** the chapter on screen (its html): `chapter` at once when its data is cached (fetched ahead), else after it came */
+  const shownChapter: number | null = chapterDataRef.current.has(chapter) ? chapter : settled;
+  const shownChapterRef = useRef(shownChapter); shownChapterRef.current = shownChapter;
+  /** the AI's hints of the chapter on screen (lemma -> [meaning as used here, other meaning]); null until the job has run */
+  const hints = shownChapter !== null ? chapterDataRef.current.get(shownChapter)?.hints ?? null : null;
   const hintsRef = useRef<HintMap | null>(null); hintsRef.current = hints;
   /** the commands window of a stop (or after an explanation) is open: the bottom bar with I know / I don't know / Go on */
   const [cmdWin, setCmdWin] = useState<(CommandWindow & { id: number }) | null>(null);
@@ -149,8 +182,6 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const cmdSeq = useRef(0);
   /** chapter -> the chapter phrase job's hits per sentence (window.readalong.hintsPhrases, when that bridge exists) */
   const phrasesRef = useRef(new Map<number, ChapterPhraseMap>());
-  /** bumps when chapter phrases arrive, so the chapter is rendered again with them highlighted */
-  const [phrasesVersion, setPhrasesVersion] = useState(0);
   const hintOverrides = useMemo(() => { const out: Record<string, string> = {}; for (const [lemma, pair] of Object.entries(hints ?? {})) if (pair?.[0]) out[lemma] = pair[0]; return out; }, [hints]);
 
   const names = useMemo(() => new Set(book.names), [book]);
@@ -204,7 +235,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       voice: () => ({ voiceId: readVoiceId(), rate: curRate() }),
       explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(curRate(), 1.2) }; },
       zhVoiceId: () => (settingsRef.current.ai.speakChinese ? zhVoiceRef.current : null),
-      contextZh: (lemma) => hintsRef.current?.[lemma],
+      contextZh: (lemma) => chapterDataRef.current.get(posRef.current.chapter)?.hints?.[lemma] ?? hintsRef.current?.[lemma],
       explain: (req, onDelta) => { if (E2E) e2eRequests.push(structuredClone(req)); const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
       mode: () => modeRef.current,
       onWaiting: (w) => setWaiting(w),
@@ -223,18 +254,30 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         setBusy(controller.busy);
         voiceRef.current?.setTutorState(!controller.busy ? 'idle' : entry.status === 'thinking' ? 'thinking' : 'speaking');
         if (entry.kind === 'question' && entry.status === 'thinking') setHeard(null);
-        // every explained word or phrase goes into My Vocabulary (and the CSV), with its sentence and explanation
+        // every explained word or phrase goes into My Vocabulary (and the CSV), with its sentence and explanation, and is
+        // saved as learning unless known: one call (vocab:explained) that also saves the status onMarkLearning just showed
         if (entry.lemma && (entry.kind === 'word' || entry.kind === 'phrase') && entry.status === 'done' && entry.text && !savedEntriesRef.current.has(entry.id)) {
           savedEntriesRef.current.add(entry.id);
+          learningSoonRef.current.delete(entry.lemma);
+          const st = vocabRef.current.words[entry.lemma];
+          if (st !== 'known' && st !== 'learning') void changeStatus(entry.lemma, 'learning', false, false);
           const ch = book.chapters[entry.position?.chapter ?? 0];
-          void window.readalong.vocabUpsertEntry({
+          void window.readalong.vocabExplained({
             lemma: entry.lemma, word: entry.target, sentence: entry.sentence, explanation: entry.text, chinese: entry.chinese ?? '',
-            bookId: book.id, bookTitle: book.title, chapter: ch?.title ?? '', position: entry.position, level: entry.level as never, again: entry.again,
+            // the level from this page's dictionary when the stop had none, so the main process does not parse its own copy for it
+            bookId: book.id, bookTitle: book.title, chapter: ch?.title ?? '', position: entry.position, level: (entry.level ?? dict.lookup(entry.lemma)?.entry.level) as never, again: entry.again,
           }).catch(() => undefined);
         }
         followEntry(entry);
       },
-      onMarkLearning: (lemma) => { if (!vocabRef.current.words[lemma]) void changeStatus(lemma, 'learning', false); },
+      // shown at once; saved by the explanation's vocab:explained when one follows in this same turn (the controller marks
+      // the word, then publishes the heard explanation), else on its own ("go on", an explanation cut short)
+      onMarkLearning: (lemma) => {
+        if (vocabRef.current.words[lemma]) return;
+        void changeStatus(lemma, 'learning', false, false);
+        learningSoonRef.current.add(lemma);
+        queueMicrotask(() => { if (learningSoonRef.current.delete(lemma)) void saveStatus(lemma, 'learning'); });
+      },
       onBudget: (daily, monthly) => {
         const s = settingsRef.current; const today = new Date().toISOString().slice(0, 10);
         if (s.ai.dailyWarnUsd > 0 && daily >= s.ai.dailyWarnUsd && warnedRef.current !== today) { warnedRef.current = today; showToast(`AI spending today: $${daily.toFixed(2)} (monthly $${monthly.toFixed(2)})`); }
@@ -316,12 +359,14 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     voiceRef.current?.setAlwaysOn(on);
     void useApp.getState().patchSettings({ voiceChat: { ...settingsRef.current.voiceChat, alwaysOn: on } });
   };
+  /** the last question (the same object while other explanations stream, so the popover is not rendered again for them) */
+  const lastQuestion = useMemo(() => [...transcript].reverse().find((e) => e.kind === 'question') ?? null, [transcript]);
   /** what the popover shows: the last question and its answer, or the last command heard */
   const voiceLast: VoiceExchange | null = useMemo(() => {
     if (heard) return { you: heard.text, tutor: heard.command === 'know' ? 'Good, marked as known.' : heard.command === 'dont_know' ? 'Once more, from another angle.' : 'Bye bye! Talk to me any time.', status: 'done' };
-    const q = [...transcript].reverse().find((e) => e.kind === 'question');
+    const q = lastQuestion;
     return q ? { you: q.question ?? '', tutor: q.parts?.free ?? q.text, status: q.status, error: q.error } : null;
-  }, [heard, transcript]);
+  }, [heard, lastQuestion]);
 
   // ---- the Dream voice (Kokoro): download on first use, read with a Mac voice meanwhile --------------
   useEffect(() => {
@@ -353,34 +398,62 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.voice.engine, settings.voice.explainEngine]);
 
-  // ---- chapter hints: cached by the main process; this chapter and the next are requested when missing ------
+  // ---- chapter hints and phrases: cached by the main process, loaded together, then the chapter is shown -----------
+  /** Fetches a chapter's hints (the AI job's Chinese meanings) and phrases together. */
+  const fetchChapterData = (ch: number): Promise<ChapterData> => {
+    const api = window.readalong;
+    const hintsP = E2E || typeof api.hintsGet !== 'function' ? Promise.resolve(null) : api.hintsGet(book.id, ch).catch(() => null);
+    const phrasesP = typeof api.hintsPhrases === 'function' ? api.hintsPhrases(book.id, ch).then((d) => toChapterPhraseMap(d, ch), () => ({})) : Promise.resolve({});
+    return Promise.all([hintsP, phrasesP]).then(([h, ph]) => ({ hints: h, phrases: ph }));
+  };
+  /** Keeps a chapter's data; the chapter is rendered again only when it is on screen and its data changed. */
+  const storeChapterData = (ch: number, data: ChapterData): void => {
+    const old = chapterDataRef.current.get(ch);
+    if (old && sameChapterData(old, data)) return;
+    chapterDataRef.current.set(ch, data);
+    phrasesRef.current.set(ch, data.phrases);
+    // the chapter on screen (also one shown without its data after CHAPTER_DATA_WAIT_MS) is rendered with the new data
+    if (ch === shownChapterRef.current) setDataVersion((v) => v + 1);
+  };
   useEffect(() => {
     const api = window.readalong;
-    if (E2E || typeof api.hintsGet !== 'function') return;
     let on = true;
-    setHints(null);
-    const fetch = () => api.hintsGet(book.id, chapter).then((m) => { if (on) setHints(m); return m; }).catch(() => null);
-    void fetch().then((m) => {
-      if (!on) return;
-      if (!m) void api.hintsRequest(book.id, chapter).catch(() => undefined);
-      if (book.chapters[chapter + 1]) void api.hintsRequest(book.id, chapter + 1).catch(() => undefined);
-    });
-    const off = api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.chapter === chapter && ev.state === 'done') void fetch(); });
-    return () => { on = false; off(); };
+    const want = chapter;
+    const show = () => { if (on) setSettled(want); };
+    /** the AI job runs for this chapter when its hints are missing, and for the next one ahead */
+    const requestJobs = (data: ChapterData) => {
+      if (E2E || typeof api.hintsRequest !== 'function') return;
+      if (!data.hints) void api.hintsRequest(book.id, want).catch(() => undefined);
+      if (book.chapters[want + 1]) void api.hintsRequest(book.id, want + 1).catch(() => undefined);
+    };
+    let wait: ReturnType<typeof setTimeout> | null = null;
+    const cached = chapterDataRef.current.get(want);
+    if (cached) {
+      show();
+      requestJobs(cached);
+      // a chapter whose hints were not ready when it was cached: look again
+      if (!cached.hints) void fetchChapterData(want).then((d) => storeChapterData(want, d));
+    } else {
+      // a busy main process does not keep the page empty: after CHAPTER_DATA_WAIT_MS the chapter shows without its data
+      // (and renders again when it comes)
+      wait = setTimeout(show, CHAPTER_DATA_WAIT_MS);
+      void fetchChapterData(want).then((d) => {
+        // kept even when the reader moved on meanwhile: coming back renders at once
+        storeChapterData(want, d);
+        if (!on) return;
+        if (wait) { clearTimeout(wait); wait = null; }
+        show();
+        requestJobs(d);
+      });
+    }
+    // the next chapter's data ahead, so turning into it renders at once
+    if (book.chapters[want + 1] && !chapterDataRef.current.has(want + 1)) void fetchChapterData(want + 1).then((d) => storeChapterData(want + 1, d));
+    const off = typeof api.onHintsProgress === 'function'
+      ? api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.state === 'done' && (chapterDataRef.current.has(ev.chapter) || ev.chapter === want)) void fetchChapterData(ev.chapter).then((d) => storeChapterData(ev.chapter, d)); })
+      : () => undefined;
+    return () => { on = false; if (wait) clearTimeout(wait); off(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book, chapter]);
-
-  // ---- chapter phrases (idioms, phrasal verbs, slang) found by the chapter job: Listening stops at them like words ----
-  useEffect(() => {
-    const api = window.readalong as unknown as { hintsPhrases?: (bookId: string, chapter: number) => Promise<unknown>; onHintsProgress?: typeof window.readalong.onHintsProgress };
-    if (typeof api.hintsPhrases !== 'function') return;
-    let on = true;
-    const load = (ch: number) => { void api.hintsPhrases!(book.id, ch).then((d) => { if (!on) return; phrasesRef.current.set(ch, toChapterPhraseMap(d, ch)); if (ch === chapter) setPhrasesVersion((v) => v + 1); }, () => undefined); };
-    load(chapter);
-    if (book.chapters[chapter + 1]) load(chapter + 1);
-    const off = typeof api.onHintsProgress === 'function' ? api.onHintsProgress((ev) => { if (ev.bookId === book.id && ev.state === 'done' && (ev.chapter === chapter || ev.chapter === chapter + 1)) load(ev.chapter); }) : () => undefined;
-    return () => { on = false; off(); };
-  }, [book, chapter]);
-  useEffect(() => { phrasesRef.current = new Map(); }, [book]);
 
   // the controller stops at hard words only on the Listening screen (and only while auto-stop is on)
   useEffect(() => { const c = controllerRef.current; if (c) c.enabled = mode === 'listening' && autoStop; }, [mode, autoStop, ready]);
@@ -394,8 +467,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const renderOpts = useCallback(() => ({ dict: dict!, names, learner: settingsRef.current.learnerLevel as CefrLevel, vocab: vocabRef.current.words, marked: markedRef.current, hints: settingsRef.current.appearance.showHints !== false, hintOverrides, phrases: phraseHitsOf }), [dict, names, hintOverrides]);
 
   const html = useMemo(() => {
-    if (!dict) return '';
-    const ch = book.chapters[chapter];
+    if (!dict || shownChapter === null) return '';
+    const ch = book.chapters[shownChapter];
     if (!ch) return '';
     const { html, meta } = renderChapter(ch, renderOpts());
     metaRef.current = meta;
@@ -403,54 +476,92 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     const label = ch.paragraphs[0]?.kind.startsWith('h') ? '' : `<div class="chapter-title">${ch.title.replace(/</g, '&lt;')}</div>`;
     return `<div class="doc-inner">${label}${html}</div>`;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dict, chapter, book, renderOpts, settings.learnerLevel, settings.appearance.showHints, vocab.marked, phrasesVersion]);
+  }, [dict, shownChapter, dataVersion, book, renderOpts, settings.learnerLevel, settings.appearance.showHints, vocab.marked]);
   useEffect(() => { markedRef.current = vocab.marked[book.id] ?? []; }, [vocab.marked, book.id]);
 
   /** the screen injected the chapter: put the highlight back and bring the sentence into view */
   const onRendered = useCallback(() => {
+    linesRef.current = null;
     highlightSentence(posRef.current);
     requestAnimationFrame(() => ensureRef.current(posRef.current, true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- highlighting -------------------------------------------------------------------------------
+  /**
+   * The injected chapter's sentence spans in reading order and the highlighted one: a new sentence moves 'cur' and
+   * 'past' only on the lines between the old and the new one (it removed and re-added 'past' on every earlier line, ~300
+   * class changes per sentence late in a long chapter). Rebuilt after each injection (onRendered).
+   */
+  const linesRef = useRef<{ root: HTMLElement; list: HTMLElement[]; at: Map<string, number>; cur: number; pastUpTo: number } | null>(null);
   function highlightSentence(pos: Position): void {
     const root = docRef.current; if (!root) return;
-    root.querySelectorAll('.s.cur').forEach((e) => e.classList.remove('cur'));
-    root.querySelectorAll('.s.past').forEach((e) => e.classList.remove('past'));
-    const el = root.querySelector(`.s[data-key="${keyOf(pos)}"]`);
-    el?.classList.add('cur');
-    if (modeRef.current === 'listening' && el) {
-      // lines before the current one are dimmed more than the ones to come
-      for (const s of root.querySelectorAll('.s')) { if (s === el) break; s.classList.add('past'); }
+    let L = linesRef.current;
+    if (!L || L.root !== root) {
+      const list = Array.from(root.querySelectorAll<HTMLElement>('.s'));
+      for (const el of list) el.classList.remove('cur', 'past');
+      L = linesRef.current = { root, list, at: new Map(list.map((el, i) => [el.dataset.key ?? '', i])), cur: -1, pastUpTo: 0 };
     }
+    const next = L.at.get(keyOf(pos)) ?? -1;
+    if (L.cur >= 0) L.list[L.cur].classList.remove('cur');
+    // lines before the current one are dimmed more than the ones to come (Listening mode only); the lines before
+    // `pastUpTo` are the dimmed ones, so only the lines between the old and the new place change
+    const upTo = modeRef.current !== 'listening' ? 0 : next >= 0 ? next : L.pastUpTo;
+    for (let i = L.pastUpTo; i < upTo; i++) L.list[i].classList.add('past');
+    for (let i = upTo; i < L.pastUpTo; i++) L.list[i].classList.remove('past');
+    L.pastUpTo = upTo;
+    if (next >= 0) L.list[next].classList.add('cur');
+    L.cur = next;
     clearWord();
     ensureRef.current(pos);
   }
   function clearWord(): void { for (const el of currentWordRef.current) el.classList.remove('cur-w'); currentWordRef.current = []; }
   function highlightWord(pos: Position, tokenIndex: number): void {
     clearWord();
-    const el = docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(pos)}"] .w[data-t="${tokenIndex}"]`);
+    // within the current sentence's span (a query over the whole chapter cost 0.2 ms per word on long chapters)
+    const L = linesRef.current;
+    const line = L && L.cur >= 0 && L.list[L.cur].dataset.key === keyOf(pos) && L.list[L.cur].isConnected ? L.list[L.cur] : docRef.current?.querySelector<HTMLElement>(`.s[data-key="${keyOf(pos)}"]`);
+    const el = line?.querySelector<HTMLElement>(`.w[data-t="${tokenIndex}"]`);
     if (el) { el.classList.add('cur-w'); currentWordRef.current.push(el); }
   }
 
   // ---- progress -----------------------------------------------------------------------------------
+  /**
+   * The position is saved at most every PROGRESS_SAVE_MS while reading (every sentence rewrote library.json), with the
+   * percent from the book index, and at once when the reader closes or the page goes away (the app quits).
+   */
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  function scheduleSave(pos: Position): void {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void window.readalong.saveProgress(book.id, pos, percentAt(book, pos)); }, 1500);
+  const savePos = useRef<Position | null>(null);
+  function saveProgressNow(): void {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const pos = savePos.current; savePos.current = null;
+    if (pos) void window.readalong.saveProgress(book.id, pos, fractionAt(index, pos) * 100).catch(() => undefined);
   }
-  useEffect(() => () => { if (saveTimer.current) { clearTimeout(saveTimer.current); void window.readalong.saveProgress(book.id, posRef.current, percentAt(book, posRef.current)); } }, [book]);
+  function scheduleSave(pos: Position): void {
+    savePos.current = pos;
+    if (!saveTimer.current) saveTimer.current = setTimeout(saveProgressNow, PROGRESS_SAVE_MS);
+  }
+  useEffect(() => {
+    const onHide = () => saveProgressNow();
+    window.addEventListener('pagehide', onHide);
+    return () => { window.removeEventListener('pagehide', onHide); saveProgressNow(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book]);
 
   // ---- vocabulary changes -------------------------------------------------------------------------
-  async function changeStatus(lemma: string, status: WordStatus | null, toast = true): Promise<void> {
+  /** Saves a word's status: known and learning through the My Vocabulary entry call, which sets the highlight map too. */
+  function saveStatus(lemma: string, status: WordStatus | null): Promise<void> {
+    // keep the My Vocabulary entry (if the word has one) in step: known words are saved as known
+    return (status === 'known' || status === 'learning' ? window.readalong.vocabSetEntryStatus(lemma, status) : window.readalong.setWordStatus(lemma, status)).catch(() => undefined);
+  }
+  /** A word's new status on screen at once (highlight, hint); `persist` false when a following call saves it. */
+  async function changeStatus(lemma: string, status: WordStatus | null, toast = true, persist = true): Promise<void> {
     const prev = vocabRef.current.words[lemma];
     const words = { ...vocabRef.current.words };
     if (status) words[lemma] = status; else delete words[lemma];
-    useApp.getState().setVocab({ ...vocabRef.current, words });
-    await window.readalong.setWordStatus(lemma, status);
-    // keep the My Vocabulary entry (if the word has one) in step: known words are saved as known
-    if (status === 'known' || status === 'learning') void window.readalong.vocabSetEntryStatus(lemma, status).catch(() => undefined);
+    vocabRef.current = { ...vocabRef.current, words };
+    useApp.getState().setVocab(vocabRef.current);
+    if (persist) await saveStatus(lemma, status);
     const hint = !status && dict && settingsRef.current.appearance.showHints !== false ? (hintsRef.current?.[lemma]?.[0] || hintText(dict.lookup(lemma)?.entry.zh ?? '')) : undefined;
     if (docRef.current) restyleLemma(docRef.current, lemma, status, settingsRef.current.learnerLevel, hint);
     if (toast && status === 'known') showToast(`“${lemma}” marked known`, { label: 'Undo', run: () => void changeStatus(lemma, prev ?? null, false) });
@@ -745,15 +856,50 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selBar, help, popover, transcript]);
 
-  if (!dict) return <div className="reader loading"><div className="empty">Loading dictionary…</div></div>;
-
-  const shared: ScreenShared = {
-    book, index, chapter, position, playState, html, docRef, ensureRef, onRendered,
-    tapWord: (el) => tapWord(el), tapSentence, onDoubleClick, onMouseUp, posOf,
-    closeOverlays: () => { const had = !!cardRef.current || !!selBar; closeCard(); setSelBar(null); return had; },
-    playPause, prev: () => nav((p) => p.prev()), next: () => nav((p) => p.next()), seek, goToChapter, setRate, switchMode,
-    explainLast, dontKnow, explainSentenceAt, seekSeconds, openHelp: () => setHelp(true), wpm, busy,
+  // ---- what the screens and the overlays get: stable actions, so memoized parts keep their props ----------------
+  const actions = {
+    tapWord: useStable((el: HTMLElement) => tapWord(el)),
+    tapSentence: useStable(tapSentence),
+    onDoubleClick: useStable(onDoubleClick),
+    onMouseUp: useStable(onMouseUp),
+    posOf: useStable(posOf),
+    closeOverlays: useStable(() => { const had = !!cardRef.current || !!selBar; closeCard(); setSelBar(null); return had; }),
+    playPause: useStable(playPause),
+    prev: useStable(() => nav((p) => p.prev())),
+    next: useStable(() => nav((p) => p.next())),
+    seek: useStable(seek),
+    goToChapter: useStable(goToChapter),
+    setRate: useStable(setRate),
+    switchMode: useStable(switchMode),
+    explainLast: useStable(explainLast),
+    dontKnow: useStable(dontKnow),
+    explainSentenceAt: useStable(explainSentenceAt),
+    seekSeconds: useStable(seekSeconds),
+    openHelp: useStable(() => setHelp(true)),
   };
+  const cardActions = {
+    onClose: useStable(closeCard),
+    onSay: useStable(sayCard),
+    onKnown: useStable(() => cardStatus('known')),
+    onIgnore: useStable(() => cardStatus('ignored')),
+    onToggleChinese: useStable(() => void useApp.getState().patchSettings({ ai: { ...settingsRef.current.ai, speakChinese: !settingsRef.current.ai.speakChinese } })),
+    onDontKnow: useStable(() => { const c = cardRef.current; if (!c) return; void changeStatus(c.lemma, 'learning', false); setCard({ ...c, status: 'learning' }); if (!ctl()?.busy) void ctl()?.explainAgain(); }),
+  };
+  const voiceActions = {
+    onToggle: useStable(() => voiceRef.current?.toggle()),
+    onAlwaysOn: useStable(setAlwaysOn),
+    onAsk: useStable((t: string) => voiceRef.current?.askTyped(t)),
+    onAcceptDownload: useStable(() => voiceRef.current?.acceptDownload()),
+    onDeclineDownload: useStable(() => voiceRef.current?.declineDownload()),
+    onDismissError: useStable(() => voiceRef.current?.dismissError()),
+  };
+  const shared: ScreenShared = useMemo(() => ({
+    book, index, chapter: shownChapter ?? chapter, position, playState, html, docRef, ensureRef, onRendered, wpm, busy, ...actions,
+    // the actions are stable (useStable): listing them would only repeat that
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [book, index, shownChapter, chapter, position, playState, html, onRendered, wpm, busy]);
+
+  if (!dict) return <div className="reader loading"><div className="empty">Loading dictionary…</div></div>;
 
   return (
     <div className={`reader mode-${mode}${voicePop ? ' voice-open' : ''}`} data-testid="reader" data-mode={mode} ref={rootRef} onClick={() => { if (cardRef.current) closeCard(); if (selBar) setSelBar(null); }}>
@@ -767,10 +913,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
           transcript={transcriptOpen ? <Transcript entries={transcript} onSkip={() => ctl()?.skip()} onClose={() => setTranscriptOpen(false)} onAsk={(q) => { if (voiceRef.current) { voiceRef.current.askTyped(q); return; } const cur = getSentence(book, posRef.current); void ctl()?.explainNow('question', cur?.text ?? '', posRef.current, null, undefined, q); }} /> : null} />
       )}
       {card && (
-        <WordCard data={card} onClose={closeCard} onSay={sayCard}
-          onKnown={() => cardStatus('known')} onIgnore={() => cardStatus('ignored')}
-          chineseOn={settings.ai.speakChinese} onToggleChinese={() => void useApp.getState().patchSettings({ ai: { ...settingsRef.current.ai, speakChinese: !settingsRef.current.ai.speakChinese } })}
-          onDontKnow={() => { const c = cardRef.current; if (!c) return; void changeStatus(c.lemma, 'learning', false); setCard({ ...c, status: 'learning' }); if (!ctl()?.busy) void ctl()?.explainAgain(); }} />
+        <WordCard data={card} {...cardActions} chineseOn={settings.ai.speakChinese} />
       )}
       {selBar && (
         <div className="selection-bar" style={{ left: Math.max(8, selBar.x - 110), top: Math.max(4, selBar.y - 44) }} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} data-testid="selection-bar">
@@ -780,9 +923,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         </div>
       )}
       {voiceSnap && (
-        <VoiceChatUI snap={voiceSnap} last={voiceLast} popover={voicePop} onPopover={setVoicePop}
-          onToggle={() => voiceRef.current?.toggle()} onAlwaysOn={setAlwaysOn} onAsk={(t) => voiceRef.current?.askTyped(t)}
-          onAcceptDownload={() => voiceRef.current?.acceptDownload()} onDeclineDownload={() => voiceRef.current?.declineDownload()} onDismissError={() => voiceRef.current?.dismissError()}
+        <VoiceChatUI snap={voiceSnap} last={voiceLast} popover={voicePop} onPopover={setVoicePop} {...voiceActions}
           keyLabel={shortcutLabel(settings.voiceChat?.pushToTalkKey || 'KeyM')} shifted={mode === 'listening' && transcriptOpen} />
       )}
       {cmdWin && (

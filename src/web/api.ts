@@ -48,6 +48,7 @@ export const webApiImpl = {
   pathForFile: (file: File) => tokenForFile(file),
   importText: (title: string, text: string) => library.importText(title, text),
   listLibrary: () => library.listLibrary(),
+  // no IPC here: the book and the dictionary are handed over as objects (JsonPayload allows both)
   loadBook: (id: string) => library.loadBook(id),
   removeBook: async (id: string) => { await library.removeBook(id); await hintsJob.clear(id); },
   saveProgress: (id, position, percent) => library.saveProgress(id, position, percent),
@@ -59,6 +60,7 @@ export const webApiImpl = {
   setMarkedRanges: (bookId, ranges) => settings.setMarkedRanges(bookId, ranges),
   vocabEntries: () => vocabulary.listEntries(),
   vocabUpsertEntry: (entry) => vocabulary.upsertEntry(entry),
+  vocabExplained: (entry) => vocabulary.explained(entry),
   vocabSetEntryStatus: (lemma, status) => vocabulary.setEntryStatus(lemma, status),
   vocabDeleteEntry: (lemma) => vocabulary.deleteEntry(lemma),
   vocabExportCsv: async () => saveTextFile(vocabulary.CSV_FILE_NAME, vocabulary.toCsv(await vocabulary.listEntries()), 'text/csv'),

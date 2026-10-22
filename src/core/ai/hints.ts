@@ -63,24 +63,50 @@ export function collectHardWords(
 ): HardWord[] {
   const chapter = book.chapters[chapterIndex];
   if (!chapter) return [];
-  const out: HardWord[] = [];
-  const seen = new Set<string>();
+  const acc: HardWordsAcc = { out: [], seen: new Set() };
+  for (const para of chapter.paragraphs) hardWordsOfParagraph(para, dict, level, names, knownLemmas, acc);
+  return acc.out;
+}
+
+/**
+ * collectHardWords that gives the thread back after every paragraph (`yieldNow`, e.g. setImmediate): the Mac app's main
+ * process also carries the voice's audio and the AI's text, and a long chapter takes 15-60 ms in one block otherwise.
+ */
+export async function collectHardWordsAsync(
+  book: Pick<Book, 'chapters'>,
+  chapterIndex: number,
+  dict: Dictionary,
+  level: CefrLevel,
+  names: ReadonlySet<string>,
+  knownLemmas: ReadonlySet<string>,
+  yieldNow: () => Promise<void>,
+): Promise<HardWord[]> {
+  const chapter = book.chapters[chapterIndex];
+  if (!chapter) return [];
+  const acc: HardWordsAcc = { out: [], seen: new Set() };
   for (const para of chapter.paragraphs) {
-    for (const s of para.sentences) {
-      const { infos, hardTokens } = annotateSentence(para, s, dict, names as Set<string>, level);
-      if (hardTokens.length === 0) continue;
-      let text: string | null = null;
-      for (const i of hardTokens) {
-        const info = infos[i];
-        if (!info || seen.has(info.lemma) || knownLemmas.has(info.lemma)) continue;
-        seen.add(info.lemma);
-        const word = s.tokens[i].text;
-        text ??= sentenceText(para, s);
-        out.push({ lemma: info.lemma, word, sentence: clipSentence(text, word) });
-      }
+    hardWordsOfParagraph(para, dict, level, names, knownLemmas, acc);
+    await yieldNow();
+  }
+  return acc.out;
+}
+
+interface HardWordsAcc { out: HardWord[]; seen: Set<string> }
+
+function hardWordsOfParagraph(para: Book['chapters'][number]['paragraphs'][number], dict: Dictionary, level: CefrLevel, names: ReadonlySet<string>, knownLemmas: ReadonlySet<string>, acc: HardWordsAcc): void {
+  for (const s of para.sentences) {
+    const { infos, hardTokens } = annotateSentence(para, s, dict, names as Set<string>, level);
+    if (hardTokens.length === 0) continue;
+    let text: string | null = null;
+    for (const i of hardTokens) {
+      const info = infos[i];
+      if (!info || acc.seen.has(info.lemma) || knownLemmas.has(info.lemma)) continue;
+      acc.seen.add(info.lemma);
+      const word = s.tokens[i].text;
+      text ??= sentenceText(para, s);
+      acc.out.push({ lemma: info.lemma, word, sentence: clipSentence(text, word) });
     }
   }
-  return out;
 }
 
 /** Splits the words of a chapter into requests of at most `size` words. */
