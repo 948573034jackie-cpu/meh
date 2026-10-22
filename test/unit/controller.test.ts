@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Playback } from '@core/listen/playback';
 import { ListenController, type ListenDeps, type CommandWindow, type ChapterPhrase, type TranscriptEntry } from '@core/listen/controller';
 import { FakeTtsEngine } from '@core/tts/fake';
+import type { TtsEngine } from '@core/tts/engine';
 import type { Dictionary, DictEntry } from '@core/dict/types';
 import type { ExplainRequest } from '@shared/api';
 import type { Position } from '@core/model';
@@ -93,6 +94,40 @@ describe('ListenController', () => {
     expect(t.windows).toEqual([true, false, true, false]);
     expect(t.bars.map((b) => b?.phase ?? null)).toEqual(['before', null, 'after', null]);
     expect(t.controller.busy).toBe(false);
+  });
+
+  it('the stop words go to the read-ahead before the cut: urgent for the sentence that stops, upcoming for the one before it', async () => {
+    const t = setup(['Then he left. He was sanguine and acrimonious. The end came.']);
+    const aheads: { texts: string[]; urgent: string[]; upcoming: string[] }[] = [];
+    // the reading voice reads ahead like the Dream voice
+    (t.reader as TtsEngine).readAhead = (texts, _v, _r, urgent = [], upcoming = []) => { aheads.push({ texts, urgent, upcoming }); };
+    const finished = new Promise<void>((r) => t.playback.on('finished', r));
+    t.playback.play();
+    await until(() => t.ai.calls.length === 1);
+    t.ai.calls[0].resolve('Sanguine means hopeful.');
+    await until(() => t.ai.calls.length === 2);
+    t.ai.calls[1].resolve('Acrimonious means bitter.');
+    await finished;
+    const [s0, s1, s2] = ['Then he left.', 'He was sanguine and acrimonious.', 'The end came.'];
+    expect(aheads[0]).toEqual({ texts: [s1, s2], urgent: [], upcoming: ['sanguine', 'acrimonious'] }); // in the order they stop
+    expect(aheads[1]).toEqual({ texts: [s2], urgent: ['sanguine', 'acrimonious'], upcoming: [] }); // the stop: next sentence only
+    expect(aheads[2]).toEqual({ texts: [s2], urgent: [], upcoming: [] }); // the re-read (no stop) hands over the list again
+    expect(t.reader.spoken.map((x) => x.text)).toEqual([s0, s1, 'sanguine', 'sanguine', 'sanguine', 'acrimonious', 'acrimonious', 'acrimonious', s1, s2]);
+  });
+
+  it('no stop words for the read-ahead in Reading mode, with auto-stop off, or without word repeats', async () => {
+    for (const variant of ['reading', 'off', 'norepeat'] as const) {
+      const t = setup(['Then he left. He was sanguine.'], variant === 'norepeat' ? { wordRepeats: 0 } : {});
+      if (variant === 'reading') mode = 'reading';
+      if (variant === 'off') t.controller.enabled = false;
+      const aheads: string[][] = [];
+      (t.reader as TtsEngine).readAhead = (_t, _v, _r, urgent = [], upcoming = []) => { aheads.push([...urgent, ...upcoming]); };
+      t.playback.play();
+      await until(() => aheads.length >= 1);
+      t.playback.stop();
+      t.controller.dispose();
+      expect(aheads[0]).toEqual([]);
+    }
   });
 
   it('pausing while the word is said cancels the prepared request at once and says the word no more', async () => {

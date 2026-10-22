@@ -33,8 +33,10 @@ const book = makeBook([{ title: 'One', paragraphs: [SENTENCES.slice(0, 6).join('
 class ReadAheadEngine extends FakeTtsEngine {
   log: string[] = [];
   aheads: string[][] = [];
+  /** per readAhead call: the stop words of the sentence starting (urgent) and of the next one (upcoming) */
+  words: { urgent: string[]; upcoming: string[] }[] = [];
   override speak(text: string, opts: Parameters<FakeTtsEngine['speak']>[1]) { this.log.push(`speak ${text}`); return super.speak(text, opts); }
-  readAhead(texts: string[]) { this.log.push('readAhead'); this.aheads.push(texts); }
+  readAhead(texts: string[], _v: string, _r: number, urgent: string[] = [], upcoming: string[] = []) { this.log.push('readAhead'); this.aheads.push(texts); this.words.push({ urgent, upcoming }); }
   stopReadAhead() { this.log.push('stop'); }
 }
 
@@ -68,6 +70,76 @@ describe('Playback read-ahead', () => {
   });
 });
 
+describe('Playback read-ahead before a Listening stop', () => {
+  // sentence 3 (index 2) stops at its word "sentence": the stop hook asks for the reading to go on from the sentence
+  // start without stopping again (as ListenController does), then the reading goes on
+  function stopping(engine: ReadAheadEngine) {
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1 }), pauseMs: () => 0 });
+    let reread = false;
+    const isStop = (p: { sentence: number }) => p.sentence === 2;
+    pb.hooks = {
+      stopAt: (p) => (isStop(p) && !reread ? 1 : null),
+      stopTargets: (p) => (isStop(p) && !reread ? ['sentence'] : []),
+      onStop: async (p) => { reread = true; pb.play(p); return 'stop'; },
+    };
+    return pb;
+  }
+  const afterSpeak = (engine: ReadAheadEngine, text: string, nth = 0) => {
+    let seen = -1;
+    const i = engine.log.findIndex((l) => l === `speak ${text}` && ++seen === nth);
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(engine.log[i + 1]).toBe('readAhead');
+    return engine.log.slice(0, i + 1).filter((l) => l === 'readAhead').length; // index of that readAhead call
+  };
+
+  it('a stopping sentence hands over only the next sentence and its stop word (urgent); the re-read after the stop the whole list', async () => {
+    const engine = new ReadAheadEngine(0.2);
+    const pb = stopping(engine);
+    const fifth = new Promise<void>((r) => pb.on('sentence', (p) => { if (p.sentence === 4) r(); }));
+    pb.play();
+    await fifth;
+    pb.stop();
+    // sentence 2 (no stop): the whole list; the next sentence's stop word goes along (upcoming)
+    const a = afterSpeak(engine, SENTENCES[1]);
+    expect(engine.aheads[a]).toEqual(SENTENCES.slice(2, 2 + READ_AHEAD_SENTENCES));
+    expect(engine.words[a]).toEqual({ urgent: [], upcoming: ['sentence'] });
+    // sentence 3 (it stops): only sentence 4, with the word the stop says 3 times
+    const b = afterSpeak(engine, SENTENCES[2]);
+    expect(engine.aheads[b]).toEqual([SENTENCES[3]]);
+    expect(engine.words[b]).toEqual({ urgent: ['sentence'], upcoming: [] });
+    // the re-read of sentence 3 after the stop (it does not stop again): the whole list again
+    const c = afterSpeak(engine, SENTENCES[2], 1);
+    expect(engine.aheads[c]).toEqual(SENTENCES.slice(3, 3 + READ_AHEAD_SENTENCES));
+    expect(engine.words[c]).toEqual({ urgent: [], upcoming: [] });
+  });
+
+  it('a sentence that does not stop (and no stop after it) hands over the list as before', async () => {
+    const engine = new ReadAheadEngine(0.2);
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1 }), pauseMs: () => 0 });
+    pb.hooks = { stopAt: () => null, stopTargets: () => [] };
+    const second = new Promise<void>((r) => pb.on('sentence', (p) => { if (p.sentence === 1) r(); }));
+    pb.play();
+    await second;
+    pb.stop();
+    expect(engine.aheads[0]).toEqual(SENTENCES.slice(1, 1 + READ_AHEAD_SENTENCES));
+    expect(engine.words[0]).toEqual({ urgent: [], upcoming: [] });
+  });
+
+  it('stopTargets is not asked for a sentence that does not stop (stopAt null), so a re-read never makes the list short', async () => {
+    const engine = new ReadAheadEngine(0.2);
+    const asked: number[] = [];
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1 }), pauseMs: () => 0 });
+    pb.hooks = { stopAt: () => null, stopTargets: (p) => { asked.push(p.sentence); return ['word']; } };
+    const second = new Promise<void>((r) => pb.on('sentence', (p) => { if (p.sentence === 1) r(); }));
+    pb.play();
+    await second;
+    pb.stop();
+    expect(asked[0]).toBe(1); // only for the next sentence (upcoming), not for sentence 0 itself
+    expect(engine.aheads[0]).toHaveLength(READ_AHEAD_SENTENCES);
+    expect(engine.words[0]).toEqual({ urgent: [], upcoming: ['word'] });
+  });
+});
+
 describe('Playback + Kokoro queue: the sentence being read is never synthesized after read-ahead', () => {
   it('first the current sentence, then the next one, then the rest, even when another prepare came first', async () => {
     const calls: string[] = [];
@@ -84,7 +156,8 @@ describe('Playback + Kokoro queue: the sentence being read is never synthesized 
       prepare: async (items) => (await handlePrepare(main, items)) ?? undefined,
     });
     const pb = new Playback(book, { engine: () => audio, voice: () => ({ voiceId: 'bf_emma', rate: 1 }), pauseMs: () => 0 });
-    // ReaderView prepares the next five on every 'sentence' event, before Playback speaks
+    // a background prepare of the next five on every 'sentence' event, before Playback speaks (what ReaderView did
+    // before its prepareAhead was removed: the engine's settle keeps the order right anyway)
     pb.on('sentence', (p) => { void main.prepare(SENTENCES.slice(p.sentence + 1, p.sentence + 6).map((text) => ({ text, voice: 'bf_emma', speed: 1 }))); });
     const third = new Promise<void>((r) => { let n = 0; pb.on('sentence', () => { if (++n === 3) r(); }); });
     pb.play();

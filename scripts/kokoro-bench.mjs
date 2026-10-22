@@ -9,13 +9,15 @@
 // Playback simulation (what the learner hears):
 //   node scripts/kokoro-bench.mjs --sim [--policy app|legacy] [--inline]
 // reads 10 consecutive sentences of Pride and Prejudice "in real time": every sentence plays for its audio
-// duration plus the 250 ms pause between sentences, and the requests are issued the way the app issues them.
+// duration plus the pause between sentences (350 ms; 250 ms for legacy), and the requests are issued the way the app
+// issues them.
 //   legacy: what the app did before (Playback asks for sentence n and prefetches n+1, n+2 through
 //           tts:synthesize when sentence n starts, ReaderView prepares n+1..n+5, one inference at a time on
 //           the main thread, whole sentences)
-//   app:    the current renderer + engine behaviour (long sentences in clause segments, the next sentence
-//           fetched as soon as the current one is ready, a priority read-ahead of ~60 s / 8 sentences that
-//           replaces itself at every sentence, inference in a worker thread)
+//   app:    the current renderer + engine behaviour (long sentences in clause segments with the pause their end
+//           punctuation calls for between them, the next sentence fetched as soon as the current one is ready, a
+//           priority read-ahead of ~60 s / 8 sentences that replaces itself at every sentence, inference in a worker
+//           thread, no ReaderView prepare)
 // It reports time to first audio, every gap > 300 ms (silence beyond the configured pause) and the worst
 // main-thread stall (the Electron main process answers IPC on this thread: a stall delays every reply).
 //   --long: time to first audio for one long sentence (whole sentence vs first segment).
@@ -42,7 +44,7 @@ fs.mkdirSync(path.dirname(bundle), { recursive: true });
 const segmentsTs = path.join(root, 'src/core/tts/segments.ts');
 await esbuild.build({
   stdin: {
-    contents: `export * from './src/main/kokoro/engine';${fs.existsSync(segmentsTs) ? `\nexport { synthesisSegments } from './src/core/tts/segments';` : ''}`,
+    contents: `export * from './src/main/kokoro/engine';${fs.existsSync(segmentsTs) ? `\nexport { synthesisSegments, pauseAfter } from './src/core/tts/segments';` : ''}`,
     resolveDir: root, loader: 'ts',
   },
   outfile: bundle, bundle: true, platform: 'node', format: 'cjs', target: 'node22',
@@ -52,6 +54,7 @@ await esbuild.build({
 const mod = await import(pathToFileURL(bundle).href);
 const { KokoroEngine } = mod;
 const synthesisSegments = mod.synthesisSegments ?? ((t) => [{ text: t, start: 0 }]);
+const pauseAfter = mod.pauseAfter ?? (() => 0);
 
 const cpu = os.cpus()[0]?.model ?? 'unknown CPU';
 console.log(`CPU: ${cpu} x${os.cpus().length} (${os.arch()}, ${os.platform()}), Node ${process.version}`);
@@ -95,7 +98,7 @@ const PRIDE = [
   'This was invitation enough.',
   '“Why, my dear, you must know, Mrs. Long says that Netherfield is taken by a young man of large fortune from the north of England; that he came down on Monday in a chaise and four to see the place, and was so much delighted with it, that he agreed with Mr. Morris immediately; that he is to take possession before Michaelmas, and some of his servants are to be in the house by the end of next week.”',
 ];
-const PAUSE_MS = 250;
+const PAUSE_MS = policy === 'legacy' ? 250 : 350;
 const now = () => performance.now();
 const sleepUntil = (at) => new Promise((r) => setTimeout(r, Math.max(0, at - now())));
 /** an IPC reply reaches the renderer only when the main thread is free: model it with a macrotask hop */
@@ -139,10 +142,10 @@ async function simulate() {
   for (let n = 0; n < PRIDE.length; n++) {
     await sleepUntil(due - (n === 0 ? 0 : PAUSE_MS)); // Playback asks for sentence n when n-1 has ended
     const asked = now();
-    // ReaderView.prepareAhead (unchanged): the next five sentences, low priority, appended
-    engine.prepare(PRIDE.slice(n + 1, n + 6).map((text) => ({ text, voice, speed: 1 })));
     let segs;
     if (policy === 'legacy') {
+      // ReaderView.prepareAhead (removed since): the next five sentences, low priority, appended
+      engine.prepare(PRIDE.slice(n + 1, n + 6).map((text) => ({ text, voice, speed: 1 })));
       segs = [{ text: PRIDE[n] }];
       for (const s of PRIDE.slice(n + 1, n + 3)) void fetch(s).catch(() => undefined);
     } else {
@@ -167,7 +170,8 @@ async function simulate() {
       if (n === 0 && k === 0) ttfa = ready - asked;
       else if (late > 300) gaps.push({ sentence: n + 1, segment: k + 1, gapMs: Math.round(late) });
       const startAt = Math.max(ready, want);
-      due = startAt + res.durationSec * 1000 + (k === segs.length - 1 ? PAUSE_MS : 0);
+      // the trimmed audio has no pause of its own: the sentence pause, or the one its end punctuation calls for
+      due = startAt + res.durationSec * 1000 + (k === segs.length - 1 ? PAUSE_MS : policy === 'legacy' ? 0 : pauseAfter(res.endPunct));
       if (k < segs.length - 1) await sleepUntil(due);
     }
   }

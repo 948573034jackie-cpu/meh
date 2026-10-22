@@ -28,7 +28,7 @@ export class KokoroTtsEngine implements TtsEngine {
   listVoices(): Promise<TtsVoice[]> { return this.inner.listVoices(); }
   speak(text: string, opts: SpeakOptions): SpeakHandle { return this.inner.speak(text, opts); }
   prefetch(text: string, voiceId: string, rate: number): void { this.inner.prefetch(text, voiceId, rate); }
-  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner.readAhead(texts, voiceId, rate); }
+  readAhead(texts: string[], voiceId: string, rate: number, urgent?: string[], upcoming?: string[]): void { this.inner.readAhead(texts, voiceId, rate, urgent, upcoming); }
   stopReadAhead(): void { this.inner.stopReadAhead(); }
   prepareSoon(texts: string[], voiceId: string): PrepareHandle { return this.inner.prepareSoon(texts, voiceId); }
   pause(): void { this.inner.pause(); }

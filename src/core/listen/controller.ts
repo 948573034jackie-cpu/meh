@@ -193,6 +193,7 @@ export class ListenController {
     this.offsetOf = wordOffsets(deps.book);
     playback.hooks = {
       stopAt: (pos) => this.stopAt(pos),
+      stopTargets: (pos) => this.stopTargets(pos),
       onStop: (pos, token) => this.onStop(pos, token),
     };
   }
@@ -262,18 +263,34 @@ export class ListenController {
     const guard = this.rereadGuard;
     this.rereadGuard = null;
     if (guard && samePosition(guard, pos)) return null;
-    if (!this.enabled) return null;
-    const s = this.deps.settings();
-    if (s.listen.maxStopsPer10Min > 0) {
-      const cutoff = Date.now() - 10 * 60 * 1000;
-      this.stopTimes = this.stopTimes.filter((t) => t > cutoff);
-      if (this.stopTimes.length >= s.listen.maxStopsPer10Min) return null;
-    }
+    if (!this.enabled || this.tooManyStops()) return null;
     const triggers = this.triggersFor(pos);
     if (!triggers.length) return null;
     // stop right after the first word or phrase (a phrase after its last word); marked ranges at the sentence end
     const at = Math.min(...triggers.map((t) => (t.kind === 'word' ? t.token : t.kind === 'phrase' && t.lemma ? t.end : Infinity)));
     return Number.isFinite(at) ? at : 'end';
+  }
+
+  /**
+   * The words and phrases a Listening stop in the sentence at `pos` would say `wordRepeats` times, in the order
+   * listenStop() takes them, so Playback has them synthesized before the cut (the first repeat then starts at once):
+   * asked for the sentence that starts (when stopAt() stops it) and for the one after it. Nothing when the controller
+   * is off or in Reading mode (its stops do not repeat the word first).
+   */
+  private stopTargets(pos: Position): string[] {
+    if (!this.enabled || (this.deps.mode?.() ?? 'listening') !== 'listening' || !(this.deps.settings().listen.wordRepeats > 0) || this.tooManyStops()) return [];
+    const out: string[] = [];
+    for (const t of this.triggersFor(pos).filter((t) => t.lemma).sort((a, b) => a.end - b.end)) if (t.target.trim() && !out.includes(t.target)) out.push(t.target);
+    return out;
+  }
+
+  /** the learner's limit of stops per 10 minutes (Settings) is reached: the reading goes on without stopping */
+  private tooManyStops(): boolean {
+    const max = this.deps.settings().listen.maxStopsPer10Min;
+    if (!(max > 0)) return false;
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    this.stopTimes = this.stopTimes.filter((t) => t > cutoff);
+    return this.stopTimes.length >= max;
   }
 
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {

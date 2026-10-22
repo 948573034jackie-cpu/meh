@@ -5,7 +5,7 @@ import path from 'node:path';
 import { KokoroEngine, DroppedError, defaultThreads, type SynthesisResult } from '../../src/main/kokoro/engine';
 import { handlePrepare } from '../../src/main/kokoro/ipc-prepare';
 import { encodeWav } from '../../src/main/kokoro/wav';
-import { synthesisSegments, PRIORITY } from '@core/tts/segments';
+import { synthesisSegments, endPunctOf, pauseAfter, PRIORITY } from '@core/tts/segments';
 
 /** A fake synthesizer: every call waits until the test releases it, and the call order is recorded. */
 class FakeSynth {
@@ -178,14 +178,19 @@ describe('Kokoro queue: long sentences in segments', () => {
     expect(r.words.map((w) => LONG.slice(w.charIndex, w.charIndex + w.charLength))).toEqual(expectWords);
     for (let i = 1; i < r.words.length; i++) expect(r.words[i].start).toBeGreaterThanOrEqual(r.words[i - 1].start);
     const parts = segs.map((s) => fakeResult(s.text).durationSec);
-    expect(r.durationSec).toBeCloseTo(parts.reduce((a, b) => a + b, 0), 5);
-    // the first word of the second segment starts when the first segment's audio ends
+    // between the segments, the pause their end punctuation calls for (the audio is trimmed to the speech): as the
+    // renderer plays segments
+    const gaps = segs.slice(0, -1).map((s) => pauseAfter(endPunctOf(s.text)) / 1000);
+    expect(gaps).toEqual([0.28, 0.28]); // both end with ';'
+    expect(r.durationSec).toBeCloseTo(parts.reduce((a, b) => a + b, 0) + gaps[0] + gaps[1], 5);
+    expect(r.endPunct).toBe('.');
+    // the first word of the second segment starts when the first segment's audio and its pause end
     const second = r.words.find((w) => w.charIndex >= segs[1].start)!;
-    expect(second.start).toBeCloseTo(parts[0], 5);
+    expect(second.start).toBeCloseTo(parts[0] + gaps[0], 5);
     expect(r.wav.length).toBe(44 + Math.round(r.durationSec * 24000) * 2);
   });
 
-  it('prepare() of a long sentence (ReaderView) queues the same segments the renderer asks for', async () => {
+  it('prepare() of a long sentence queues the same segments the renderer asks for', async () => {
     const synth = new FakeSynth();
     const e = engine(synth);
     void e.prepare([{ text: LONG }]);

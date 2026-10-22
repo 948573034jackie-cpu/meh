@@ -4,11 +4,18 @@ import type { CloudTtsResult } from '@shared/api';
 class FakeAudio {
   static instances: FakeAudio[] = [];
   preservesPitch = false; playbackRate = 1; currentTime = 0; duration = 2; played = 0;
+  paused = true; volumes: number[] = []; pausedAtVolume: number | null = null;
+  declare volume: number; // an accessor on the prototype (below)
   onplaying: (() => void) | null = null; onended: (() => void) | null = null; onerror: (() => void) | null = null;
   constructor(public src: string) { FakeAudio.instances.push(this); }
-  play() { this.played++; this.onplaying?.(); return Promise.resolve(); }
-  pause() { /* noop */ }
+  play() { this.played++; this.paused = false; this.onplaying?.(); return Promise.resolve(); }
+  pause() { if (!this.paused) this.pausedAtVolume = this.volume; this.paused = true; }
 }
+// every volume step is recorded (the fade on a stop)
+Object.defineProperty(FakeAudio.prototype, 'volume', {
+  get(this: FakeAudio & { _v?: number }) { return this._v ?? 1; },
+  set(this: FakeAudio & { _v?: number }, v: number) { this._v = v; (this.volumes ??= []).push(v); },
+});
 Object.assign(globalThis, {
   Audio: FakeAudio,
   requestAnimationFrame: (cb: (t: number) => void) => setTimeout(() => cb(performance.now()), 4),
@@ -20,6 +27,85 @@ const result = (timings: CloudTtsResult['timings']): CloudTtsResult => ({ audio:
 
 describe('AudioTtsEngine', () => {
   beforeEach(() => { FakeAudio.instances.length = 0; });
+
+  it('readAhead urgent (the stop word): in the same replace call at priority soon with wait, then pre-decoded; speak() plays that element', async () => {
+    const { PRIORITY } = await import('@core/tts/segments');
+    const prepared: { text: string; priority?: number; wait?: boolean; replace?: boolean }[][] = [];
+    const synth: string[] = [];
+    const e = new AudioTtsEngine('kokoro', async (_e, text) => { synth.push(text); return result(null); }, async () => [], true, { prepare: async (items) => { prepared.push(items); return true; }, segment: true });
+    e.readAhead(['The next sentence.'], 'bf_emma', 1, ['sanguine', 'sanguine', ' '], ['acrimonious', 'sanguine']);
+    expect(prepared[0]).toEqual([
+      { text: '', replace: true },
+      { text: 'The next sentence.', voice: 'bf_emma', speed: 1, priority: PRIORITY.ahead - 1 },
+      // the next sentence's stop word: after the next sentence, before the read-ahead; not waited for
+      { text: 'acrimonious', voice: 'bf_emma', speed: 1, priority: PRIORITY.nextWords },
+      { text: 'sanguine', voice: 'bf_emma', speed: 1, priority: PRIORITY.soon, wait: true },
+    ]);
+    expect(PRIORITY.soon).toBe(95);
+    expect(PRIORITY.next).toBeGreaterThan(PRIORITY.nextWords);
+    expect(PRIORITY.nextWords).toBeGreaterThan(PRIORITY.ahead);
+    // the separate 'next' request for the next sentence, as before
+    expect(prepared[1]).toEqual([{ text: 'The next sentence.', voice: 'bf_emma', speed: 1, priority: PRIORITY.next, wait: true }]);
+    await sleep(5);
+    expect(synth).toContain('sanguine'); // fetched from the main process's memory cache and loaded
+    expect(synth).not.toContain('acrimonious');
+    expect(FakeAudio.instances).toHaveLength(2); // the word and the next sentence, loaded, none played
+    expect(FakeAudio.instances.every((a) => a.played === 0)).toBe(true);
+    const before = FakeAudio.instances.length;
+    // the cut: the first of the 3 repeats plays the element loaded ahead
+    const h = e.speak('sanguine', { voiceId: 'bf_emma', rate: 0.9 });
+    await sleep(5);
+    expect(FakeAudio.instances.length).toBe(before);
+    expect(e.lastStartDelayMs).not.toBeNull();
+    expect(FakeAudio.instances.filter((a) => a.played === 1)).toHaveLength(1);
+    expect(synth.filter((t) => t === 'sanguine')).toHaveLength(1); // not asked for again
+    FakeAudio.instances.find((a) => a.played === 1)!.onended?.();
+    expect(await h.done).toBe('ended');
+  });
+
+  it('readAhead urgent dropped (a pause replaced the list before it was ready): nothing is loaded', async () => {
+    let ready!: (ok: boolean) => void;
+    const synth: string[] = [];
+    const e = new AudioTtsEngine('kokoro', async (_e, text) => { synth.push(text); return result(null); }, async () => [], true, { prepare: (items) => (items.some((i) => i.text === 'sanguine') ? new Promise((r) => { ready = r; }) : Promise.resolve(true)), segment: true });
+    e.readAhead(['The next sentence.'], 'bf_emma', 1, ['sanguine']);
+    e.stopReadAhead();
+    ready(true);
+    await sleep(5);
+    expect(synth).not.toContain('sanguine');
+  });
+
+  it('readAhead urgent (cloud voice): the word is fetched and pre-decoded at once (a few characters), with the next two sentences', async () => {
+    const synth: string[] = [];
+    const e = new AudioTtsEngine('edge', async (_e, text) => { synth.push(text); return result(null); }, async () => [], true);
+    e.readAhead(['B.', 'C.', 'D.'], 'v', 1, ['sanguine'], ['acrimonious']);
+    await sleep(5);
+    expect(synth.sort()).toEqual(['B.', 'C.', 'sanguine']); // the next sentence's word is not fetched yet
+  });
+
+  it('a stop at a hard word fades the audio out over 25 ms (no click); speak() reports the cancel at once', async () => {
+    const e = new AudioTtsEngine('kokoro', async () => result(null), async () => [], true, { segment: true });
+    const h = e.speak('He was sanguine about it.', { voiceId: 'v', rate: 1 });
+    await sleep(5);
+    const a = FakeAudio.instances[0];
+    expect(a.played).toBe(1);
+    h.cancel({ fade: true });
+    expect(await h.done).toBe('cancelled');
+    expect(a.paused).toBe(false); // still fading
+    await sleep(60);
+    expect(a.paused).toBe(true);
+    expect(a.volumes.map((v) => +v.toFixed(3))).toEqual([0.8, 0.6, 0.4, 0.2, 0]);
+    for (let i = 1; i < a.volumes.length; i++) expect(a.volumes[i]).toBeLessThan(a.volumes[i - 1]);
+    expect(a.pausedAtVolume).toBe(0);
+    expect(a.src).toBe('');
+    // a plain cancel (pause, seek) stops at once
+    const h2 = e.speak('Then he left.', { voiceId: 'v', rate: 1 });
+    await sleep(5);
+    const b = FakeAudio.instances[1];
+    h2.cancel();
+    expect(await h2.done).toBe('cancelled');
+    expect(b.paused).toBe(true);
+    expect(b.volumes).toEqual([]);
+  });
 
   it('cancelAll() while the audio is still being synthesized prevents it from playing later', async () => {
     let resolve!: (r: CloudTtsResult) => void;

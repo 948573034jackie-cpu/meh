@@ -4,6 +4,7 @@ import type { CloudTtsResult, TtsVoiceInfo, WordTiming } from '@shared/api';
 import { KokoroEngine, type EngineStatus, type SynthesisResult } from './engine';
 import { handlePrepare, type KokoroPrepareItem } from './ipc-prepare';
 import { KOKORO_VOICES, DEFAULT_VOICE } from './voices';
+import type { EndPunct } from '@core/tts/segments';
 
 /**
  * IPC for the local Kokoro voice. Channels (renderer -> main, all `invoke`):
@@ -34,6 +35,8 @@ export interface KokoroSynthesisReply {
   durationSec: number;
   phonemes: string;
   fromCache: boolean;
+  /** the text's end punctuation: the audio is trimmed to the speech, the pause after it is the player's (SEGMENT_PAUSE_MS) */
+  endPunct: EndPunct;
 }
 
 let engine: KokoroEngine | null = null;
@@ -77,7 +80,7 @@ function toTimings(r: SynthesisResult): WordTiming[] { return r.words.map((w) =>
 /** Used by the generic tts:synthesize channel (engine 'kokoro'); downloads the model on first use. */
 export async function kokoroSynthesize(text: string, voiceId: string, speed: number): Promise<CloudTtsResult> {
   const r = await kokoroEngine().synthesize(text, { voice: voiceId || DEFAULT_VOICE, speed });
-  return { audio: toArrayBuffer(r.wav), mime: 'audio/wav', timings: toTimings(r), durationSec: r.durationSec };
+  return { audio: toArrayBuffer(r.wav), mime: 'audio/wav', timings: toTimings(r), durationSec: r.durationSec, endPunct: r.endPunct ?? null };
 }
 
 export function registerKokoroIpc(): void {
@@ -91,7 +94,7 @@ export function registerKokoroIpc(): void {
     return {
       audio: opts?.asFile ? null : toArrayBuffer(r.wav),
       path: opts?.asFile ? eng.wavPath(text.trim(), voice, speed) : null,
-      mime: 'audio/wav', timings: toTimings(r), durationSec: r.durationSec, phonemes: r.phonemes, fromCache: r.fromCache,
+      mime: 'audio/wav', timings: toTimings(r), durationSec: r.durationSec, phonemes: r.phonemes, fromCache: r.fromCache, endPunct: r.endPunct ?? null,
     };
   });
   ipcMain.handle('kokoro:prepare', (_e, items: KokoroPrepareItem[]): Promise<boolean> | void => handlePrepare(kokoroEngine(), items));

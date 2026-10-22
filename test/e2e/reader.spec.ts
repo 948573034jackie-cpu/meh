@@ -167,7 +167,8 @@ test.describe('reader', () => {
     // silence: after the window the explanation starts and its card appears by itself
     const card = page.getByTestId('card');
     await expect(card).toBeVisible({ timeout: 20000 });
-    await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/);
+    // the card shows from the pause on; its explanation status only once the 5-second window has ended
+    await expect(card).toHaveAttribute('data-status', /thinking|speaking|done|error|skipped/, { timeout: 15000 });
     // after the explanation the window opens again; "Go on" ends it: the sentence is read again, then the book goes on
     await expect(bar).toHaveAttribute('data-phase', 'after', { timeout: 30000 });
     await page.getByTestId('cmd-go-on').click();

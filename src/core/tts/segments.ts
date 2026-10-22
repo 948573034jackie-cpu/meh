@@ -85,20 +85,46 @@ function piece(s: string, from: number, to: number, lead: number): SynthesisSegm
   return { text: raw.trim(), start: lead + from + l };
 }
 
+/** The punctuation a synthesized piece ends with (closing quotes ignored); null = none (cut at a space). */
+export type EndPunct = '.' | '?' | '!' | ',' | ';' | ':' | '—' | null;
+
+/** The trailing punctuation of `text`: '…' counts as '.', '–' as '—'; closing quotes and brackets are skipped. */
+export function endPunctOf(text: string): EndPunct {
+  let i = text.trimEnd().length - 1;
+  while (i >= 0 && CLOSERS.test(text[i])) i--;
+  const ch = text[i];
+  if (ch === '.' || ch === '…') return '.';
+  if (ch === '?' || ch === '!' || ch === ',' || ch === ';' || ch === ':' || ch === '—') return ch;
+  if (ch === '–') return '—';
+  return null;
+}
+
+/**
+ * Silence (ms) played after a segment that ends with this punctuation, before the next segment of the same text. The
+ * local voice's audio is trimmed to about 80 ms after the speech (src/main/kokoro/engine.ts), so the pause the model
+ * would have made is added here on purpose: close to what Kokoro leaves when it reads both pieces in one call.
+ */
+export const SEGMENT_PAUSE_MS: Record<Exclude<EndPunct, null>, number> = { ',': 180, ';': 280, ':': 280, '—': 280, '.': 350, '?': 350, '!': 350 };
+
+export function pauseAfter(p: EndPunct | undefined): number { return p ? SEGMENT_PAUSE_MS[p] : 0; }
+
 /** Request priorities of the Kokoro queue in the main process (higher first). */
 export const PRIORITY = {
   /** a speak() waiting for its audio right now (reading or an explanation) */
   now: 100,
   /**
    * an explanation the learner will hear in a few seconds (prepareSoon: the first sentences of a reply that streams in
-   * during a Listening stop's commands window, then the rest while it is spoken): after any speak(), before the book's
+   * during a Listening stop's commands window, then the rest while it is spoken), and the hard word a Listening stop
+   * will say 3 times (asked for when its sentence starts, readAhead's `urgent`): after any speak(), before the book's
    * next sentence and read-ahead
    */
   soon: 95,
   /** the sentence after the one playing: synthesized as soon as nothing is waiting */
   next: 90,
+  /** the hard words of that next sentence when it will stop (readAhead's `upcoming`): after it, before the read-ahead */
+  nextWords: 85,
   /** read-ahead: `ahead - distance` (distance 1 = the next sentence) */
   ahead: 80,
-  /** a plain prepare() without priority (ReaderView) */
+  /** a plain prepare() without priority */
   background: 0,
 } as const;

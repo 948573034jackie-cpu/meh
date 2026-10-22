@@ -237,3 +237,108 @@ describe('Playback skip panel', () => {
     expect(engine.spoken.map((s) => s.text)).toEqual(['Hello there.', 'The end.']);
   });
 });
+
+/** a fake engine with a read-ahead (records each list) and, optionally, a live rate change (like the Dream voice) */
+class AheadEngine extends FakeTtsEngine {
+  aheads: { texts: string[]; voiceId: string; rate: number }[] = [];
+  readAhead(texts: string[], voiceId: string, rate: number) { this.aheads.push({ texts, voiceId, rate }); }
+}
+class LiveRateEngine extends AheadEngine {
+  rates: number[] = [];
+  setRate(rate: number) { this.rates.push(rate); }
+}
+
+describe('Playback.prime: the start position is synthesized before Play', () => {
+  const book3 = makeBook([{ title: 'One', paragraphs: ['Chapter one', '12', 'First real sentence (Smith, 2020). Second one. Third one. Fourth one.'] }]);
+  const settings = { ...DEFAULT_SKIP, citations: true, pageNumbers: true };
+  const skipped = skippedSentences(book3, settings);
+  const make = (engine: FakeTtsEngine, start?: { chapter: number; paragraph: number; sentence: number }) => new Playback(book3, {
+    engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1.3 }), pauseMs: () => 0,
+    shouldSkip: (p) => skipped.has(sentenceKey(p)), strip: (t) => stripInline(t, settings),
+  }, start);
+
+  it('hands the engine the sentence at the position first, then the next two (Skip panel applied, stripped text)', () => {
+    const engine = new AheadEngine(1);
+    const pb = make(engine);
+    pb.prime();
+    expect(skipped.has('0.1.0')).toBe(true); // the page number is not read
+    expect(engine.aheads).toEqual([{ texts: ['Chapter one', 'First real sentence.', 'Second one.'], voiceId: 'v', rate: 1.3 }]);
+    pb.prime({ chapter: 0, paragraph: 2, sentence: 1 });
+    expect(engine.aheads[1].texts).toEqual(['Second one.', 'Third one.', 'Fourth one.']);
+    expect(engine.spoken).toEqual([]); // nothing is said
+  });
+
+  it('a skipped start position primes the next read sentence; nothing while playing (Playback reads ahead itself)', async () => {
+    const engine = new AheadEngine(1);
+    const pb = make(engine, { chapter: 0, paragraph: 1, sentence: 0 });
+    pb.prime();
+    expect(engine.aheads[0].texts[0]).toBe('First real sentence.');
+    pb.play();
+    const n = engine.aheads.length;
+    pb.prime();
+    expect(engine.aheads.length).toBe(n);
+    pb.stop();
+  });
+
+  it('an engine without read-ahead (the Mac voice) is not asked for anything; nor a cloud voice (it costs money)', () => {
+    const engine = new FakeTtsEngine(1);
+    const pb = make(engine);
+    expect(() => pb.prime()).not.toThrow();
+    expect(engine.spoken).toEqual([]);
+    const cloud = new AheadEngine(1);
+    (cloud as unknown as { kind: string }).kind = 'cloud';
+    make(cloud).prime();
+    expect(cloud.aheads).toEqual([]);
+  });
+
+  it('a seek while paused moves the position; prime() then starts from it', async () => {
+    const engine = new AheadEngine(5);
+    const pb = make(engine);
+    pb.play();
+    await new Promise((r) => setTimeout(r, 10));
+    pb.pause();
+    pb.seek({ chapter: 0, paragraph: 2, sentence: 2 });
+    pb.prime();
+    expect(engine.aheads.at(-1)!.texts).toEqual(['Third one.', 'Fourth one.']);
+    pb.stop();
+  });
+});
+
+describe('Playback.rateChanged: a new speed while reading', () => {
+  it('an engine that can change the rate of the utterance playing goes on: the sentence is not said again', async () => {
+    const engine = new LiveRateEngine(20);
+    let rate = 1;
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'fake-gb', rate }), pauseMs: () => 0 });
+    pb.play();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(engine.spoken).toHaveLength(1);
+    rate = 1.4;
+    pb.rateChanged();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(engine.rates).toEqual([1.4]);
+    expect(engine.spoken).toHaveLength(1); // no second speak of the same sentence
+    expect(engine.spoken[0].text).toBe('First sentence here.');
+    pb.stop();
+  });
+
+  it('an engine without setRate (Web Speech) re-reads the sentence at the new rate', async () => {
+    const engine = new FakeTtsEngine(20);
+    let rate = 1;
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'fake-gb', rate }), pauseMs: () => 0 });
+    pb.play();
+    await new Promise((r) => setTimeout(r, 30));
+    rate = 1.4;
+    pb.rateChanged();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(engine.spoken.map((s) => [s.text, s.rate])).toEqual([['First sentence here.', 1], ['First sentence here.', 1.4]]);
+    pb.stop();
+  });
+
+  it('paused or explaining: nothing happens (the next sentence uses the new rate)', () => {
+    const engine = new LiveRateEngine(20);
+    const pb = new Playback(book, { engine: () => engine, voice: () => ({ voiceId: 'fake-gb', rate: 1.2 }), pauseMs: () => 0 });
+    pb.rateChanged();
+    expect(engine.rates).toEqual([]);
+    expect(engine.spoken).toEqual([]);
+  });
+});

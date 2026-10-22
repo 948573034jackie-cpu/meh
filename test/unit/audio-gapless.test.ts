@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { CloudTtsResult, WordTiming } from '@shared/api';
-import { synthesisSegments, PRIORITY } from '@core/tts/segments';
+import { synthesisSegments, endPunctOf, PRIORITY } from '@core/tts/segments';
 
 /** An audio element that plays for SEG_SEC seconds of (fake) time and reports currentTime from the clock. */
 const SEG_SEC = 2;
@@ -79,6 +79,45 @@ describe('AudioTtsEngine: long sentences in segments', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(await h.done).toBe('ended');
     expect(synth.calls.map((c) => c.text)).toEqual(['A short one.']);
+  });
+
+  it('trimmed local audio (the result names its end punctuation): the pause it calls for comes between segments', async () => {
+    const synth = serialSynth(1000);
+    // the main process trims each segment to the speech and says how the text ended
+    const fn = (e: string, text: string) => synth.fn(e, text).then((r) => ({ ...r, endPunct: endPunctOf(text) }));
+    const e = new AudioTtsEngine('kokoro', fn, async () => [], true, { segment: true });
+    const segs = synthesisSegments(LONG);
+    expect(segs.map((x) => endPunctOf(x.text))).toEqual([';', ';', '.']);
+    const h = e.speak(LONG, { voiceId: 'v', rate: 1 });
+    await vi.advanceTimersByTimeAsync(SEG_SEC * 1000 * 3 + 2000);
+    expect(await h.done).toBe('ended');
+    // 280 ms after each ';' (the next segment was ready long before)
+    expect(FakeAudio.instances.filter((a) => a.plays).map((a) => a.startedAt)).toEqual([1000, 3280, 5560]);
+  });
+
+  it('the pause between segments overlaps the synthesis of the next one, and a cancel during it ends the speech', async () => {
+    const synth = serialSynth(2500); // slower than the audio: the next segment is late anyway
+    const fn = (e: string, text: string) => synth.fn(e, text).then((r) => ({ ...r, endPunct: endPunctOf(text) }));
+    const e = new AudioTtsEngine('kokoro', fn, async () => [], true, { segment: true });
+    const h = e.speak(LONG, { voiceId: 'v', rate: 1 });
+    await vi.advanceTimersByTimeAsync(5100);
+    // first segment 2500-4500; the second was ready at 5000: no 280 ms on top of the wait
+    expect(FakeAudio.instances.filter((a) => a.plays).map((a) => a.startedAt)).toEqual([2500, 5000]);
+    await vi.advanceTimersByTimeAsync(2000); // the second segment ends at 7000; the pause runs
+    h.cancel();
+    expect(await h.done).toBe('cancelled');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(FakeAudio.instances.filter((a) => a.plays)).toHaveLength(2); // the third never plays
+  });
+
+  it('a voice that names no end punctuation (cloud voices keep their own silence) plays its segments back to back', async () => {
+    const synth = serialSynth(100);
+    const fn = (e: string, text: string) => synth.fn(e, text).then((r) => ({ ...r, endPunct: null }));
+    const e = new AudioTtsEngine('kokoro', fn, async () => [], true, { segment: true });
+    const h = e.speak(LONG, { voiceId: 'v', rate: 1 });
+    await vi.advanceTimersByTimeAsync(SEG_SEC * 1000 * 3 + 500);
+    expect(await h.done).toBe('ended');
+    expect(FakeAudio.instances.filter((a) => a.plays).map((a) => a.startedAt)).toEqual([100, 2100, 4100]);
   });
 
   it('the speed set while a long sentence plays applies to its next segments', async () => {

@@ -1,6 +1,7 @@
 import type { Book, Position, CefrLevel } from '@core/model';
 import type { Settings, VocabState, LibraryItem, WordStatus, MarkedRange, UsageRecord, TtsEngineId } from './settings';
 import type { HintMap, PhraseMap } from '@core/ai/hints';
+import type { EndPunct } from '@core/tts/segments';
 
 export type { HintMap, HintPair, PhraseHit, PhraseMap } from '@core/ai/hints';
 
@@ -184,7 +185,14 @@ export interface TtsVoiceInfo { id: string; name: string; lang: string; gender?:
 
 export interface WordTiming { start: number; end: number; charIndex: number; charLength: number }
 
-export interface CloudTtsResult { audio: ArrayBuffer; mime: string; timings: WordTiming[] | null; durationSec: number | null }
+export interface CloudTtsResult {
+  audio: ArrayBuffer; mime: string; timings: WordTiming[] | null; durationSec: number | null;
+  /**
+   * the local voice (Kokoro) trims its audio to the speech and names the punctuation the text ended with, so the
+   * renderer adds that pause before the next segment of the same sentence (src/core/tts/segments SEGMENT_PAUSE_MS)
+   */
+  endPunct?: EndPunct;
+}
 
 export interface Diagnostics {
   platform: string; arch: string; electron: string; chrome: string; node: string; appVersion: string;

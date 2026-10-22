@@ -7,11 +7,11 @@ import { Worker } from 'node:worker_threads';
 import type { Tensor as OrtTensor } from 'onnxruntime-node';
 import { downloadModel, presentVariant, DEFAULT_VARIANT, MODEL_FILES, VOICES_FILE, MODEL_VERSION, type ModelVariant, type DownloadProgress } from './download';
 import { textToChunks, defaultPhonemizer, espeakLang, MAX_TOKENS, PAD_TOKEN, type Phonemizer } from './phonemes';
-import { wordTimes, trimRange, type WordTime } from './align';
+import { wordTimes, trimRange, speechRange, type WordTime } from './align';
 import { encodeWav, decodeWav, concatWav } from './wav';
 import { readVoicesNpz } from './npz';
 import { DEFAULT_VOICE, isKnownVoice } from './voices';
-import { synthesisSegments, PRIORITY } from '@core/tts/segments';
+import { synthesisSegments, endPunctOf, pauseAfter, PRIORITY, type EndPunct } from '@core/tts/segments';
 
 export const SAMPLE_RATE = 24000;
 
@@ -27,7 +27,18 @@ export interface SynthesisResult {
   wav: Buffer;
   phonemes: string;
   fromCache: boolean;
+  /**
+   * the punctuation the text ends with: the audio is trimmed to the speech (speechRange), so the renderer adds the
+   * pause it calls for before the next segment of the same sentence (SEGMENT_PAUSE_MS)
+   */
+  endPunct?: EndPunct;
 }
+
+/**
+ * Part of every cache key: bumped when the audio made for the same text changes, so older files are not reused
+ * (they are left to pruneDisk's size limit). trim2 = silence trimmed by energy (speechRange), pauses added on purpose.
+ */
+export const AUDIO_FORMAT = 'trim2';
 
 export type EngineState = 'missing' | 'downloading' | 'loading' | 'ready' | 'error';
 
@@ -292,7 +303,7 @@ export class KokoroEngine {
   }
 
   cacheKey(text: string, voice: string, speed: number): string {
-    return crypto.createHash('sha1').update(`${MODEL_VERSION}\0${voice}\0${speed.toFixed(2)}\0${text}`).digest('hex');
+    return crypto.createHash('sha1').update(`${MODEL_VERSION}/${AUDIO_FORMAT}\0${voice}\0${speed.toFixed(2)}\0${text}`).digest('hex');
   }
 
   /** Path of the cached WAV for a sentence (exists only after synthesis). */
@@ -465,6 +476,7 @@ export class KokoroEngine {
     let res: SynthesisResult;
     if (this.synthOverride) res = await this.synthOverride(job.text, job.voice, job.speed);
     else { await this.ensureReady(); res = await this.run(job.text, job.voice, job.speed); }
+    if (res.endPunct === undefined) res = { ...res, endPunct: endPunctOf(job.text) };
     this.remember(job.key, res);
     if (this.persist) this.writeDisk(job.key, res).catch((e) => this.log(`kokoro: cache write failed: ${(e as Error).message}`));
     return res;
@@ -491,19 +503,21 @@ export class KokoroEngine {
       const ids = BigInt64Array.from([PAD_TOKEN, ...chunk.tokens.slice(0, n), PAD_TOKEN], (v) => BigInt(v));
       const row = Math.min(n, MAX_TOKENS) - 1;
       const out = await inference.run(ids, style.slice(row * 256, row * 256 + 256), speed);
-      const wave = out.waveform;
-      const durations = out.duration;
-      const [s, e] = trimRange(durations, chunk.tokens, wave.length, SAMPLE_RATE);
-      words.push(...wordTimes(durations, chunk.owner, chunk.words, wave.length, SAMPLE_RATE, total - s));
-      parts.push(wave.subarray(s, e));
-      total += e - s;
+      if (parts.length) {
+        // a long text cut at a sentence end: the pause the trimmed audio no longer has
+        const gap = new Float32Array(Math.round((pauseAfter(endPunctOf(phonemes)) / 1000) * SAMPLE_RATE));
+        parts.push(gap); total += gap.length;
+      }
+      const piece = trimChunk(out.waveform, out.duration, chunk.tokens, chunk.owner, chunk.words, total);
+      words.push(...piece.words);
+      parts.push(piece.pcm);
+      total += piece.pcm.length;
       phonemes += (phonemes ? ' ' : '') + chunk.phonemes;
     }
     const pcm = new Float32Array(total);
     let off = 0;
     for (const p of parts) { pcm.set(p, off); off += p.length; }
-    for (const w of words) { w.start = Math.max(0, Math.min(w.start, total / SAMPLE_RATE)); w.end = Math.max(w.start, Math.min(w.end, total / SAMPLE_RATE)); }
-    return { pcm, sampleRate: SAMPLE_RATE, words, durationSec: total / SAMPLE_RATE, wav: encodeWav(pcm, SAMPLE_RATE), phonemes, fromCache: false };
+    return { pcm, sampleRate: SAMPLE_RATE, words, durationSec: total / SAMPLE_RATE, wav: encodeWav(pcm, SAMPLE_RATE), phonemes, fromCache: false, endPunct: endPunctOf(text) };
   }
 
   private async readDisk(key: string): Promise<SynthesisResult | null> {
@@ -511,12 +525,12 @@ export class KokoroEngine {
     const jsonFile = path.join(this.cacheDir, `${key}.json`);
     try {
       const [wav, meta] = await Promise.all([fs.promises.readFile(wavFile), fs.promises.readFile(jsonFile, 'utf8')]);
-      const info = JSON.parse(meta) as { version: string; words: WordTime[]; durationSec: number; phonemes: string };
+      const info = JSON.parse(meta) as { version: string; words: WordTime[]; durationSec: number; phonemes: string; endPunct?: EndPunct };
       if (info.version !== MODEL_VERSION) return null;
       const { pcm } = decodeWav(wav);
       const now = new Date();
       fs.utimes(wavFile, now, now, () => undefined);
-      return { pcm, sampleRate: SAMPLE_RATE, words: info.words, durationSec: info.durationSec, wav, phonemes: info.phonemes, fromCache: true };
+      return { pcm, sampleRate: SAMPLE_RATE, words: info.words, durationSec: info.durationSec, wav, phonemes: info.phonemes, fromCache: true, endPunct: info.endPunct ?? null };
     } catch { return null; }
   }
 
@@ -525,7 +539,7 @@ export class KokoroEngine {
     const tmp = path.join(this.cacheDir, `${key}.${process.pid}.tmp`);
     await fs.promises.writeFile(tmp, res.wav);
     await fs.promises.rename(tmp, path.join(this.cacheDir, `${key}.wav`));
-    await fs.promises.writeFile(path.join(this.cacheDir, `${key}.json`), JSON.stringify({ version: MODEL_VERSION, words: res.words, durationSec: res.durationSec, phonemes: res.phonemes }));
+    await fs.promises.writeFile(path.join(this.cacheDir, `${key}.json`), JSON.stringify({ version: MODEL_VERSION, words: res.words, durationSec: res.durationSec, phonemes: res.phonemes, endPunct: res.endPunct ?? null }));
     if (++this.seq % 25 === 0) this.pruneDisk().catch(() => undefined);
   }
 
@@ -548,16 +562,41 @@ function checkModel(inputNames: readonly string[], outputNames: readonly string[
   if (!inputNames.includes('input_ids') || !outputNames.includes('duration')) throw new Error('Kokoro model has no duration output; word timing needs the kokoro-onnx model-files-v1.1 export.');
 }
 
-/** Joins segment results: audio back to back, word times shifted by the audio before, char offsets by the segment start. */
+/**
+ * Joins segment results: audio back to back with the pause each segment's end punctuation calls for (the renderer
+ * plays segments the same way), word times shifted by the audio before, char offsets by the segment start.
+ */
 export function joinResults(parts: SynthesisResult[], starts: number[]): SynthesisResult {
   const words: WordTime[] = [];
-  let t = 0;
+  const wavs: Buffer[] = [];
+  let samples = 0;
   parts.forEach((p, i) => {
+    if (i > 0) {
+      const gap = Math.round((pauseAfter(parts[i - 1].endPunct) / 1000) * SAMPLE_RATE);
+      if (gap > 0) { wavs.push(encodeWav(new Float32Array(gap), SAMPLE_RATE)); samples += gap; }
+    }
+    const t = samples / SAMPLE_RATE;
     for (const w of p.words) words.push({ charIndex: w.charIndex + starts[i], charLength: w.charLength, start: w.start + t, end: w.end + t });
-    t += p.durationSec;
+    wavs.push(p.wav);
+    samples += Math.round(p.durationSec * SAMPLE_RATE);
   });
-  const { wav, pcm } = concatWav(parts.map((p) => p.wav), SAMPLE_RATE);
-  return { pcm, sampleRate: SAMPLE_RATE, words, durationSec: t, wav, phonemes: parts.map((p) => p.phonemes).join(' '), fromCache: parts.every((p) => p.fromCache) };
+  const { wav, pcm } = concatWav(wavs, SAMPLE_RATE);
+  return { pcm, sampleRate: SAMPLE_RATE, words, durationSec: pcm.length / SAMPLE_RATE, wav, phonemes: parts.map((p) => p.phonemes).join(' '), fromCache: parts.every((p) => p.fromCache), endPunct: parts[parts.length - 1]?.endPunct ?? null };
+}
+
+/**
+ * One model output -> the audio kept and its word times: trimRange (the pad tokens), then speechRange (the silence
+ * Kokoro gives the last phoneme, by energy; faded out); word times start at `offset` samples and are clamped to the
+ * kept audio. Exported for tests.
+ */
+export function trimChunk(wave: Float32Array, durations: ArrayLike<number | bigint>, tokens: number[], owner: number[], chunkWords: { charIndex: number; charLength: number }[], offset: number): { pcm: Float32Array; words: WordTime[] } {
+  const [s0, e0] = trimRange(durations, tokens, wave.length, SAMPLE_RATE);
+  const [s, e] = speechRange(wave, s0, e0, SAMPLE_RATE);
+  const lo = offset / SAMPLE_RATE;
+  const hi = (offset + e - s) / SAMPLE_RATE;
+  const words = wordTimes(durations, owner, chunkWords, wave.length, SAMPLE_RATE, offset - s);
+  for (const w of words) { w.start = Math.max(lo, Math.min(w.start, hi)); w.end = Math.max(w.start, Math.min(w.end, hi)); }
+  return { pcm: wave.subarray(s, e), words };
 }
 
 /**

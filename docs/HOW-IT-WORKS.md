@@ -94,7 +94,12 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 
 - **Playback** (`src/core/listen/playback.ts`): a loop that speaks one sentence at a time, emits `sentence` and
   `word` events (for karaoke highlighting), prepares the next sentences ahead, skips sentences the Skip panel
-  removes, and calls hooks `stopAt(pos)` / `onStop(pos)` that the controller uses to pause at hard items.
+  removes, and calls hooks `stopAt(pos)` / `stopTargets(pos)` / `onStop(pos)` that the controller uses to pause at
+  hard items. The word a stop says 3 times is synthesized before the cut (with the read-ahead of the sentence before,
+  and again when its own sentence starts; that read-ahead then holds only the next sentence, so the stop's word and
+  explanation never wait behind book work). The stop fades the sentence out over 25 ms. `prime()` synthesizes the
+  start position when a book opens and after a seek while paused, so Play starts from the cache. A speed change
+  goes on at the new rate without re-reading the sentence (the Mac voice still re-reads it).
 - **ListenController** (`src/core/listen/controller.ts`) runs the learner's rule (details in RULES.md):
   1. pause at a hard word/phrase/learning word (not again within 500 words);
   2. show the card, send the explanation request at once (`PreparedExplanation`, `src/core/listen/prepared.ts`:
@@ -137,7 +142,10 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
   runs on the Mac with onnxruntime-node 1.23.2 (the last version with Intel Mac binaries). Text → phonemes
   (espeak-ng WASM) → model → audio + per-word timings from the model's duration output. It runs in a worker
   thread, with a priority queue (the sentence needed now first), long sentences split into clauses, about 8
-  sentences prepared ahead, and a disk cache. One-time 192 MB download.
+  sentences prepared ahead, and a disk cache. One-time 192 MB download. Each clip is trimmed to the speech by
+  energy (Kokoro leaves about 0.6 s of silence after the last phoneme); the pauses are added on purpose: 180 ms after
+  a comma, 280 ms after ; : —, 350 ms after a sentence end inside a long text, and the sentence pause (Settings,
+  350 ms by default) between sentences.
 - **Mac voices** (`src/core/tts/webspeech.ts`): the built-in system voices, with watchdogs against silent hangs.
 - **Cloud voices** (`src/main/tts.ts`): Microsoft Edge (free), OpenAI, ElevenLabs, Azure, Google; each shows its
   price per hour; word timings when the service gives them, otherwise estimated.

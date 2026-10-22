@@ -37,6 +37,10 @@ export const keyOf = (p: Position) => `${p.chapter}.${p.paragraph}.${p.sentence}
 
 /** How long the word card stays after its explanation ended. */
 const CARD_LINGER_MS = 1500;
+/** a seek while paused is synthesized ahead once no other seek followed for this long */
+const PRIME_AFTER_SEEK_MS = 300;
+/** speed clicks are saved to the settings file once none followed for this long */
+const RATE_SAVE_MS = 300;
 
 export type Card = CardData & { pos: Position; tokenIndex: number; entryId: number | null };
 export interface SelBar { x: number; y: number; text: string; kind: 'word' | 'phrase' | 'sentence' | 'passage'; ranges: MarkedRange[]; pos: Position }
@@ -111,6 +115,9 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   /** The engine that actually reads: Kokoro only once its model is ready (tests always use the fake Mac voice). */
   const readEngineId = (): TtsEngineId => { const id = settingsRef.current.voice.engine; return id === 'kokoro' && (E2E || !kokoroReadyRef.current) ? 'webspeech' : id; };
   const readVoiceId = (): string => (readEngineId() === settingsRef.current.voice.engine ? voiceIdRef.current : macVoiceIdRef.current);
+  /** the speed chosen last (setRate), until the settings file has it */
+  const rateRef = useRef<number | null>(null);
+  const curRate = (): number => rateRef.current ?? settingsRef.current.voice.rate;
 
   const [chapter, setChapter] = useState<number>(() => (library.find((b) => b.id === book.id)?.position ?? firstPosition(book))?.chapter ?? 0);
   const [position, setPosition] = useState<Position>(posRef.current);
@@ -181,7 +188,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     posRef.current = start; setPosition(start); setChapter(start.chapter);
     const playback = new Playback(book, {
       engine: () => getEngine(readEngineId()),
-      voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
+      voice: () => ({ voiceId: readVoiceId(), rate: curRate() }),
       pauseMs: () => settingsRef.current.voice.pauseBetweenSentencesMs,
       shouldSkip: (p) => skippedRef.current.has(sentenceKey(p)),
       strip: (t) => stripInline(t, settingsRef.current.skip),
@@ -194,8 +201,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       engine: () => getEngine(readEngineId()),
       explainEngine: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; return getEngine(ee === 'kokoro' && (E2E || !kokoroReadyRef.current) ? 'webspeech' : ee); },
       zhEngine: () => getEngine('webspeech'),
-      voice: () => ({ voiceId: readVoiceId(), rate: settingsRef.current.voice.rate }),
-      explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(settingsRef.current.voice.rate, 1.2) }; },
+      voice: () => ({ voiceId: readVoiceId(), rate: curRate() }),
+      explainVoice: () => { const ee = settingsRef.current.voice.explainEngine ?? settingsRef.current.voice.engine; const fallback = ee === 'kokoro' && (E2E || !kokoroReadyRef.current); return { voiceId: fallback ? macVoiceIdRef.current : explainVoiceIdRef.current, rate: Math.min(curRate(), 1.2) }; },
       zhVoiceId: () => (settingsRef.current.ai.speakChinese ? zhVoiceRef.current : null),
       contextZh: (lemma) => hintsRef.current?.[lemma],
       explain: (req, onDelta) => { if (E2E) e2eRequests.push(structuredClone(req)); const h = aiExplain(req, (_d, full) => onDelta(full)); return { done: h.done, cancel: h.cancel }; },
@@ -236,7 +243,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     controller.enabled = modeRef.current === 'listening';
     playbackRef.current = playback; controllerRef.current = controller;
     const offs = [
-      playback.on('sentence', (pos) => { posRef.current = pos; setPosition(pos); setChapter((c) => (c === pos.chapter ? c : pos.chapter)); highlightSentence(pos); scheduleSave(pos); prepareAhead(pos); }),
+      playback.on('sentence', (pos) => { posRef.current = pos; setPosition(pos); setChapter((c) => (c === pos.chapter ? c : pos.chapter)); highlightSentence(pos); scheduleSave(pos); }),
       playback.on('word', (pos, ti) => highlightWord(pos, ti)),
       playback.on('state', (st) => { setPlayState(st); setBusy(controller.busy); if (!controller.busy) voiceRef.current?.setTutorState('idle'); }),
       playback.on('finished', () => showToast('End of the book.')),
@@ -255,6 +262,9 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       }),
     ];
     setReady(true);
+    // the book just opened: its first sentences are synthesized now, so Play starts at once (the Dream voice; it primes
+    // again when it reports ready, below)
+    playback.prime();
     return () => { offs.forEach((f) => f()); controller.dispose(); playback.stop(); cancelAllEngines(); playbackRef.current = null; controllerRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dict, book]);
@@ -324,6 +334,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       if (ready !== kokoroReadyRef.current) {
         kokoroReadyRef.current = ready; // the next sentence is read with the new engine
         if (ready && announced) showToast('The Dream voice is ready.');
+        // not playing yet (the book just opened): the start position is synthesized with the Dream voice now
+        if (ready) playbackRef.current?.prime();
       }
       if (st.state === 'error' && st.error && !announced) { announced = true; showToast(`The Dream voice could not be downloaded (${st.error}). Using a Mac voice.`); }
     };
@@ -340,25 +352,6 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
     return () => { on = false; off(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.voice.engine, settings.voice.explainEngine]);
-
-  /** While Kokoro reads, the next five sentences are synthesized ahead so each one starts without a wait. */
-  function prepareAhead(pos: Position): void {
-    if (readEngineId() !== 'kokoro' || typeof window.readalong.kokoroPrepare !== 'function') return;
-    // exactly what Playback will ask for: Skip-panel sentences left out, the stripped text, speed 1 (the main
-    // process always synthesizes Kokoro at speed 1; the rate is applied on playback), so the cache key matches
-    const items: { text: string; voice?: string; speed?: number }[] = [];
-    let p: Position | null = pos;
-    for (let i = 0; i < 5 && p; ) {
-      p = nextPosition(book, p);
-      if (!p) break;
-      if (skippedRef.current.has(sentenceKey(p))) continue;
-      i++;
-      const s = getSentence(book, p);
-      const text = s ? (stripInline(s.text, settingsRef.current.skip)?.text ?? s.text) : '';
-      if (text.trim()) items.push({ text, voice: readVoiceId() || undefined, speed: 1 });
-    }
-    if (items.length) void window.readalong.kokoroPrepare(items).catch(() => undefined);
-  }
 
   // ---- chapter hints: cached by the main process; this chapter and the next are requested when missing ------
   useEffect(() => {
@@ -593,7 +586,19 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const pb = () => playbackRef.current;
   const ctl = () => controllerRef.current;
   /** navigation always interrupts a running explanation first */
-  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; ctl()?.skip(); fn(p); };
+  const nav = (fn: (p: Playback) => void) => { const p = pb(); if (!p) return; ctl()?.skip(); fn(p); primeAfterSeek(p); };
+  /**
+   * A seek while paused (or before Play in Listening mode): the new position is synthesized ahead once the seeking
+   * stops (Timeline drags, arrow keys), so Play starts from the cache. Silent reading in Reading mode, where the
+   * position follows the pages, does not make the voice work for nothing.
+   */
+  const primeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const primeAfterSeek = (p: Playback) => {
+    if (p.state !== 'paused' && !(p.state === 'idle' && modeRef.current === 'listening')) return;
+    if (primeTimer.current) clearTimeout(primeTimer.current);
+    primeTimer.current = setTimeout(() => { primeTimer.current = null; pb()?.prime(); }, PRIME_AFTER_SEEK_MS);
+  };
+  useEffect(() => () => { if (primeTimer.current) { clearTimeout(primeTimer.current); primeTimer.current = null; } }, [book]);
   const seek = (pos: Position) => { posRef.current = pos; setPosition(pos); setChapter(pos.chapter); nav((p) => p.seek(pos)); if (pb()?.state === 'idle') { highlightSentence(pos); scheduleSave(pos); } };
   const playPause = () => {
     const p = pb(); if (!p) return;
@@ -614,9 +619,36 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   };
   const sayCard = () => { const c = cardRef.current; if (!c) return; ctl()?.skip(); const e = getEngine(readEngineId()); e.cancelAll(); e.speak(c.word, { voiceId: readVoiceId(), rate: 0.8 }); };
   const markSentence = (pos: Position) => { const cur = getSentence(book, pos); if (!cur) return; const r: MarkedRange = { ...pos, start: cur.sentence.start, end: cur.sentence.end, text: cur.text }; const exists = markedRef.current.some((m) => keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end); void setMarked(exists ? markedRef.current.filter((m) => !(keyOf(m) === keyOf(pos) && m.start === r.start && m.end === r.end)) : [...markedRef.current, r]); showToast(exists ? 'Sentence unmarked' : 'Sentence marked: it will be explained in Listening mode'); };
-  const setRate = (r: number) => { void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate: clampRate(r) } }).then(() => pb()?.rateChanged()); };
+  /**
+   * A new speed is heard at once: the sentence goes on at it (Playback.rateChanged; the Mac voice re-reads the sentence)
+   * and shows at once; the settings file is written once the clicks stop (RATE_SAVE_MS), and when the reader closes.
+   */
+  const rateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showRate = (rate: number) => {
+    settingsRef.current = { ...settingsRef.current, voice: { ...settingsRef.current.voice, rate } };
+    useApp.getState().setSettings(settingsRef.current);
+  };
+  const saveRate = () => {
+    if (rateTimer.current) { clearTimeout(rateTimer.current); rateTimer.current = null; }
+    const rate = rateRef.current;
+    if (rate === null) return;
+    void useApp.getState().patchSettings({ voice: { ...settingsRef.current.voice, rate } }).then(() => {
+      // a newer click while this one was saved: the reply must not put the older speed back
+      if (rateRef.current === rate) rateRef.current = null; else if (rateRef.current !== null) showRate(rateRef.current);
+    }, () => undefined);
+  };
+  const setRate = (r: number) => {
+    const rate = clampRate(r);
+    if (rate === curRate()) return;
+    rateRef.current = rate;
+    showRate(rate);
+    pb()?.rateChanged();
+    if (rateTimer.current) clearTimeout(rateTimer.current);
+    rateTimer.current = setTimeout(saveRate, RATE_SAVE_MS);
+  };
+  useEffect(() => () => { if (rateTimer.current) saveRate(); }, [book]);
   const seekSeconds = (delta: number) => {
-    const w = wordsPerMinute(modeRef.current, settingsRef.current.voice.rate, true);
+    const w = wordsPerMinute(modeRef.current, curRate(), true);
     const target = positionAtTime(index, timeAt(index, posRef.current, w) + delta, w);
     if (target) seek(target);
   };
@@ -698,8 +730,8 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
       else if (is('toggleHints')) void useApp.getState().patchSettings({ appearance: { ...settingsRef.current.appearance, showHints: settingsRef.current.appearance.showHints === false } });
       else if (is('goTo')) { if (!listening) setPopover((p) => (p === 'goto' ? null : 'goto')); }
       else if (is('sayWord')) sayCard();
-      else if (is('speedUp')) setRate(settingsRef.current.voice.rate + 0.1);
-      else if (is('speedDown')) setRate(settingsRef.current.voice.rate - 0.1);
+      else if (is('speedUp')) setRate(curRate() + 0.1);
+      else if (is('speedDown')) setRate(curRate() - 0.1);
       else if (is('speedReset')) setRate(1);
       else if (is('nextHard')) { e.preventDefault(); jumpHard(1); }
       else if (is('prevHard')) { e.preventDefault(); jumpHard(-1); }

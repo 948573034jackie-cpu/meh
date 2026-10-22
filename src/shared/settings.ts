@@ -70,7 +70,13 @@ export interface Settings {
     explainEngine: TtsEngineId | null;
     explainVoiceId: string | null;
     rate: number; // 0.5 .. 2.5
+    /** silence between two sentences of the book; the Dream voice's audio is trimmed to the speech, so this is all of it */
     pauseBetweenSentencesMs: number;
+    /**
+     * set once a stored pause was brought to the default for trimmed audio (the old default 250 ms became 350 ms):
+     * a 250 chosen after that is the learner's own and stays
+     */
+    pauseMigrated?: boolean;
   };
   listen: {
     /** stop on highlighted words automatically while in listening mode */
@@ -188,7 +194,7 @@ export const DEFAULT_SETTINGS: Settings = {
     contextWordsAfter: 200,
     generateScenePicture: false,
   },
-  voice: { engine: 'kokoro', voiceId: 'bf_emma', explainEngine: null, explainVoiceId: null, rate: 1.0, pauseBetweenSentencesMs: 250 },
+  voice: { engine: 'kokoro', voiceId: 'bf_emma', explainEngine: null, explainVoiceId: null, rate: 1.0, pauseBetweenSentencesMs: 350, pauseMigrated: true },
   listen: {
     autoExplainWords: true,
     autoExplainPhrases: true,
@@ -242,7 +248,9 @@ export const DEFAULT_SETTINGS: Settings = {
 /**
  * Brings a stored settings object up to date in place and returns it: the v1 theme 'dark' became 'night';
  * shared AI rules still equal to an earlier default get the current default (no filler, badly recognised
- * speech); the old 7 s pause after an explanation became the 5 s window.
+ * speech); the old 7 s pause after an explanation became the 5 s window; the old default pause between sentences
+ * (exactly 250 ms) becomes 350 ms once (the Dream voice no longer keeps ~0.6 s of silence at the end of each
+ * sentence), any other value stays.
  * Safe to call on partial objects (patches) and on the defaults.
  */
 export function migrateSettings<T extends { appearance?: { theme?: string } }>(s: T): T {
@@ -252,6 +260,12 @@ export function migrateSettings<T extends { appearance?: { theme?: string } }>(s
   if (ai && typeof ai.contextRules === 'string' && LEGACY_CONTEXT_RULES.some((old) => old.trim() === (ai.contextRules as string).trim())) ai.contextRules = DEFAULT_CONTEXT_RULES;
   const listen = (s as { listen?: { pauseAfterExplainMs?: unknown } } | null)?.listen;
   if (listen && listen.pauseAfterExplainMs === 7000) listen.pauseAfterExplainMs = 5000;
+  const voice = (s as { voice?: { pauseBetweenSentencesMs?: unknown; pauseMigrated?: boolean } } | null)?.voice;
+  if (voice && typeof voice === 'object' && !voice.pauseMigrated) {
+    // once: a settings file from before (every save writes the flag) or a patch that names the pause without it
+    if (voice.pauseBetweenSentencesMs === 250) voice.pauseBetweenSentencesMs = 350;
+    if (voice.pauseBetweenSentencesMs !== undefined) voice.pauseMigrated = true;
+  }
   return s;
 }
 

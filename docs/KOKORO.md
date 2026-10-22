@@ -104,6 +104,14 @@ RTF ~0.1–0.2). The CoreML execution provider is available in onnxruntime-node 
    in these exports; the code scales frame sums to the real sample count rather than assuming it).
 4. `align.ts` turns cumulative durations into sample edges, trims the ~0.3 s of pad silence at the start
    (keeping 50 ms) and the tail (keeping 120 ms), and emits `{charIndex, charLength, start, end}` per word.
+   Then `speechRange` trims by energy: Kokoro gives the pause after a sentence or clause to its last phoneme
+   (about 22 frames, 0.55 s), so the durations alone left ~0.6 s of silence at the end of every clip (15% of all
+   audio). Speech = 10 ms RMS frames above max(−58 dBFS, peak − 45 dB) (not higher: the "f" of "wife." runs
+   ~150 ms at −41 to −48 dBFS); 30 ms are kept before the first such frame and 80 ms after the last, plus a 15 ms
+   linear fade-out. Word times are clamped to the kept audio. The result names the text's end punctuation
+   (`endPunct`), and the renderer adds that pause before the next segment (`SEGMENT_PAUSE_MS`: , 180 ms; ; : — 280 ms;
+   . ? ! 350 ms; `joinResults` does the same for a whole text). The cache key carries `AUDIO_FORMAT` (`trim2`), so
+   WAVs made before are not reused (they age out under the 300 MB limit).
 5. `ipc.ts` returns a WAV (16-bit) plus timings; the renderer's `AudioTtsEngine` plays it and fires `onWord`.
 
 ## Smooth playback (no silence between sentences)
@@ -125,7 +133,7 @@ Causes found, and what fixed them:
    FIFO within a priority, so sentence n waited for n+1 and n+2 (first audio 12.9 s instead of ~3 s; after a
    seek or an explanation the same). Fix: one priority queue in the main process
    (`src/core/tts/segments.ts` `PRIORITY`): `now` (a speak() waiting: reading or an explanation) > `next` (the
-   sentence after the one playing) > read-ahead (`ahead − distance`) > plain `prepare()` (ReaderView). Playback
+   sentence after the one playing) > read-ahead (`ahead − distance`) > plain `prepare()`. Playback
    asks for the current sentence first; read-ahead goes through `kokoro:prepare` with priorities, and the next
    sentence is requested with `wait: true` (the call resolves when it is ready, then the renderer fetches it from
    the memory cache), so it never competes as `now` with an explanation. Requests are deduped (one job per cache
@@ -139,7 +147,10 @@ Causes found, and what fixed them:
 4. **Read-ahead was too short.** Two sentences (renderer) + five (ReaderView), only when a sentence started.
    Now Playback hands the engine up to 8 sentences / ~60 s of speech; the Kokoro engine queues all of them (each
    call replaces the previous list, so a seek drops stale work) and pause/stop clears the queue
-   (`stopReadAhead`). Cloud voices still fetch only two ahead (they cost money).
+   (`stopReadAhead`). Cloud voices still fetch only two ahead (they cost money). ReaderView's own background
+   prepare of the next five was removed: sent before Playback's request for the sentence needed now, it made Play,
+   resume and seek wait for the next sentence first (+0.8 to +2.7 s measured). Instead `Playback.prime()` asks for
+   the start position (and the two after it) when a book opens and after a seek while paused.
 5. **Decode/setup per sentence.** The next sentence's audio element is created and `load()`ed while the current
    one plays, so its start is just `play()` (`AudioTtsEngine.lastStartDelayMs` records it). HTMLAudio is kept
    rather than Web Audio buffers because `playbackRate` on an `AudioBufferSourceNode` changes the pitch.
@@ -154,7 +165,16 @@ Causes found, and what fixed them:
 The Mac voice path (`webspeech.ts`) had one way to go silent: when Chromium loses an utterance's `onend`, the
 end watchdog only fires after twice the expected duration + 5 s. An idle check now ends the utterance 1.5 s
 after the synthesizer reports nothing speaking or queued (and at least half the expected time has passed).
-The 250 ms pause between sentences is the `pauseBetweenSentencesMs` setting, intended.
+The pause between sentences is the `pauseBetweenSentencesMs` setting, intended: 350 ms by default since the clips
+are trimmed (a stored 250, the old default, becomes 350 once). Measured on the bench box (45 clause segments and 12
+sentence pairs of Pride and Prejudice, fp16): silence at a clip end 640 ms → 130 ms (median, −40 dBFS); at a sentence
+boundary 860 ms → 510 ms (Kokoro reading both sentences in one call: 470 ms); dead air 15% → 3.7% of the audio.
+
+Listening stops: the word a stop says 3 times goes to `kokoro:prepare` in the read-ahead call of the sentence before
+(priority `nextWords`, after that sentence) and again, at `soon` with `wait`, in the call of its own sentence (a
+separate call would be dropped by that call's `replace`); that call's read-ahead holds only the next sentence. Cut →
+word ready, measured with the app's request pattern (3 threads): median 2.4 s (1.2–3.9 s) before; now 0 ms (0–0.3 s)
+with the queue idle and 0 ms when a long read-ahead job is running as the sentence starts (it was 0.6–2.8 s).
 
 ### Measured (scripts/kokoro-bench.mjs, 4-vCPU Xeon @ 2.8 GHz, fp16, bf_emma)
 

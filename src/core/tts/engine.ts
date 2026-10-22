@@ -29,7 +29,8 @@ export interface SpeakHandle {
   /** resolves when speech finishes, is cancelled, or fails (never rejects) */
   done: Promise<SpeakOutcome>;
   error?: Error;
-  cancel(): void;
+  /** `fade`: a short fade-out instead of a hard cut (a Listening stop at a hard word; engines may ignore it) */
+  cancel(opts?: { fade?: boolean }): void;
 }
 
 /**
@@ -50,9 +51,13 @@ export interface TtsEngine {
   /**
    * optional, preferred over prefetch: the sentences after the one being spoken, nearest first (up to about a
    * minute of speech). Each call replaces the previous list; the engine decides how far to go (cloud voices cost
-   * money, the local voice reads ahead as far as the CPU allows) and pre-decodes the next one.
+   * money, the local voice reads ahead as far as the CPU allows) and pre-decodes the next one. `urgent`: short texts
+   * a speak() will ask for within seconds (the hard word a Listening stop says 3 times), synthesized before the
+   * read-ahead and pre-decoded; the local voice asks for them in the same request that replaces the list.
+   * `upcoming`: the same for the next sentence (it will stop too): the local voice synthesizes them right after that
+   * sentence, before the rest of the read-ahead, so they are ready even when a long job is running as it starts.
    */
-  readAhead?(texts: string[], voiceId: string, rate: number): void;
+  readAhead?(texts: string[], voiceId: string, rate: number, urgent?: string[], upcoming?: string[]): void;
   /** optional: playback paused or stopped, drop the read-ahead */
   stopReadAhead?(): void;
   /**
@@ -67,6 +72,11 @@ export interface TtsEngine {
   pause(): void;
   resume(): void;
   cancelAll(): void;
+  /**
+   * optional: the reading speed changed: the utterance playing now (and the rest of its text) goes on at `rate`, without
+   * starting again. Engines without it (Web Speech cannot change the rate mid-utterance) restart the sentence.
+   */
+  setRate?(rate: number): void;
   /** true when a paused utterance exists */
   readonly paused: boolean;
   /** optional: checks that the engine can actually start speaking (a "Test voice" button); `reason` explains a failure */

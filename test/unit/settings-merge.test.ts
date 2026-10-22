@@ -65,6 +65,23 @@ describe('settings merge and migration', () => {
     const again = load(JSON.parse(JSON.stringify(next)));
     expect(again.appearance).toEqual(next.appearance);
   });
+  it('the old default pause between sentences (exactly 250 ms) becomes 350 ms once; any other value stays', () => {
+    expect(DEFAULT_SETTINGS.voice.pauseBetweenSentencesMs).toBe(350);
+    const stored = (pause: number) => ({ ...STORED_V1, voice: { ...STORED_V1.voice, pauseBetweenSentencesMs: pause } });
+    expect(load(stored(250)).voice.pauseBetweenSentencesMs).toBe(350);
+    expect(load(stored(400)).voice.pauseBetweenSentencesMs).toBe(400);
+    expect(load(stored(0)).voice.pauseBetweenSentencesMs).toBe(0);
+    expect(load(STORED_V1).voice.pauseBetweenSentencesMs).toBe(300);
+    expect(load({}).voice.pauseBetweenSentencesMs).toBe(350);
+    // after that the learner may choose 250 in Settings (the whole voice section is patched): it stays 250, also
+    // after the file is written and read again
+    let s = load(stored(250));
+    s = migrateSettings(deepMerge(s, migrateSettings(structuredClone({ voice: { ...s.voice, pauseBetweenSentencesMs: 250 } }) as never)));
+    expect(s.voice.pauseBetweenSentencesMs).toBe(250);
+    expect(load(JSON.parse(JSON.stringify(s))).voice.pauseBetweenSentencesMs).toBe(250);
+    // the other voice fields are untouched
+    expect(load(stored(250)).voice).toMatchObject({ engine: 'webspeech', voiceId: 'Daniel', rate: 1.2 });
+  });
   it('DEFAULT_SETTINGS use night and the dark highlight palette applies to night and grey only', () => {
     expect(DEFAULT_SETTINGS.appearance.theme).toBe('night');
     expect(isDarkTheme('night')).toBe(true);
