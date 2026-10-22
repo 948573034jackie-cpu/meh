@@ -106,8 +106,11 @@ export const webApiImpl = {
       platform: `web: ${navigator.userAgent}`, arch: (navigator as Navigator & { platform?: string }).platform ?? '', electron: 'none (web)', chrome: '',
       node: 'none (web)', appVersion: WEB_VERSION, userData: `IndexedDB "dream-read" on ${location.origin}${storage}`,
       secretsFile: 'IndexedDB "dream-read" / kv / secrets (stored unencrypted in this browser)', dictWords, secrets: await secrets.secretStatus(),
+      cpu: { model: 'unknown (browser)', logical: navigator.hardwareConcurrency || 0, physical: null },
     };
   },
+  // App Nap is a Mac app matter; Safari decides on its own what a background tab may run
+  keepAwake: async () => undefined,
   openExternal: async (url: string) => { if (/^https?:\/\//.test(url)) window.open(url, '_blank', 'noopener'); },
   exportText: (fileName, contents) => saveTextFile(fileName, contents, /\.csv$/i.test(fileName) ? 'text/csv' : 'text/plain'),
   onMenu: () => noopUnsubscribe(),

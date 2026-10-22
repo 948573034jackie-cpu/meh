@@ -8,6 +8,10 @@ import * as vocabulary from './vocabulary';
 import { registerAiHandlers } from './ai';
 import { registerHintsHandlers } from './hints';
 import { registerTtsHandlers } from './tts';
+import { registerPowerIpc } from './power';
+import { cpuInfo } from './cpu';
+import { kokoroEngine } from './kokoro/ipc';
+import { defaultSttThreads } from './stt/engine';
 import { exportDir } from './paths';
 import { writeAtomic } from './storage';
 import path from 'node:path';
@@ -64,12 +68,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('app:diagnostics', async (): Promise<Diagnostics> => {
     let dictWords = 0;
     try { dictWords = Object.keys((await library.getDictData()).w).length; } catch { /* dictionary missing */ }
+    // the speed facts that turn the estimates for the learner's Mac into numbers: the CPU, the threads, the voice's
+    // real-time factor per segment (KokoroEngine.perf)
+    let kokoro: Diagnostics['kokoro'];
+    try { kokoro = kokoroEngine().perf(); } catch (e) { console.error('diagnostics: no Kokoro facts', e); }
     return {
       platform: process.platform, arch: process.arch, electron: process.versions.electron, chrome: process.versions.chrome,
       node: process.versions.node, appVersion: app.getVersion(), userData: app.getPath('userData'),
       secretsFile: secrets.secretsFilePath(), dictWords, secrets: secrets.secretStatus(),
+      cpu: await cpuInfo(), sttThreads: defaultSttThreads(), kokoro,
     };
   });
+  registerPowerIpc();
 
   registerAiHandlers(getWindow);
   registerHintsHandlers(getWindow);

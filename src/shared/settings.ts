@@ -300,4 +300,8 @@ export interface UsageRecord {
   date: string; provider: AiProviderId; model: string; inputTokens: number; outputTokens: number; cachedTokens: number; usd: number;
   /** a request cancelled mid-way (an explanation prepared at a Listening stop and then dropped): output is a lower bound */
   partial?: boolean;
+  /** explanations: ms from the request to the first words of the reply (absent when none came; older records have none) */
+  ttftMs?: number;
+  /** explanations: ms from the request to the whole reply (absent for a cancelled request) */
+  totalMs?: number;
 }

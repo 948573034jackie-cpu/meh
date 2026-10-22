@@ -155,7 +155,7 @@ export type AiErrorCode = 'no_key' | 'auth' | 'rate_limit' | 'spend_limit' | 'mo
 
 export type AiEvent =
   | { type: 'delta'; streamId: string; text: string }
-  | { type: 'done'; streamId: string; text: string; usage: { inputTokens: number; outputTokens: number; cachedTokens: number; usd: number; dailyUsd: number; monthlyUsd: number; model: string } }
+  | { type: 'done'; streamId: string; text: string; usage: { inputTokens: number; outputTokens: number; cachedTokens: number; usd: number; dailyUsd: number; monthlyUsd: number; model: string; /** ms to the first words (absent: no text) */ ttftMs?: number; /** ms to the whole reply */ totalMs?: number } }
   | { type: 'error'; streamId: string; message: string; code?: AiErrorCode };
 
 /**
@@ -194,9 +194,50 @@ export interface CloudTtsResult {
   endPunct?: EndPunct;
 }
 
+/** One text segment the local voice synthesized (src/main/kokoro/engine.ts keeps the last 100 for Diagnostics). */
+export interface KokoroSegmentStat {
+  /** when its synthesis ended (ms since 1970) */
+  at: number;
+  chars: number;
+  /** synthesis time: phonemes + inference (ms) */
+  ms: number;
+  /** seconds of audio it gave (trimmed to the speech) */
+  audioSec: number;
+  /** ms / 1000 / audioSec: under 1 is faster than real time */
+  rtf: number;
+  /** ms from the request to the start of its synthesis (the queue) */
+  queueWaitMs: number;
+  /** its priority when it started (src/core/tts/segments PRIORITY: now 100, soon 95, next 90, read-ahead below) */
+  priority: number;
+}
+
+/** How the local voice (Kokoro) runs on this machine, for Diagnostics. */
+export interface KokoroPerf {
+  state: KokoroStatus['state'];
+  /** the model precision on disk (fp16 by default) */
+  variant: string;
+  /** onnxruntime intra-op threads (KOKORO_THREADS overrides) */
+  threads: number;
+  /** intra-op spinning (on unless KOKORO_SPIN=0) */
+  spinning: boolean;
+  inference: 'worker' | 'inline';
+  /** ms to load the model, the voices and espeak this session; null until loaded */
+  loadMs: number | null;
+  /** ms of the warm-up sentence after loading; null until done */
+  warmUpMs: number | null;
+  /** the last 100 synthesized segments, oldest first (cache hits are not in it) */
+  segments: KokoroSegmentStat[];
+}
+
 export interface Diagnostics {
   platform: string; arch: string; electron: string; chrome: string; node: string; appVersion: string;
   userData: string; secretsFile: string; dictWords: number; secrets: SecretStatusMap;
+  /** the processor: model name, logical CPUs, physical cores (macOS only; null elsewhere or when unknown) */
+  cpu?: { model: string; logical: number; physical: number | null };
+  /** threads of the local speech recognizer (Mac app; STT_THREADS overrides) */
+  sttThreads?: number;
+  /** the local voice's settings and speed (Mac app) */
+  kokoro?: KokoroPerf;
 }
 
 /**
@@ -305,6 +346,11 @@ export interface ReadAlongApi {
   onSttProgress?(cb: (s: SttStatus) => void): () => void;
   // misc
   getDiagnostics(): Promise<Diagnostics>;
+  /**
+   * the book is read aloud in Listening mode (true) or not any more (false): the Mac app keeps macOS from suspending
+   * the app meanwhile (App Nap would delay the stop at a hard word and the 5-second windows); the web build ignores it
+   */
+  keepAwake(on: boolean): Promise<void>;
   openExternal(url: string): Promise<void>;
   /** Writes a text file into ~/Documents/Dream Read and reveals it in Finder; resolves with the full path. */
   exportText(fileName: string, contents: string): Promise<string>;

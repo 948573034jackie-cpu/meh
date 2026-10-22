@@ -77,6 +77,7 @@ const api: ReadAlongApi = {
     return () => ipcRenderer.removeListener('stt:progress', handler);
   },
   getDiagnostics: () => invoke('app:diagnostics'),
+  keepAwake: (on) => invoke('app:keepAwake', on === true),
   openExternal: (url) => invoke('app:openExternal', url),
   exportText: (fileName, contents) => invoke('app:exportText', fileName, contents),
   onMenu: (cb) => {

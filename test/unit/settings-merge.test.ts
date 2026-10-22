@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { DEFAULT_SETTINGS, migrateSettings, isDarkTheme } from '@shared/settings';
 import { resolveStyle, resolveStyles } from '@shared/styles';
 import type { Settings } from '@shared/settings';
-vi.mock('electron', () => ({ app: { getPath: () => '/tmp/dream-read-settings-test' }, safeStorage: { isEncryptionAvailable: () => false } }));
-import { deepMerge } from '../../src/main/settings';
+import { aiLatencyByModel } from '@core/perf';
+const userData = vi.hoisted(() => { const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path'); return fs.mkdtempSync(path.join(os.tmpdir(), 'dream-read-settings-test-')); });
+vi.mock('electron', () => ({ app: { getPath: () => userData }, safeStorage: { isEncryptionAvailable: () => false } }));
+import { deepMerge, getUsage, addUsage, usdSpent } from '../../src/main/settings';
 
 /** A settings.json written by the first version (ReadAlong): no Dream Read fields, theme 'dark'. */
 const STORED_V1 = {
@@ -117,5 +121,21 @@ describe('settings merge and migration', () => {
     set({ level: { model: { version: 1, alpha: [1, 2, 3], beta: [1, 2, 3], falseAlarmRate: 0, seen: ['a', 'b'], updatedAt: null, testedAt: null } } });
     set({ level: { model: { version: 1, alpha: [9], beta: [9], falseAlarmRate: 0, seen: [], updatedAt: null, testedAt: null } } });
     expect(s.level.model).toMatchObject({ alpha: [9], beta: [9], seen: [] });
+  });
+
+  it('usage records written before the AI timings (no ttftMs / totalMs / partial) still load, count and are left out of the medians', () => {
+    // a usage.json from an older version, before this session's store reads it
+    const old = [
+      { date: '2026-10-01T08:00:00.000Z', provider: 'anthropic', model: 'claude-opus-5-5', inputTokens: 2000, outputTokens: 300, cachedTokens: 1000, usd: 0.0102 },
+      { date: '2026-10-02T08:00:00.000Z', provider: 'openai', model: 'gpt-5.4-mini', inputTokens: 1500, outputTokens: 200, cachedTokens: 0, usd: 0.002 },
+    ];
+    fs.mkdirSync(path.join(userData, 'data'), { recursive: true });
+    fs.writeFileSync(path.join(userData, 'data', 'usage.json'), JSON.stringify({ records: old }));
+    expect(getUsage()).toEqual(old);
+    expect(usdSpent('2026-10-01T00:00:00.000Z')).toBeCloseTo(0.0122, 10);
+    expect(aiLatencyByModel(getUsage())).toEqual([]);
+    addUsage({ date: '2026-10-22T08:00:00.000Z', provider: 'anthropic', model: 'claude-opus-5-5', inputTokens: 2000, outputTokens: 300, cachedTokens: 1000, usd: 0.0102, ttftMs: 3100, totalMs: 7400 });
+    expect(getUsage()).toHaveLength(3);
+    expect(aiLatencyByModel(getUsage())).toEqual([{ model: 'claude-opus-5-5', count: 1, medianTtftMs: 3100, medianTotalMs: 7400 }]);
   });
 });

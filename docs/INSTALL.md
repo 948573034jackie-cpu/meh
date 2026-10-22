@@ -61,4 +61,5 @@ Your API keys are now stored encrypted inside the app's own folder, so they are 
 See docs/IPAD.md: Dream Read also runs in Safari and can be added to the iPad home screen.
 
 ## If something does not work
-View → Diagnostics → **Copy all**, and paste the text back to me.
+View → Diagnostics → **Copy diagnostics**, and paste the text back to me. It also says how fast the voice and the AI
+are on your Mac (copy it again after some listening: the numbers come from what the app just did).

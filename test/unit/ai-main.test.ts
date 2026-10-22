@@ -6,7 +6,7 @@ const userData = vi.hoisted(() => { const fs = require('node:fs'); const os = re
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() }, BrowserWindow: class {}, safeStorage: { isEncryptionAvailable: () => false }, app: { getPath: () => userData } }));
 vi.mock('../../src/main/secrets', () => ({ getSecret: () => 'sk-ant-test', hasSecret: () => true, formatWarning: () => null, getAzureCredentials: () => null }));
 // the Anthropic SDK with its streaming replaced: the request params are recorded and the stream is driven by the test
-const sdk = vi.hoisted(() => ({ params: [] as Record<string, unknown>[], aborted: 0 }));
+const sdk = vi.hoisted(() => ({ params: [] as Record<string, unknown>[], aborted: 0, finish: null as null | { textAfterMs: number; endAfterMs: number; text: string } }));
 vi.mock('@anthropic-ai/sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('@anthropic-ai/sdk')>();
   const stream = (params: Record<string, unknown>, opts: { signal: AbortSignal }) => {
@@ -16,7 +16,14 @@ vi.mock('@anthropic-ai/sdk', async (importOriginal) => {
     const s = {
       get currentMessage() { return current; },
       on(ev: string, cb: (t: string) => void) { if (ev === 'text') texts.push(cb); return s; },
-      finalMessage: () => new Promise((_resolve, reject) => {
+      finalMessage: () => new Promise((resolve, reject) => {
+        const finish = sdk.finish;
+        if (finish) {
+          // a reply that completes: its first text after textAfterMs, the whole message after endAfterMs
+          setTimeout(() => { for (const cb of texts) cb(finish.text); }, finish.textAfterMs);
+          setTimeout(() => resolve({ content: [{ type: 'text', text: finish.text }], stop_reason: 'end_turn', usage: { input_tokens: 200, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 40 } }), finish.endAfterMs);
+          return;
+        }
         // message_start (input and cache reads), then 37 characters of text, then nothing until the request is aborted
         current = { usage: { input_tokens: 1200, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 3 } };
         setTimeout(() => { for (const cb of texts) cb('Sanguine means hopeful, full of hope.'); }, 5);
@@ -101,6 +108,40 @@ describe('AI main: cancelled requests and per-model options', () => {
     expect(sdk.params.at(-1)).toMatchObject({ model: 'claude-haiku-5-5', thinking: { type: 'disabled' }, output_config: { effort: 'low' } });
     await h.cancel({}, streamId);
     await until(() => h.events.some((e) => e.type === 'error'));
+  });
+
+  it('the done usage and the usage record carry the time to the first words and to the whole reply (Diagnostics)', async () => {
+    sdk.finish = { textAfterMs: 60, endAfterMs: 120, text: 'Sanguine means hopeful.' };
+    try {
+      const h = handlers();
+      const before = getUsage().length;
+      const { streamId } = await h.explain({}, REQ) as { streamId: string };
+      await until(() => h.events.some((e) => e.type === 'done' && e.streamId === streamId));
+      const done = h.events.find((e) => e.type === 'done' && e.streamId === streamId) as Extract<AiEvent, { type: 'done' }>;
+      expect(done.text).toBe('Sanguine means hopeful.');
+      const { ttftMs, totalMs } = done.usage;
+      expect(ttftMs).toBeGreaterThanOrEqual(50);
+      expect(totalMs).toBeGreaterThanOrEqual(110);
+      expect(totalMs! - ttftMs!).toBeGreaterThanOrEqual(40);
+      const rec = getUsage().slice(before);
+      expect(rec).toHaveLength(1);
+      expect(rec[0]).toMatchObject({ ttftMs, totalMs, inputTokens: 1200, outputTokens: 40, cachedTokens: 1000 });
+      expect(rec[0]).not.toHaveProperty('partial');
+    } finally { sdk.finish = null; }
+  });
+
+  it('a cancelled request keeps its time to the first words, but has no total', async () => {
+    const h = handlers();
+    const before = getUsage().length;
+    const { streamId } = await h.explain({}, REQ) as { streamId: string };
+    await until(() => h.events.some((e) => e.type === 'delta' && e.streamId === streamId));
+    await h.cancel({}, streamId);
+    await until(() => h.events.some((e) => e.type === 'error' && e.streamId === streamId));
+    const rec = getUsage().slice(before);
+    expect(rec).toHaveLength(1);
+    expect(rec[0].partial).toBe(true);
+    expect(rec[0].ttftMs).toBeGreaterThanOrEqual(0);
+    expect(rec[0]).not.toHaveProperty('totalMs');
   });
 
   it('partialUsage: nothing before the reply started; output never below the reported count', () => {

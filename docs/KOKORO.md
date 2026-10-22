@@ -156,8 +156,17 @@ Causes found, and what fixed them:
    rather than Web Audio buffers because `playbackRate` on an `AudioBufferSourceNode` changes the pitch.
 6. **Threads.** The old default `min(4, cores − 1)` counted Hyper-Threading cores: 4 threads on a 4-core/8-thread
    Intel Mac, leaving nothing for the renderer and the main process. Now `defaultThreads()`: physical cores − 1,
-   2..4 (3 on that Mac; `KOKORO_THREADS` overrides). On the 4-core bench box: 2 threads RTF 0.52, 3 → 0.50,
-   4 → 0.61.
+   2..4 (3 on that Mac; `KOKORO_THREADS` overrides). On the 4-vCPU bench box (quiet): 1 thread RTF 0.78-0.85,
+   2 → 0.49-0.51, 3 → 0.36-0.40, 4 → 0.33-0.37, but 4 was not reliably faster than 3 and 17-40% slower with one other
+   core busy. Intra-op spinning stays on: off (`KOKORO_SPIN=0`) used 13-25% less CPU but was 4-16% slower at 3
+   threads; the switch is for an A/B on the Mac. Speech recognition, which decodes in the 5-second windows while
+   Kokoro synthesizes the explanation ahead, takes 1-2 threads on an Intel Mac (`defaultSttThreads`, `STT_THREADS`
+   overrides).
+   **Measuring on the Mac:** Settings → Diagnostics shows the threads, spinning, model load and warm-up times, the
+   CPU (model, logical CPUs, physical cores from `sysctl -n hw.physicalcpu`), and the median and p90 real-time factor
+   of the last 50 synthesized segments (the engine keeps the last 100 with their characters, synthesis ms, audio
+   seconds, queue wait and priority; **Copy diagnostics** includes them all), plus the AI's median time to its first
+   words per model (`ttftMs` / `totalMs` in the usage records).
 7. **Model load at first play.** The model loads and warms up in the background 1.5 s after start-up when the
    Dream voice is chosen and on disk (`warmUpKokoro`, `src/main/tts.ts`), so the first sentence does not pay the
    ~3–6 s load.

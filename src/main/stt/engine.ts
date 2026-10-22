@@ -32,7 +32,7 @@ export interface EngineStatus {
 export interface SttEngineOptions {
   modelDir: string;
   variant?: SttVariant;
-  /** sherpa-onnx intra-op threads for the recogniser; default: cores - 1, between 2 and 4 */
+  /** sherpa-onnx intra-op threads for the recogniser; default: defaultSttThreads() (STT_THREADS overrides) */
   threads?: number;
   /** VAD segmentation (see SpeechSegmenter); defaults: 600 ms silence, 15 s max, 300 ms pad */
   vad?: SegmenterOptions;
@@ -80,6 +80,20 @@ interface Session {
 interface DecodeJob { session: Session; segmentId: number; kind: 'partial' | 'final'; samples: Float32Array }
 
 /**
+ * sherpa-onnx threads for the recogniser. Intel Macs report two logical CPUs per core (Hyper-Threading), and the
+ * recogniser decodes in the 5-second windows of a Listening stop, exactly while Kokoro (2-3 threads) synthesizes the
+ * explanation ahead: there it gets physical cores minus one, 1 or 2 (2-core/4-thread Mac: 1, 4-core/8-thread: 2).
+ * Moonshine-base decodes a 1-2 s command at RTF about 0.06 with 3 threads, so 1-2 threads stay well under real time
+ * (estimate). Elsewhere cores - 1, between 2 and 4, as before. STT_THREADS overrides it (A/B on the Mac).
+ */
+export function defaultSttThreads(cpus = os.cpus().length, arch: string = process.arch, platform: string = process.platform): number {
+  const env = Number(process.env.STT_THREADS);
+  if (Number.isInteger(env) && env > 0) return env;
+  if (platform === 'darwin' && arch === 'x64') return Math.max(1, Math.min(2, Math.floor(cpus / 2) - 1));
+  return Math.max(2, Math.min(4, cpus - 1));
+}
+
+/**
  * Free, local, offline speech-to-text for the voice tutor: Silero VAD (onnxruntime-node) cuts the 16 kHz
  * mic stream into utterances, sherpa-onnx (Moonshine v2 base int8 by default, or Parakeet TDT 0.6B v3)
  * recognises each one. Moonshine is an offline model, so "partials" are decodes of the segment so far,
@@ -117,7 +131,7 @@ export class SttEngine extends Emitter<SttEngineEvents> {
     this.modelDir = opts.modelDir;
     const env = process.env.STT_VARIANT;
     this.variant = opts.variant ?? (isVariant(env) ? env : DEFAULT_VARIANT);
-    this.threads = opts.threads ?? Math.max(2, Math.min(4, os.cpus().length - 1));
+    this.threads = opts.threads ?? defaultSttThreads();
     this.vadOptions = { sampleRate: VAD_SAMPLE_RATE, windowSamples: VAD_WINDOW, minSilenceMs: 600, maxSpeechMs: 15000, padMs: 300, ...opts.vad };
     this.partialEvery = Math.round(((opts.partialEveryMs ?? 900) / 1000) * VAD_SAMPLE_RATE);
     this.partialMin = Math.round(((opts.partialMinMs ?? 1200) / 1000) * VAD_SAMPLE_RATE);

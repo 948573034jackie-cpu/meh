@@ -191,6 +191,14 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   const index = useMemo(() => indexBook(book), [book]);
   const playing = playState === 'playing' || playState === 'explaining';
   const wpm = wordsPerMinute(mode, settings.voice.rate, playing);
+  // while the book is read aloud in Listening mode (its stops and windows included) macOS must not nap the app: the
+  // stop at the word and the 5-second windows run on timers. Given back on pause, stop, Reading mode and book close.
+  const keepAwake = mode === 'listening' && playing;
+  useEffect(() => {
+    if (!keepAwake) return;
+    void window.readalong.keepAwake?.(true)?.catch(() => undefined);
+    return () => { void window.readalong.keepAwake?.(false)?.catch(() => undefined); };
+  }, [keepAwake]);
 
   // ---- voices ---------------------------------------------------------------------------------
   useEffect(() => {

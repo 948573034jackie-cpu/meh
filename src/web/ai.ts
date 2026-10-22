@@ -271,6 +271,9 @@ export async function aiCancel(streamId: string): Promise<void> { streams.get(st
 
 async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortController): Promise<void> {
   let used: { provider: AiProviderId; model: string } | null = null;
+  // time to the first words and to the whole reply (Diagnostics), as the Mac app records them
+  let t0 = 0;
+  let ttftMs: number | undefined;
   try {
     const s = await getSettings();
     const styled = req.kind === 'word' || req.kind === 'phrase' || req.kind === 'sentence';
@@ -288,20 +291,25 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
     const prompt = style
       ? buildStyledPrompt(req, { style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
       : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength });
-    const onText = (t: string) => send({ type: 'delta', streamId, text: t });
+    const onText = (t: string) => {
+      if (ttftMs === undefined) ttftMs = Math.round(performance.now() - t0);
+      send({ type: 'delta', streamId, text: t });
+    };
+    t0 = performance.now();
     const result = provider === 'anthropic'
       ? await streamAnthropic(key, model, prompt, ctrl.signal, onText)
       : await streamOpenAI(key, model, prompt, ctrl.signal, onText);
+    const timing = { ...(ttftMs !== undefined ? { ttftMs } : {}), totalMs: Math.round(performance.now() - t0) };
     const usd = estimateUsd(model, result.inputTokens, result.outputTokens, result.cachedTokens);
-    try { await addUsage({ date: new Date().toISOString(), provider, model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd }); } catch (e) { console.error('usage not recorded', e); }
+    try { await addUsage({ date: new Date().toISOString(), provider, model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, ...timing }); } catch (e) { console.error('usage not recorded', e); }
     const { day, month } = periodStarts();
-    send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: await usdSpent(day), monthlyUsd: await usdSpent(month), model } });
+    send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: await usdSpent(day), monthlyUsd: await usdSpent(month), model, ...timing } });
   } catch (e) {
     const c = classifyError(e);
     // cancelled mid-way (a prepared explanation the learner did not need): the tokens are billed all the same
     const partial = (e as { partialUsage?: StreamResult }).partialUsage;
     if (c.code === 'cancelled' && partial && used) {
-      try { await addUsage({ date: new Date().toISOString(), provider: used.provider, model: used.model, inputTokens: partial.inputTokens, outputTokens: partial.outputTokens, cachedTokens: partial.cachedTokens, usd: estimateUsd(used.model, partial.inputTokens, partial.outputTokens, partial.cachedTokens), partial: true }); } catch (err) { console.error('usage not recorded', err); }
+      try { await addUsage({ date: new Date().toISOString(), provider: used.provider, model: used.model, inputTokens: partial.inputTokens, outputTokens: partial.outputTokens, cachedTokens: partial.cachedTokens, usd: estimateUsd(used.model, partial.inputTokens, partial.outputTokens, partial.cachedTokens), partial: true, ...(ttftMs !== undefined ? { ttftMs } : {}) }); } catch (err) { console.error('usage not recorded', err); }
     }
     send({ type: 'error', streamId, ...c });
   }

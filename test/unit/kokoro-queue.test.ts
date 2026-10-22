@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { KokoroEngine, DroppedError, defaultThreads, type SynthesisResult } from '../../src/main/kokoro/engine';
+import { KokoroEngine, DroppedError, defaultThreads, kokoroSessionOptions, type SynthesisResult } from '../../src/main/kokoro/engine';
 import { handlePrepare } from '../../src/main/kokoro/ipc-prepare';
 import { encodeWav } from '../../src/main/kokoro/wav';
 import { synthesisSegments, endPunctOf, pauseAfter, PRIORITY } from '@core/tts/segments';
@@ -321,5 +321,62 @@ describe('defaultThreads', () => {
       expect(defaultThreads(8, 'arm64', 'darwin')).toBe(4); // Apple Silicon
       expect(defaultThreads(2, 'x64', 'linux')).toBe(2);
     } finally { if (env !== undefined) process.env.KOKORO_THREADS = env; }
+  });
+});
+
+describe('Kokoro segment log (Diagnostics: the real-time factor on the learner\'s Mac)', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('records each synthesized segment: characters, synthesis ms, audio seconds, RTF, queue wait and priority; cache hits are not in it', async () => {
+    const synth = new FakeSynth();
+    const e = engine(synth);
+    const now = e.synthesize(S[0]);
+    void e.prepare([{ text: S[1], priority: PRIORITY.next }]);
+    expect(await synth.started()).toBe(true);
+    await sleep(30);
+    expect(await synth.finishOne()).toBe(S[0]);
+    await now;
+    expect(await synth.started()).toBe(true);
+    await sleep(15);
+    expect(await synth.finishOne()).toBe(S[1]);
+    await e.synthesize(S[0]); // from the memory cache: no synthesis, no record
+    const p = e.perf();
+    expect(p.segments).toHaveLength(2);
+    const [a, b] = p.segments;
+    expect(a).toMatchObject({ chars: S[0].length, priority: PRIORITY.now, audioSec: fakeResult(S[0]).durationSec });
+    expect(a.ms).toBeGreaterThanOrEqual(25);
+    expect(a.rtf).toBeCloseTo(a.ms / 1000 / a.audioSec, 2);
+    expect(a.queueWaitMs).toBeLessThan(25);
+    // the next sentence waited for the one needed now
+    expect(b).toMatchObject({ chars: S[1].length, priority: PRIORITY.next });
+    expect(b.queueWaitMs).toBeGreaterThanOrEqual(25);
+    expect(b.at).toBeGreaterThanOrEqual(a.at);
+    expect(p).toMatchObject({ state: 'missing', variant: 'fp16', inference: 'worker', loadMs: null, warmUpMs: null });
+    expect(p.threads).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keeps the last 100 segments, oldest first', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kokoro-perf-'));
+    const e = new KokoroEngine({ modelDir: cacheDir, cacheDir, persist: false, warmUp: false, synth: async (t) => fakeResult(t) });
+    const texts = Array.from({ length: 120 }, (_, i) => `Word ${'a'.repeat(i)}.`);
+    await Promise.all(texts.map((t) => e.synthesize(t)));
+    const segs = e.perf().segments;
+    expect(segs).toHaveLength(100);
+    expect(segs[0].chars).toBe(texts[20].length);
+    expect(segs[99].chars).toBe(texts[119].length);
+  });
+
+  it('KOKORO_SPIN=0 turns intra-op spinning off in the session options (a plain object: it survives the worker\'s structured clone)', () => {
+    const off = kokoroSessionOptions(3, '0');
+    expect(off).toEqual({ executionProviders: ['cpu'], graphOptimizationLevel: 'all', intraOpNumThreads: 3, interOpNumThreads: 1, logSeverityLevel: 3, extra: { session: { intra_op: { allow_spinning: '0' } } } });
+    expect(structuredClone(off)).toEqual(off);
+    expect(kokoroSessionOptions(3, '1').extra).toEqual({ session: { intra_op: { allow_spinning: '1' } } });
+    // unset (or anything else): onnxruntime's default, spinning on
+    expect(kokoroSessionOptions(2)).not.toHaveProperty('extra');
+    expect(kokoroSessionOptions(2, 'no')).not.toHaveProperty('extra');
+    vi.stubEnv('KOKORO_SPIN', '0');
+    try { expect(engine(new FakeSynth()).perf().spinning).toBe(false); } finally { vi.unstubAllEnvs(); }
+    vi.stubEnv('KOKORO_SPIN', '');
+    try { expect(engine(new FakeSynth()).perf().spinning).toBe(true); } finally { vi.unstubAllEnvs(); }
   });
 });

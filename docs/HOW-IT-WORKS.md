@@ -110,6 +110,10 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
   explanation never wait behind book work). The stop fades the sentence out over 25 ms. `prime()` synthesizes the
   start position when a book opens and after a seek while paused, so Play starts from the cache. A speed change
   goes on at the new rate without re-reading the sentence (the Mac voice still re-reads it).
+- **Behind another window**: the window is not background-throttled, the word highlights are polled every 50 ms
+  while the page is hidden (no animation frames then), and while Listening mode reads aloud the main process holds
+  a power-save blocker against App Nap (`src/main/power.ts`, released on pause, stop, Reading mode and book close),
+  so a stop still cuts at its word.
 - **ListenController** (`src/core/listen/controller.ts`) runs the learner's rule (details in RULES.md):
   1. pause at a hard word/phrase/learning word (not again within 500 words);
   2. show the card, send the explanation request at once (`PreparedExplanation`, `src/core/listen/prepared.ts`:
@@ -156,6 +160,9 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
   energy (Kokoro leaves about 0.6 s of silence after the last phoneme); the pauses are added on purpose: 180 ms after
   a comma, 280 ms after ; : —, 350 ms after a sentence end inside a long text, and the sentence pause (Settings,
   350 ms by default) between sentences.
+- **Speed facts** (Settings → Diagnostics): the voice's threads, spinning, load and warm-up times, the CPU, and the
+  median / p90 real-time factor of the last segments (`KokoroEngine.perf()`, `src/core/perf.ts`); the AI's median time
+  to its first words per model. **Copy diagnostics** puts it all in the clipboard for the developer.
 - **Mac voices** (`src/core/tts/webspeech.ts`): the built-in system voices, with watchdogs against silent hangs.
 - **Cloud voices** (`src/main/tts.ts`): Microsoft Edge (free), OpenAI, ElevenLabs, Azure, Google; each shows its
   price per hour; word timings when the service gives them, otherwise estimated.
@@ -166,7 +173,8 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 
 - **Mic** (`src/renderer/voice/mic.ts`): echo-cancelled microphone audio, downsampled to 16 kHz in an AudioWorklet.
 - **Speech recognition** (`src/main/stt`): free and local with sherpa-onnx: Moonshine v2 model (111 MB) plus
-  Silero voice-activity detection; partial and final transcripts.
+  Silero voice-activity detection; partial and final transcripts. On an Intel Mac it uses 1-2 threads
+  (`defaultSttThreads`), leaving the cores to the voice that prepares the explanation during the windows.
 - **Commands** (`src/core/voice/commands.ts`): "I know", "I don't know", "go on / bye bye" recognised with fuzzy
   and sound-alike matching for a Chinese accent.
 - **VoiceChat** (`src/renderer/voice/VoiceChat.ts`): opens the mic in the 5-second windows (commands only), and in

@@ -22,6 +22,8 @@ import type { EndPunct } from '@core/tts/segments';
  *      speed, drop: texts }` removes the queued jobs of those texts nobody waits for (an explanation prepared ahead
  *      was dropped). See KokoroEngine.
  * Main -> renderer: 'kokoro:progress' (EngineStatus) on every change, sent to every window.
+ * The engine's speed facts (KokoroEngine.perf: threads, spinning, load and warm-up ms, the last 100 synthesized
+ * segments) go with app:diagnostics (src/main/ipc.ts), not with every status broadcast.
  * The preload bridge for these channels still needs to be added to src/preload/index.ts and src/shared/api.ts;
  * until then the voice is reachable through the existing tts:synthesize / tts:voices channels with engine 'kokoro'.
  */

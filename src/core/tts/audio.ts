@@ -30,13 +30,21 @@ const PRELOAD_MAX = 8;
 /** a speak() cancelled with `fade` ramps its volume down over this many ms (in FADE_STEP_MS steps) before it stops */
 const FADE_MS = 25;
 const FADE_STEP_MS = 5;
+/**
+ * a hidden page gets no animation frames: the word highlights (and the stop at a hard word, which waits for its word)
+ * are then polled this often instead of all coming at the end of the clip
+ */
+const WORD_TICK_HIDDEN_MS = 50;
+
+function pageHidden(): boolean { return typeof document !== 'undefined' && document.visibilityState === 'hidden'; }
 
 /**
  * Engine for voices synthesized elsewhere (cloud providers or the local neural model), which return an
  * audio file plus optional word timings. Audio plays through an HTMLAudioElement so the speed slider can
  * change playbackRate live (pitch preserved; Web Audio buffers would change the pitch). Word highlights come
  * from the provider's timings when present, otherwise from a character-based estimate over the real audio
- * duration.
+ * duration. They are checked every animation frame, and every WORD_TICK_HIDDEN_MS while the page is hidden (no
+ * frames then), so a Listening stop still cuts at its word behind another window.
  *
  * Gaps between sentences: synthesized audio is cached (LRU) and the next sentence is fetched and pre-decoded (an
  * audio element loaded ahead of time) while the current one plays, so starting it is just play(). With `segment`,
@@ -255,6 +263,8 @@ export class AudioTtsEngine implements TtsEngine {
       let timings: WordTiming[] | null = res.timings?.length ? res.timings.map((w) => ({ ...w, charIndex: w.charIndex + offset })) : null;
       let nextWord = 0;
       let raf = 0;
+      let hiddenTick: ReturnType<typeof setInterval> | null = null;
+      let playing = false;
       let over = false;
       const tick = () => {
         if (over) return;
@@ -266,12 +276,20 @@ export class AudioTtsEngine implements TtsEngine {
           opts.onWord?.(timings[nextWord].charIndex, timings[nextWord].charLength);
           nextWord++;
         }
-        raf = requestAnimationFrame(tick);
+      };
+      const frame = () => { if (over) return; tick(); raf = requestAnimationFrame(frame); };
+      // hidden page: the frames stop (and resume by themselves when it shows again), a timer ticks meanwhile
+      const onVisibility = () => {
+        if (over || !playing) return;
+        if (pageHidden()) { if (hiddenTick === null) hiddenTick = setInterval(tick, WORD_TICK_HIDDEN_MS); }
+        else if (hiddenTick !== null) { clearInterval(hiddenTick); hiddenTick = null; }
       };
       const end = (o: SpeakOutcome, fade = false) => {
         if (over) return;
         over = true;
         cancelAnimationFrame(raf);
+        if (hiddenTick !== null) { clearInterval(hiddenTick); hiddenTick = null; }
+        if (typeof document !== 'undefined') document.removeEventListener?.('visibilitychange', onVisibility);
         audio.onplaying = audio.onended = audio.onerror = null;
         const release = () => { audio.pause(); audio.src = ''; URL.revokeObjectURL(url); };
         // the stop at a hard word: a short fade instead of a click (the outcome is reported at once)
@@ -282,7 +300,9 @@ export class AudioTtsEngine implements TtsEngine {
       audio.onplaying = () => {
         if (!started) { started = true; this.lastStartDelayMs = performance.now() - t0; opts.onStart?.(); }
         cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(tick);
+        raf = requestAnimationFrame(frame);
+        playing = true;
+        onVisibility();
       };
       audio.onended = () => {
         // words whose start the last frame did not reach are still announced, in order
@@ -290,6 +310,7 @@ export class AudioTtsEngine implements TtsEngine {
         end('ended');
       };
       audio.onerror = () => { handle.error = new Error('audio playback failed'); end('error'); };
+      if (typeof document !== 'undefined') document.addEventListener?.('visibilitychange', onVisibility);
       this.current = { audio, cancel: handle.cancel };
       audio.play().catch((e: Error) => { if (!over) { handle.error = e; end('error'); } });
     });

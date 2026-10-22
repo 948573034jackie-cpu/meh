@@ -36,6 +36,9 @@ function createWindow(): void {
       sandbox: true,
       nodeIntegration: false,
       spellcheck: false,
+      // a hidden or covered window keeps its timers and frames: the word highlights drive the stop at a hard word and
+      // the 5-second windows, which would otherwise wait for the end of the clip (see also power.ts, App Nap)
+      backgroundThrottling: false,
     },
   });
   win.once('ready-to-show', () => win?.show());

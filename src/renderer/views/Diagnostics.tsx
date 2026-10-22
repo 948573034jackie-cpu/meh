@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { SECRET_NAMES, SECRET_LABELS, type Diagnostics, type SecretName, type SecretStatusMap } from '@shared/api';
+import type { UsageRecord } from '@shared/settings';
 import { KeyStatusDot, LostKeyNotice, STORAGE_NOTE, NO_KEYS } from './Settings';
+import { environmentLines, speedLines, segmentLines } from './diagnosticsText';
 
-/** Shows environment facts the user can paste back when something does not work on their Mac. */
+/**
+ * Shows environment facts the user can paste back when something does not work on their Mac, and the speed facts
+ * (the voice's real-time factor, CPU and threads, the AI's time to its first words) that tell how fast it runs there.
+ */
 export function DiagnosticsView(): JSX.Element {
   const [d, setD] = useState<Diagnostics | null>(null);
+  const [usage, setUsage] = useState<UsageRecord[]>([]);
+  const [copied, setCopied] = useState('');
   const [voices, setVoices] = useState<string[]>([]);
   const [probe, setProbe] = useState<string>('not run');
   const [keys, setKeys] = useState<SecretStatusMap>(NO_KEYS);
@@ -15,8 +22,14 @@ export function DiagnosticsView(): JSX.Element {
     try { const r = await window.readalong.aiTest(name); setTestResult((t) => ({ ...t, [name]: `${r.ok ? '✅' : '❌'} ${r.message}${r.detail ? ` [${r.detail}]` : ''}` })); }
     catch (e) { setTestResult((t) => ({ ...t, [name]: `❌ ${(e as Error).message}` })); }
   };
+  /** fresh facts (the speed numbers change while the app reads) */
+  const refresh = async (): Promise<{ diag: Diagnostics; records: UsageRecord[] }> => {
+    const [diag, records] = await Promise.all([window.readalong.getDiagnostics(), window.readalong.getUsage().catch(() => [] as UsageRecord[])]);
+    setD(diag); setUsage(records);
+    return { diag, records };
+  };
   useEffect(() => {
-    void window.readalong.getDiagnostics().then(setD);
+    void refresh().catch(() => { /* main not ready */ });
     void refreshKeys();
     const load = () => setVoices(speechSynthesis.getVoices().map((v) => `${v.name} [${v.lang}]${v.default ? ' (default)' : ''}${v.localService ? '' : ' remote'}`));
     load();
@@ -35,11 +48,31 @@ export function DiagnosticsView(): JSX.Element {
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   };
   const keyLines = SECRET_NAMES.map((n) => `key ${n}: ${keys[n].verified ? 'saved, verified' : keys[n].saved ? 'saved, UNREADABLE' : keys[n].lostAtStartup ? 'lost at startup' : 'none'}${testResult[n] ? ` · test: ${testResult[n]}` : ''}`);
-  const text = [d ? Object.entries(d).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join('\n') : '', ...keyLines, `voices (${voices.length}):`, ...voices, `probe: ${probe}`].join('\n');
+  const textOf = (diag: Diagnostics | null, records: UsageRecord[]) => [
+    ...environmentLines(diag), ...speedLines(diag, records), ...keyLines, `voices (${voices.length}):`, ...voices, `probe: ${probe}`,
+    ...segmentLines(diag?.kokoro?.segments ?? []),
+  ].join('\n');
+  const text = textOf(d, usage);
+  const speed = speedLines(d, usage);
+  const copy = async () => {
+    setCopied('Copying…');
+    let fresh: { diag: Diagnostics; records: UsageRecord[] } | null = null;
+    try { fresh = await refresh(); } catch { /* copy what is shown */ }
+    try { await navigator.clipboard.writeText(textOf(fresh?.diag ?? d, fresh?.records ?? usage)); setCopied('Copied. Paste it in your message.'); }
+    catch (e) { setCopied(`Could not copy: ${(e as Error).message}`); }
+  };
   return (
     <div className="library">
       <h1>Diagnostics</h1>
-      <div className="row"><button onClick={runProbe}>Test speech voice</button><button onClick={() => navigator.clipboard.writeText(text)}>Copy all</button></div>
+      <div className="row">
+        <button onClick={runProbe}>Test speech voice</button>
+        <button onClick={() => { void copy(); }} data-testid="diagnostics-copy">Copy diagnostics</button>
+        {copied && <span className="hint">{copied}</span>}
+      </div>
+      <div className="field" style={{ marginTop: 16 }}>
+        <label>Speed</label>
+        <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, margin: 0 }} data-testid="diagnostics-speed">{d ? speed.join('\n') : 'Loading…'}</pre>
+      </div>
       <div className="field" style={{ marginTop: 16 }}>
         <label>API keys</label>
         {SECRET_NAMES.map((name) => (

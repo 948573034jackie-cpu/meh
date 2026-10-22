@@ -17,9 +17,17 @@ export interface SynthesisSegment {
   start: number;
 }
 
-/** texts up to this many characters (about 10 s of speech) are synthesized whole */
+/**
+ * texts up to this many characters (about 10.5 s of speech) are synthesized whole: the longest job a request needed
+ * now can wait behind (a running job is never interrupted). 3.7-4.2 s to synthesize at 3 threads on a 3.1 GHz AVX-512
+ * Xeon (measured); an Intel Mac is estimated at 5-7 s.
+ */
 export const SEGMENT_SPLIT_ABOVE = 180;
-/** a piece is at most this long (about 8 s of speech, 2–4 s to synthesize on a 4-core Intel Mac) */
+/**
+ * a piece is at most this long (about 8.7 s of speech): 3.1-3.5 s to synthesize at 3 threads on a 3.1 GHz AVX-512
+ * Xeon (measured); an Intel Mac is estimated at 4-8 s. The synthesis time per second of audio hardly depends on the
+ * length (50 characters about 10% worse, 300-411 characters 0-8%), so the sizes are chosen for latency and prosody.
+ */
 export const SEGMENT_MAX = 150;
 /** and at least this long (shorter pieces sound choppy and gain nothing) */
 export const SEGMENT_MIN = 40;

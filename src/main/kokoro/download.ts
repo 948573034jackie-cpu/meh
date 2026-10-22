@@ -10,11 +10,17 @@ import { Readable, Transform } from 'node:stream';
  * (one frame count per input token) that gives us word timings. The onnx-community Hugging Face exports used
  * by kokoro-js only output the waveform.
  *
- * Variants (same weights, different precision), measured on a 4-core x86 Xeon with onnxruntime-node 1.30:
- *  - fp16: 164 MB, runs at fp32 speed on CPU (ORT casts to fp32), RTF ~0.3. DEFAULT.
- *  - fp32: 326 MB, same speed, reference quality.
- *  - int8: 114 MB, dynamic quantization (ConvInteger/MatMulInteger): ~6x SLOWER than fp32 on x86 CPUs with
- *    ORT's CPU provider, and needs ORT >= 1.30 (int8 ConvInteger kernel), so it does not load with the pinned 1.23.2. Kept for experiments only.
+ * Variants (same weights, different precision), measured on a 4-vCPU x86 Xeon (AVX-512, about 3.1 GHz) with the
+ * app's onnxruntime-node 1.23.2:
+ *  - fp16: 164 MB. DEFAULT. Every kernel still runs in fp32 on the CPU (ORT casts), so it runs at fp32 speed: RTF
+ *    0.36-0.40 at 3 threads when the machine is quiet (0.47-0.54 at 2); an Intel Mac is estimated at 0.45-0.7. It costs
+ *    more to load: 1.8-2.7 s vs 1.05-1.3 s for fp32 (in the background after launch), and about 305-320 MB more memory
+ *    (RSS about 880-1000 MB vs 560-700 MB).
+ *  - fp32: 326 MB on disk, the same speed (0-8% faster), reference quality.
+ *  - int8: 114 MB, dynamic quantization (ConvInteger/MatMulInteger): does not load with the pinned 1.23.2 ("Could not
+ *    find an implementation for ConvInteger(10)"). Kept for experiments only.
+ * presentVariant keeps loading whichever variant is installed, so changing DEFAULT_VARIANT alone changes nothing for a
+ * learner who has fp16.
  */
 export type ModelVariant = 'fp16' | 'fp32' | 'int8';
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
-import type { Tensor as OrtTensor } from 'onnxruntime-node';
+import type { Tensor as OrtTensor, InferenceSession } from 'onnxruntime-node';
 import { downloadModel, presentVariant, DEFAULT_VARIANT, MODEL_FILES, VOICES_FILE, MODEL_VERSION, type ModelVariant, type DownloadProgress } from './download';
 import { textToChunks, defaultPhonemizer, espeakLang, MAX_TOKENS, PAD_TOKEN, type Phonemizer } from './phonemes';
 import { wordTimes, trimRange, speechRange, type WordTime } from './align';
@@ -12,6 +12,8 @@ import { encodeWav, decodeWav, concatWav } from './wav';
 import { readVoicesNpz } from './npz';
 import { DEFAULT_VOICE, isKnownVoice } from './voices';
 import { synthesisSegments, endPunctOf, pauseAfter, PRIORITY, type EndPunct } from '@core/tts/segments';
+import { RecentLog } from '@core/perf';
+import type { KokoroPerf, KokoroSegmentStat } from '@shared/api';
 
 export const SAMPLE_RATE = 24000;
 
@@ -61,6 +63,8 @@ export interface KokoroEngineOptions {
   variant?: ModelVariant;
   /** ORT intra-op threads; default: defaultThreads() (physical cores, at most 4), or KOKORO_THREADS */
   threads?: number;
+  /** ORT intra-op spinning: undefined = onnxruntime's default (on); default: KOKORO_SPIN ('0' off, '1' on) */
+  spin?: '0' | '1';
   /**
    * where the ONNX inference runs: 'worker' (default) is a worker thread, so the Electron main process keeps
    * answering IPC while a sentence is synthesized (onnxruntime-node's session.run and session creation are
@@ -93,6 +97,8 @@ interface Job {
   waiters: number;
   /** a prepare(..., { wait }) caller is told when it is ready: a read-ahead list does not lower its priority */
   held: boolean;
+  /** performance.now() when it was requested at the highest priority asked for (its queue wait, for Diagnostics) */
+  queuedAt: number;
   promise: Promise<SynthesisResult>;
   resolve: (r: SynthesisResult) => void; reject: (e: Error) => void;
 }
@@ -115,11 +121,28 @@ export function defaultThreads(cpus = os.cpus().length, arch: string = process.a
   const env = Number(process.env.KOKORO_THREADS);
   if (Number.isInteger(env) && env > 0) return env;
   const physical = arch === 'x64' && platform === 'darwin' && cpus >= 4 ? Math.floor(cpus / 2) : cpus;
-  // one core is left for the app (renderer, audio, the main process); measured on a 4-core x86: 3 threads RTF 0.50,
-  // 4 threads RTF 0.61 (the threads fight with everything else)
+  // one core is left for the app (renderer, audio, the main process); measured on a 4-vCPU Xeon: 4 threads were not
+  // reliably faster than 3 (0.84-1.04 of the time) and 17-40% slower with one other core busy
   const n = physical >= 8 ? 4 : physical - 1;
   return Math.max(2, Math.min(4, n));
 }
+
+/**
+ * ORT session options for the Kokoro model. `spin` '0' (KOKORO_SPIN=0) turns intra-op spinning off: the pool's threads
+ * sleep between operators instead of busy-waiting. Measured on a 4-vCPU Xeon at 3 threads: 13-25% less CPU but 4-16%
+ * slower, so it stays on; the switch is for an A/B on the learner's Mac (thermal throttling, a busy 2-core model).
+ * `extra` is a plain object, so it survives the structured clone into the worker.
+ */
+export function kokoroSessionOptions(threads: number, spin?: string): InferenceSession.SessionOptions {
+  const base: InferenceSession.SessionOptions = { executionProviders: ['cpu'], graphOptimizationLevel: 'all', intraOpNumThreads: threads, interOpNumThreads: 1, logSeverityLevel: 3 };
+  return spin === '0' || spin === '1' ? { ...base, extra: { session: { intra_op: { allow_spinning: spin } } } } : base;
+}
+
+/** KOKORO_SPIN as a session option value ('0' / '1'), else undefined (onnxruntime's default: spinning) */
+function spinFromEnv(v = process.env.KOKORO_SPIN): '0' | '1' | undefined { return v === '0' || v === '1' ? v : undefined; }
+
+/** synthesized segments kept for Diagnostics (KokoroEngine.perf) */
+const PERF_SEGMENTS = 100;
 
 /** removed from the queue by prepare(..., { replace }) / clearReadAhead() / dropTexts() before it ran */
 export class DroppedError extends Error { constructor() { super('dropped from the read-ahead queue'); this.name = 'DroppedError'; } }
@@ -154,6 +177,7 @@ export class KokoroEngine {
   readonly cacheDir: string;
   readonly variant: ModelVariant;
   private threads: number;
+  private spin: '0' | '1' | undefined;
   private phonemizer: Phonemizer | null;
   private injectedPhonemizer: Phonemizer | null;
   private loaded = false;
@@ -179,6 +203,10 @@ export class KokoroEngine {
   private inference: Inference | null = null;
   private synthOverride: KokoroEngineOptions['synth'] | null;
   private log: (msg: string) => void;
+  /** the last synthesized segments, their load and warm-up times (Diagnostics) */
+  private perfLog = new RecentLog<KokoroSegmentStat>(PERF_SEGMENTS);
+  private loadMs: number | null = null;
+  private warmUpMs: number | null = null;
   /** notified on every status change (download progress, state changes) */
   onStatus: ((s: EngineStatus) => void) | null = null;
 
@@ -187,6 +215,7 @@ export class KokoroEngine {
     this.cacheDir = opts.cacheDir;
     this.variant = opts.variant ?? (process.env.KOKORO_VARIANT as ModelVariant) ?? DEFAULT_VARIANT;
     this.threads = opts.threads ?? defaultThreads();
+    this.spin = 'spin' in opts ? opts.spin : spinFromEnv();
     this.inferenceMode = opts.inference ?? (process.env.KOKORO_INFERENCE === 'inline' ? 'inline' : 'worker');
     this.synthOverride = opts.synth ?? null;
     this.phonemizer = opts.phonemizer ?? null;
@@ -250,8 +279,9 @@ export class KokoroEngine {
       this.inference = inference; this.voices = voices;
       this.phonemizer = phonemizer ?? inference.phonemizer ?? (await defaultPhonemizer());
       this.lastError = null;
-      this.log(`kokoro: ${variant} model loaded in ${Date.now() - t0} ms (${this.threads} threads, inference in ${inference.where === 'worker' ? 'a worker thread' : 'the main thread'}, ${voices.size} voices)`);
-      if (this.warmUp) { const t1 = Date.now(); await this.run('Hello.', DEFAULT_VOICE, 1); this.log(`kokoro: warm-up in ${Date.now() - t1} ms`); }
+      this.loadMs = Date.now() - t0;
+      this.log(`kokoro: ${variant} model loaded in ${this.loadMs} ms (${this.threads} threads${this.spin === '0' ? ', spinning off' : ''}, inference in ${inference.where === 'worker' ? 'a worker thread' : 'the main thread'}, ${voices.size} voices)`);
+      if (this.warmUp) { const t1 = Date.now(); await this.run('Hello.', DEFAULT_VOICE, 1); this.warmUpMs = Date.now() - t1; this.log(`kokoro: warm-up in ${this.warmUpMs} ms`); }
       this.loaded = true;
       this.emit();
     })().catch((e) => { this.lastError = (e as Error).message; this.readyPromise = null; this.emit(); throw e; });
@@ -264,8 +294,16 @@ export class KokoroEngine {
   /** Where inference runs ('worker' unless the worker could not start). */
   get inferenceWhere(): 'worker' | 'inline' { return this.inference?.where ?? this.inferenceMode; }
 
+  /** How the voice runs and its last synthesized segments (Diagnostics; the renderer computes the medians). */
+  perf(): KokoroPerf {
+    return {
+      state: this.status().state, variant: this.installedVariant ?? this.variant, threads: this.threads, spinning: this.spin !== '0',
+      inference: this.inferenceWhere, loadMs: this.loadMs, warmUpMs: this.warmUpMs, segments: this.perfLog.toArray(),
+    };
+  }
+
   private async loadInference(modelPath: string): Promise<Inference> {
-    const sessionOptions = { executionProviders: ['cpu'], graphOptimizationLevel: 'all', intraOpNumThreads: this.threads, interOpNumThreads: 1, logSeverityLevel: 3 } as const;
+    const sessionOptions = kokoroSessionOptions(this.threads, this.spin);
     if (this.inferenceMode === 'worker') {
       try {
         return await startWorkerInference(modelPath, sessionOptions, () => {
@@ -415,7 +453,7 @@ export class KokoroEngine {
       if (hold) job.held = true;
       if (job !== this.running) {
         // a request at a higher level joins at the back of that level; a read-ahead list re-ranks what nobody waits for
-        if (priority > job.priority) { job.priority = priority; job.seq = ++this.jobSeq; }
+        if (priority > job.priority) { job.priority = priority; job.seq = ++this.jobSeq; job.queuedAt = performance.now(); }
         else if (rerank && job.waiters === 0 && !job.held && priority !== job.priority) { job.priority = priority; job.seq = ++this.jobSeq; }
         this.sortQueue();
       }
@@ -424,7 +462,7 @@ export class KokoroEngine {
     let resolve!: (r: SynthesisResult) => void; let reject!: (e: Error) => void;
     const promise = new Promise<SynthesisResult>((res, rej) => { resolve = res; reject = rej; });
     promise.catch(() => undefined); // a dropped read-ahead job may have no listener
-    const j: Job = { key, text, voice, speed, priority, seq: ++this.jobSeq, waiters: waiter ? 1 : 0, held: hold, promise, resolve, reject };
+    const j: Job = { key, text, voice, speed, priority, seq: ++this.jobSeq, waiters: waiter ? 1 : 0, held: hold, queuedAt: performance.now(), promise, resolve, reject };
     this.jobs.set(key, j);
     this.queue.push(j);
     this.sortQueue();
@@ -471,15 +509,27 @@ export class KokoroEngine {
   clearMemory(): void { this.memory.clear(); }
 
   private async produce(job: Job): Promise<SynthesisResult> {
+    const started = performance.now();
     const disk = this.persist ? await this.readDisk(job.key) : null;
     if (disk) { this.remember(job.key, disk); return disk; }
     let res: SynthesisResult;
-    if (this.synthOverride) res = await this.synthOverride(job.text, job.voice, job.speed);
-    else { await this.ensureReady(); res = await this.run(job.text, job.voice, job.speed); }
+    let t0: number;
+    if (this.synthOverride) { t0 = performance.now(); res = await this.synthOverride(job.text, job.voice, job.speed); }
+    else { await this.ensureReady(); t0 = performance.now(); res = await this.run(job.text, job.voice, job.speed); }
+    this.recordSegment(job, started, performance.now() - t0, res.durationSec);
     if (res.endPunct === undefined) res = { ...res, endPunct: endPunctOf(job.text) };
     this.remember(job.key, res);
     if (this.persist) this.writeDisk(job.key, res).catch((e) => this.log(`kokoro: cache write failed: ${(e as Error).message}`));
     return res;
+  }
+
+  /** one synthesized segment for Diagnostics: its synthesis time (not the model loading before it) and queue wait */
+  private recordSegment(job: Job, started: number, ms: number, audioSec: number): void {
+    if (!(audioSec > 0)) return;
+    this.perfLog.push({
+      at: Date.now(), chars: job.text.length, ms: Math.round(ms), audioSec: Math.round(audioSec * 100) / 100,
+      rtf: Math.round((ms / 1000 / audioSec) * 1000) / 1000, queueWaitMs: Math.round(started - job.queuedAt), priority: job.priority,
+    });
   }
 
   private remember(key: string, res: SynthesisResult): void {

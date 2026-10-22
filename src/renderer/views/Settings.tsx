@@ -523,7 +523,8 @@ function VoicePicker({ label, engine, voiceId, voices, onChange, onPreview }: { 
 function DataSection({ usage }: { usage: { today: number; month: number } }): JSX.Element {
   const [diag, setDiag] = useState<string>('');
   const [exported, setExported] = useState<string>('');
-  useEffect(() => { void window.readalong.getDiagnostics().then((d) => setDiag(JSON.stringify(d, null, 1))); }, []);
+  // where things are stored; the speed facts are on the Diagnostics screen
+  useEffect(() => { void window.readalong.getDiagnostics().then(({ kokoro: _k, cpu: _c, sttThreads: _t, ...where }) => setDiag(JSON.stringify(where, null, 1))); }, []);
   const vocab = useApp((s) => s.vocab);
   const known = Object.values(vocab.words).filter((v) => v === 'known').length;
   const learning = Object.values(vocab.words).filter((v) => v === 'learning').length;

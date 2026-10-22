@@ -209,4 +209,47 @@ describe('AudioTtsEngine', () => {
     expect(await h.done).toBe('ended');
     expect(synth).toHaveLength(2);
   });
+
+  it('a hidden page gets no animation frames: the words are polled every 50 ms meanwhile (a stop still cuts at its word), and the timer goes with the clip', async () => {
+    const listeners = new Set<() => void>();
+    const doc = { visibilityState: 'hidden', addEventListener: (_t: string, f: () => void) => listeners.add(f), removeEventListener: (_t: string, f: () => void) => listeners.delete(f) };
+    const raf = globalThis.requestAnimationFrame;
+    // frames never come in this test (a hidden window); the timer alone has to announce the words
+    Object.assign(globalThis, { document: doc, requestAnimationFrame: () => 0 });
+    try {
+      const timings = [{ start: 0, end: 0.2, charIndex: 0, charLength: 2 }, { start: 0.3, end: 0.5, charIndex: 3, charLength: 3 }, { start: 0.6, end: 0.9, charIndex: 7, charLength: 8 }];
+      const e = new AudioTtsEngine('kokoro', async () => result(timings), async () => [], true, { segment: true });
+      const words: number[] = [];
+      const h = e.speak('He was sanguine.', { voiceId: 'v', rate: 1, onWord: (i) => words.push(i) });
+      await sleep(5);
+      const a = FakeAudio.instances[0];
+      expect(a.played).toBe(1);
+      expect(listeners.size).toBe(1);
+      await sleep(70);
+      expect(words).toEqual([0]);
+      a.currentTime = 0.35;
+      await sleep(70);
+      expect(words).toEqual([0, 3]); // long before the clip ends
+      // shown again: the frames take over and the timer stops (no frames here, so nothing moves)
+      doc.visibilityState = 'visible'; listeners.forEach((f) => f());
+      a.currentTime = 0.65;
+      await sleep(70);
+      expect(words).toEqual([0, 3]);
+      // hidden again: polled again
+      doc.visibilityState = 'hidden'; listeners.forEach((f) => f());
+      await sleep(70);
+      expect(words).toEqual([0, 3, 7]);
+      a.onended?.();
+      expect(await h.done).toBe('ended');
+      expect(listeners.size).toBe(0);
+      const n = words.length;
+      a.currentTime = 5;
+      await sleep(70);
+      expect(words).toHaveLength(n); // the timer stopped with the clip
+    } finally {
+      Object.assign(globalThis, { requestAnimationFrame: raf });
+      delete (globalThis as { document?: unknown }).document;
+    }
+  });
 });
+
