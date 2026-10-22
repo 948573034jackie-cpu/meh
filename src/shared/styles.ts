@@ -22,7 +22,7 @@ export type AnswerType = 'explain' | 'quiz' | 'example';
 /** The three knobs every style exposes; each value appends one sentence to the prompt (length, then personality, then answer type). */
 export const KNOBS: { personality: Record<Personality, { label: string; text: string }>; length: Record<Length, { label: string; text: string }>; answerType: Record<AnswerType, { label: string; text: string }> } = {
   personality: {
-    warm: { label: 'Warm teacher', text: 'Speak like a warm, encouraging teacher who is glad the learner asked, use "you" and "we", and praise one thing the learner already understands before you go on.' },
+    warm: { label: 'Warm teacher', text: 'Speak like a warm, encouraging teacher, use "you" and "we", and start with the meaning at once.' },
     strict: { label: 'Strict coach', text: 'Speak like a strict but fair coach who respects the learner\'s time: go straight to the point, no praise and no small talk, and end by telling the learner exactly one thing to remember.' },
     peer: { label: 'Friendly peer', text: 'Speak like a friendly classmate reading the same book, in a relaxed everyday voice, sharing what you noticed as if you were sitting next to the learner; it is fine to say "I think" or "to me".' },
   },

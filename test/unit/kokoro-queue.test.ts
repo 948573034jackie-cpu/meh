@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,7 +17,7 @@ class FakeSynth {
   };
   /** finishes the running synthesis; returns its text */
   async finishOne(): Promise<string> {
-    await ticks();
+    await this.started();
     const w = this.waiting.shift();
     if (!w) throw new Error('nothing is being synthesized');
     w.go();
@@ -25,7 +25,15 @@ class FakeSynth {
     return w.text;
   }
   get running(): string | undefined { return this.waiting[0]?.text; }
-  async drain(): Promise<string[]> { const out: string[] = []; await ticks(); while (this.waiting.length) out.push(await this.finishOne()); return out; }
+  /** true once a synthesis runs (background jobs start after the engine's short settle wait); false after ~40 ms */
+  async started(): Promise<boolean> {
+    await ticks();
+    for (let i = 0; i < 20 && !this.waiting.length; i++) await new Promise((r) => setTimeout(r, 2));
+    return this.waiting.length > 0;
+  }
+  async drain(): Promise<string[]> { const out: string[] = []; while (await this.started()) out.push(await this.finishOne()); return out; }
+  /** finishes the running synthesis without waiting on timers (fake-timer tests) */
+  finishNow(): void { const w = this.waiting.shift(); if (!w) throw new Error('nothing is being synthesized'); w.go(); }
 }
 
 function fakeResult(text: string): SynthesisResult {
@@ -62,7 +70,7 @@ describe('Kokoro queue: what the learner waits for goes first', () => {
     const synth = new FakeSynth();
     const e = engine(synth);
     void e.prepare(S.slice(1, 9).map((text, i) => ({ text, priority: PRIORITY.ahead - (i + 1) })), { replace: true });
-    await ticks();
+    await synth.started();
     expect(synth.running).toBe(S[1]); // read-ahead started while nothing else was asked for
     const explanation = 'That word means a large house in the country.';
     const p = e.synthesize(explanation);
@@ -102,7 +110,7 @@ describe('Kokoro queue: what the learner waits for goes first', () => {
     const synth = new FakeSynth();
     const e = engine(synth);
     void e.prepare(S.slice(0, 6).map((text, i) => ({ text, priority: PRIORITY.ahead - (i + 1) })), { replace: true });
-    await ticks();
+    await synth.started();
     const p = e.synthesize(S[4]);
     expect(e.queuedTexts()[0]).toEqual({ text: S[4], priority: PRIORITY.now });
     expect(await synth.finishOne()).toBe(S[0]); // was already running
@@ -205,7 +213,96 @@ describe('kokoro:prepare IPC', () => {
     void handlePrepare(e, [{ text: '', replace: true }]); // pause
     expect(await dropped).toBe(false);
     await synth.drain();
-    expect(synth.calls).toEqual([S[0], S[1], S[2]]);
+    // S[2] (read-ahead) is dropped by the pause too unless it started in the meantime (it waits SETTLE_MS first)
+    expect(synth.calls.slice(0, 2)).toEqual([S[0], S[1]]);
+    expect(synth.calls).not.toContain(S[5]);
+  });
+});
+
+describe('kokoro:prepare at priority soon (an explanation the learner will hear in a few seconds)', () => {
+  it('goes after speech needed now, before the next sentence and the read-ahead; a pause (replace) drops it', async () => {
+    const synth = new FakeSynth();
+    const e = engine(synth);
+    void e.synthesize(S[0]); // running
+    await ticks();
+    void handlePrepare(e, [{ text: '', replace: true }, { text: S[2], priority: PRIORITY.ahead - 1 }, { text: S[3], priority: PRIORITY.ahead - 2 }]);
+    void handlePrepare(e, [{ text: S[1], priority: PRIORITY.next, wait: true }]);
+    const soon = handlePrepare(e, [{ text: S[7], priority: PRIORITY.soon, wait: true }]);
+    void e.synthesize(S[9]); // a word said now (the 3 repeats)
+    expect(e.queuedTexts().map((q) => q.text)).toEqual([S[9], S[7], S[1], S[2], S[3]]);
+    await synth.drain();
+    expect(await soon).toBe(true);
+    const dropped = handlePrepare(e, [{ text: S[8], priority: PRIORITY.soon, wait: true }]);
+    void handlePrepare(e, [{ text: '', replace: true }]); // pause / the next read-ahead list
+    expect(await dropped).toBe(false);
+  });
+});
+
+describe('Kokoro queue: an explanation prepared ahead (priority soon) and its drop', () => {
+  it('dropTexts removes the queued jobs of those texts nobody waits for; the running one finishes; others stay', async () => {
+    const synth = new FakeSynth();
+    const e = engine(synth);
+    const running = handlePrepare(e, [{ text: S[0], voice: 'bf_emma', speed: 1, priority: PRIORITY.soon, wait: true }]);
+    await synth.started();
+    expect(synth.running).toBe(S[0]);
+    const queued = handlePrepare(e, [{ text: S[1], voice: 'bf_emma', speed: 1, priority: PRIORITY.soon, wait: true }]);
+    const waited = e.synthesize(S[2], { voice: 'bf_emma' }); // a speak() waits for this one: never dropped
+    const other = handlePrepare(e, [{ text: S[3], voice: 'bf_emma', speed: 1, priority: PRIORITY.soon, wait: true }]);
+    void handlePrepare(e, [{ text: S[1], voice: 'bf_emma', speed: 1, priority: PRIORITY.ahead - 1 }]); // the same text in the read-ahead
+    void handlePrepare(e, [{ text: '', voice: 'bf_emma', speed: 1, drop: [S[0], S[1], S[2]] }]);
+    expect(await queued).toBe(false);
+    expect(e.queuedTexts().map((q) => q.text)).toEqual([S[2], S[3]]);
+    expect(await synth.drain()).toEqual([S[0], S[2], S[3]]);
+    expect(await running).toBe(true);
+    expect(await other).toBe(true);
+    await waited;
+    // another voice or speed is another text
+    const elsewhere = handlePrepare(e, [{ text: S[5], voice: 'bf_emma', speed: 1, priority: PRIORITY.soon, wait: true }]);
+    e.dropTexts([S[5]], { voice: 'bm_george', speed: 1 });
+    e.dropTexts([S[5]], { voice: 'bf_emma', speed: 1.2 });
+    expect(await synth.drain()).toEqual([S[5]]);
+    expect(await elsewhere).toBe(true);
+  });
+
+  it('a replace (pause, the next read-ahead list) drops a soon job nobody waits for: the invariant a Listening stop relies on', async () => {
+    const synth = new FakeSynth();
+    const e = engine(synth);
+    void e.synthesize(S[0]);
+    await synth.started();
+    const soon = handlePrepare(e, [{ text: S[1], priority: PRIORITY.soon, wait: true }]);
+    const kept = handlePrepare(e, [{ text: '', replace: true }, { text: S[2], priority: PRIORITY.ahead - 1 }, { text: S[3], priority: PRIORITY.soon, wait: true }]);
+    expect(await soon).toBe(false);
+    expect(e.queuedTexts().map((q) => q.text)).toEqual([S[3], S[2]]); // in the replacing call itself: kept
+    await synth.drain();
+    expect(await kept).toBe(true);
+  });
+
+  it('settle: a background job waits 10 ms before it starts, so a now request one message later goes first', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const synth = new FakeSynth();
+      const e = engine(synth);
+      void e.prepare([{ text: S[1] }]); // ReaderView's plain prepare of the next sentence (background)
+      await ticks();
+      expect(synth.running).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(5);
+      const now = e.synthesize(S[0]); // the speak() that was one IPC message behind
+      await vi.advanceTimersByTimeAsync(10);
+      await ticks();
+      expect(synth.calls).toEqual([S[0]]);
+      synth.finishNow();
+      await now;
+      await vi.advanceTimersByTimeAsync(10);
+      await ticks();
+      expect(synth.calls).toEqual([S[0], S[1]]);
+      // 'next' and above start at once
+      synth.finishNow();
+      await ticks();
+      void e.prepare([{ text: S[2], priority: PRIORITY.next }]);
+      await ticks();
+      expect(synth.calls).toEqual([S[0], S[1], S[2]]);
+      synth.finishNow();
+    } finally { vi.useRealTimers(); }
   });
 });
 

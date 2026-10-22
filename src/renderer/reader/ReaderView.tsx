@@ -277,6 +277,7 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
         hold: () => { ctl()?.hold(); },
         release: () => ctl()?.release(modeRef.current === 'listening'),
         keepWaiting: () => ctl()?.keepWaiting(),
+        windowSpeechEnded: () => ctl()?.windowSpeechEnded(),
         continueBook: () => { const c = ctl(); if (c && !c.answerWindow('bye') && modeRef.current === 'listening') c.continueNow(); },
       },
     });
@@ -636,8 +637,10 @@ export function ReaderView({ book }: { book: Book }): JSX.Element {
   function answerKnow(): void {
     const c = ctl(); if (!c) return;
     const l = c.lastExplained;
+    // the window first: markKnown() of the stop's word would end its window as "I know" by itself
+    const inWindow = c.answerWindow('know');
     if (l?.lemma) { c.markKnown(l.lemma); void changeStatus(l.lemma, 'known'); if (cardRef.current?.lemma === l.lemma) closeCard(); }
-    if (!c.answerWindow('know')) c.continueNow();
+    if (!inWindow) c.continueNow();
   }
   /** "I don't know" (voice, D during a window, the button): before the explanation it simply starts; after it, again and deeper. */
   function answerDontKnow(): void {

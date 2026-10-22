@@ -34,6 +34,7 @@ function setup(initial: SttStatus['state'] = 'ready', opts: { alwaysOn?: boolean
     hold: () => tutorCalls.push('hold'),
     release: () => tutorCalls.push('release'),
     keepWaiting: () => tutorCalls.push('keepWaiting'),
+    windowSpeechEnded: () => tutorCalls.push('windowSpeechEnded'),
     continueBook: () => tutorCalls.push('continueBook'),
   };
   const timers: { fn: () => void; ms: number; id: number }[] = [];
@@ -67,9 +68,11 @@ describe('VoiceChat state machine', () => {
     expect(t.mic.active).toBe(true);
     expect(t.calls).toContain('start:ok');
     t.send({ type: 'speechStart' });
-    expect(t.tutorCalls).toEqual(['keepWaiting']); // the learner is talking: the pause waits for them, nothing is interrupted
+    expect(t.tutorCalls).toEqual(['keepWaiting']); // the learner is talking: the pause notes it, nothing is interrupted
+    t.send({ type: 'speechEnd' });
+    expect(t.tutorCalls).toEqual(['keepWaiting', 'windowSpeechEnded']); // a command may still be on its way
     t.send({ type: 'final', text: 'I know' });
-    expect(t.tutorCalls).toEqual(['keepWaiting', 'know']);
+    expect(t.tutorCalls).toEqual(['keepWaiting', 'windowSpeechEnded', 'know']);
     expect(t.chat.snapshot.line).toBe('closed');
     expect(t.mic.active).toBe(false);
     expect(t.calls).toContain('stop');

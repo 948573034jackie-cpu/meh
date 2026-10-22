@@ -53,8 +53,8 @@ export function aiSteps(parts: ExplanationParts, s: ScriptSettings, zhAvailable:
 // Style-shaped scripts (Dream Read): the shape comes from the explanation style, the AI reply is prose.
 
 import type { ScriptShape } from '@shared/styles';
-import { splitAtPause } from '@shared/styles';
-import { cleanSpokenProse } from '@core/ai/prompts';
+import { splitAtPause, PAUSE_TOKEN } from '@shared/styles';
+import { cleanSpokenProse, stripOpeningFiller } from '@core/ai/prompts';
 
 /** A silent wait for the learner (quiz question); the controller ends it on an answer or after its timeout. */
 export type WaitStep = { type: 'wait' };
@@ -130,4 +130,70 @@ export function twoMeanings(raw: string | string[]): string {
     .map((x) => x.replace(/\b[a-z]{1,5}\.\s*/gi, '').replace(/[(（[【][^)）\]】]*[)）\]】]/g, '').replace(/[A-Za-z]/g, '').trim())
     .filter((x) => CJK.test(x));
   return [...new Set(parts)].slice(0, 2).join('，');
+}
+
+/**
+ * One streamed piece (a sentence) of a prose reply, as it is spoken: the pieces before / after a [PAUSE] token, with
+ * `null` where the token was (the quiz wait). Further tokens are dropped.
+ */
+export function pauseParts(piece: string): (string | null)[] {
+  const i = piece.indexOf(PAUSE_TOKEN);
+  if (i < 0) return [piece];
+  const before = piece.slice(0, i).trim();
+  const after = piece.slice(i + PAUSE_TOKEN.length).split(PAUSE_TOKEN).join(' ').trim();
+  return [...(before ? [before] : []), null, ...(after ? [after] : [])];
+}
+
+/** a piece that is only a list number ("2." or "3)"): nothing to say */
+const NUMBER_ONLY = /^\d+[.)]$/;
+
+/**
+ * What one sentence of a streamed prose reply says: English runs for the explanation voice, Chinese runs for the
+ * Chinese voice (left out when Chinese is off or there is no Chinese voice). `first` = nothing of the reply has been
+ * said yet: opening filler is removed only there, and a sentence that is only filler ("Great question!") says nothing.
+ * A list number alone says nothing either. The controller's speaker and the pre-synthesis both use this, so they ask
+ * the TTS engine for exactly the same texts (same cache keys).
+ */
+export function sentenceSteps(piece: string, opts: { first: boolean; chinese: boolean }): ScriptStep[] {
+  let text = cleanSpokenProse(piece, { opening: false }).replace(/\s+/g, ' ').trim();
+  if (opts.first) text = stripOpeningFiller(text);
+  if (!text || NUMBER_ONLY.test(text)) return [];
+  const out: ScriptStep[] = [];
+  for (const run of splitByScript(text)) {
+    if (run.zh) { if (opts.chinese) out.push({ type: 'say', text: run.text, lang: 'zh', role: 'chinese' }); }
+    else if (/[\p{L}\p{N}]/u.test(run.text)) out.push({ type: 'say', text: run.text, lang: 'en', role: 'explanation' });
+  }
+  return out;
+}
+
+/** What one streamed sentence becomes: say steps, or null where the quiz waits for the learner ([PAUSE]). */
+export type SpokenPart = ScriptStep[] | null;
+
+/**
+ * The spoken plan of a streamed prose reply, sentence by sentence and in order: each sentence's parts are fixed when it
+ * arrives, so the speaker and the pre-synthesis (which runs ahead of the speaker) agree on every text. Chinese runs
+ * are always kept here (the speaker leaves them out when Chinese is off); `pauses` = a [PAUSE] token makes a wait
+ * (prose explanations; only the first token of the reply counts).
+ */
+export class SpokenPlan {
+  private opening = true;
+  private paused = false;
+  constructor(private readonly opts: { pauses: boolean }) {}
+
+  parts(piece: string): SpokenPart[] {
+    const out: SpokenPart[] = [];
+    for (const part of this.opts.pauses ? pauseParts(piece) : [piece]) {
+      if (part === null) { if (!this.paused) { this.paused = true; out.push(null); } continue; }
+      const steps = sentenceSteps(part, { first: this.opening, chinese: true });
+      if (!steps.length) continue;
+      this.opening = false;
+      out.push(steps);
+    }
+    return out;
+  }
+}
+
+/** The English texts of these parts, in order (what the explanation voice will be asked to say). */
+export function englishTexts(parts: SpokenPart[]): string[] {
+  return parts.flatMap((p) => (p ?? []).flatMap((st) => (st.type === 'say' && st.lang === 'en' ? [st.text] : [])));
 }

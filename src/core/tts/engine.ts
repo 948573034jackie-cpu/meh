@@ -22,6 +22,9 @@ export interface SpeakOptions {
 
 export type SpeakOutcome = 'ended' | 'cancelled' | 'error';
 
+/** What TtsEngine.prepareSoon returns: release() drops what is still queued or loaded for those texts (idempotent). */
+export interface PrepareHandle { release(): void }
+
 export interface SpeakHandle {
   /** resolves when speech finishes, is cancelled, or fails (never rejects) */
   done: Promise<SpeakOutcome>;
@@ -52,6 +55,15 @@ export interface TtsEngine {
   readAhead?(texts: string[], voiceId: string, rate: number): void;
   /** optional: playback paused or stopped, drop the read-ahead */
   stopReadAhead?(): void;
+  /**
+   * optional: synthesize these texts soon, exactly as a later speak(text) will ask for them, after any speak() waiting
+   * now and before the book's next sentence and read-ahead. For an explanation the learner will hear in a few seconds.
+   * The local voice queues them all; a cloud voice fetches only the first two (it costs money per character).
+   * release(): not needed after all (the explanation was dropped): queued jobs and audio loaded for them are
+   * dropped; a job already running finishes. A Kokoro read-ahead `replace` (pause, stop, the next sentence list)
+   * drops them too, unless a speak() waits for them.
+   */
+  prepareSoon?(texts: string[], voiceId: string): PrepareHandle;
   pause(): void;
   resume(): void;
   cancelAll(): void;

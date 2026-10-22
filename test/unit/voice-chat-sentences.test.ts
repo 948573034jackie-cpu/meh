@@ -55,6 +55,34 @@ describe('streamed-text sentence splitter', () => {
     expect(splitSentences('乐观的。Hopeful.')).toEqual(['乐观的。', 'Hopeful.']);
   });
 
+  it('firstMaxChars cuts only the first piece, at a comma, so the first audio is ready sooner', () => {
+    const first = 'When Mr. Darcy looked across the crowded room at Elizabeth, who was laughing with her sister, he felt something he did not expect at all.';
+    const second = 'Then he went outside into the cold night air, where the carriages waited in a long line, and he stood there for a long time without a word.';
+    const text = `${first} ${second}`;
+    expect(first.length).toBeGreaterThan(120);
+    const pieces = new StreamSentenceSplitter({ firstMaxChars: 120 }).flush(text);
+    expect(pieces[0]).toBe('When Mr. Darcy looked across the crowded room at Elizabeth, who was laughing with her sister,');
+    expect(pieces.slice(1)).toEqual(['he felt something he did not expect at all.', second]); // later sentences stay whole
+    expect(new StreamSentenceSplitter().flush(text)).toEqual([first, second]); // default: whole sentences
+    // streamed in small chunks: the same pieces
+    const sp = new StreamSentenceSplitter({ firstMaxChars: 120 });
+    const got: string[] = [];
+    for (let i = 7; i < text.length; i += 7) got.push(...sp.push(text.slice(0, i)));
+    got.push(...sp.flush(text));
+    expect(got).toEqual(pieces);
+  });
+
+  it('pushPieces / flushPieces mark a sentence that starts a new paragraph (a blank line before it)', () => {
+    const sp = new StreamSentenceSplitter();
+    const text = 'Sanguine means hopeful. He smiles.\n\nIn this sentence he is calm.\nHe waits.';
+    expect([...sp.pushPieces(text), ...sp.flushPieces(text)]).toEqual([
+      { text: 'Sanguine means hopeful.', paragraph: false },
+      { text: 'He smiles.', paragraph: false },
+      { text: 'In this sentence he is calm.', paragraph: true },
+      { text: 'He waits.', paragraph: false },
+    ]);
+  });
+
   it('findSentenceEnd: needs to see what follows unless the text is final', () => {
     expect(findSentenceEnd('Hello there.', 0)).toBe(-1);
     expect(findSentenceEnd('Hello there.', 0, true)).toBe(12);

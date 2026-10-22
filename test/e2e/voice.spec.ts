@@ -37,13 +37,15 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   await expect(page.getByTestId('listening')).toBeVisible();
   await expect(page.getByTestId('mic')).toBeVisible();
 
-  // 1. listening pauses at a hard word: the word is said, then the 5 s window opens the voice line ("commands")
-  //    before any explanation; "I know" = known, no explanation, the sentence is read again
+  // 1. listening pauses at a hard word: its explanation is asked for at once (prepared, not spoken), the word is said,
+  //    then the 5 s window opens the voice line ("commands"); "I know" = known, no explanation, the sentence again
   await page.getByTestId('play').click();
   await expect.poll(() => line(page), { timeout: 30000 }).toBe('window');
   await expect(page.getByTestId('mic')).toHaveAttribute('data-line', 'window');
   await expect(page.getByTestId('command-bar')).toHaveAttribute('data-phase', 'before');
-  expect((await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase')).toHaveLength(0);
+  const prepared = (await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase');
+  expect(prepared).toHaveLength(1);
+  expect(prepared[0].question).toBeUndefined();
   const knownBefore = await page.evaluate(() => window.readalong.getVocab().then((v) => Object.keys(v.words).filter((k) => v.words[k] === 'known')));
   await inject(page, 'I know', 'e2e:1');
   // the word of this stop is known now (saved for good)
@@ -51,17 +53,18 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   const lemma = await page.evaluate((before) => window.readalong.getVocab().then((v) => Object.keys(v.words).find((k) => v.words[k] === 'known' && !before.includes(k))!), knownBefore);
   await expect(page.locator(`.w[data-lemma="${lemma}"].hl-unknown`)).toHaveCount(0);
   await expect(page.getByTestId('command-bar')).toHaveCount(0);
-  expect((await requests(page)).some((r) => r.target.toLowerCase() === lemma)).toBe(false);
+  expect((await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase')).toHaveLength(1); // nothing more was asked
   await expect(page.getByTestId('play')).toHaveAttribute('aria-label', 'Pause');
   expect(await line(page)).toBe('closed');
 
-  // 2. the next hard word: anything else the learner says in the window is ignored (never sent to the AI);
-  //    when the 5 seconds run out the explanation starts on its own
+  // 2. the next hard word: its request went out when the book paused; anything else the learner says in the window is
+  //    ignored (never sent to the AI); when the 5 seconds run out the prepared explanation is spoken
   await expect.poll(async () => (await line(page)) === 'window' && (await phase(page)) === 'before', { timeout: 40000 }).toBe(true);
+  const wordRequests = async () => (await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase');
+  expect(await wordRequests()).toHaveLength(2);
   await inject(page, 'what is that', 'e2e:2');
-  await expect.poll(async () => (await requests(page)).some((r) => r.kind === 'word' || r.kind === 'phrase'), { timeout: 15000 }).toBe(true);
   expect((await requests(page)).some((r) => r.question === 'what is that')).toBe(false);
-  const second = (await requests(page)).filter((r) => r.kind === 'word' || r.kind === 'phrase').at(-1)!;
+  const second = (await wordRequests()).at(-1)!;
 
   // 3. after its explanation the window opens again: "I don't know" asks for a second, deeper explanation,
   //    then the window again, where anything else is a question about the sentence
@@ -73,12 +76,15 @@ test('voice chat: the pause window takes "I know", "I don\'t know" and questions
   await page.waitForTimeout(500);
   expect((await requests(page)).some((r) => r.question === 'what does this mean')).toBe(false); // the window takes commands only
 
-  // 3b. the keys work in the window too: D before the explanation starts it, Esc after it goes on
+  // 3b. the keys work in the window too: D before the explanation starts the prepared one at once (no new request),
+  //     Esc after it goes on
   await expect.poll(async () => (await phase(page)) === 'before', { timeout: 60000 }).toBe(true);
   const beforeD = (await requests(page)).length;
+  const t0 = Date.now();
   await page.keyboard.press('KeyD');
-  await expect.poll(async () => (await requests(page)).length > beforeD, { timeout: 5000 }).toBe(true);
   await expect.poll(async () => phase(page), { timeout: 30000 }).toBe('after');
+  expect(Date.now() - t0).toBeLessThan(4500); // did not wait for the 5 s window
+  expect((await requests(page)).length).toBe(beforeD);
   await page.keyboard.press('Escape');
   await expect(page.getByTestId('command-bar')).toHaveCount(0);
 

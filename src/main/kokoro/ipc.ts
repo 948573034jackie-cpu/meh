@@ -17,7 +17,9 @@ import { KOKORO_VOICES, DEFAULT_VOICE } from './voices';
  *      when those items are synthesized, so the renderer can fetch them from the memory cache without queueing as
  *      'now'). Control items (empty text): `{ text: '', replace: true }` makes the call replace the read-ahead
  *      (queued jobs nobody waits for and not in this call are dropped), `{ text: '', release: true }` turns the
- *      renderer's own waiting requests into ordinary read-ahead (it cancelled its speech). See KokoroEngine.
+ *      renderer's own waiting requests into ordinary read-ahead (it cancelled its speech), `{ text: '', voice,
+ *      speed, drop: texts }` removes the queued jobs of those texts nobody waits for (an explanation prepared ahead
+ *      was dropped). See KokoroEngine.
  * Main -> renderer: 'kokoro:progress' (EngineStatus) on every change, sent to every window.
  * The preload bridge for these channels still needs to be added to src/preload/index.ts and src/shared/api.ts;
  * until then the voice is reachable through the existing tts:synthesize / tts:voices channels with engine 'kokoro'.

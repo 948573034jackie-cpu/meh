@@ -7,15 +7,22 @@ have given. When the code and this file disagree, this file wins. Change it only
 1. The book is read aloud to the end. It pauses at every **word, phrase (2 to 5 words), slang or short
    sentence above the learner's level**, and at every yellow "learning" word. It does not pause twice for the
    same word within 500 words.
-2. At the pause, the **dictionary card appears under the word**, and the word is said **3 times**.
+2. At the pause, the **dictionary card appears under the word**, and **at that same moment the word or phrase,
+   with its sentence and the text around it, is sent to the AI**, so the explanation is prepared while the
+   learner listens. Then the word is said **3 times**. Nothing of the explanation is said yet.
 3. Then a **5-second window**. During these 5 seconds the microphone only listens for three commands.
-   **Nothing the learner says is sent to the AI**, and repeating the word or saying anything else is ignored.
+   **Nothing the learner says is sent to the AI**, and repeating the word or saying anything else is ignored:
+   it does not make the window longer. (A command the learner is still saying when the 5 seconds end is still
+   heard, about 2 seconds at most.)
    - **"I know"** (or K, or the button): saved as known for good, highlight removed, never explained again.
-     No explanation.
+     No explanation: the prepared one is thrown away. The sentence is read again from its start, then the book
+     goes on.
    - **"Go on"** (also "bye bye", "continue", "next"; or Esc, or the button): no explanation, the AI says
-     nothing, but the word is **saved as learning**.
-   - **"I don't know"** (or D, or the button): the explanation starts at once, the fuller version.
-   - **Silence, the learner repeating the word, or anything else**: when the 5 seconds end, the AI explains.
+     nothing, the prepared one is thrown away, but the word is **saved as learning**.
+   - **"I don't know"** (or D, or the button): the prepared explanation starts **at once**, without waiting for
+     the 5 seconds to end.
+   - **Silence, the learner repeating the word, or anything else**: when the 5 seconds end, the prepared
+     explanation is played **at once**.
 4. After the explanation, the card disappears and another 5-second window opens (same rules: speech is not
    sent to the AI):
    - "I don't know": explain again, harder and deeper. Then this window again.

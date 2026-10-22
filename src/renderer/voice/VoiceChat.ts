@@ -48,8 +48,10 @@ export interface TutorActions {
   hold(): void;
   /** the learner said nothing after all: the book goes on if it was going (Listening) */
   release(): void;
-  /** the learner started talking during the pause: keep the pause open a little longer */
+  /** the learner started talking during the pause: a stop's window only notes it, the pause after an explanation waits */
   keepWaiting(): void;
+  /** the learner stopped talking during the pause (a command still being said when a stop's window ends is waited for) */
+  windowSpeechEnded?(): void;
   /** "bye bye" during the pause: the book goes on (Listening); Reading stays where it is */
   continueBook(): void;
 }
@@ -322,6 +324,7 @@ export class VoiceChat extends Emitter<VoiceChatEvents> {
   private onSpeechEnd(): void {
     this.userSpeaking = false;
     this.changed();
+    if (this.session.mode === 'commands') this.opts.tutor.windowSpeechEnded?.();
     if (!this.holding) return;
     // noise, a cough, or words the recogniser could not make out: the book goes on after a moment
     this.clearNoQuestion();

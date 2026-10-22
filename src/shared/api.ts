@@ -259,7 +259,11 @@ export interface ReadAlongApi {
   kokoroStatus(): Promise<KokoroStatus>;
   kokoroDownload(): Promise<KokoroStatus>;
   kokoroCancelDownload(): Promise<void>;
-  kokoroPrepare(items: { text: string; voice?: string; speed?: number }[]): Promise<void>;
+  /**
+   * queues texts for synthesis (src/main/kokoro/ipc.ts has the item rules: priority, wait, replace, release, drop);
+   * with `wait` items it resolves true when they are ready, false when they were dropped first
+   */
+  kokoroPrepare(items: { text: string; voice?: string; speed?: number; priority?: number; wait?: boolean; replace?: boolean; release?: boolean; drop?: string[] }[]): Promise<boolean | void>;
   onKokoroProgress(cb: (s: KokoroStatus) => void): () => void;
   // local speech-to-text (docs/VOICE.md); absent where there is no STT engine (the web build)
   sttStatus?(): Promise<SttStatus>;

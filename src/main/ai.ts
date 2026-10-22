@@ -57,6 +57,7 @@ export function registerAiHandlers(getWindow: () => BrowserWindow | null): void 
 }
 
 async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortController, send: (ev: AiEvent) => void): Promise<void> {
+  let used: { provider: AiProviderId; model: string } | null = null;
   // Everything is inside the try: the renderer waits for a 'done' or 'error' event and nothing else may end the stream.
   try {
     const s = getSettings();
@@ -65,6 +66,7 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
     const style = styled ? resolveStyle((req.styleId as StyleId) ?? s.ai.activeStyle, s.ai.styles) : null;
     const provider = style?.provider ?? s.ai.provider;
     const model = style?.model ?? (provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel);
+    used = { provider, model };
     const key = getSecret(provider);
     if (!key) { send({ type: 'error', streamId, message: provider === 'anthropic' ? 'Add your Anthropic API key in Settings.' : 'Add your OpenAI API key in Settings.', code: 'no_key' }); return; }
     const monthly = usdSpent(periodStarts().month);
@@ -84,11 +86,36 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
     const { day, month } = periodStarts();
     send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: usdSpent(day), monthlyUsd: usdSpent(month), model } });
   } catch (e) {
-    send({ type: 'error', streamId, ...classifyError(e) });
+    const c = classifyError(e);
+    // cancelled mid-way (a prepared explanation the learner did not need, a pause): the tokens are billed all the same,
+    // so the spending meter and the monthly limit count them
+    const partial = (e as { partialUsage?: StreamResult }).partialUsage;
+    if (c.code === 'cancelled' && partial && used) {
+      try { addUsage({ date: new Date().toISOString(), provider: used.provider, model: used.model, inputTokens: partial.inputTokens, outputTokens: partial.outputTokens, cachedTokens: partial.cachedTokens, usd: estimateUsd(used.model, partial.inputTokens, partial.outputTokens, partial.cachedTokens), partial: true }); } catch (err) { console.error('usage not recorded', err); }
+    }
+    send({ type: 'error', streamId, ...c });
   }
 }
 
 export interface StreamResult { text: string; inputTokens: number; outputTokens: number; cachedTokens: number }
+
+/**
+ * The usage of a stream that ended early, from what had arrived: input and cache reads exactly (message_start), output
+ * the larger of the last reported count and the streamed characters / 4 (a lower bound: hidden thinking is not
+ * counted). Undefined when the reply never started.
+ */
+export function partialUsage(u: { input_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; output_tokens?: number | null } | null | undefined, streamedChars: number): StreamResult | undefined {
+  if (!u) return undefined;
+  const cached = u.cache_read_input_tokens ?? 0;
+  return { text: '', inputTokens: (u.input_tokens ?? 0) + cached + (u.cache_creation_input_tokens ?? 0), outputTokens: Math.max(u.output_tokens ?? 0, Math.ceil(streamedChars / 4)), cachedTokens: cached };
+}
+
+/** Request options that depend on the model (besides effort 'low' for all). */
+export function anthropicModelParams(model: string): { thinking?: { type: 'disabled' } } {
+  // Haiku 5.5 may answer without thinking at effort high or below, so its first words come sooner; Opus 5.5 cannot
+  // turn thinking off (effort is its only control) and Sonnet 5.5 / Fable stay adaptive
+  return /^claude-haiku-5-5/.test(model) ? { thinking: { type: 'disabled' } } : {};
+}
 
 /**
  * One non-streaming completion with an explicit provider and model (background jobs such as the chapter
@@ -110,18 +137,31 @@ async function streamAnthropic(apiKey: string, model: string, prompt: { system: 
     system: [{ type: 'text' as const, text: prompt.system, cache_control: { type: 'ephemeral' as const } }],
     messages: [{ role: 'user' as const, content: prompt.user }],
     output_config: { effort: 'low' as const },
+    ...anthropicModelParams(model),
   };
   // Opus 5.5 / Sonnet 5.5 / Fable: opt into server-side refusal fallbacks so a rare safety decline still yields an answer.
   const wantsFallback = /^claude-(opus-5-5|sonnet-5-5|fable)/.test(model);
   let final: Anthropic.Message | Anthropic.Beta.BetaMessage;
-  if (wantsFallback) {
-    const stream = client.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } as never, { signal });
-    stream.on('text', (t: string) => onText(t));
-    final = await stream.finalMessage();
-  } else {
-    const stream = client.messages.stream(params, { signal });
-    stream.on('text', (t: string) => onText(t));
-    final = await stream.finalMessage();
+  let chars = 0;
+  const onDelta = (t: string) => { chars += t.length; onText(t); };
+  let current: () => { usage?: Parameters<typeof partialUsage>[0] } | undefined = () => undefined;
+  try {
+    if (wantsFallback) {
+      const stream = client.beta.messages.stream({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } as never, { signal });
+      current = () => stream.currentMessage;
+      stream.on('text', onDelta);
+      final = await stream.finalMessage();
+    } else {
+      const stream = client.messages.stream(params, { signal });
+      current = () => stream.currentMessage;
+      stream.on('text', onDelta);
+      final = await stream.finalMessage();
+    }
+  } catch (e) {
+    // what the stream had used when it ended (runExplain records it for a cancelled request)
+    const partial = partialUsage(current()?.usage, chars);
+    if (partial && e && typeof e === 'object') Object.assign(e, { partialUsage: partial });
+    throw e;
   }
   const text = (final.content as { type: string; text?: string }[]).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
   if (final.stop_reason === 'refusal') throw Object.assign(new Error('The AI declined to answer this request.'), { code: 'other' });
@@ -141,10 +181,18 @@ async function streamOpenAI(apiKey: string, model: string, prompt: { system: str
   }, { signal });
   let text = '';
   let usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0 };
-  for await (const chunk of stream) {
-    const delta = chunk.choices?.[0]?.delta?.content;
-    if (delta) { text += delta; onText(delta); }
-    if (chunk.usage) usage = { prompt_tokens: chunk.usage.prompt_tokens, completion_tokens: chunk.usage.completion_tokens, cached: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0 };
+  let started = false;
+  try {
+    for await (const chunk of stream) {
+      started = true;
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) { text += delta; onText(delta); }
+      if (chunk.usage) usage = { prompt_tokens: chunk.usage.prompt_tokens, completion_tokens: chunk.usage.completion_tokens, cached: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0 };
+    }
+  } catch (e) {
+    // ended early: OpenAI reports usage only at the end, so the prompt is estimated from its characters
+    if (started && e && typeof e === 'object') Object.assign(e, { partialUsage: partialUsage({ input_tokens: Math.ceil((prompt.system.length + prompt.user.length) / 4) }, text.length) });
+    throw e;
   }
   return { text, inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, cachedTokens: usage.cached };
 }

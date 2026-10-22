@@ -97,13 +97,20 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
   removes, and calls hooks `stopAt(pos)` / `onStop(pos)` that the controller uses to pause at hard items.
 - **ListenController** (`src/core/listen/controller.ts`) runs the learner's rule (details in RULES.md):
   1. pause at a hard word/phrase/learning word (not again within 500 words);
-  2. show the card, say the word 3 times;
-  3. a 5-second **commands-only** window (I know / I don't know / Go on; other speech is ignored and never sent to
-     the AI);
-  4. explanation by the AI in the active style, then another 5-second window ("I don't know" = deeper again);
-  5. read the interrupted sentence again from its start and go on.
+  2. show the card, send the explanation request at once (`PreparedExplanation`, `src/core/listen/prepared.ts`:
+     the reply streams in silently, nothing is shown, saved or added to the chapter history yet) and say the word
+     3 times;
+  3. a 5-second **commands-only** window with a fixed end (I know / I don't know / Go on; other speech is ignored,
+     never sent to the AI and never makes the window longer; "I know" and "Go on" drop the prepared request). The
+     first sentences of the reply are synthesized meanwhile (`TtsEngine.prepareSoon`, Kokoro priority 'soon');
+  4. the prepared explanation at once ("I don't know", or when the window ends), spoken sentence by sentence as it
+     streams with every arrived sentence synthesized ahead, then another 5-second window ("I don't know" = a new,
+     deeper request, spoken as it streams);
+  5. read the interrupted sentence again from its start and go on. A stop interrupted before its explanation was
+     heard (pause, seek, Reading) stops at the word again when the reading comes back.
   It also handles manual explanations (taps, selection, Up/Down arrows = previous/next sentence, "explain the last
-  30 seconds"), the quiz pause, barge-in (the learner starts talking), and saving words as learning/known.
+  30 seconds"; they stream the same way), the quiz pause, barge-in (the learner starts talking), and saving words
+  as learning/known. Only explanations that were heard enter the chapter history and My Vocabulary.
 - **Scripts** (`src/core/listen/script.ts`): turn an AI reply into spoken steps; Chinese parts are spoken by a
   Chinese voice (never an English voice); two Chinese meanings at the end; `[PAUSE]` marks a quiz wait.
 
@@ -111,7 +118,8 @@ reuses it with a browser version of the bridge in `src/web/api.ts`).
 
 - **Prompts** (`src/core/ai/prompts.ts`, `src/shared/styles.ts`): every explanation request carries the book title,
   chapter, the exact position, about 500 words before and 200 after, the sentence, the target, a dictionary hint,
-  recent history, and (for "I don't know") `again: true` for a deeper explanation. The system prompt is the shared
+  recent history (only explanations the learner heard), and `again: true` only for "I don't know" after an
+  explanation (a deeper one). The system prompt is the shared
   **context rules** (easy spoken English, no labels, no filler, explain in this context, paint the scene with words,
   never invent text, adapt to the kind of text: novel, poem, song, philosophy, science...).
 - **Styles**: 10 built-in teaching styles (Custom, Teacher, Imagination, Chunk, Word Parts, Story, Quiz,

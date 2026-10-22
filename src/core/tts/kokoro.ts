@@ -1,4 +1,4 @@
-import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle } from './engine';
+import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, PrepareHandle } from './engine';
 import { ENGINE_LABELS } from './engine';
 import { AudioTtsEngine, type Prepare } from './audio';
 
@@ -21,7 +21,7 @@ export class KokoroTtsEngine implements TtsEngine {
     const api = window.readalong;
     // read-ahead and the "tell me when the next sentence is ready" requests go to the main process's priority queue
     // (kokoro:prepare); a speak() is a tts:synthesize request, which always goes first
-    const prepare: Prepare | undefined = typeof api.kokoroPrepare === 'function' ? (items) => api.kokoroPrepare(items as Parameters<typeof api.kokoroPrepare>[0]) : undefined;
+    const prepare: Prepare | undefined = typeof api.kokoroPrepare === 'function' ? (items) => api.kokoroPrepare(items) : undefined;
     this.inner = new AudioTtsEngine('kokoro', (engine, text, voiceId, rate) => api.ttsSynthesize(engine, text, voiceId, rate), (engine) => api.ttsListVoices(engine), true, { prepare, segment: true });
   }
   get paused(): boolean { return this.inner.paused; }
@@ -30,6 +30,7 @@ export class KokoroTtsEngine implements TtsEngine {
   prefetch(text: string, voiceId: string, rate: number): void { this.inner.prefetch(text, voiceId, rate); }
   readAhead(texts: string[], voiceId: string, rate: number): void { this.inner.readAhead(texts, voiceId, rate); }
   stopReadAhead(): void { this.inner.stopReadAhead(); }
+  prepareSoon(texts: string[], voiceId: string): PrepareHandle { return this.inner.prepareSoon(texts, voiceId); }
   pause(): void { this.inner.pause(); }
   resume(): void { this.inner.resume(); }
   cancelAll(): void { this.inner.cancelAll(); }

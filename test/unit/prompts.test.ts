@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildPrompt, parseExplanation, spokenEnglish, spokenChinese } from '@core/ai/prompts';
+import { buildPrompt, parseExplanation, spokenEnglish, spokenChinese, cleanSpokenProse, stripOpeningFiller } from '@core/ai/prompts';
+import { KNOBS } from '@shared/styles';
 
 describe('prompts', () => {
   it('builds a word prompt with context and labels', () => {
@@ -62,5 +63,22 @@ describe('parseExplanation tolerance', () => {
     const parts = parseExplanation('MEANING: Easy.\nHARD WORDS: grudge, a lasting bad feeling, 怨恨; sulk', 'sentence');
     expect(parts.hardWords).toEqual([{ word: 'grudge', meaning: 'a lasting bad feeling', zh: '怨恨' }]);
     expect(spokenEnglish(parts)).toEqual(['Easy.', 'grudge: a lasting bad feeling']);
+  });
+});
+
+describe('spoken prose: opening filler (docs/RULES.md 2, "No filler")', () => {
+  it('cleanSpokenProse removes opening filler, except with { opening: false } (a later sentence of a streamed reply)', () => {
+    expect(cleanSpokenProse('Great question! **Sanguine** means hopeful.')).toBe('Sanguine means hopeful.');
+    expect(cleanSpokenProse('Now, look at him.', { opening: false })).toBe('Now, look at him.');
+    expect(cleanSpokenProse('Great question!')).toBe('Great question!'); // the whole text is never dropped here
+  });
+  it('stripOpeningFiller may leave nothing: a first sentence that is only filler is not spoken', () => {
+    expect(stripOpeningFiller('Great question!')).toBe('');
+    expect(stripOpeningFiller('Let me explain. Now, sanguine means hopeful.')).toBe('Sanguine means hopeful.');
+    expect(stripOpeningFiller('Sanguine means hopeful.')).toBe('Sanguine means hopeful.');
+  });
+  it('the warm personality starts with the meaning at once and asks for no praise', () => {
+    expect(KNOBS.personality.warm.text).not.toMatch(/praise/i);
+    expect(KNOBS.personality.warm.text).toContain('start with the meaning at once');
   });
 });

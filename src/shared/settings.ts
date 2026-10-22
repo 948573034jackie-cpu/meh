@@ -282,4 +282,8 @@ export interface LibraryItem {
   mode?: ReadMode;
 }
 
-export interface UsageRecord { date: string; provider: AiProviderId; model: string; inputTokens: number; outputTokens: number; cachedTokens: number; usd: number }
+export interface UsageRecord {
+  date: string; provider: AiProviderId; model: string; inputTokens: number; outputTokens: number; cachedTokens: number; usd: number;
+  /** a request cancelled mid-way (an explanation prepared at a Listening stop and then dropped): output is a lower bound */
+  partial?: boolean;
+}

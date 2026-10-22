@@ -1,4 +1,4 @@
-import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from './engine';
+import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome, PrepareHandle } from './engine';
 import { estimateWordTimes } from './timing';
 
 /**
@@ -36,6 +36,13 @@ export class FakeTtsEngine implements TtsEngine {
     at(durationMs, () => finish('ended'));
     this.active.push(handle);
     return handle;
+  }
+  /** texts handed to prepareSoon, and whether they were released again (tests) */
+  prepared: { texts: string[]; voiceId: string; released: boolean }[] = [];
+  prepareSoon(texts: string[], voiceId: string): PrepareHandle {
+    const rec = { texts: [...texts], voiceId, released: false };
+    this.prepared.push(rec);
+    return { release: () => { rec.released = true; } };
   }
   pause(): void { this._paused = true; }
   resume(): void { this._paused = false; }

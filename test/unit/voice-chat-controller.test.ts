@@ -96,11 +96,13 @@ describe('voice chat: controller', () => {
     expect(t.windows).toEqual([true]);
     expect(t.controller.lastExplained).toMatchObject({ kind: 'word', lemma: 'sanguine' });
     const t0 = Date.now();
-    t.controller.markKnown('sanguine');
     expect(t.controller.answerWindow('know')).toBe(true);
+    t.controller.markKnown('sanguine');
     await finished;
     expect(Date.now() - t0).toBeLessThan(2000);
-    expect(t.ai.calls.length).toBe(0);
+    expect(t.ai.calls.length).toBe(1); // the prepared request, dropped
+    expect(t.ai.calls[0].cancelled).toBe(true);
+    expect(t.explainer.spoken).toEqual([]);
     expect(t.windows).toEqual([true, false]);
     expect(t.reader.spoken.slice(-2).map((s) => s.text)).toEqual(['He was sanguine.', 'Then he left.']);
   });
@@ -121,17 +123,25 @@ describe('voice chat: controller', () => {
     await until(() => t.reader.spoken.at(-1)?.text === 'Then he left.');
   });
 
-  it('keepWaiting (the learner starts talking in the window) restarts its countdown', async () => {
+  it('keepWaiting (the learner starts talking in the window) does not restart its countdown; a command still being said is waited for', async () => {
     const t = setup(['He was sanguine.', 'Then he left.'], { commandWindowMs: 150 });
     t.playback.play();
     await until(() => t.windows.length === 1);
-    await sleep(100);
-    t.controller.keepWaiting(300);
-    await sleep(120);
-    expect(t.windows).toEqual([true]); // still open after the first 150 ms
-    expect(t.ai.calls.length).toBe(0);
+    const t0 = Date.now();
+    expect(t.ai.calls.length).toBe(1); // prepared when the book paused, not spoken yet
+    t.ai.calls[0].resolve('Sanguine means hopeful.');
+    await sleep(60);
+    t.controller.keepWaiting(); // speech starts
     t.controller.answerWindow({ text: 'what is it' }); // swallowed: the window only takes commands
-    await until(() => t.ai.calls.length === 1); // the countdown ran out: the explanation starts
+    await sleep(200);
+    expect(t.windows).toEqual([true]); // past its end, but the learner is still talking: their words may be a command
+    t.controller.windowSpeechEnded();
+    const ended = Date.now();
+    await until(() => t.explainer.spoken.length === 1); // nothing came: the prepared explanation
+    expect(Date.now() - ended).toBeGreaterThanOrEqual(1100); // the words of a command arrive after the speech ends
+    expect(Date.now() - t0).toBeLessThan(150 + 2500 + 300); // never more than 2.5 s past the end
+    expect(t.windows).toEqual([true, false]);
+    expect(t.ai.calls.length).toBe(1);
     expect(t.ai.calls[0].req.question).toBeUndefined();
     t.playback.stop();
   });

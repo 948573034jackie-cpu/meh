@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('electron', () => ({ ipcMain: { handle: vi.fn() }, safeStorage: { isEncryptionAvailable: () => false }, app: { getPath: () => '/tmp' } }));
 import { parseEdgeMetadata, alignWords, charAlignmentToWords } from '../../src/main/tts';
+import { handlePrepare } from '../../src/main/kokoro/ipc-prepare';
 
 describe('cloud TTS timing helpers', () => {
   it('parses Edge word boundaries and aligns them to the text', () => {
@@ -40,5 +41,28 @@ describe('alignWords edge cases', () => {
   it('ignores metadata entries without text', () => {
     const chunk = JSON.stringify({ Metadata: [{ Type: 'WordBoundary', Data: { Offset: 0, Duration: 1 } }] });
     expect(parseEdgeMetadata([chunk], 'Hi')).toBeNull();
+  });
+});
+
+describe('kokoro:prepare drop items (an explanation prepared ahead was dropped)', () => {
+  function fakeEngine() {
+    const calls: string[] = [];
+    const eng = {
+      prepare: async (items: { text: string }[], opts: { replace?: boolean; wait?: boolean } = {}) => { calls.push(`prepare ${items.map((i) => i.text).join('|')}${opts.replace ? ' replace' : ''}${opts.wait ? ' wait' : ''}`); },
+      releaseWaiters: () => { calls.push('release'); },
+      dropTexts: (texts: string[], opts: { voice?: string; speed?: number }) => { calls.push(`drop ${texts.join('|')} ${opts.voice} ${opts.speed}`); },
+    };
+    return { calls, eng };
+  }
+  it('routes the texts to dropTexts with the voice and speed 1, and queues nothing', () => {
+    const { calls, eng } = fakeEngine();
+    const r = handlePrepare(eng, [{ text: '', voice: 'bf_emma', drop: ['Sanguine means hopeful.', 7 as unknown as string, 'He stays cheerful.'] }]);
+    expect(r).toBeUndefined();
+    expect(calls).toEqual(['drop Sanguine means hopeful.|He stays cheerful. bf_emma 1']);
+  });
+  it('a drop item next to other items: the drop first, then the jobs', async () => {
+    const { calls, eng } = fakeEngine();
+    await handlePrepare(eng, [{ text: '', voice: 'bf_emma', speed: 1, drop: ['Old.'] }, { text: 'New.', voice: 'bf_emma', wait: true }]);
+    expect(calls).toEqual(['drop Old. bf_emma 1', 'prepare New. wait']);
   });
 });

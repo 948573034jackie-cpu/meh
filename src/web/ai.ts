@@ -58,6 +58,14 @@ function rethrow(e: unknown, signal: AbortSignal): never {
   throw e;
 }
 
+/** rethrow(), with what the stream had used when it ended (`partialUsage`, recorded for a cancelled request). */
+function withPartialUsage(e: unknown, signal: AbortSignal, partial: StreamResult | undefined): never {
+  try { rethrow(e, signal); } catch (err) {
+    if (partial && err && typeof err === 'object') Object.assign(err, { partialUsage: partial });
+    throw err;
+  }
+}
+
 async function errorFromResponse(res: Response, label: string): Promise<HttpError> {
   let body = '';
   try { body = (await res.text()).slice(0, 2000); } catch { /* no body */ }
@@ -125,6 +133,8 @@ export async function streamAnthropic(apiKey: string, model: string, prompt: Pro
     stream: true,
   };
   if (wantsFallback) body.fallbacks = 'default';
+  // Haiku 5.5 may answer without thinking at effort high or below (sooner first words), as the Mac app does
+  if (/^claude-haiku-5-5/.test(model)) body.thinking = { type: 'disabled' };
   const t = withTimeout(signal, REQUEST_TIMEOUT_MS);
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers, body: JSON.stringify(body), signal: t.signal }).catch((e) => rethrow(e, t.signal));
@@ -151,7 +161,11 @@ export async function streamAnthropic(apiKey: string, model: string, prompt: Pro
         const status = type === 'overloaded_error' ? 529 : type === 'rate_limit_error' ? 429 : type === 'authentication_error' ? 401 : type === 'not_found_error' ? 404 : 500;
         streamError = new HttpError(status, ev.error?.message ?? type ?? 'stream error');
       }
-    }).catch((e) => rethrow(e, t.signal));
+    }).catch((e) => {
+      // ended early: what it had used (runExplain counts it for a cancelled request); output is a lower bound
+      const started = u.input + u.cacheRead + u.cacheWrite > 0;
+      withPartialUsage(e, t.signal, started ? { text: '', inputTokens: u.input + u.cacheRead + u.cacheWrite, outputTokens: Math.max(u.output, Math.ceil(text.length / 4)), cachedTokens: u.cacheRead } : undefined);
+    });
     if (streamError) throw streamError;
     if (stop === 'refusal') throw Object.assign(new Error('The AI declined to answer this request.'), { code: 'other' });
     return { text, inputTokens: u.input + u.cacheRead + u.cacheWrite, outputTokens: u.output, cachedTokens: u.cacheRead };
@@ -176,7 +190,9 @@ export async function streamOpenAI(apiKey: string, model: string, prompt: Prompt
     let text = '';
     let usage = { prompt_tokens: 0, completion_tokens: 0, cached: 0 };
     let streamError: HttpError | null = null;
+    let started = false;
     await readSse(res.body, (_event, data) => {
+      started = true;
       if (data === '[DONE]') return;
       let chunk: { choices?: { delta?: { content?: string } }[]; usage?: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } }; error?: { message?: string } };
       try { chunk = JSON.parse(data); } catch { return; }
@@ -184,7 +200,10 @@ export async function streamOpenAI(apiKey: string, model: string, prompt: Prompt
       const delta = chunk.choices?.[0]?.delta?.content;
       if (delta) { text += delta; onText(delta); }
       if (chunk.usage) usage = { prompt_tokens: chunk.usage.prompt_tokens, completion_tokens: chunk.usage.completion_tokens, cached: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0 };
-    }).catch((e) => rethrow(e, t.signal));
+    }).catch((e) => {
+      // ended early: OpenAI reports usage only at the end, so the prompt is estimated from its characters
+      withPartialUsage(e, t.signal, started ? { text: '', inputTokens: Math.ceil((prompt.system.length + prompt.user.length) / 4), outputTokens: Math.ceil(text.length / 4), cachedTokens: 0 } : undefined);
+    });
     if (streamError) throw streamError;
     return { text, inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens, cachedTokens: usage.cached };
   } finally { t.done(); }
@@ -251,12 +270,14 @@ export async function aiExplain(req: ExplainRequest): Promise<{ streamId: string
 export async function aiCancel(streamId: string): Promise<void> { streams.get(streamId)?.abort(); }
 
 async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortController): Promise<void> {
+  let used: { provider: AiProviderId; model: string } | null = null;
   try {
     const s = await getSettings();
     const styled = req.kind === 'word' || req.kind === 'phrase' || req.kind === 'sentence';
     const style = styled ? resolveStyle((req.styleId as StyleId) ?? s.ai.activeStyle, s.ai.styles) : null;
     const provider = style?.provider ?? s.ai.provider;
     const model = style?.model ?? (provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel);
+    used = { provider, model };
     const key = await getSecret(provider);
     if (!key) { send({ type: 'error', streamId, message: noKey(provider), code: 'no_key' }); return; }
     const monthly = await usdSpent(periodStarts().month);
@@ -276,7 +297,13 @@ async function runExplain(streamId: string, req: ExplainRequest, ctrl: AbortCont
     const { day, month } = periodStarts();
     send({ type: 'done', streamId, text: result.text, usage: { inputTokens: result.inputTokens, outputTokens: result.outputTokens, cachedTokens: result.cachedTokens, usd, dailyUsd: await usdSpent(day), monthlyUsd: await usdSpent(month), model } });
   } catch (e) {
-    send({ type: 'error', streamId, ...classifyError(e) });
+    const c = classifyError(e);
+    // cancelled mid-way (a prepared explanation the learner did not need): the tokens are billed all the same
+    const partial = (e as { partialUsage?: StreamResult }).partialUsage;
+    if (c.code === 'cancelled' && partial && used) {
+      try { await addUsage({ date: new Date().toISOString(), provider: used.provider, model: used.model, inputTokens: partial.inputTokens, outputTokens: partial.outputTokens, cachedTokens: partial.cachedTokens, usd: estimateUsd(used.model, partial.inputTokens, partial.outputTokens, partial.cachedTokens), partial: true }); } catch (err) { console.error('usage not recorded', err); }
+    }
+    send({ type: 'error', streamId, ...c });
   }
 }
 

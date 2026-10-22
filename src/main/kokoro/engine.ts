@@ -110,8 +110,15 @@ export function defaultThreads(cpus = os.cpus().length, arch: string = process.a
   return Math.max(2, Math.min(4, n));
 }
 
-/** removed from the queue by prepare(..., { replace }) / clearReadAhead() before it ran */
+/** removed from the queue by prepare(..., { replace }) / clearReadAhead() / dropTexts() before it ran */
 export class DroppedError extends Error { constructor() { super('dropped from the read-ahead queue'); this.name = 'DroppedError'; } }
+
+/**
+ * ms a background job (below PRIORITY.next) waits before it starts: a speak() that arrives one IPC message after a
+ * read-ahead list (the renderer sends both for the same sentence) is then not stuck behind a job that cannot be
+ * interrupted. It costs nothing for what the learner waits for.
+ */
+const SETTLE_MS = 10;
 
 /**
  * Kokoro-82M through onnxruntime-node (in a worker thread), sentence by sentence, with word timings taken from
@@ -126,7 +133,10 @@ export class DroppedError extends Error { constructor() { super('dropped from th
  * clause segments (synthesisSegments) that are queued as separate jobs: a running job is never interrupted, so
  * small jobs bound how long a 'now' request can wait behind read-ahead work, and the renderer can start the first
  * segment of a long sentence while the rest is synthesized. prepare(items, { replace: true }) replaces the
- * read-ahead: queued jobs nobody waits for that are not in the new list are dropped (a seek, a pause).
+ * read-ahead: queued jobs nobody waits for that are not in the new list are dropped (a seek, a pause). That includes
+ * the 'soon' jobs of an explanation prepared ahead (prepare(..., { wait })): a Listening stop sends no replace while
+ * it runs, and anything that must survive a replace has to be in the same call. Background jobs (below 'next') wait
+ * SETTLE_MS before they start, so a 'now' request one IPC message behind them goes first.
  */
 export class KokoroEngine {
   readonly modelDir: string;
@@ -338,6 +348,27 @@ export class KokoroEngine {
   clearReadAhead(): void { this.dropExcept(new Set()); this.emit(); }
 
   /**
+   * The renderer no longer needs these texts (an explanation prepared at 'soon' priority was dropped): their queued
+   * jobs (every segment) that no synthesize() call waits for are removed, held or not, and their prepare promises
+   * reject with DroppedError. A job already running finishes (its result is kept in the cache).
+   */
+  dropTexts(texts: string[], opts: SynthesizeOptions = {}): void {
+    const { voice, speed } = this.normalize(opts);
+    const keys = new Set<string>();
+    for (const t of texts) if (typeof t === 'string' && t.trim()) for (const seg of synthesisSegments(t)) keys.add(this.cacheKey(seg.text, voice, speed));
+    if (!keys.size) return;
+    const kept: Job[] = [];
+    for (const j of this.queue) {
+      if (!keys.has(j.key) || j.waiters > 0) { kept.push(j); continue; }
+      this.jobs.delete(j.key);
+      j.reject(new DroppedError());
+    }
+    if (kept.length === this.queue.length) return;
+    this.queue = kept;
+    this.emit();
+  }
+
+  /**
    * The renderer stopped waiting for what it asked for (it cancelled its speech: a pause, a seek, an explanation
    * that was interrupted): queued synthesize() requests become ordinary read-ahead, so they no longer go before
    * the requests that follow, and the next replace/clear may drop them.
@@ -409,6 +440,12 @@ export class KokoroEngine {
       // let the requests that arrive together (an IPC burst) be queued before the first pick
       await new Promise<void>((r) => setImmediate(r));
       while (this.queue.length) {
+        if (this.queue[0].priority < PRIORITY.next) {
+          // background work: let a request that is one IPC message behind it go first (SETTLE_MS)
+          await new Promise<void>((r) => setTimeout(r, SETTLE_MS));
+          this.sortQueue();
+          if (!this.queue.length) break;
+        }
         const job = this.queue.shift()!;
         this.running = job;
         try { job.resolve(await this.produce(job)); } catch (e) { job.reject(e as Error); }

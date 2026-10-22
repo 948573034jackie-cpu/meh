@@ -89,6 +89,12 @@ function piece(s: string, from: number, to: number, lead: number): SynthesisSegm
 export const PRIORITY = {
   /** a speak() waiting for its audio right now (reading or an explanation) */
   now: 100,
+  /**
+   * an explanation the learner will hear in a few seconds (prepareSoon: the first sentences of a reply that streams in
+   * during a Listening stop's commands window, then the rest while it is spoken): after any speak(), before the book's
+   * next sentence and read-ahead
+   */
+  soon: 95,
   /** the sentence after the one playing: synthesized as soon as nothing is waiting */
   next: 90,
   /** read-ahead: `ahead - distance` (distance 1 = the next sentence) */

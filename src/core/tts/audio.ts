@@ -1,6 +1,6 @@
 import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult, WordTiming } from '@shared/api';
-import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from './engine';
+import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome, PrepareHandle } from './engine';
 import { ENGINE_LABELS } from './engine';
 import { estimateWordTimes } from './timing';
 import { synthesisSegments, PRIORITY, type SynthesisSegment } from './segments';
@@ -9,7 +9,7 @@ type Synthesize = (engine: TtsEngineId, text: string, voiceId: string, rate: num
 type ListVoices = (engine: TtsEngineId) => Promise<{ id: string; name: string; lang: string; gender?: string; quality?: string; note?: string }[]>;
 
 /** an item of the main process's kokoro:prepare channel (src/main/kokoro/ipc.ts) */
-export interface PrepareItem { text: string; voice?: string; speed?: number; priority?: number; wait?: boolean; replace?: boolean; release?: boolean }
+export interface PrepareItem { text: string; voice?: string; speed?: number; priority?: number; wait?: boolean; replace?: boolean; release?: boolean; drop?: string[] }
 /** kokoro:prepare; with `wait` items it resolves true when they are ready, false when they were dropped */
 export type Prepare = (items: PrepareItem[]) => Promise<unknown>;
 
@@ -110,7 +110,7 @@ export class AudioTtsEngine implements TtsEngine {
     const prepare = this.opts.prepare;
     if (!prepare) {
       texts.slice(0, CLOUD_PREFETCH).forEach((t) => this.prefetch(t, voiceId, 1));
-      if (next) this.predecode(next, voiceId, gen);
+      if (next) this.predecode(next, voiceId, () => gen === this.aheadGen);
       return;
     }
     const items: PrepareItem[] = [{ text: '', replace: true }];
@@ -120,8 +120,51 @@ export class AudioTtsEngine implements TtsEngine {
     // ask to be told when the next sentence is ready rather than requesting it as 'now': an explanation the
     // learner is waiting for must not queue behind it
     prepare([{ text: next, voice: voiceId, speed: 1, priority: PRIORITY.next, wait: true }]).then((ok) => {
-      if (ok !== false && gen === this.aheadGen) this.predecode(next, voiceId, gen);
+      if (ok !== false && gen === this.aheadGen) this.predecode(next, voiceId, () => gen === this.aheadGen);
     }).catch(() => undefined);
+  }
+
+  /**
+   * An explanation the learner will hear in a few seconds. Local synthesis (Kokoro): every text goes to the main
+   * process's queue at 'soon' priority (after any speak() waiting now, before the book's next sentence and read-ahead)
+   * and is pre-decoded once it is ready, so its speak() only has to play(). Cloud voices cost money per character and
+   * the explanation may still be dropped: only the first two are fetched. release() (the explanation was dropped)
+   * removes the queued jobs (a running one finishes) and frees the audio loaded for them.
+   *
+   * Invariant (main process): a read-ahead `replace` (pause, stop, the next sentence list) also drops these jobs while
+   * no speak() waits for them. During a Listening stop the reading loop sends none (it waits in onStop), so they
+   * survive; anything that has to survive a `replace` must go into the same kokoro:prepare call.
+   */
+  prepareSoon(texts: string[], voiceId: string): PrepareHandle {
+    const list = texts.filter((t) => t.trim());
+    let released = false;
+    const alive = () => !released;
+    const prepare = this.opts.prepare;
+    if (prepare) {
+      for (const text of list) {
+        prepare([{ text, voice: voiceId, speed: 1, priority: PRIORITY.soon, wait: true }]).then((ok) => {
+          if (ok !== false && alive()) this.predecode(text, voiceId, alive);
+        }).catch(() => undefined);
+      }
+    } else {
+      for (const text of list.slice(0, CLOUD_PREFETCH)) this.predecode(text, voiceId, alive);
+    }
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        if (prepare && list.length) void prepare([{ text: '', voice: voiceId, speed: 1, drop: list }]).catch(() => undefined);
+        for (const text of list) {
+          for (const s of this.segmentsOf(text)) {
+            const k = this.key(s.text, voiceId);
+            const p = this.preloaded.get(k);
+            if (p) { this.preloaded.delete(k); URL.revokeObjectURL(p.url); }
+            // a request nobody will play: forgotten, so a later speak() asks again rather than waiting for a dropped job
+            if (this.unresolved.has(k)) { this.unresolved.delete(k); this.cache.delete(k); }
+          }
+        }
+      },
+    };
   }
 
   /** Playback paused or stopped: drop the read-ahead (local synthesis stops working for nothing). */
@@ -130,13 +173,16 @@ export class AudioTtsEngine implements TtsEngine {
     void this.opts.prepare?.([{ text: '', replace: true }])?.catch(() => undefined);
   }
 
-  /** Fetches every segment of `text` and loads an audio element for each, so speak() only has to call play(). */
-  private predecode(text: string, voiceId: string, gen: number): void {
+  /**
+   * Fetches every segment of `text` and loads an audio element for each, so speak() only has to call play(). `alive`
+   * = still wanted when the audio arrives (the read-ahead list was not replaced, the explanation was not dropped).
+   */
+  private predecode(text: string, voiceId: string, alive: () => boolean): void {
     for (const s of this.segmentsOf(text)) {
       const k = this.key(s.text, voiceId);
       if (this.preloaded.has(k)) continue;
       this.fetch(s.text, voiceId).then((res) => {
-        if (gen !== this.aheadGen || this.preloaded.has(k)) return;
+        if (!alive() || this.preloaded.has(k)) return;
         this.preloaded.set(k, this.load(res));
         while (this.preloaded.size > PRELOAD_MAX) {
           const oldest = this.preloaded.keys().next().value as string;

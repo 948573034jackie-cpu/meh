@@ -227,9 +227,12 @@ const OPENING_FILLER = [
   /^now,\s*/i,
 ];
 
-/** Strips anything a model might still add that a voice should not read: markdown, labels, list markers, opening filler. */
-export function cleanSpokenProse(text: string): string {
-  let out = text
+/**
+ * Strips anything a model might still add that a voice should not read: markdown, labels, list markers, and (unless
+ * `opening` is false: a later sentence of a streamed reply) opening filler, as long as something is left.
+ */
+export function cleanSpokenProse(text: string, opts: { opening?: boolean } = {}): string {
+  const out = text
     .replace(/\*\*|__|`/g, '')
     .replace(/^#+[ \t]*/gm, '')
     .replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]+/gm, '')
@@ -237,11 +240,21 @@ export function cleanSpokenProse(text: string): string {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  if (opts.opening === false) return out;
+  return stripOpeningFiller(out) || out;
+}
+
+/**
+ * Removes opening filler ("Great question!", "Let me explain.", "Now,") from the start of a text. May return '': the
+ * first sentence of a streamed reply that is only filler is not spoken at all.
+ */
+export function stripOpeningFiller(text: string): string {
+  let out = text.trim();
   for (let changed = true; changed;) {
     changed = false;
     for (const re of OPENING_FILLER) {
-      const next = out.replace(re, '');
-      if (next !== out && next.trim()) { out = next.charAt(0).toUpperCase() + next.slice(1); changed = true; }
+      const next = out.replace(re, '').trim();
+      if (next !== out) { out = next.charAt(0).toUpperCase() + next.slice(1); changed = true; }
     }
   }
   return out;
