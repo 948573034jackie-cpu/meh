@@ -338,6 +338,7 @@ async function diagnose() {
       const tutorOn = !!(st.drExtras && st.drExtras.tutorOn);
       if (!r.settings.sendOn && !tutorOn) problems.push(self.__ytcSafari ? 'ChatGPT and Claude are both OFF (red). Press Claude under the video so it turns green.' : 'Everything is OFF (red). Under the video press My tutor (your own API key) or Claude / ChatGPT (the website) so it turns green.');
       if (r.tutor && r.tutor.problem) problems.push(r.tutor.problem);
+      if (r.tutor && r.tutor.voiceProblem) problems.push('The tutor\'s voice had a problem: ' + r.tutor.voiceProblem + '. (One failed sentence is said by the Mac voice; then the good voice is tried again.)');
       if (r.muted) problems.push('The video is MUTED. Tap the speaker icon in the player.');
       if (r.settings.voiceOn && r.touch) problems.push('Voice commands are ON: the YouTube page uses the microphone, so the Claude voice call may lose it and the video sound gets quiet. Turn "Voice commands" off.');
     }
@@ -350,6 +351,7 @@ async function diagnose() {
     add('My tutor', { on: !!ex.tutorOn, keys: saved.length ? saved : 'none saved', ai: ds.ai ? (ds.ai.provider + ' ' + (ds.ai.provider === 'openai' ? ds.ai.openaiModel : ds.ai.anthropicModel)) : 'default', level: ds.learnerLevel || 'B2', voice: ex.voice || 'auto', liveTalk: ks.openai ? 'real time (OpenAI)' : 'slower (no OpenAI key)' });
     if (ex.tutorOn && !saved.length) problems.push('My tutor is ON but no API key is saved. Click the extension icon → Dream Tutor settings → paste your key → Save → Test.');
     if (ex.tutorOn && ex.voice === 'openai' && !ks.openai) problems.push('The OpenAI voice is chosen but no OpenAI API key is saved (Dream Tutor settings). The Mac voice is used until then.');
+    if (ex.tutorOn && ex.voice === 'azure' && !ks.azure) problems.push('The Microsoft (Azure) voice is chosen but no Azure Speech key is saved (⚙ → API keys). The Mac voice is used until then.');
     if (ex.tutorOn && ex.voice === 'elevenlabs' && !ks.elevenlabs) problems.push('The ElevenLabs voice is chosen but no ElevenLabs key is saved (Dream Tutor settings). The Mac voice is used until then.');
   }
 

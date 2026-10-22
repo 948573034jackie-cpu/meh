@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "3.2",
+  "version": "3.3",
   "description": "Safari (iPhone/iPad): YouTube English: send the video and the part you paused at to Claude / ChatGPT, with subtitles, replay and your voice.",
   "permissions": [
     "tabs",
@@ -12,7 +12,8 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://claude.ai/*",
-    "https://chatgpt.com/*"
+    "https://chatgpt.com/*",
+    "https://*.tts.speech.microsoft.com/*"
   ],
   "background": {
     "service_worker": "background.js"

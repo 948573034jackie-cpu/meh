@@ -14,7 +14,7 @@ Learn English from YouTube videos with Claude (claude.ai) or ChatGPT (chatgpt.co
 
 **Popup settings:** replay on/off, **text size slider (1–10 in quarter steps, 6 = medium, 10 = the biggest)**, send the transcript on/off, “let's go” voice command on/off.
 
-## My tutor (v3.2): your own AI teacher, with your own API key
+## My tutor (v3.3): your own AI teacher, with your own API key
 The **My tutor** button on the video bar turns it on (Claude / ChatGPT turns off: one voice at a time).
 1. Click ⚙ on the Dream panel (or the extension icon → Dream Tutor settings) → API keys: paste your Claude and/or
    OpenAI key → Save. (OpenAI gives the natural voice and the live voice call.)

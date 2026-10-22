@@ -83,7 +83,8 @@ const sse = (req, res, text) => {
   };
   tick();
 };
-const kindOf = (sys, url) => (url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : 'explain');
+let failNextTts = 0;
+const kindOf = (sys, url) => (url.includes('/cognitiveservices/v1') ? 'azure' : url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : 'explain');
 const api = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-max-age': '600' }); res.end(); return; }
   if (req.url === '/peer.html') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(peerHtml); return; }
@@ -96,8 +97,9 @@ const api = http.createServer((req, res) => {
     const sys = JSON.stringify(j.system || '');
     const user = JSON.stringify(j.messages || '');
     const kind = kindOf(sys, req.url);
-    apiLog.push({ path: req.url, kind, model: j.model, user, sys, key: req.headers['x-api-key'] || req.headers.authorization, stream: j.stream, cache: sys.includes('ephemeral'), effort: j.output_config && j.output_config.effort, fallbacks: j.fallbacks, voice: j.voice, input: j.input, at: Date.now() });
-    if (kind === 'tts') { res.writeHead(200, { 'content-type': 'audio/mpeg', ...cors(req) }); res.end(ttsWav); return; }
+    apiLog.push({ path: req.url, kind, model: j.model, user, sys, body: kind === 'azure' ? body : '', key: req.headers['x-api-key'] || req.headers.authorization || req.headers['ocp-apim-subscription-key'], stream: j.stream, cache: sys.includes('ephemeral'), effort: j.output_config && j.output_config.effort, fallbacks: j.fallbacks, voice: j.voice, input: j.input, at: Date.now() });
+    if (kind === 'tts' && failNextTts > 0) { failNextTts--; apiLog[apiLog.length - 1].failed = true; res.writeHead(400, { 'content-type': 'application/json', ...cors(req) }); res.end('{"error":{"message":"test hiccup","type":"invalid_request_error"}}'); return; }
+    if (kind === 'tts' || kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg', ...cors(req) }); res.end(ttsWav); return; }
     if (kind === 'live') {
       const sdp = (/name="sdp"\r\n\r\n([\s\S]*?)\r\n--/.exec(body) || [])[1];
       const session = (/name="session"\r\n\r\n([\s\S]*?)\r\n--/.exec(body) || [])[1];
@@ -330,6 +332,22 @@ const api = http.createServer((req, res) => {
   const out = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.talk && !d.flow ? v : null; }, 8000, 80);
   ok('"bye bye": the call ends and the video plays on', !!out, JSON.stringify(out));
 
+  // ---- 9c. the Microsoft (Azure) voice: official, free 9 hours a month ----
+  await patch('drTestBaseUrls', { azure: 'http://localhost:8790' });
+  await patch('drKeys', { azure: 'az-test-key' });
+  await patch('drExtras', { voice: 'azure' });
+  await until(async () => (await dbg()).voice === 'azure', 5000);
+  ok('Microsoft voice chosen, with its Azure key: the tutor speaks with it', (await dbg()).voice === 'azure');
+  const nAz = apiLog.filter((r) => r.kind === 'azure').length;
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 20.5; return v.play(); });
+  await until(async () => (await vstate()).t > 22.5, 8000);
+  await yt.keyboard.press('ArrowLeft');
+  const az = await until(() => { const a = apiLog.filter((r) => r.kind === 'azure'); return a.length > nAz ? a[a.length - 1] : null; }, 15000);
+  ok('the explanation is spoken by the Microsoft voice (Ava), with the Azure key', az && /AvaMultilingualNeural/.test(az.body) && az.key === 'az-test-key', az && az.body.slice(0, 160));
+  await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !d.flow && !v.paused; }, 25000);
+  await patch('drKeys', { azure: '' });
+  await patch('drExtras', { voice: 'auto' });
+
   // ---- 10. the OpenAI voice and the live voice call (real time) ----
   await patch('drExtras', { talkSilenceSec: 0, talkWith: 'openai' }); // the OpenAI live call; it waits for you (the test talks in it)
   await patch('drKeys', { openai: 'sk-openai-test' });
@@ -338,9 +356,14 @@ const api = http.createServer((req, res) => {
   const nTts = apiLog.filter((r) => r.kind === 'tts').length;
   await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 20.5; return v.play(); });
   await until(async () => (await vstate()).t > 22.5, 8000);
+  failNextTts = 1; // the first sentence of the voice fails once (like a short internet hiccup)
+  const macBefore = (await speak()).length;
   await yt.keyboard.press('ArrowLeft');
-  const tts = await until(() => { const t = apiLog.filter((r) => r.kind === 'tts'); return t.length > nTts ? t[t.length - 1] : null; }, 15000);
+  const tts = await until(() => { const t = apiLog.filter((r) => r.kind === 'tts' && !r.failed); return t.length > nTts ? t[t.length - 1] : null; }, 15000);
   ok('the explanation is spoken by the OpenAI voice (gpt-4o-mini-tts, marin), through the background', tts && tts.model === 'gpt-4o-mini-tts' && tts.voice === 'marin' && /Bearer sk-openai-test/.test(tts.key), JSON.stringify(tts && { m: tts.model, v: tts.voice, i: tts.input }));
+  await sleep(1500);
+  const failed = apiLog.filter((r) => r.kind === 'tts' && r.failed);
+  ok('a voice hiccup (one failed request) is tried again: the OpenAI voice keeps speaking, no switch to the Mac voice', failed.length === 1 && apiLog.filter((r) => r.kind === 'tts' && !r.failed && r.input === failed[0].input).length >= 1 && (await speak()).length === macBefore && (await dbg()).voice === 'openai', JSON.stringify({ failed: failed.map((r) => r.input), mac: (await speak()).slice(macBefore) }));
   const live = await until(() => liveLog[0], 20000);
   ok('the live call connects to OpenAI realtime with the key (from the background), the part, your rules, the tools', live && /Bearer sk-openai-test/.test(live.auth) && live.session.model === 'gpt-realtime-2.1' && live.session.audio.output.voice === 'marin' && /RULE ONE/.test(live.session.instructions) && /number six/.test(live.session.instructions) && live.session.tools.some((t) => t.name === 'continue_video'), JSON.stringify(live && { m: live.session.model, v: live.session.audio.output.voice }));
   ok('the microphone is sensitive (lower speech threshold, laptop-microphone noise setting)', live && live.session.audio.input.turn_detection.type === 'server_vad' && live.session.audio.input.turn_detection.threshold === 0.35 && live.session.audio.input.noise_reduction.type === 'far_field');

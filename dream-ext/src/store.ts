@@ -28,6 +28,9 @@ export interface YtExtras {
   openaiVoice: string;
   /** ElevenLabs voice id */
   elevenVoice: string;
+  /** Azure Speech (Microsoft's neural voices, free tier): the voice and the region of your Speech resource */
+  azureVoice: string;
+  azureRegion: string;
   /** after each explanation the talk opens (real time with an OpenAI key; else speech recognition + the tutor) */
   talkAfterExplain: boolean;
   /** quiet seconds in the talk before the video goes on by itself; 0 = wait for me ("go on", Enter or play) */
@@ -64,15 +67,15 @@ export interface YtExtras {
   fakeVoice?: boolean;
 }
 
-export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs';
+export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', talkAfterExplain: true, talkSilenceSec: 3, talkWith: 'claude', liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-US-AvaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: true, talkSilenceSec: 3, talkWith: 'claude', liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 2, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
 };
 
-export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string }
+export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }
 export type KeyName = keyof Keys;
 
 const K = { settings: 'drSettings', extras: 'drExtras', vocab: 'drVocab', entries: 'drEntries', usage: 'drUsage', keys: 'drKeys' } as const;

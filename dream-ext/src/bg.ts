@@ -65,9 +65,9 @@ export function hintsModelFor(s: Settings): { provider: AiProviderId; model: str
 export interface StreamResult { text: string; inputTokens: number; outputTokens: number; cachedTokens: number }
 
 /** Test hook: the extension tests point the SDKs at a local fake server (never set in normal use). */
-async function baseUrls(): Promise<{ anthropic?: string; openai?: string; elevenlabs?: string }> {
+async function baseUrls(): Promise<{ anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }> {
   const o = await chrome.storage.local.get('drTestBaseUrls');
-  return (o.drTestBaseUrls as { anthropic?: string; openai?: string; elevenlabs?: string } | undefined) ?? {};
+  return (o.drTestBaseUrls as { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string } | undefined) ?? {};
 }
 
 /** The chosen provider, or the other one when only its key is saved (one key is enough to start). */
@@ -212,7 +212,7 @@ export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, o
 }
 
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
-interface TtsAsk { engine: 'openai' | 'elevenlabs'; text: string; voice: string; lang?: 'en' | 'zh' }
+interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure'; text: string; voice: string; lang?: 'en' | 'zh' }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
@@ -234,7 +234,8 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   const urls = await baseUrls();
   if (a.engine === 'openai') {
     if (!keys.openai) throw new Error('Add your OpenAI API key (Dream Tutor settings) to use the OpenAI voice.');
-    const client = new OpenAI({ apiKey: keys.openai, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...(urls.openai ? { baseURL: urls.openai } : {}) });
+    // short sentences: a quick timeout and two retries (a slow or failed request is tried again at once)
+    const client = new OpenAI({ apiKey: keys.openai, maxRetries: 2, timeout: 20_000, dangerouslyAllowBrowser: true, ...(urls.openai ? { baseURL: urls.openai } : {}) });
     try {
       const res = await client.audio.speech.create({ model: 'gpt-4o-mini-tts', voice: (a.voice || 'marin') as never, input: text, instructions: VOICE_STYLE[a.lang ?? 'en'], response_format: 'mp3' });
       const audio = await res.arrayBuffer();
@@ -245,6 +246,7 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
       return { b64: toBase64(audio), mime: wav ? 'audio/wav' : 'audio/mpeg', timings: null };
     } catch (e) { throw new Error(`OpenAI voice: ${classifyError(e).message}`); }
   }
+  if (a.engine === 'azure') return synthAzure(a, keys.azure, urls.azure);
   if (!keys.elevenlabs) throw new Error('Add your ElevenLabs API key (Dream Tutor settings) to use the ElevenLabs voice.');
   const base = urls.elevenlabs ?? 'https://api.elevenlabs.io';
   const res = await fetch(`${base}/v1/text-to-speech/${encodeURIComponent(a.voice || 'JBFqnCBsd6RMkjVDRZzb')}/with-timestamps?output_format=mp3_44100_64`, {
@@ -255,6 +257,34 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   const data = (await res.json()) as { audio_base64: string; alignment?: { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] } | null };
   void addUsage({ date: new Date().toISOString(), provider: 'openai', model: 'elevenlabs-flash', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: text.length * 0.00005 }).catch(() => undefined);
   return { b64: data.audio_base64, mime: 'audio/mpeg', timings: data.alignment ? charAlignmentToWords(data.alignment) : null };
+}
+
+const xml = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+/** The SSML for one sentence: English with the chosen voice; Chinese with a Mandarin voice (Xiaoxiao). */
+export function azureSsml(text: string, voice: string, lang: 'en' | 'zh' = 'en'): string {
+  const v = lang === 'zh' ? 'zh-CN-XiaoxiaoNeural' : voice || 'en-US-AvaMultilingualNeural';
+  const loc = lang === 'zh' ? 'zh-CN' : (/^([a-z]{2}-[A-Z]{2})/.exec(v)?.[1] ?? 'en-US');
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${loc}"><voice name="${xml(v)}">${xml(text)}</voice></speak>`;
+}
+
+/** Microsoft's neural voices through Azure Speech (official REST; the key and region of your Speech resource). */
+async function synthAzure(a: TtsAsk, key: string | undefined, testBase?: string): Promise<TtsAnswer> {
+  if (!key) throw new Error('Add your Azure Speech key (⚙ → API keys) to use the Microsoft voices.');
+  const region = (await getExtras()).azureRegion || 'eastus';
+  const url = testBase ? `${testBase}/cognitiveservices/v1` : `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
+  let res: Response | null = null;
+  for (let i = 0; i < 3; i++) {
+    res = await fetch(url, { method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3', 'User-Agent': 'DreamTutor' }, body: azureSsml(a.text, a.voice, a.lang) }).catch(() => null);
+    if (res && res.status !== 429 && res.status < 500) break;
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+  }
+  if (!res) throw new Error('Microsoft voice: no internet connection');
+  if (!res.ok) throw new Error(res.status === 401 ? 'Microsoft voice: the Azure key or the region is wrong (⚙ → API keys / Voice)' : res.status === 429 ? 'Microsoft voice: the free hours of this month are used up (or too many requests)' : `Microsoft voice: HTTP ${res.status}`);
+  const audio = await res.arrayBuffer();
+  // the free tier covers about 500,000 characters a month; nothing is counted against your AI budget
+  void addUsage({ date: new Date().toISOString(), provider: 'openai', model: 'azure-neural', inputTokens: a.text.length, outputTokens: 0, cachedTokens: 0, usd: 0 }).catch(() => undefined);
+  return { b64: toBase64(audio), mime: 'audio/mpeg', timings: null };
 }
 
 /** ElevenLabs character times -> word timings (Dream Read src/main/tts.ts). */

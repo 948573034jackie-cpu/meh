@@ -6,7 +6,7 @@
 import type { Settings } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import * as store from './store';
-import { OPENAI_VOICES, ELEVEN_VOICES } from './voice';
+import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_REGIONS } from './voice';
 import { DEFAULT_TEACHER } from './teacher-text';
 import { SHORTCUTS, shortcutMap, comboLabel, comboOf } from './shortcuts';
 import { resolveStyles } from '@shared/styles';
@@ -18,7 +18,7 @@ export interface QuickCtx {
   /** say a test sentence with the chosen voice */
   testVoice(): void;
   /** the voice that speaks now ('mac' when a cloud voice has no key) */
-  speaking: 'mac' | 'openai' | 'elevenlabs';
+  speaking: 'mac' | 'openai' | 'elevenlabs' | 'azure';
   /** the Mac's English voices */
   macVoices: { id: string; name: string }[];
   /** start a test call */
@@ -44,8 +44,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const sc = shortcutMap(x.shortcuts);
   const styles = resolveStyles(s.ai.styles).filter((st) => !st.hidden);
   const shape = styles.find((st) => st.id === s.ai.activeStyle)?.shape ?? styles[0].shape;
-  const voices = ctx.speaking === 'elevenlabs' ? ELEVEN_VOICES : OPENAI_VOICES;
-  const voiceVal = ctx.speaking === 'elevenlabs' ? x.elevenVoice : x.openaiVoice;
+  const voices = ctx.speaking === 'elevenlabs' ? ELEVEN_VOICES : ctx.speaking === 'azure' ? AZURE_VOICES : OPENAI_VOICES;
+  const voiceVal = ctx.speaking === 'elevenlabs' ? x.elevenVoice : ctx.speaking === 'azure' ? x.azureVoice : x.openaiVoice;
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
     <section><h4>What you see</h4>
@@ -66,15 +66,16 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Hide YouTube's own captions ${onOff('hideCc', x.hideYtCaptions)}</label>
     </section>
     <section><h4>Voice</h4>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
-      <p class="speaking">Speaking now: <b>${ctx.speaking === 'openai' ? 'OpenAI voice' : ctx.speaking === 'elevenlabs' ? 'ElevenLabs voice' : 'Mac voice'}</b>${ctx.speaking === 'mac' && (x.voice === 'openai' || x.voice === 'auto') && !keys.openai ? ' <span class="warn">(the OpenAI voices need your OpenAI key, see API keys below)</span>' : ''}${ctx.speaking === 'mac' && x.voice === 'elevenlabs' && !keys.elevenlabs ? ' <span class="warn">(ElevenLabs needs its key, see API keys below)</span>' : ''}</p>
+      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free 9 h/month)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac (free)']])}</label>
+      <p class="speaking">Speaking now: <b>${ctx.speaking === 'openai' ? 'OpenAI voice' : ctx.speaking === 'elevenlabs' ? 'ElevenLabs voice' : ctx.speaking === 'azure' ? 'Microsoft voice' : 'Mac voice'}</b>${ctx.speaking === 'mac' && x.voice === 'openai' && !keys.openai ? ' <span class="warn">(the OpenAI voices need your OpenAI key, see API keys below)</span>' : ''}${ctx.speaking === 'mac' && x.voice === 'azure' && !keys.azure ? ' <span class="warn">(the Microsoft voices need your Azure Speech key, see API keys below)</span>' : ''}${ctx.speaking === 'mac' && x.voice === 'elevenlabs' && !keys.elevenlabs ? ' <span class="warn">(ElevenLabs needs its key, see API keys below)</span>' : ''}</p>
+      ${ctx.speaking === 'azure' ? `<label>Azure region <select data-name="azureRegion">${AZURE_REGIONS.map((r) => `<option value="${r}"${r === x.azureRegion ? ' selected' : ''}>${r}</option>`).join('')}</select> <span class="muted">(the region of your Speech resource)</span></label>` : ''}
       ${ctx.speaking !== 'mac'
         ? `<label>Voice <select data-name="voiceId">${voices.map((v) => `<option value="${v.id}"${v.id === voiceVal ? ' selected' : ''}>${esc(v.name)}</option>`).join('')}</select><button type="button" data-act="test">▶ Test</button></label>`
         : `<label>Mac voice <select data-name="macVoice">${ctx.macVoices.length ? ctx.macVoices.map((v) => `<option value="${esc(v.id)}"${v.id === s.voice.voiceId ? ' selected' : ''}>${esc(v.name)}</option>`).join('') : '<option value="">(the Mac voices are loading…)</option>'}</select><button type="button" data-act="test">▶ Test</button></label>
            <p class="muted">Better Mac voices: System Settings → Accessibility → Spoken Content → System voice → Manage Voices… → download an "Enhanced" or "Premium" English voice, then reload YouTube.</p>`}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
-      <p class="muted">Auto = the OpenAI voice when your OpenAI key is saved, otherwise the Mac voice.</p>
+      <p class="muted">Cost of one hour of the tutor speaking: Microsoft about $0 (free 9 hours a month, then about $0.90), OpenAI about $0.90, ElevenLabs about $3 or more, Mac free. Auto = Microsoft if its key is saved, else OpenAI, else Mac.</p>
     </section>
     <section><h4>Voice call</h4>
       <label>Call with ${seg('talkWith', x.talkWith ?? 'claude', [['claude', 'Claude'], ['openai', 'OpenAI live (real time)']])} <button type="button" data-act="test-call">📞 Test the call</button></label>
@@ -95,7 +96,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
     <section><h4>API keys</h4>
-      ${(['anthropic', 'openai', 'elevenlabs'] as const).map((k) => `<label>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
+      ${(['anthropic', 'openai', 'azure', 'elevenlabs'] as const).map((k) => `<label>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Azure Speech (Microsoft voices)' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
       <p class="muted">Keys stay in Chrome on this computer. Claude explains; OpenAI gives the voice and the live call.</p>
     </section>
     <section><h4>Shortcuts <span class="muted">(click one, then press the new keys)</span></h4>
@@ -192,7 +193,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   el.onchange = (ev) => {
     const t = ev.target as HTMLSelectElement;
     const name = t.dataset.name;
-    if (name === 'voiceId') void store.patchExtras(ctx.speaking === 'elevenlabs' ? { elevenVoice: t.value } : { openaiVoice: t.value });
+    if (name === 'voiceId') void store.patchExtras(ctx.speaking === 'elevenlabs' ? { elevenVoice: t.value } : ctx.speaking === 'azure' ? { azureVoice: t.value } : { openaiVoice: t.value });
+    else if (name === 'azureRegion') void store.patchExtras({ azureRegion: t.value });
     else if (name === 'macVoice' && t.value) void store.patchSettings({ voice: { ...s.voice, voiceId: t.value } });
     else if (name === 'model') {
       const [provider, model] = t.value.split(':') as ['anthropic' | 'openai', string];

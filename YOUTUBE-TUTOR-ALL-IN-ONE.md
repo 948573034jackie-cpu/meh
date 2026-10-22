@@ -1,6 +1,6 @@
 # YouTube English with My Tutor: everything in one file
 
-Chrome extension **"YouTube to Claude / ChatGPT", version 3.2** (Mac, Google Chrome).
+Chrome extension **"YouTube to Claude / ChatGPT", version 3.3** (Mac, Google Chrome).
 
 ---
 
@@ -24,7 +24,7 @@ Turning one on turns the other off.
 3. Turn on **Developer mode** (top right).
 4. If an old version is there: click **Remove**.
 5. Click **Load unpacked** and choose the folder.
-6. It must say **3.2**. Pin it (🧩 icon). Refresh your YouTube tab.
+6. It must say **3.3**. Pin it (🧩 icon). Refresh your YouTube tab.
 
 Update later: remove the old one and load the new folder the same way.
 
@@ -38,7 +38,8 @@ Click **⚙** on the Dream panel (right of the video) → **API keys** → paste
 |---|---|
 | **Claude** (Anthropic) | the explanations, the AI sentences and Chinese meanings, and the **call with Claude** |
 | **OpenAI** | the natural voice (marin, cedar…) and the OpenAI live call; it can also do everything alone |
-| **ElevenLabs** (optional) | another natural voice |
+| **Azure Speech** (optional, cheapest good voice) | Microsoft's natural voices (Ava, Andrew, Sonia…): **free for about 9 hours of speech every month** |
+| **ElevenLabs** (optional) | another natural voice (expensive) |
 
 One key is enough to start. The keys stay in Chrome on your computer. **Never paste a key into a chat.**
 
@@ -113,17 +114,36 @@ blocked: click the lock icon left of the address bar → Microphone → Allow. F
 
 ## 8. The voice
 
-⚙ → **Voice**. "Speaking now" shows which voice talks.
+⚙ → **Voice**. "Speaking now" shows which voice really talks.
 
-- **Auto**: the OpenAI voice when your OpenAI key is saved, otherwise the Mac voice.
-- **OpenAI**: marin or cedar (most natural), coral, sage, ballad…
-- **ElevenLabs**: George, Alice, Daniel, Lily…
-- **Mac**: choose any Mac voice in the list. For better Mac voices: System Settings → Accessibility →
-  Spoken Content → System voice → Manage Voices… → download an "Enhanced" or "Premium" English voice.
+| Voice | Sounds | Cost for 1 hour of the tutor speaking |
+|---|---|---|
+| **Microsoft** (Azure Speech) | very natural (Ava, Andrew, Emma, Sonia, Ryan…) | **free** for about 9 hours a month, then about $0.90 |
+| **OpenAI** | very natural (marin, cedar…) | about $0.90 (1.5 cents a minute) |
+| **ElevenLabs** | very natural | about $3 or more |
+| **Mac** | good with a Premium voice | free |
 
-Choosing a voice says a short test sentence. Speed: ⚙ → Speed.
+(The tutor speaks maybe 10 to 20 minutes in one hour of video, so OpenAI costs about 15 to 30 cents per hour of
+video. Prices are approximate.)
 
----
+- **Auto**: Microsoft if its key is saved, else OpenAI, else the Mac voice.
+- **The cheapest good voice: Microsoft (Azure Speech), free tier.** One-time setup:
+  1. Go to **portal.azure.com** and sign in with a Microsoft account (free; it asks for a card only to check who you are).
+  2. Search **"Speech service"** → **Create** → Pricing tier **Free F0** → Region, for example **East US** → **Create**.
+  3. Open it → **Keys and Endpoint** → copy **KEY 1** and the **Location/Region**.
+  4. On YouTube: ⚙ → **API keys** → **Azure Speech** → paste KEY 1 → **Save**.
+  5. ⚙ → **Voice** → **Microsoft** → **Azure region**: the same region → Voice: **Ava**. It says a test sentence.
+- **Free Mac voice**: System Settings → Accessibility → Spoken Content → System voice → Manage Voices… →
+  download an "Enhanced" or "Premium" English voice (for example Ava or Zoe), reload YouTube, pick it in ⚙.
+  Avoid the "Google … · online" voices in the list: Chrome stops them after about 15 seconds (the extension now
+  says them in short pieces, so they keep going).
+
+**The voice does not disconnect any more (3.3):** when the good voice fails (a short internet problem, a busy
+server, no sound after 12 seconds), that sentence is tried again. If it fails again, only that one sentence is
+said by the Mac voice, and the good voice is used again for the next sentence. Only after 3 failures in a row
+does the Mac voice speak for 1 minute, then the good voice comes back. The 🩺 Check report shows why it failed.
+
+The OpenAI live call reconnects once by itself if the connection drops.
 
 ## 9. The reading page
 
@@ -157,7 +177,11 @@ the video. CSV download. Progress per level (A1 to C2).
 
 ---
 
-## 12. New in 3.2 (fixed)
+## 12. Fixed in 3.3 and 3.2
+
+**3.3:** the good voice does not disconnect any more (see section 8); the cheapest good voice: Microsoft (Azure Speech, free about 9 hours a month); Chrome's online voices no longer stop after 15 seconds; the OpenAI live call reconnects once.
+
+**3.2:**
 
 1. **Call Claude**: the voice call now goes to Claude by default, with your Claude key. The microphone turns on
    for the call even when voice commands are off. The OpenAI call is safer too: if Chrome blocks the louder
@@ -173,7 +197,7 @@ the video. CSV download. Progress per level (A1 to C2).
 
 ## 13. Honest limits
 
-- Tested in Chrome with a test YouTube page, a test AI and a test live-call server (69 checks, all pass), but
+- Tested in Chrome with a test YouTube page, a test AI, test voices and a test live-call server (72 checks, all pass), but
   **not yet on real YouTube with your real keys, your microphone and your speakers**.
 - Without an OpenAI key the call uses Chrome's own speech recognition: it is slower, and its sensitivity can't be
   changed.

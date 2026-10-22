@@ -8,7 +8,7 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.2) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
+| **Chrome extension** (v3.3) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
 | **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
 
@@ -133,7 +133,7 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
-## 7. My tutor (Chrome only, v3.2): your own AI teacher on YouTube
+## 7. My tutor (Chrome only, v3.3): your own AI teacher on YouTube
 
 Two ways to learn, never at the same time (turning one on turns the other off):
 
@@ -164,8 +164,8 @@ Your commands:
 - **Shift+L**: listening mode (all subtitles over the screen, the playing line near the middle) / normal video.
 - **[ ]**: smaller / bigger text; **Shift+C**: Chinese under every line (live AI translation). All keys can be changed.
 
-Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (OpenAI marin /
-cedar…, ElevenLabs, Mac), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
+Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (Microsoft /
+Azure: free about 9 hours a month; OpenAI marin / cedar…; ElevenLabs; Mac), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
 instructions (write anything), how many repeats, the API keys and the shortcuts.
 
 📒 My Vocabulary: every explained word and sentence with its explanation, Chinese and a link to that moment in the

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "3.2",
+  "version": "3.3",
   "description": "YouTube English: learn with your own AI tutor (stops at hard words, phrases and sentences, a natural voice, live voice call, Chinese) or send the part you paused at to Claude / ChatGPT.",
   "permissions": [
     "tabs",
@@ -17,7 +17,8 @@
     "https://chatgpt.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
-    "https://api.elevenlabs.io/*"
+    "https://api.elevenlabs.io/*",
+    "https://*.tts.speech.microsoft.com/*"
   ],
   "background": {
     "service_worker": "background.js"

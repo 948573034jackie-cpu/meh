@@ -40,7 +40,7 @@ import { VideoEngine } from './video-engine';
 import { explain as aiExplain, complete, completeStream, getDictionary } from './ai-client';
 import * as store from './store';
 import { clock } from './vocab';
-import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, LIVE_VOICES, cloudSpoken } from './voice';
+import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, ShortPieces, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION } from './sentences-ai';
 import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from './zh';
@@ -138,6 +138,8 @@ interface Talk {
   error?: string;
   /** opened with 📞: it waits for you (no quiet-seconds go on) */
   manual?: boolean;
+  /** the live call was reconnected once already */
+  reconnected?: boolean;
 }
 
 class Session {
@@ -157,12 +159,15 @@ class Session {
   private prefetched = new Map<string, { full: string; done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void; sink: ((full: string) => void) | null; at: number }>();
   private engine: VideoEngine;
   private mac: TtsEngine | null = null;
+  private macRaw: TtsEngine | null = null;
   private macVoice = '';
   private zhMac: string | null = null;
   private tts: TtsEngine | null = null;
   private zhTts: TtsEngine | null = null;
   private router: SentenceFromVideo | null = null;
-  private voiceKind: 'mac' | 'openai' | 'elevenlabs' = 'mac';
+  private voiceKind: 'mac' | 'openai' | 'elevenlabs' | 'azure' = 'mac';
+  /** why the good voice failed last (for the 🩺 check) */
+  private lastVoiceError: string | null = null;
   private voiceId = '';
   private zhVoice: string | null = null;
   private keys: store.Keys = {};
@@ -301,13 +306,16 @@ class Session {
   // ---- voices ---------------------------------------------------------------------------------------------------
   private async prepareVoices(): Promise<void> {
     if (E2E()) useFakeEngine(2);
-    this.mac = getEngine('webspeech');
+    // Chrome's free online voices ("Google UK English …") stop after about 15 s: they get short pieces
+    this.macRaw = getEngine('webspeech');
+    this.mac = new ShortPieces(this.macRaw, (id) => /^Google /i.test(id));
     this.macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.zhMac = await chineseVoiceId().catch(() => null);
     void this.mac.listVoices().then((vs) => {
       // English voices, the better ones (Enhanced / Premium / Siri) first
       const good = (n: string) => (/premium|enhanced|siri/i.test(n) ? 0 : 1);
-      this.macVoices = vs.filter((v) => /^en/i.test(v.lang)).sort((a, b) => good(a.name) - good(b.name) || a.name.localeCompare(b.name)).map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` }));
+      const online = (n: string) => (/^Google /i.test(n) ? 1 : 0);
+      this.macVoices = vs.filter((v) => /^en/i.test(v.lang)).sort((a, b) => online(a.name) - online(b.name) || good(a.name) - good(b.name) || a.name.localeCompare(b.name)).map((v) => ({ id: v.id, name: `${v.name} (${v.lang})${online(v.name) ? ' · online' : ''}` }));
       this.renderQuickIfOpen();
     }).catch(() => undefined);
     this.applyVoice();
@@ -322,10 +330,15 @@ class Session {
     if (kind === 'mac') {
       this.tts = this.mac; this.zhTts = this.mac; this.voiceId = this.macVoice; this.zhVoice = this.zhMac;
     } else {
-      const name = kind === 'openai' ? 'OpenAI' : 'ElevenLabs';
-      this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, (e) => this.toast(`The ${name} voice failed (${e.message}) · the Mac voice speaks now.`, 9000));
-      this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', () => undefined);
-      this.voiceId = kind === 'openai' ? extras.openaiVoice : extras.elevenVoice;
+      const name = kind === 'openai' ? 'OpenAI' : kind === 'azure' ? 'Microsoft' : 'ElevenLabs';
+      const trouble = (e: Error, cooling: boolean) => {
+        this.lastVoiceError = `${name} voice: ${e.message}`;
+        // one failed sentence is said by the Mac voice quietly; only a longer problem is shown
+        if (cooling) this.toast(`The ${name} voice has a problem (${e.message}). The Mac voice speaks for 1 minute, then the ${name} voice again.`, 9000);
+      };
+      this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, trouble);
+      this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', trouble);
+      this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
       this.zhVoice = this.voiceId;
     }
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => this.closeCard());
@@ -730,6 +743,16 @@ class Session {
     const call: LiveCall = new LiveCall({ model: extras.liveModel, voice: this.liveVoice(), instructions: this.liveContext(word, explanation), transcribe: true, mic: extras.micLevel ?? 2 }, {
       state: (s, detail) => {
         const t = this.talk;
+        // the connection dropped during a talk: one automatic reconnect with the same context
+        if (s === 'error' && t?.live === call && !t.reconnected && /lost|did not open|connection/i.test(detail ?? '')) {
+          t.reconnected = true;
+          this.toast('The live voice dropped. Reconnecting…', 4000);
+          const again = this.newCall(t.word, t.explanation);
+          t.live = again;
+          again.setMic(true);
+          this.renderTalk();
+          return;
+        }
         if (s === 'error' && detail) {
           if (t?.live === call) { t.live = null; t.error = detail; this.renderTalk(); }
           this.toast(detail, 9000);
@@ -1867,7 +1890,8 @@ class Session {
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
     if (prev.stageSizePx !== extras.stageSizePx) this.fitSoon();
-    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) { this.applyVoice(); if (prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice) this.testVoice(); }
+    const voiceChanged = prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion;
+    if (prev.voice !== extras.voice || voiceChanged) { this.applyVoice(); if (voiceChanged) this.testVoice(); }
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
     if (prev.zhLines !== extras.zhLines && extras.zhLines && this.stageVisible() && this.vb) {
@@ -1948,7 +1972,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind,
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, voiceProblem: this.lastVoiceError,
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -1960,7 +1984,7 @@ class Session {
     return {
       mode: this.mode, sentences: this.vb?.order.length ?? 0, state: this.playback?.state ?? null, cur: this.cur, window: this.cmdWin, card: this.card,
       transcript: this.transcript.map((e) => ({ kind: e.kind, target: e.target, status: e.status, text: e.text.slice(0, 80) })),
-      spoken: (this.mac as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
+      spoken: (this.macRaw as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
       cloud: cloudSpoken.slice(-30),
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
