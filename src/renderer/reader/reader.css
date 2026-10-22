@@ -1,0 +1,212 @@
+/* Reader: two full-screen screens (Reading = pages, Listening = lines) over one playback. */
+.reader { position: absolute; inset: 0; background: var(--bg); color: var(--fg); overflow: hidden; }
+.reader.loading { display: flex; align-items: center; justify-content: center; }
+.reader-preparing { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-muted); background: var(--bg); z-index: 30; }
+.screen { position: absolute; inset: 0; display: flex; flex-direction: column; }
+/* an always-present drag strip under the macOS traffic lights, even when the bars are hidden */
+.traffic-drag { position: absolute; top: 0; left: 0; width: 84px; height: 40px; z-index: 25; }
+:root:not([data-platform="mac"]) .traffic-drag { display: none; }
+.ico { width: 16px; height: 16px; vertical-align: -3px; }
+
+/* ---- book text (both screens) ---------------------------------------------------------------- */
+.doc-inner { font-family: var(--reader-font); font-size: var(--reader-size); line-height: var(--reader-lh); color: var(--fg); }
+.para { margin: 0 0 0.9em; text-align: left; hyphens: auto; -webkit-hyphens: auto; break-inside: auto; }
+.para.k-h1 { font-size: 1.6em; line-height: 1.3; margin: 0.6em 0 0.8em; font-weight: 700; }
+.para.k-h2 { font-size: 1.3em; line-height: 1.3; margin: 0.8em 0 0.6em; font-weight: 700; }
+.para.k-h3 { font-size: 1.1em; margin: 0.8em 0 0.4em; font-weight: 700; }
+.para.k-li { margin-left: 1.4em; list-style: disc; display: list-item; }
+.para.k-blockquote { margin-left: 1.2em; padding-left: 0.8em; border-left: 3px solid var(--border); color: var(--fg-muted); }
+.para.k-pre { font-family: ui-monospace, Menlo, monospace; font-size: 0.85em; white-space: pre-wrap; }
+.chapter-title { font-size: 0.75em; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1.4em; font-family: var(--font-sans); }
+.s { border-radius: 4px; transition: background-color 160ms, box-shadow 160ms; }
+.w { border-radius: 3px; padding: 0 1px; cursor: pointer; }
+.w.punct, .w.number { cursor: default; }
+.w:hover:not(.punct) { outline: 1px solid var(--border-strong); }
+.w.cur-w { text-decoration: underline; text-decoration-color: var(--hl-word); text-decoration-thickness: 3px; text-underline-offset: 3px; background: color-mix(in srgb, var(--hl-word) 22%, transparent); }
+.hl-unknown { background: color-mix(in srgb, var(--hl-unknown) 18%, transparent); text-decoration: underline dotted var(--hl-unknown); text-underline-offset: 3px; }
+.hl-learning { background: color-mix(in srgb, var(--hl-learning) 22%, transparent); }
+.hl-marked { background: color-mix(in srgb, var(--hl-marked) 22%, transparent); text-decoration: underline; text-decoration-color: var(--hl-marked); text-underline-offset: 3px; }
+.ph.hl-unknown, .ph.hl-learning { padding: 0 2px; border-radius: 4px; }
+:root[data-underline-only="1"] .hl-unknown, :root[data-underline-only="1"] .hl-learning, :root[data-underline-only="1"] .hl-marked { background: transparent; text-decoration-line: underline; text-decoration-thickness: 2px; }
+:root[data-underline-only="1"] .hl-learning { text-decoration-color: var(--hl-learning); }
+
+/* Word Wise-style hints: a small Chinese meaning under a hard word. The word becomes an inline block with
+   room reserved below it, so only lines that carry a hint grow. */
+:root { --hint-size: 0.66em; }
+:root[data-hints="1"] .w[data-hint] { display: inline-block; position: relative; padding-bottom: calc(var(--hint-size) * 1.3); margin-bottom: calc(var(--hint-size) * -0.35); vertical-align: baseline; background-clip: content-box; }
+:root[data-hints="1"] .w[data-hint]::after { content: attr(data-hint); position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); font-size: var(--hint-size); line-height: 1.2; font-family: var(--font-zh); font-weight: 400; color: var(--fg-muted); white-space: nowrap; letter-spacing: 0.02em; pointer-events: none; text-decoration: none; opacity: 0.9; }
+.w.selected { background: color-mix(in srgb, var(--accent) 35%, transparent); }
+
+/* ---- Reading mode -------------------------------------------------------------------------------- */
+.screen.reading .bar { position: absolute; left: 0; right: 0; z-index: 20; display: flex; align-items: center; gap: 10px; padding: 0 14px; height: 44px; background: color-mix(in srgb, var(--bg-elevated) 86%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); transition: opacity 220ms ease, transform 220ms ease, visibility 0s linear 0s; font-family: var(--font-sans); zoom: var(--ui-scale); }
+.screen.reading .bar.top { top: 0; border-bottom: 1px solid var(--border); padding-left: 84px; }
+:root:not([data-platform="mac"]) .screen.reading .bar.top { padding-left: 16px; }
+.screen.reading .bar.bottom { bottom: 0; border-top: 1px solid var(--border); height: 38px; }
+.screen.reading.chrome-off .bar { opacity: 0; visibility: hidden; transition: opacity 220ms ease, transform 220ms ease, visibility 0s linear 220ms; }
+.screen.reading.chrome-off .bar.top { transform: translateY(-6px); }
+.screen.reading.chrome-off .bar.bottom { transform: translateY(6px); }
+.bar .titles { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; overflow: hidden; white-space: nowrap; }
+.bar .book-title { font-weight: 500; font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.bar .chapter-name { font-size: 12px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; }
+.bar .row { gap: 2px; flex-wrap: nowrap; }
+.bar button { background: transparent; border-color: transparent; color: var(--fg-muted); padding: 5px 10px; font-size: 13px; border-radius: var(--radius-sm); }
+.bar button:hover { background: var(--bg-hover); color: var(--fg); }
+.bar button.active { background: var(--accent-soft); color: var(--fg); }
+.bar button.primary.switch { background: var(--accent); color: var(--accent-fg); font-weight: 600; padding: 5px 12px; margin: 0 6px; display: inline-flex; align-items: center; gap: 6px; }
+.bar button.primary.switch:hover { filter: brightness(1.06); }
+.bar .aa { font-family: var(--font-serif); font-size: 15px; letter-spacing: -0.02em; }
+.bar .status { font-variant-numeric: tabular-nums; }
+.bar .play.on { color: var(--accent); }
+.bar .page-count { font-variant-numeric: tabular-nums; }
+
+.page-view { position: absolute; inset: 0; overflow: hidden; user-select: text; }
+.pages { height: 100%; box-sizing: border-box; padding: 54px 0 46px; column-fill: auto; transition: transform 180ms ease-out; will-change: transform; }
+.pages.no-anim, :root[data-page-turn="0"] .pages { transition: none; }
+/* the reading column is at most --max-line characters wide and centred on the page; the side margins never go below --reader-margin */
+.pages .doc-inner { padding: 0 max(var(--reader-margin), 72px, calc((100% - var(--max-line) * 1ch) / 2)); max-width: 100%; }
+.page-view .zone { position: absolute; top: 44px; bottom: 38px; width: 20%; pointer-events: none; }
+.page-view .zone.left { left: 0; } .page-view .zone.right { right: 0; }
+/* the current sentence glows only while the voice reads it */
+.screen.reading .s.cur { box-shadow: none; background: transparent; }
+.screen.reading.playing .s.cur { background: color-mix(in srgb, var(--hl-sentence) 10%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--hl-sentence) 10%, transparent); }
+.progress-line { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in srgb, var(--fg) 10%, transparent); z-index: 21; }
+.progress-line .fill { height: 100%; background: var(--accent); transition: width 300ms ease; }
+.progress-line .tick { position: absolute; top: -1px; width: 1px; height: 5px; background: color-mix(in srgb, var(--fg) 45%, transparent); }
+
+/* popovers under the top bar */
+.popover { position: absolute; top: 48px; right: 12px; z-index: 30; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; width: 340px; font-family: var(--font-sans); font-size: 13px; cursor: default; }
+.popover .pop-row { display: flex; align-items: center; gap: 10px; }
+.popover .pop-row > span:first-child { width: 90px; color: var(--fg-muted); flex: none; }
+.popover .steps { display: flex; gap: 4px; flex: 1; }
+.popover .steps button { flex: 1; padding: 5px 8px; font-size: 12.5px; background: var(--bg); border-color: var(--border); color: var(--fg); }
+.popover .steps button.active { border-color: var(--accent); background: var(--accent-soft); }
+.popover .steps .val { min-width: 28px; text-align: center; font-variant-numeric: tabular-nums; }
+.popover .themes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.popover .theme { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px 6px; border: 1px solid var(--border); border-radius: 10px; font-size: 11px; }
+.popover .theme .aa { font-size: 18px; }
+.popover .theme.active { box-shadow: 0 0 0 2px var(--accent); border-color: transparent; }
+.popover .check { display: flex; align-items: center; gap: 8px; color: var(--fg); cursor: pointer; }
+.popover input[type="range"] { flex: 1; margin: 0; }
+.popover input[type="number"] { width: 110px; padding: 5px 8px; font-size: 12.5px; }
+.popover .page-form { display: flex; gap: 4px; margin-left: auto; }
+.popover .page-form button, .goto-pop .pop-row > button { padding: 5px 10px; font-size: 12.5px; background: var(--bg); border-color: var(--border); color: var(--fg); }
+.chapter-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; margin: 0 -6px; }
+.chapter-list button { text-align: left; display: flex; gap: 10px; align-items: baseline; padding: 6px 8px; font-size: 12.5px; color: var(--fg); border-color: transparent; background: transparent; }
+.chapter-list button.active { background: var(--accent-soft); }
+.chapter-list button .n { color: var(--fg-faint); font-variant-numeric: tabular-nums; width: 22px; flex: none; text-align: right; }
+.chapter-list button .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Listening mode ------------------------------------------------------------------------------ */
+.screen.listening { background: var(--bg); }
+.listen-main { flex: 1; min-height: 0; display: flex; }
+.listen-scroll { flex: 1; min-width: 0; overflow-y: auto; scroll-behavior: smooth; position: relative; }
+.listen-head { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px 0 84px; font-family: var(--font-sans); background: linear-gradient(to bottom, var(--bg) 60%, transparent); zoom: var(--ui-scale); }
+:root:not([data-platform="mac"]) .listen-head { padding-left: 16px; }
+.listen-head .book-title { font-size: 13px; font-weight: 500; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.listen-head .chapter-name { font-size: 12px; color: var(--fg-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.listen-head button { background: transparent; border-color: transparent; color: var(--fg-muted); padding: 5px 10px; font-size: 13px; }
+.listen-head button:hover { background: var(--bg-hover); color: var(--fg); }
+.listen-head button.primary.switch { background: var(--accent); color: var(--accent-fg); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; }
+.listen-lines { padding: 38vh 76px 58vh; transition: padding-right 160ms ease; } /* the side padding keeps the lines clear of the floating mic */
+/* the voice popover is open: the lines make room for it instead of running under it */
+.reader.voice-open .listen-lines { padding-right: 400px; }
+.reader.voice-open .page-view { right: 380px; }
+.listen-lines .doc-inner { max-width: calc(var(--max-line-listen) * 1ch); margin: 0 auto; padding: 0 max(40px, var(--reader-margin)); font-size: var(--reader-size); line-height: 1.5; }
+.listen-lines .chapter-title { display: none; }
+.listen-lines .para { margin: 0 0 0.6em; }
+/* Only opacity is animated on the lines: a size, colour or background transition on every line re-lays out and repaints the
+   text each frame (renderer 18% of a core against 6% while reading, measured). The current line changes size at once. */
+.listen-lines .s { display: block; padding: 0.22em 0.4em; margin: 0 -0.4em; border-radius: 8px; opacity: 0.62; transition: opacity 200ms ease; }
+.listen-lines .s.past { opacity: 0.32; }
+.listen-lines .s.cur { opacity: 1; font-size: max(var(--subtitle-size), calc(var(--reader-size) * 1.3)); color: var(--fg); background: transparent; box-shadow: none; }
+.screen.listening.playing .listen-lines .s.cur { background: color-mix(in srgb, var(--hl-sentence) 6%, transparent); }
+.listen-lines .s:hover:not(.cur) { opacity: 0.85; cursor: pointer; }
+/* the spoken word: colour and underline only (paint); bold would re-lay out the line at every word */
+.listen-lines .s.cur .w.cur-w { color: var(--accent); text-decoration: underline 2px; }
+/* opaque, no backdrop blur: the blur was redrawn under the moving lines at every frame */
+.listen-bottom { flex: none; border-top: 1px solid var(--border); background: var(--bg-elevated); padding: 6px 16px 10px; display: flex; flex-direction: column; gap: 6px; font-family: var(--font-sans); zoom: var(--ui-scale); }
+.controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.controls .group { display: flex; align-items: center; gap: 6px; }
+.controls button { padding: 6px 10px; font-size: 13px; }
+.controls button.icon { min-width: 34px; }
+.controls button.play { min-width: 52px; font-size: 14px; }
+.controls button.active { border-color: var(--accent); color: var(--accent); }
+.controls .clock { font-size: 12.5px; font-variant-numeric: tabular-nums; margin-left: 6px; white-space: nowrap; }
+.controls .speed input[type="range"] { width: 100px; margin: 0; }
+.controls .speed .val { font-size: 12px; color: var(--fg-muted); min-width: 34px; font-variant-numeric: tabular-nums; }
+.controls select { padding: 5px 8px; font-size: 12.5px; max-width: 220px; }
+.timeline { display: flex; align-items: center; gap: 10px; height: 22px; }
+.timeline .t { font-size: 11.5px; color: var(--fg-muted); font-variant-numeric: tabular-nums; min-width: 52px; }
+.timeline .t.total { text-align: right; }
+.timeline .track { flex: 1; position: relative; height: 22px; cursor: pointer; touch-action: none; }
+.timeline .track::before { content: ''; position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.timeline .fill { position: absolute; left: 0; top: 9px; height: 4px; border-radius: 2px; background: var(--accent); }
+.timeline .mark { position: absolute; top: 7px; width: 2px; height: 8px; margin-left: -1px; background: color-mix(in srgb, var(--fg) 55%, transparent); border-radius: 1px; }
+.timeline .thumb { position: absolute; top: 5px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg-elevated); transition: left 120ms linear; }
+.timeline .hover-label { position: absolute; bottom: 22px; transform: translateX(-50%); background: color-mix(in srgb, var(--fg) 92%, var(--bg)); color: var(--bg); font-size: 11.5px; padding: 3px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.waiting-chip { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 15; display: flex; gap: 10px; align-items: center; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 999px; padding: 6px 8px 6px 16px; box-shadow: var(--shadow); font-family: var(--font-sans); font-size: 13px; }
+.waiting-chip button { padding: 4px 12px; border-radius: 999px; }
+
+/* ---- the word card (Trancy-style) ---------------------------------------------------------------- */
+.card-word { position: absolute; z-index: 40; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 14px; width: 330px; font-family: var(--font-sans); font-size: 13.5px; display: flex; flex-direction: column; gap: 8px; animation: card-in 140ms ease-out; zoom: var(--ui-scale); }
+@keyframes card-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.card-word.above { animation-name: card-in-up; }
+@keyframes card-in-up { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.card-word .hw { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.card-word .hw .word { font-size: 20px; font-weight: 700; font-family: var(--reader-font); }
+.card-word .hw .ipa { color: var(--fg-muted); }
+.card-word .hw .lemma { color: var(--fg-faint); font-size: 12px; }
+.card-word .hw .say { padding: 2px 7px; min-width: 0; font-size: 11px; }
+.card-word .lvl { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-muted); }
+.card-word .zh { font-family: var(--font-zh); line-height: 1.5; display: flex; flex-direction: column; gap: 2px; font-size: 19px; }
+.card-word .zh.here { color: var(--fg); font-weight: 600; font-size: 22px; }
+.card-word .zh.here .muted { font-weight: 400; }
+.card-word .zh .pos { color: var(--fg-muted); font-size: 12px; margin-right: 5px; font-family: var(--font-sans); }
+.card-word .en { color: var(--fg-muted); font-size: 12.5px; line-height: 1.45; display: flex; align-items: center; gap: 6px; min-height: 18px; }
+.card-word .en.error { color: var(--danger); }
+.card-word .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+.card-word .row { gap: 5px; flex-wrap: nowrap; }
+.card-word .status-btns button { padding: 5px 9px; font-size: 12.5px; white-space: nowrap; }
+.card-word .status-btns button.active { border-color: var(--accent); color: var(--accent); }
+.card-word .close { padding: 3px 7px; min-width: 0; }
+
+.selection-bar { position: absolute; z-index: 39; display: flex; gap: 4px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; padding: 4px; box-shadow: var(--shadow); font-family: var(--font-sans); }
+.selection-bar button { padding: 5px 10px; font-size: 12.5px; }
+
+/* ---- Transcript drawer (Listening mode) ------------------------------------------------------------ */
+.transcript { width: 340px; border-left: 1px solid var(--border); background: var(--bg-elevated); display: flex; flex-direction: column; flex: none; font-family: var(--font-sans); }
+.transcript header { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.transcript .entries { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; }
+.entry { border: 1px solid var(--border); border-radius: 10px; padding: 10px; font-size: var(--explain-size); display: flex; flex-direction: column; gap: 6px; }
+.entry .target { font-weight: 700; font-family: var(--reader-font); font-size: 1.1em; }
+.entry .st { font-size: 0.8em; color: var(--fg-muted); }
+.entry .zh { font-family: var(--font-zh); color: var(--hl-learning); }
+.entry .body { white-space: pre-wrap; line-height: 1.5; }
+.entry.error { border-color: var(--danger); }
+.entry.chat { gap: 8px; }
+.entry.chat .who { display: inline-block; min-width: 3.2em; font-size: 0.72em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-right: 4px; }
+.entry.chat .you { font-weight: 600; }
+.entry.chat .tutor .body { white-space: pre-wrap; line-height: 1.5; }
+
+/* ---- help sheet ------------------------------------------------------------------------------------ */
+.help-sheet { width: min(820px, 92vw); }
+.help-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; }
+.help-groups section h3 { margin: 0 0 6px; font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.help-groups .kv { grid-template-columns: 86px 1fr; gap: 5px 10px; font-size: 13px; align-items: baseline; }
+.help-groups .kv .key { white-space: nowrap; }
+@media (max-width: 760px) { .help-groups { grid-template-columns: 1fr; } }
+
+/* The commands window at a hard word (both screens): three big, calm answers and a thin countdown line. */
+.command-bar { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; gap: 8px; align-items: stretch; padding: 10px 12px 8px; background: color-mix(in srgb, var(--bg-elevated) 94%, transparent); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); font-family: var(--font-sans); zoom: var(--ui-scale); animation: command-in 160ms ease-out; max-width: calc(100% - 32px); }
+.command-bar.in-listening { bottom: 132px; }
+.command-buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+.command-bar .cmd { font-size: 16px; padding: 12px 20px; border-radius: 12px; min-width: 132px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; border: 1px solid var(--border); background: var(--bg-hover); color: var(--fg); cursor: pointer; }
+.command-bar .cmd:hover { background: color-mix(in srgb, var(--accent) 16%, var(--bg-hover)); }
+.command-bar .cmd.know { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.command-bar .cmd kbd { font-family: var(--font-sans); font-size: 11.5px; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
+.command-countdown { height: 3px; border-radius: 3px; background: color-mix(in srgb, var(--fg) 10%, transparent); overflow: hidden; }
+.command-countdown span { display: block; height: 100%; background: var(--accent); transform-origin: left center; animation-name: command-countdown; animation-timing-function: linear; animation-fill-mode: forwards; }
+@keyframes command-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes command-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (prefers-reduced-motion: reduce) { .command-bar { animation: none; } }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' blob: data: https://api.anthropic.com https://api.openai.com https://api.elevenlabs.io https://*.api.cognitive.microsoft.com https://texttospeech.googleapis.com; worker-src 'self' blob:; manifest-src 'self'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Dream Read</title>
+  <meta name="description" content="A calm reading and listening app for English learners." />
+  <meta name="theme-color" content="#15171c" />
+  <meta name="color-scheme" content="dark light" />
+  <!-- iPad home screen -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Dream Read" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="format-detection" content="telephone=no" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png" />
+  <link rel="stylesheet" href="main.css" />
+  <style>html, body { background: #15171c; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <noscript>Dream Read needs JavaScript.</noscript>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

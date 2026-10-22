@@ -1,0 +1,49 @@
+/* ---- voice chat: floating mic (right edge, mid-height) and its popover ---------------------------- */
+.voice-dock { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); z-index: 45; display: flex; flex-direction: column; align-items: center; gap: 8px; font-family: var(--font-sans); zoom: var(--ui-scale); transition: right 160ms ease; }
+.voice-dock.shifted { right: calc(340px + 18px); }
+.voice-mic { position: relative; width: 52px; height: 52px; border-radius: 50%; padding: 0; display: grid; place-items: center; background: var(--bg-elevated); border: 1px solid var(--border-strong); box-shadow: var(--shadow); color: var(--fg-muted); }
+.voice-mic .ico { width: 22px; height: 22px; position: relative; z-index: 1; }
+.voice-mic:hover { color: var(--fg); }
+.voice-mic.on { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+.voice-mic .ring { position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0.55; transition: transform 90ms linear; pointer-events: none; }
+/* the listening pulse is a halo behind the button that fades and grows (opacity + transform run on the compositor; an
+   animated box-shadow repainted the button at every frame while the mic was open) */
+.voice-mic.on.listening::after { content: ''; position: absolute; inset: -12px; z-index: -1; border-radius: 50%; background: var(--accent-soft); pointer-events: none; animation: voice-pulse 1.6s ease-in-out infinite; }
+.voice-mic.thinking { color: var(--accent); }
+.voice-mic.on.thinking { color: var(--accent-fg); }
+.voice-mic.on.thinking .ring { animation: voice-spin 1.1s linear infinite; border-style: dashed; }
+.voice-mic.speaking .ring, .voice-mic.on.speaking { box-shadow: 0 0 0 6px var(--accent-soft), var(--shadow); }
+@keyframes voice-pulse { 0%, 100% { opacity: 0; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1); } }
+@keyframes voice-spin { to { transform: rotate(360deg); } }
+.voice-more { width: 30px; height: 30px; border-radius: 50%; padding: 0; display: grid; place-items: center; color: var(--fg-muted); box-shadow: var(--shadow-sm); }
+.voice-more.active { color: var(--accent); border-color: var(--accent); }
+
+.voice-pop { position: absolute; right: calc(100% + 14px); top: 50%; transform: translateY(-50%); width: 320px; max-height: min(560px, calc(100vh - 140px)); overflow-y: auto; background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; animation: card-in 140ms ease-out; }
+.voice-pop .vp-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.voice-pop .vp-head .icon { padding: 2px 8px; }
+.vp-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--fg-faint); flex: none; }
+.vp-dot.listening { background: var(--ok); animation: voice-blink 1.4s ease-in-out infinite; }
+.vp-dot.thinking { background: var(--accent); }
+.vp-dot.speaking { background: var(--hl-unknown); }
+@keyframes voice-blink { 50% { opacity: 0.35; } }
+.vp-meter { height: 4px; background: var(--bg-sunken); border-radius: 2px; overflow: hidden; }
+.vp-meter span { display: block; height: 100%; background: var(--ok); transform-origin: left; transition: transform 80ms linear; }
+.vp-partial { font-style: italic; color: var(--fg-muted); }
+.vp-turns { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: var(--explain-size); max-height: 180px; overflow-y: auto; }
+.vp-turns b { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin-right: 6px; }
+.vp-tutor { line-height: 1.45; }
+.vp-err { color: var(--danger); }
+.vp-consent { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.vp-progress { display: flex; align-items: center; gap: 8px; }
+.vp-progress .bar { flex: 1; height: 6px; background: var(--bg-sunken); border-radius: 3px; overflow: hidden; }
+.vp-progress .bar span { display: block; height: 100%; background: var(--accent); transition: width 200ms; }
+.vp-error { display: flex; gap: 8px; align-items: flex-start; color: var(--danger); border: 1px solid var(--danger); border-radius: 10px; padding: 8px 10px; }
+.vp-error span { flex: 1; }
+.vp-error .icon { padding: 0 6px; }
+.vp-ask { display: flex; flex-direction: column; gap: 6px; }
+.vp-ask textarea { width: 100%; resize: vertical; min-height: 44px; font: inherit; font-size: 13.5px; background: var(--bg); color: var(--fg); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 7px 9px; }
+.vp-ask .row { display: flex; align-items: center; gap: 8px; }
+.vp-ask button { padding: 5px 14px; }
+.vp-hint { line-height: 1.3; }
+.vp-always { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.vp-always input { margin-top: 2px; }
