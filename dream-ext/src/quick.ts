@@ -74,7 +74,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const voiceRows = [
     missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
     now === 'mac' && x.voice === 'auto' ? '<p class="warn">No Microsoft or OpenAI key is saved, so you hear the Mac voice now. Paste a free Microsoft key below (API keys) for a natural voice.</p>' : '',
-    now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${azureOptions(x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(free: 500,000 characters a month, about 9 hours · ★ = the best, they also say Chinese words)</span></label>` : '',
+    now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${azureOptions(x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(★ = the best, they also say Chinese words)</span></label>
+      <p class="muted az-used">Microsoft this month: counting…</p>` : '',
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
     now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
     now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',
@@ -151,6 +152,13 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button></section>
   </div>`;
 
+  // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)
+  const azUsed = el.querySelector<HTMLElement>('.az-used');
+  if (azUsed) void store.getUsage().then((u) => {
+    const r = store.azureUsageText(store.azureCharsSince(u, store.periodStarts().month));
+    azUsed.textContent = r.text;
+    azUsed.className = r.low ? 'warn az-used' : 'muted az-used';
+  }, () => undefined);
   // every change is made on the settings as they are now (this panel may be older than the last change)
   const patchS = (fn: (cur: Settings) => Partial<Settings>) => void store.updateSettings(fn);
   const patchListen = (p: Partial<Settings['listen']>) => patchS((cur) => ({ listen: { ...cur.listen, ...p } }));

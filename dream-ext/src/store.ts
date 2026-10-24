@@ -242,6 +242,18 @@ export async function addUsage(r: UsageRecord): Promise<void> {
   const cutoff = new Date(Date.now() - 62 * 86400_000).toISOString();
   await area().set({ [K.usage]: list.filter((x) => x.date >= cutoff) });
 }
+/** Microsoft's free plan: 500,000 characters a month */
+export const AZURE_FREE_CHARS = 500_000;
+/** characters the Microsoft voice made since then (each request counts, also the ones made ahead) */
+export function azureCharsSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso && r.model === 'azure-neural').reduce((n, r) => n + (r.inputTokens || 0), 0); }
+/** "Microsoft this month: 47,312 of 500,000 free characters (9%) · about 8.4 hours left" */
+export function azureUsageText(used: number): { text: string; low: boolean } {
+  const left = Math.max(0, AZURE_FREE_CHARS - used);
+  const pct = Math.min(100, Math.round((used / AZURE_FREE_CHARS) * 100));
+  const hours = left / 54_000; // about 54,000 characters = 1 hour of the tutor talking
+  const leftText = left === 0 ? 'nothing left: the Microsoft voice stops until next month' : `about ${hours >= 1 ? `${hours.toFixed(1)} hours` : `${Math.round(hours * 60)} minutes`} of talking left`;
+  return { text: `Microsoft this month: ${used.toLocaleString('en-US')} of ${AZURE_FREE_CHARS.toLocaleString('en-US')} free characters used (${pct}%) · ${leftText}`, low: pct >= 80 };
+}
 export function usdSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso).reduce((n, r) => n + (r.usd || 0), 0); }
 export function periodStarts(now = new Date()): { day: string; month: string } {
   return { day: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(), month: new Date(now.getFullYear(), now.getMonth(), 1).toISOString() };

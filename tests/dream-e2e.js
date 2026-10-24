@@ -508,6 +508,11 @@ const api = http.createServer((req, res) => {
   const az = await until(() => apiLog.slice(nAz).find((r) => r.kind === 'azure'), 15000);
   ok('the explanation is spoken by the Microsoft voice (Ada, the best British woman, high-quality sound, the key stays in the background)', !!az && az.key === 'az-test-key' && /name="en-GB-AdaMultilingualNeural"/.test(az.ssml) && /xml:lang="en-GB"/.test(az.ssml) && az.format === 'audio-48khz-192kbitrate-mono-mp3', JSON.stringify(az && { key: az.key, f: az.format, s: az.ssml.slice(0, 220) }));
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 20000);
+  // ⚙ → Voice: how much of this month's free Microsoft voice is used
+  await sroot(() => { for (const id of ['dr-stage-host', 'dr-panel-host']) { const b = document.getElementById(id).shadowRoot.querySelector('[data-act="quick"]'); if (b && b.offsetParent) { b.click(); return; } } });
+  const azCount = await until(() => sroot(() => { for (const id of ['dr-stage-host', 'dr-panel-host']) { const q = document.getElementById(id).shadowRoot.querySelector('.quick'); const p = q && !q.hidden && q.querySelector('.az-used'); if (p && /of 500,000 free characters used/.test(p.textContent)) return p.textContent; } return null; }), 6000);
+  ok('⚙ shows the Microsoft voice used this month: characters of the free 500,000, and the hours left', !!azCount && /^Microsoft this month: [1-9][\d,]* of 500,000 free characters used \(\d+%\) · about [\d.]+ hours of talking left$/.test(azCount), azCount);
+  await yt.keyboard.press('Escape');
   await patch('drKeys', { azure: undefined });
   await patch('drExtras', { voice: 'auto' });
   await until(async () => (await dbg()).voice === 'openai', 5000);

@@ -18,7 +18,7 @@ import { DEFAULT_SETTINGS, type Settings, type VocabState } from '@shared/settin
 import type { ExplainRequest } from '@shared/api';
 import { getSentence } from '@core/nav';
 import { buildVideoBook } from '../src/video-book';
-import { azureRegionOf } from '../src/store';
+import { azureRegionOf, azureCharsSince, azureUsageText } from '../src/store';
 import { VideoEngine } from '../src/video-engine';
 import { FakeVideo, realDictionary } from './helpers';
 import type { TimedWord } from '../src/video-book';
@@ -170,6 +170,14 @@ describe('the live call and the voice', () => {
       await vi.advanceTimersByTimeAsync(60_100);
       expect(done).toEqual([...Array(21).keys()]);
     } finally { vi.useRealTimers(); }
+  });
+  it('the Microsoft counter: characters this month, of the free 500,000, and the hours left', () => {
+    const rec = (date: string, model: string, chars: number) => ({ date, provider: 'openai' as const, model, inputTokens: chars, outputTokens: 0, cachedTokens: 0, usd: 0 });
+    const list = [rec('2026-09-30T10:00:00.000Z', 'azure-neural', 9000), rec('2026-10-02T10:00:00.000Z', 'azure-neural', 40000), rec('2026-10-03T10:00:00.000Z', 'gpt-4o-mini-tts', 5000), rec('2026-10-04T10:00:00.000Z', 'azure-neural', 7312)];
+    expect(azureCharsSince(list, '2026-10-01T00:00:00.000Z')).toBe(47312);
+    expect(azureUsageText(47312).text).toBe('Microsoft this month: 47,312 of 500,000 free characters used (9%) · about 8.4 hours of talking left');
+    expect(azureUsageText(450000).low).toBe(true);
+    expect(azureUsageText(500000).text).toMatch(/nothing left: the Microsoft voice stops until next month/);
   });
   it('auto voice = OpenAI with its key, else the Mac voice', () => {
     expect(resolveVoice('auto', { openai: 'k' })).toBe('openai');
