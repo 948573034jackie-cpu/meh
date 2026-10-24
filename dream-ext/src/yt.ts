@@ -39,8 +39,8 @@ import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book
 import { VideoEngine } from './video-engine';
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData } from './ai-client';
 import * as store from './store';
-import { clock, computeProgress, estimateKnown } from './vocab';
-import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
+import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
+import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
@@ -201,6 +201,22 @@ class Session {
   private stageShown = false;
   /** when the page last appeared (a click right after that was meant for the video) */
   private stageShownAt = 0;
+  /**
+   * The AI gets only what it needs: the sentence with a little before and after (not 700 words around it every
+   * time), so each explanation costs less.
+   */
+  private leanOf: Settings | null = null;
+  private leanCopy: Settings | null = null;
+  private leanSettings(): Settings {
+    if (this.leanOf !== settings || !this.leanCopy) {
+      this.leanOf = settings;
+      this.leanCopy = { ...settings, ai: { ...settings.ai, contextWordsBefore: Math.min(settings.ai.contextWordsBefore, 80), contextWordsAfter: Math.min(settings.ai.contextWordsAfter, 40) } };
+    }
+    return this.leanCopy;
+  }
+  /** memory of this video: the last save of where you are; the stops explained the times before */
+  private spotSavedAt = 0;
+  private doneBefore = new Set<string>();
   private partKeys: Set<string> | null = null;
   private cur: Position | null = null;
   private curWord = -1;
@@ -239,11 +255,21 @@ class Session {
       this.knownTimer = null;
       void Promise.all([getDictData(), store.getEntries()]).then(([d, entries]) => {
         if (this.disposed) return;
-        this.knownEstimate = estimateKnown(computeProgress(d, vocab.words, Object.values(entries)), settings.learnerLevel);
+        const progress = computeProgress(d, vocab.words, Object.values(entries));
+        this.knownEstimate = estimateKnown(progress, settings.learnerLevel);
+        // my level follows my own words
+        const next = extras.levelAuto !== false ? suggestLevel(progress.levels, settings.learnerLevel) : null;
+        if (next && next.level !== settings.learnerLevel) {
+          void store.patchSettings({ learnerLevel: next.level });
+          this.toast(`Your level is now ${next.level}: ${next.reason}. The tutor stops at what is above it.`, 9000);
+        }
+        this.levelText = levelNote(progress.levels, next?.level ?? settings.learnerLevel);
         this.renderHead();
       }).catch(() => undefined);
     }, 1500);
   }
+  /** "B2 words you met: 40 of 52 known · …" for ⚙ */
+  levelText = '';
   /** video time of the last automatic stop (stopGapSec counts from it) */
   private lastStopAt: number | null = null;
   private lastTtsEnd = 0;
@@ -300,6 +326,7 @@ class Session {
     if (split && split.words === words.length) { use = regroup(words, split.ends.map((end, i) => ({ end, text: split.texts[i] ?? '' }))); this.source = 'ai'; }
     this.buildBook(use, info.title || document.title.replace(/ - YouTube$/, ''), info.channel);
     this.zh = await store.getZh(this.videoId).catch(() => ({}));
+    this.doneBefore = new Set(await store.getDone(this.videoId).catch(() => []));
     await this.loadHints();
     await this.prepareVoices();
     if (this.disposed) return;
@@ -313,6 +340,7 @@ class Session {
     this.setStatus(this.readyText(info.source));
     this.countKnown();
     this.applyView();
+    await this.backWhereYouStopped();
     if (this.mode === 'tutor') {
       const v = video();
       if (v && !v.paused) { this.engine.resumeHere = true; this.playback!.play(this.vb!.positionAt(v.currentTime) ?? undefined); }
@@ -320,6 +348,17 @@ class Session {
       void this.checkKey();
     }
     void this.runAiJobs();
+  }
+
+  /** the video opens where you stopped last time (not when the link asks for a time, or YouTube already went there) */
+  private async backWhereYouStopped(): Promise<void> {
+    const v = video();
+    if (!v || this.disposed) return;
+    if (/[?&#](t|start)=/.test(location.href) || v.currentTime > 20) return;
+    const at = store.resumeAt(await store.getSpot(this.videoId).catch(() => null), Date.now(), v.duration || 0);
+    if (at === null || this.disposed) return;
+    v.currentTime = at;
+    this.toast(`Back where you stopped (${clock(at)}). Press 0 for the start.`, 7000);
   }
 
   private readyText(src?: string | null): string {
@@ -402,7 +441,9 @@ class Session {
     // the sentence plays again from the video (after the explanation): the word card has done its job
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
     this.wordOut = new WithVolume(() => this.router!, () => this.volumeOf('word'));
-    this.teachOut = new WithVolume(() => this.tts!, () => this.volumeOf('teacher'));
+    // the teacher's words: the AI's own sentences by the voice, the video's sentences it quotes by the video itself
+    this.quotes = new QuotesFromVideo(() => this.tts!, this.engine, (t) => this.quotedSentence(t));
+    this.teachOut = new WithVolume(() => this.quotes!, () => this.volumeOf('teacher'));
     this.zhOut = new WithVolume(() => this.zhTts!, () => this.volumeOf('teacher'));
   }
 
@@ -418,6 +459,26 @@ class Session {
   }
 
   /** the teacher says the sentence being taught: it plays from the video */
+  private quotes: QuotesFromVideo | null = null;
+  /**
+   * The sentence of the video near here that the teacher quotes (whole, in quotation marks or not): it is played
+   * from the video. Short quotes (a phrase, a word) are said by the voice.
+   */
+  quotedSentence(text: string): Position | null {
+    const vb = this.vb;
+    if (!vb || this.mode !== 'tutor') return null;
+    const t = norm(text.replace(/^[\s"“”'‘’«»]+|[\s"“”'‘’«»]+$/g, ''));
+    if (t.split(' ').length < 4) return null;
+    const same = (p: Position) => { const s = getSentence(vb.book, p); return !!s && norm(s.text) === t; };
+    // the part on the page; else the sentence being taught and the ones right around it
+    if (this.partKeys) { for (const p of vb.order) if (this.partKeys.has(sentenceKey(p)) && same(p)) return p; return null; }
+    const center = this.engine.target ?? this.playback?.position ?? null;
+    const i0 = center ? vb.order.findIndex((p) => sentenceKey(p) === sentenceKey(center)) : -1;
+    if (i0 < 0) return null;
+    for (let i = Math.max(0, i0 - 2); i < Math.min(vb.order.length, i0 + 2); i++) if (same(vb.order[i])) return vb.order[i];
+    return null;
+  }
+
   private isTaught(text: string): boolean {
     const p = this.engine.target;
     const s = p && this.vb ? getSentence(this.vb.book, p) : null;
@@ -454,7 +515,7 @@ class Session {
     this.playback = new Playback(vb.book, { engine: () => this.engine, voice: () => ({ voiceId: this.voiceId, rate: settings.voice.rate }), pauseMs: () => 0 }, start);
     this.controller = new ListenController(this.playback, {
       book: vb.book, dict: this.dict!, names: this.names,
-      settings: () => settings, vocab: () => vocab,
+      settings: () => this.leanSettings(), vocab: () => vocab,
       marked: () => [],
       sentenceTrigger: (pos) => { const l = extras.stopSentences ? this.hardKeys.get(sentenceKey(pos)) : undefined; return l ? { lemma: l } : null; },
       engine: () => this.wordOut!, explainEngine: () => this.teachOut!, zhEngine: () => this.zhOut!,
@@ -485,6 +546,8 @@ class Session {
       stopFilter: (kind, pos) => {
         const gap = extras.stopGapSec ?? 45;
         if (gap < 0) return false;
+        // explained the last time this video was watched
+        if ((kind === 'phrase' || kind === 'sentence') && this.doneBefore.has(sentenceKey(pos))) return false;
         if (kind !== 'word' || gap === 0 || this.lastStopAt === null) return true;
         const at = this.vb?.timingOf(pos)?.start;
         return at === undefined || Math.abs(at - this.lastStopAt) >= gap;
@@ -635,6 +698,10 @@ class Session {
       if (!v.paused) { this.engine.resumeHere = true; pb.play(pos); } else pb.seek(pos);
     };
     const onFs = () => this.placeStage();
+    const onPlayState = () => this.updateStopButton();
+    v.addEventListener('play', onPlayState);
+    v.addEventListener('pause', onPlayState);
+    this.offs.push(() => { v.removeEventListener('play', onPlayState); v.removeEventListener('pause', onPlayState); });
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
     v.addEventListener('seeking', onSeeking);
@@ -657,6 +724,11 @@ class Session {
       if (!ad && this.mode === 'tutor' && !v.paused) { this.engine.resumeHere = true; this.playback?.play(this.vb.positionAt(v.currentTime) ?? undefined); }
     }
     if (ad) return;
+    // where you are in this video (so next time it goes on from here)
+    if (!v.paused && v.currentTime > 0 && Date.now() - this.spotSavedAt > 5000) {
+      this.spotSavedAt = Date.now();
+      void store.setSpot(this.videoId, { t: v.currentTime, d: v.duration || 0, at: Date.now() }).catch(() => undefined);
+    }
     const reading = this.mode === 'tutor' && this.playback?.state === 'playing';
     this.placeBand();
     if (reading) return;
@@ -1399,6 +1471,8 @@ class Session {
   private onStopTarget(t: { kind: string; target: string; lemma?: string } | null): void {
     if (!t) { this.closeCardSoon(); return; }
     const pos = this.playback?.position ?? this.cur;
+    // remembered: next time this video is watched, this hard phrase / sentence is not stopped at again
+    if (pos && (t.kind === 'phrase' || t.kind === 'sentence')) void store.addDone(this.videoId, sentenceKey(pos)).catch(() => undefined);
     this.lastStopAt = pos && this.vb ? this.vb.timingOf(pos)?.start ?? null : null;
     if (pos && this.vb && extras.stageOn) {
       const tm = this.vb.timingOf(pos);
@@ -1647,12 +1721,14 @@ class Session {
     const listening = extras.view === 'listening';
     const range = this.partKeys && this.vb ? (() => { const ps = this.vb.order.filter((p) => this.partKeys!.has(sentenceKey(p))); return ps.length ? `${clock(this.vb.timingOf(ps[0])!.start)} – ${clock(this.vb.timingOf(ps[ps.length - 1])!.end)}` : ''; })() : '';
     const sc = shortcutMap(extras.shortcuts);
-    top.innerHTML = `<span class="brand">Dream</span><span class="ttl">${esc(this.vb?.book.title ?? '')}</span>${range ? `<span class="range">${range}</span>` : ''}<span class="grow"></span>
+    const playing = !!video() && !video()!.paused;
+    top.innerHTML = `<span class="brand">Dream</span>${this.mode === 'tutor' ? `<button data-act="stop" class="stopbtn" title="${playing ? 'Stop everything' : 'Play on'} (${esc(comboLabel(sc.stop))})">${playing ? '⏸' : '▶'}</button>` : ''}<span class="ttl">${esc(this.vb?.book.title ?? '')}</span>${range ? `<span class="range">${range}</span>` : ''}<span class="grow"></span>
       <span class="seg" data-name="secs">${[20, 30, 40, 60].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
       ${this.mode === 'tutor' ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
       <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? '🎬 Video' : '📖 Listening'}</button>
+      ${listening ? '' : `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="This big page at stops and pauses: on / off (off = you only watch the video)">📄 Page ${extras.stageOn ? 'on' : 'off'}</button>`}
       <button data-act="quick" title="Quick settings">⚙</button>${listening ? '' : '<button data-act="close" class="quiet" title="Back to the video">✕</button>'}`;
     top.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
@@ -1665,8 +1741,63 @@ class Session {
       else if (act === 'voice') this.toggleVoiceMode();
       else if (act === 'view') void store.patchExtras({ view: listening ? 'normal' : 'listening' });
       else if (act === 'quick') this.toggleQuick(this.stage!.el);
+      else if (act === 'stop') this.stopOrPlay();
+      else if (act === 'pageAuto') this.togglePageAuto();
       else if (act === 'close') { if (this.talk || this.flow || this.cmdWin) this.goOn(); else this.hideStage(); }
     };
+  }
+
+  /** 📄: the big page at stops and pauses on / off (off = only the video, the explanation is in the panel) */
+  togglePageAuto(): void {
+    const on = !extras.stageOn;
+    extras.stageOn = on;
+    void store.patchExtras({ stageOn: on });
+    if (!on && normalView() && this.stageVisible()) this.hideStage();
+    this.renderHead();
+    this.renderStageTop();
+    this.toast(on ? 'The big page opens at stops again.' : 'Big page off: you only watch the video (📄 turns it on again).');
+  }
+
+  /** ⏸ / ▶ (Shift+P): everything stops (the video, the explanation, the talk) with no "you paused" explanation */
+  private stoppedAt: Position | null = null;
+  stopOrPlay(): void {
+    const v = video();
+    if (!v || this.mode !== 'tutor' || !this.playback) return;
+    const busy = !v.paused || !!this.controller?.busy || !!this.flow || !!this.talk || !!this.cmdWin;
+    if (busy) this.stopAll(); else this.playOn();
+  }
+
+  private stopAll(): void {
+    const v = video(), pb = this.playback!;
+    this.trail('stop (⏸)');
+    this.stoppedAt = pb.position ?? (v && this.vb ? this.vb.positionAt(v.currentTime) : null);
+    this.dropPrefetch();
+    this.endFlow();
+    this.talkWaiter = null;
+    this.closeTalk();
+    pb.pause(); // the explanation sees the change and stops (it does not go on by itself)
+    if (this.controller?.busy || this.cmdWin) this.controller?.skip();
+    this.tts?.cancelAll();
+    this.zhTts?.cancelAll();
+    if (v && !v.paused) this.engine.hold();
+    this.updateStopButton();
+  }
+
+  private playOn(): void {
+    const pos = this.stoppedAt ?? this.playback?.position ?? null;
+    this.stoppedAt = null;
+    this.trail('play (▶)');
+    if (pos) this.continueFrom(pos); else void video()?.play();
+    this.updateStopButton();
+  }
+
+  private updateStopButton(): void {
+    const b = this.stage?.el.querySelector<HTMLElement>('.top [data-act="stop"]');
+    const v = video();
+    if (!b) return;
+    const playing = !!v && !v.paused;
+    b.textContent = playing ? '⏸' : '▶';
+    b.title = `${playing ? 'Stop everything' : 'Play on'} (${comboLabel(shortcutMap(extras.shortcuts).stop)})`;
   }
 
   /** shows the page; `part` = only these sentences (a stop, a pause); none = all subtitles */
@@ -1772,7 +1903,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -1806,6 +1937,7 @@ class Session {
     head.innerHTML = `<span class="brand">Dream</span><span class="mode ${tutor ? 'tutor' : ''}">${tutor ? 'My tutor' : esc(callName)}</span><span class="grow"></span>
       ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hi bro”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
+      ${tutor ? `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="The big page at stops and pauses: on / off (off = you only watch the video)">📄 ${extras.stageOn ? 'on' : 'off'}</button>` : ''}
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
       <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙${extras.voiceMode ? ' on' : ''}</button>
@@ -1821,6 +1953,7 @@ class Session {
       else if (act === 'smaller' || act === 'bigger') void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + (act === 'bigger' ? 1 : -1), 12, 48) } });
       else if (act === 'vocab') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' });
       else if (act === 'voice') this.toggleVoiceMode();
+      else if (act === 'pageAuto') this.togglePageAuto();
       else if (act === 'quick') this.toggleQuick(this.panel!.el);
     };
   }
@@ -2348,6 +2481,7 @@ class Session {
     swallow();
     if (a.id === 'explainSentence') this.explainSentence();
     else if (a.id === 'explainLast') this.explainLast();
+    else if (a.id === 'stop') this.stopOrPlay();
     else if (a.id === 'talk') void this.callTutor();
     else if (a.id === 'listening') void store.patchExtras({ view: extras.view === 'listening' ? 'normal' : 'listening' });
     else if (a.id === 'page') { if (this.stageVisible()) this.hideStage(); else this.showStage(this.partAt(video()?.currentTime ?? 0, settings.listen.lastSecondsWindow)); }

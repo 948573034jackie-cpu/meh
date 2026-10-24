@@ -23,6 +23,8 @@ export interface QuickCtx {
   /** the Mac's English voices, and the one the tutor uses */
   macVoices: { id: string; name: string; lang: string }[];
   macVoice: string;
+  /** what my own words say about my level */
+  levelText?: string;
   /** say a test sentence with the chosen voice (teacher volume) / a test word (word volume) */
   testVoice(): void;
   testWord(): void;
@@ -134,6 +136,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     </section>
     <section><h4>My teacher</h4>
       <label>My level ${seg('level', s.learnerLevel, CEFR_LEVELS.map((l) => [l, l] as [string, string]))}</label>
+      <label>Level from my words ${onOff('levelAuto', x.levelAuto !== false)} <span class="muted">(up when you know most words of the next level, down when many of yours are new)</span></label>
+      ${ctx.levelText ? `<p class="muted">${esc(ctx.levelText)}</p>` : ''}
       <label>AI <select data-name="model">${CLAUDE_MODELS.map(([v, l]) => `<option value="anthropic:${v}"${s.ai.provider === 'anthropic' && s.ai.anthropicModel === v ? ' selected' : ''}>${l}</option>`).join('')}<option value="openai:${esc(s.ai.openaiModel)}"${s.ai.provider === 'openai' ? ' selected' : ''}>OpenAI ${esc(s.ai.openaiModel)}</option></select></label>
       ${wayRows}
       <label class="col">My teacher's instructions <span class="muted">(write anything: how to teach, the personality)</span><textarea data-name="teacher" rows="9">${esc(x.teacher)}</textarea><span><button type="button" data-act="teacher-reset">Use my rules again</button></span></label>
@@ -200,7 +204,9 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'callEngine') void store.patchExtras({ callEngine: v as store.YtExtras['callEngine'] });
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });
       else if (segName === 'silence') void store.patchExtras({ talkSilenceSec: v === 'auto' ? 3 : 0 });
-      else if (segName === 'level') void store.patchSettings({ learnerLevel: v as Settings['learnerLevel'] });
+      // (a level chosen by hand stays: the automatic level is turned off)
+      else if (segName === 'level') { void store.patchSettings({ learnerLevel: v as Settings['learnerLevel'] }); void store.patchExtras({ levelAuto: false }); }
+      else if (segName === 'levelAuto') void store.patchExtras({ levelAuto: v === 'on' });
       else if (segName === 'followVol') void store.patchExtras({ followVideoVolume: v === 'on' });
       else if (segName === 'stopGap') void store.patchExtras({ stopGapSec: Number(v) });
       else if (segName === 'band') void store.patchExtras({ band: v as store.YtExtras['band'] });

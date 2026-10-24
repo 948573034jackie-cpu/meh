@@ -98,7 +98,8 @@ export class ChatCall {
     this.deps.changed();
     const splitter = new StreamSentenceSplitter();
     let written = '';
-    const job = chatStream(this.deps.system(), this.history.slice(-16), (full) => {
+    // the last turns are enough for a phone call (the screen and the explanation are in the instructions)
+    const job = chatStream(this.deps.system(), this.history.slice(-9), (full) => {
       if (this.job !== job) return;
       written = full;
       this.deps.line(id, cleanSpokenProse(full), false);

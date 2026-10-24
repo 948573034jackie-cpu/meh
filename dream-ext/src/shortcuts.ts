@@ -12,6 +12,7 @@ export const SHORTCUTS: ShortcutAction[] = [
   { id: 'talk', label: 'Talk to my tutor (live voice call)', def: 'Shift+KeyT' },
   { id: 'listening', label: 'Listening mode (all subtitles, full screen) / normal video', def: 'Shift+KeyL' },
   { id: 'page', label: 'Show / hide the reading page', def: 'Shift+KeyB' },
+  { id: 'stop', label: 'Stop everything (the video and the tutor) / play on', def: 'Shift+KeyP' },
   { id: 'bigger', label: 'Bigger text', def: 'BracketRight' },
   { id: 'smaller', label: 'Smaller text', def: 'BracketLeft' },
   { id: 'zh', label: 'Chinese translation on / off', def: 'Shift+KeyC' },

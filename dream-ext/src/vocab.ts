@@ -142,3 +142,35 @@ export function estimateKnown(p: VocabProgress, level: CefrLevel | string): numb
   for (const l of p.levels) est += order.indexOf(l.level) <= mine ? l.total - l.learning : l.known;
   return est;
 }
+
+/**
+ * My level from my own words: the words of each CEFR level the learner met (stops, taps) and knew ("I know") or did
+ * not know (explained). Up one level when 75% of the 15+ words met at the next level were known; down one when
+ * fewer than 40% of the 15+ words met at the own level were known. null = the level stays.
+ */
+export function suggestLevel(levels: LevelProgress[], current: string): { level: CefrLevel; reason: string } | null {
+  const order = CEFR_LEVELS as CefrLevel[];
+  const i = order.indexOf(current as CefrLevel);
+  if (i < 0) return null;
+  const at = (l: CefrLevel) => levels.find((x) => x.level === l);
+  const next = order[i + 1];
+  const up = next ? at(next) : undefined;
+  if (next && up) {
+    const n = up.known + up.learning;
+    if (n >= 15 && up.known / n >= 0.75) return { level: next, reason: `you knew ${up.known} of the ${n} ${next} words you met` };
+  }
+  const mine = at(order[i]);
+  if (i > 0 && mine) {
+    const n = mine.known + mine.learning;
+    if (n >= 15 && mine.known / n < 0.4) return { level: order[i - 1], reason: `${mine.learning} of the ${n} ${order[i]} words you met were new to you` };
+  }
+  return null;
+}
+
+/** "B2 words: 40 of 52 known · C1: 12 of 30" for the settings */
+export function levelNote(levels: LevelProgress[], current: string): string {
+  const order = CEFR_LEVELS as string[];
+  const i = order.indexOf(current);
+  const show = order.slice(Math.max(0, i), i + 2).map((l) => levels.find((x) => x.level === l)).filter((p): p is LevelProgress => !!p && p.known + p.learning > 0);
+  return show.length ? show.map((p) => `${p.level} words you met: ${p.known} of ${p.known + p.learning} known`).join(' · ') : 'no words met yet at your level';
+}

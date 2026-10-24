@@ -9,6 +9,7 @@ import { AudioTtsEngine } from '@core/tts/audio';
 import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from '@core/tts/engine';
 import type { CloudTtsResult } from '@shared/api';
 import type { VoiceChoice } from './store';
+import type { Position } from '@core/model';
 
 export const OPENAI_VOICES: { id: string; name: string }[] = [
   { id: 'marin', name: 'Marin (most natural)' }, { id: 'cedar', name: 'Cedar (most natural)' },
@@ -206,4 +207,50 @@ export class SentenceFromVideo implements TtsEngine {
   pause(): void { this.voice().pause(); }
   resume(): void { this.voice().resume(); }
   cancelAll(): void { this.voice().cancelAll(); }
+}
+
+/**
+ * The teacher's explanation, with the original sentences it quotes played from the video itself (the real speaker):
+ * the cloud voice only reads the AI's own words, which saves its characters, and the learner hears the real line.
+ * `find` = the sentence of the video the text is (quotes and punctuation aside), or null.
+ */
+export class QuotesFromVideo implements TtsEngine {
+  readonly id: TtsEngine['id'];
+  readonly kind: TtsEngine['kind'];
+  readonly label: string;
+  readonly costNote: string;
+  readonly wordBoundaries: boolean;
+  constructor(private voice: () => TtsEngine, private video: TtsEngine & { hold(): void; forceStart: boolean; target: Position | null }, private find: (text: string) => Position | null) {
+    const v = voice();
+    this.id = v.id; this.kind = v.kind; this.label = v.label; this.costNote = v.costNote; this.wordBoundaries = v.wordBoundaries;
+  }
+  get paused(): boolean { return this.voice().paused; }
+  listVoices(): Promise<TtsVoice[]> { return this.voice().listVoices(); }
+  speak(text: string, opts: SpeakOptions): SpeakHandle {
+    const pos = this.find(text);
+    if (!pos) return this.voice().speak(text, opts);
+    const before = this.video.target;
+    this.video.target = pos;
+    this.video.forceStart = true;
+    const h = this.video.speak(text, { ...opts, onWord: undefined });
+    this.quoting = h;
+    // after the quote: the video stops and the reading's own sentence is the target again; when the quote was cut
+    // (something else started), nothing is touched: the new play has its own target already
+    const back = (o: SpeakOutcome) => {
+      if (this.quoting === h) this.quoting = null;
+      if (this.video.target !== pos) return;
+      this.video.target = before;
+      if (o !== 'ended') return;
+      this.video.hold();
+      this.video.forceStart = true; // the reading goes on from its own sentence, not from this quote
+    };
+    return { done: h.done.then((o) => { back(o); return o; }), cancel: () => h.cancel(), get error() { return h.error; } };
+  }
+  /** the quote playing from the video now (only that is stopped by cancelAll: the video itself is not paused) */
+  private quoting: SpeakHandle | null = null;
+  prefetch(text: string, voiceId: string, rate: number): void { if (!this.find(text)) this.voice().prefetch?.(text, voiceId, rate); }
+  stopReadAhead(): void { this.voice().stopReadAhead?.(); }
+  pause(): void { this.voice().pause(); }
+  resume(): void { this.voice().resume(); }
+  cancelAll(): void { this.voice().cancelAll(); const q = this.quoting; this.quoting = null; q?.cancel(); }
 }

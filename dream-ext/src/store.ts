@@ -89,6 +89,8 @@ export interface YtExtras {
   stopGapSec: number;
   /** one-time changes of saved settings already made (see migrateExtras) */
   migrated: number;
+  /** my level follows my own words (up when I know most of the next level's words, down when I know few of mine) */
+  levelAuto: boolean;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
@@ -99,7 +101,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true,
 };
 
 /**
@@ -242,6 +244,52 @@ export async function addUsage(r: UsageRecord): Promise<void> {
   const cutoff = new Date(Date.now() - 62 * 86400_000).toISOString();
   await area().set({ [K.usage]: list.filter((x) => x.date >= cutoff) });
 }
+// ---- memory of each video: where the learner stopped, and the stops already explained ------------------------------
+export interface VideoSpot { t: number; d: number; at: number }
+const SPOTS = 'drSpots', DONE = 'drDone';
+/** keeps the newest `max` entries of an object of { at } values */
+function newest<T extends { at: number }>(all: Record<string, T>, max: number): Record<string, T> {
+  const keys = Object.keys(all);
+  if (keys.length <= max) return all;
+  const out = { ...all };
+  for (const k of keys.sort((a, b) => all[a].at - all[b].at).slice(0, keys.length - max)) delete out[k];
+  return out;
+}
+export async function getSpot(videoId: string): Promise<VideoSpot | null> {
+  const o = await area().get(SPOTS);
+  return ((o[SPOTS] as Record<string, VideoSpot> | undefined) ?? {})[videoId] ?? null;
+}
+/** where the learner is in a video (the last 300 videos are kept) */
+export function setSpot(videoId: string, spot: VideoSpot): Promise<void> {
+  return oneAtATime(async () => {
+    const o = await area().get(SPOTS);
+    await area().set({ [SPOTS]: newest({ ...((o[SPOTS] as Record<string, VideoSpot> | undefined) ?? {}), [videoId]: spot }, 300) });
+  });
+}
+interface DoneList { keys: string[]; at: number }
+/** the sentences of a video whose stop (a hard phrase or sentence) was already explained */
+export async function getDone(videoId: string): Promise<string[]> {
+  const o = await area().get(DONE);
+  return ((o[DONE] as Record<string, DoneList> | undefined) ?? {})[videoId]?.keys ?? [];
+}
+export function addDone(videoId: string, key: string): Promise<void> {
+  return oneAtATime(async () => {
+    const o = await area().get(DONE);
+    const all = (o[DONE] as Record<string, DoneList> | undefined) ?? {};
+    const keys = all[videoId]?.keys ?? [];
+    if (keys.includes(key)) return;
+    await area().set({ [DONE]: newest({ ...all, [videoId]: { keys: [...keys, key].slice(-800), at: Date.now() } }, 200) });
+  });
+}
+/** a video is "where you stopped" when it is well started and not finished */
+export function resumeAt(spot: VideoSpot | null, now: number, duration: number): number | null {
+  if (!spot || !(spot.t > 30)) return null;
+  const d = duration > 0 ? duration : spot.d;
+  if (d > 0 && spot.t > d - 30) return null; // finished (or nearly): from the start
+  if (now - spot.at > 60 * 86400_000) return null; // two months ago: forgotten
+  return Math.max(0, spot.t - 3);
+}
+
 /** Microsoft's free plan: 500,000 characters a month */
 export const AZURE_FREE_CHARS = 500_000;
 /** characters the Microsoft voice made since then (each request counts, also the ones made ahead) */

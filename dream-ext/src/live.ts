@@ -321,6 +321,6 @@ export function liveInstructions(o: { teacher: string; level: string; title: str
     `Video: "${o.title}"`,
     `On the screen now (${o.from} to ${o.to} in the video):\n${o.part.map((l, i) => `${i + 1}. ${l}`).join('\n')}`,
     o.hints ? `Hard words on the screen, with their Chinese meaning here: ${o.hints}` : '',
-    o.word ? `You just stopped the video at "${o.word}" and explained it.${o.explanation ? ` Your explanation was: "${o.explanation.slice(0, 1500)}"` : ''} The learner may ask about it now.` : (o.explanation ? `You just explained this part. Your explanation was: "${o.explanation.slice(0, 1500)}"` : ''),
+    o.word ? `You just stopped the video at "${o.word}" and explained it.${o.explanation ? ` Your explanation was: "${o.explanation.slice(0, 700)}"` : ''} The learner may ask about it now.` : (o.explanation ? `You just explained this part. Your explanation was: "${o.explanation.slice(0, 700)}"` : ''),
   ].filter(Boolean).join('\n\n');
 }

@@ -71,7 +71,7 @@ export function buildPrompt(req: ExplainRequest, opts: { level: CefrLevel; instr
       break;
     }
   }
-  const history = req.history.length ? `Earlier in this chapter you were asked:\n${req.history.slice(-6).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 400)}`).join('\n')}\n\n` : '';
+  const history = req.history.length ? `Earlier in this chapter you were asked:\n${req.history.slice(-4).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 250)}`).join('\n')}\n\n` : '';
   return { system, user: `${history}${ctx}\n\n${task}`, maxTokens };
 }
 
@@ -214,7 +214,8 @@ export function buildStyledPrompt(req: ExplainRequest, opts: StyledPromptOpts): 
   const knobs = knobText(opts.style);
   if (knobs) task += `\n\n${knobs}`;
   if (req.again) task += `\n\nThe learner has just heard a first explanation of this and said they still do not understand. Explain it again from a different angle, more slowly and in more detail than before: start from what they surely know, use the story around this moment, compare it with a simpler word or situation, give one more everyday example, and check the meaning in this exact sentence once more at the end. Take the time it needs.`;
-  const history = req.history.length ? `Earlier in this chapter:\n${req.history.slice(-4).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 300)}`).join('\n')}\n\n` : '';
+  // (only the last explanation: enough to go on from it, and every request stays small)
+  const history = req.history.length ? `Earlier in this chapter:\n${req.history.slice(-2).map((h) => `${h.role === 'user' ? 'Learner' : 'You'}: ${h.text.slice(0, 200)}`).join('\n')}\n\n` : '';
   return { system, user: `${history}${ctx}\n\n${task}`, maxTokens: req.again ? Math.round(opts.style.maxTokens * 1.6) : opts.style.maxTokens };
 }
 

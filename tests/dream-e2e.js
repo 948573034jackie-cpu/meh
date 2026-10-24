@@ -126,7 +126,7 @@ const api = http.createServer((req, res) => {
     if (kind === 'chat') return sse(req, res, /gregarious/i.test(user) ? 'Gregarious means friendly. A gregarious man loves parties and people. Do you know someone like that?' : 'Sure. Ask me anything about this part.');
     // explanations: about the sentence being read now (the context around it holds the other hard words too)
     const cur = (/The sentence being read now:\\n(.*?)(?:\\n|")/.exec(user) || [])[1] || '';
-    if (/The learner just paused the video/.test(user)) return sse(req, res, 'In this part the speaker counts the sentences of the lesson. That is the main point.');
+    if (/The learner just paused the video/.test(user)) return sse(req, res, /just heard, in complete sentences[^]*?sentence number five[^]*?First, tell the learner/.test(user) ? '"This is complete sentence number five of the lesson." In this part the speaker counts the sentences of the lesson. That is the main point.' : 'In this part the speaker counts the sentences of the lesson. That is the main point.');
     if (/What is a gregarious man/.test(user)) return sse(req, res, 'A gregarious man loves being with people.');
     return sse(req, res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again so that nothing is wrong.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : /number six/.test(cur) ? 'This sentence simply says it is the sixth sentence.' : 'It means something simple.');
   });
@@ -272,6 +272,9 @@ const api = http.createServer((req, res) => {
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
   const spokePart = await until(async () => (await speak()).some((x) => /counts the sentences/.test(x)), 10000);
   ok('the explanation is spoken', !!spokePart);
+  // the original sentence the teacher quotes is played from the video (the real speaker; no voice characters)
+  const quoteSpoken = (await speak()).some((x) => /complete sentence number five/.test(x));
+  ok('a sentence of the video the teacher quotes is played from the video itself, not read by the voice', !quoteSpoken && (await seeksTo(16 - 0.15)) >= 1, JSON.stringify({ quoteSpoken, seeks: await seeksTo(16 - 0.15) }));
   const back = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow && (await seeksTo(7.85)) >= 2 ? v : null; }, 15000, 80);
   ok('then back to the start of the part, playing (no stops inside it)', back && back.t < 10, JSON.stringify(back));
   await sleep(1500);
@@ -429,6 +432,30 @@ const api = http.createServer((req, res) => {
   const backToVideo = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 8000);
   ok('"let\'s go": the call ends and the video plays on', !!backToVideo, JSON.stringify(backToVideo || { events: (await dbg()).talk?.events, v: await vstate(), api: apiLog.slice(nStill).map((r) => r.kind + '@' + (r.at - apiLog[nStill].at)) }));
 
+  // ---- 10b2. the front buttons: the big page at stops on / off, and ⏸ stop (Shift+P) on the big page ----
+  await sroot(() => document.getElementById('dr-panel-host').shadowRoot.querySelector('.head [data-act="pageAuto"]').click());
+  const pageOff = await until(async () => (await store('drExtras')).stageOn === false, 4000);
+  ok('📄 in the panel turns the big page off (and on again)', !!pageOff);
+  await sroot(() => document.getElementById('dr-panel-host').shadowRoot.querySelector('.head [data-act="pageAuto"]').click());
+  await until(async () => (await store('drExtras')).stageOn === true, 4000);
+  await yt.keyboard.press('Shift+KeyL'); // the big page (listening mode)
+  await until(async () => (await dbg()).stage.shown, 5000);
+  await sleep(900);
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 4.2; return v.play(); });
+  await until(async () => !(await vstate()).paused, 4000);
+  await sleep(600);
+  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-act="stop"]').click());
+  await sleep(1500);
+  const stopTest = { v: await vstate(), d: await dbg() };
+  ok('⏸ on the big page stops everything (the video, the tutor) and does not start an explanation', stopTest.v.paused && !stopTest.d.flow && !stopTest.d.talk, JSON.stringify({ v: stopTest.v, flow: stopTest.d.flow, talk: !!stopTest.d.talk }));
+  await yt.keyboard.press('Shift+KeyP');
+  const playedOn = await until(async () => !(await vstate()).paused ? await vstate() : null, 4000);
+  ok('Shift+P (or ▶) plays on', !!playedOn, JSON.stringify(playedOn));
+  await yt.keyboard.press('Shift+KeyP');
+  await until(async () => (await vstate()).paused, 3000);
+  await yt.keyboard.press('Shift+KeyL'); // back to the normal video
+  await sleep(500);
+
   // ---- 10c. the page: an Explain button on every sentence, explain what you select; the original line first ----
   await patch('drExtras', { talkSilenceSec: 3 });
   await yt.keyboard.press('Shift+KeyL'); // listening mode: all sentences on the page
@@ -553,9 +580,10 @@ const api = http.createServer((req, res) => {
   const sdbg = () => slow.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
   await slow.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 4.2; return v.play(); });
   let sawTalk = false;
-  const stopped = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; return d && d.window && d.window.target === 'meticulous' ? d : null; }, 15000, 100);
+  const sTrace = [];
+  const stopped = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; const v = await slow.evaluate(() => { const x = document.querySelector('video'); return `${x.currentTime.toFixed(1)}${x.paused ? 'P' : '>'}`; }); const line = `${v} ${d && d.state} ${d && d.window ? d.window.phase + '/' + d.window.target.slice(0, 12) : ''} ${d && d.flow || ''}`; if (sTrace[sTrace.length - 1] !== line) sTrace.push(line); return d && d.window && d.window.target === 'meticulous' ? d : null; }, 15000, 100);
   const onAgain = await until(async () => { const d = await sdbg(); if (d && d.talk) sawTalk = true; const v = await slow.evaluate(() => ({ t: document.querySelector('video').currentTime, paused: document.querySelector('video').paused })); return d && !d.window && !v.paused && v.t > 8.2 ? v : null; }, 25000, 100);
-  ok('no talk after explanations (new default): after the explanation the video goes on by itself', !!stopped && !!onAgain && !sawTalk, JSON.stringify({ stopped: !!stopped, onAgain, sawTalk }));
+  ok('no talk after explanations (new default): after the explanation the video goes on by itself', !!stopped && !!onAgain && !sawTalk, JSON.stringify({ stopped: !!stopped, onAgain, sawTalk, sTrace: sTrace.slice(0, 30), trail: (await sdbg())?.trail }));
   // "Stops by itself: Sometimes" (the default): after a stop, no new stop within 45 seconds of video
   await patch('drExtras', { stopGapSec: 45 });
   await slow.evaluate(() => { document.querySelector('video').playbackRate = 3; });

@@ -125,6 +125,7 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .stage .top { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); flex-wrap: wrap; }
 .stage .top .brand { font-family: var(--font-serif); font-size: 19px; font-weight: 700; color: var(--accent); }
 .stage .top .ttl { font-size: 13px; color: var(--fg-muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage .top .stopbtn { min-width: 30px; padding: 2px 8px; font-size: 13px; line-height: 1.2; }
 .stage .top .range { font-size: 12px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 999px; padding: 1px 9px; font-variant-numeric: tabular-nums; }
 .stage .top button { padding: 5px 10px; font-size: 13px; }
 .stage .flowstate { flex: none; text-align: center; font-size: 13px; color: var(--accent); padding: 6px; background: var(--accent-soft); }

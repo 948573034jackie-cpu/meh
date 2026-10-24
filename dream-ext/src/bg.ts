@@ -22,6 +22,7 @@ import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
 import { splitByScript } from '@core/listen/script';
+import { getSound, putSound, CACHE_MAX_CHARS } from './tts-cache';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
 const PRICES: Record<string, [number, number, number]> = {
@@ -244,12 +245,16 @@ export interface ChatTurn { role: 'user' | 'assistant'; content: string }
 export async function runChat(system: string, messages: ChatTurn[], signal: AbortSignal, onDelta: (t: string) => void): Promise<{ text: string; usd: number }> {
   const s = await getSettings();
   const keys = await getKeys();
-  const { provider, model } = pickProvider(s, keys);
+  const picked = pickProvider(s, keys);
+  // a phone call wants fast, short answers: the fast, cheap model (Haiku), not the one for the long explanations
+  const provider = picked.provider;
+  const model = provider === 'anthropic' ? (s.ai.hintsModel?.trim() || DEFAULT_ANTHROPIC_HINTS_MODEL) : picked.model;
   const key = keys[provider];
   if (!key) throw noKey(provider);
   const monthly = usdSince(await getUsage(), periodStarts().month);
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error('Monthly AI budget reached.'), { code: 'budget' });
-  const turns = messages.filter((m) => m.content.trim()).slice(-16);
+  const turns = messages.filter((m) => m.content.trim()).slice(-10);
+  while (turns.length && turns[0].role !== 'user') turns.shift(); // the conversation starts with the learner
   try {
     let r: StreamResult;
     if (provider === 'anthropic') {
@@ -362,7 +367,21 @@ export async function testAzure(key?: string): Promise<{ ok: boolean; message: s
   } catch (e) { return { ok: false, message: `Microsoft voice: ${(e as Error).message}. Check the region (for example eastus).` }; }
 }
 
+/** A short text (a word, a phrase) the voice said before is played again from this computer: no new characters. */
 export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
+  const text = a.text.trim();
+  if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };
+  if (text.length > CACHE_MAX_CHARS || typeof indexedDB === 'undefined') return synthesizeNow(a);
+  const best = a.engine === 'elevenlabs' ? (await getExtras()).elevenQuality !== 'fast' : true;
+  const key = `${a.engine}|${a.voice}|${a.lang ?? 'en'}|${best ? 'best' : 'fast'}|${text}`;
+  const kept = await getSound(key);
+  if (kept) return kept;
+  const made = await synthesizeNow(a);
+  if (made.b64) void putSound(key, made);
+  return made;
+}
+
+async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
   const keys = await getKeys();
   const text = a.text.trim();
   if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };

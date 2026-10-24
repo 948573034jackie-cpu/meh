@@ -18,7 +18,8 @@ import { DEFAULT_SETTINGS, type Settings, type VocabState } from '@shared/settin
 import type { ExplainRequest } from '@shared/api';
 import { getSentence } from '@core/nav';
 import { buildVideoBook } from '../src/video-book';
-import { azureRegionOf, azureCharsSince, azureUsageText } from '../src/store';
+import { azureRegionOf, azureCharsSince, azureUsageText, resumeAt } from '../src/store';
+import { suggestLevel, levelNote } from '../src/vocab';
 import { VideoEngine } from '../src/video-engine';
 import { FakeVideo, realDictionary } from './helpers';
 import type { TimedWord } from '../src/video-book';
@@ -178,6 +179,22 @@ describe('the live call and the voice', () => {
     expect(azureUsageText(47312).text).toBe('Microsoft this month: 47,312 of 500,000 free characters used (9%) · about 8.4 hours of talking left');
     expect(azureUsageText(450000).low).toBe(true);
     expect(azureUsageText(500000).text).toMatch(/nothing left: the Microsoft voice stops until next month/);
+  });
+  it('back where you stopped: a video well started and not finished, seen in the last two months', () => {
+    const now = Date.parse('2026-10-24T10:00:00Z');
+    expect(resumeAt({ t: 300, d: 900, at: now - 3600_000 }, now, 900)).toBe(297);
+    expect(resumeAt({ t: 20, d: 900, at: now }, now, 900)).toBeNull(); // just started
+    expect(resumeAt({ t: 890, d: 900, at: now }, now, 900)).toBeNull(); // finished
+    expect(resumeAt({ t: 300, d: 900, at: now - 70 * 86400_000 }, now, 900)).toBeNull(); // long ago
+    expect(resumeAt(null, now, 900)).toBeNull();
+  });
+  it('my level from my words: up when I knew most of the next level, down when many of mine were new', () => {
+    const lv = (level: string, known: number, learning: number) => ({ level, known, learning, unknown: 0, total: 1000 }) as never;
+    expect(suggestLevel([lv('B2', 10, 2), lv('C1', 16, 4)], 'B2')).toEqual({ level: 'C1', reason: 'you knew 16 of the 20 C1 words you met' });
+    expect(suggestLevel([lv('B2', 10, 2), lv('C1', 8, 6)], 'B2')).toBeNull(); // too few C1 words, and not 75 %
+    expect(suggestLevel([lv('B2', 4, 14)], 'B2')?.level).toBe('B1');
+    expect(suggestLevel([lv('C2', 40, 2)], 'C2')).toBeNull();
+    expect(levelNote([lv('B2', 10, 2), lv('C1', 16, 4)], 'B2')).toBe('B2 words you met: 10 of 12 known · C1 words you met: 16 of 20 known');
   });
   it('auto voice = OpenAI with its key, else the Mac voice', () => {
     expect(resolveVoice('auto', { openai: 'k' })).toBe('openai');
