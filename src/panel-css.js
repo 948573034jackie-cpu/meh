@@ -39,10 +39,10 @@ globalThis.YTL_PANEL_CSS = `
 .resize:hover::after { background: var(--accent); }
 .row {
   display: flex; align-items: center; flex-wrap: wrap;
-  gap: 6px 10px; padding: 6px 10px;
+  gap: 5px 8px; padding: 4px 8px;
 }
-.bar { background: var(--bg2); border-bottom: 1px solid var(--line); padding-top: 7px; }
-.bar.transport { background: #10151f; padding-top: 6px; }
+.bar { background: var(--bg2); border-bottom: 1px solid var(--line); padding-top: 5px; }
+.bar.transport { background: #10151f; padding-top: 4px; }
 .group { display: flex; align-items: center; gap: 4px; }
 .sep { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
 .spacer { flex: 1 1 auto; }
@@ -235,7 +235,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
   transform: translateX(-50%); white-space: nowrap; z-index: 2;
 }
 .tip[hidden] { display: none; }
-.status { display: flex; align-items: center; gap: 10px; padding: 4px 10px; min-height: 30px; background: var(--bg2); border-top: 1px solid var(--line); }
+.status { display: flex; align-items: center; gap: 10px; padding: 3px 10px; min-height: 26px; background: var(--bg2); border-top: 1px solid var(--line); }
 .hint { color: var(--muted); flex: 1 1 auto; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hint b { color: var(--text); font-weight: 600; }
 .chips { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow-x: auto; max-width: 55%; scrollbar-width: thin; }
@@ -339,17 +339,28 @@ button.beat-btn.on { background: #ff8a3d; color: #1d0d00; }
 .q-pair button.q-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 select.q-res { height: 30px; margin-left: -1px; padding: 0 4px; border-top-left-radius: 0; border-bottom-left-radius: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
 /* Stems: vocals / drums / bass / other on and off, and shadowing */
-button.stem-btn { min-width: 64px; font-weight: 700; color: var(--stem); border-color: color-mix(in srgb, var(--stem) 45%, transparent); background: color-mix(in srgb, var(--stem) 14%, transparent); }
+button.stem-btn { min-width: 0; padding: 0 7px; font-weight: 700; color: var(--stem); border-color: color-mix(in srgb, var(--stem) 45%, transparent); background: color-mix(in srgb, var(--stem) 14%, transparent); }
 button.stem-btn[data-stem="vocals"] { --stem: #ff6ec7; }
 button.stem-btn[data-stem="drums"] { --stem: #ff5436; }
 button.stem-btn[data-stem="bass"] { --stem: #4da3ff; }
 button.stem-btn[data-stem="other"] { --stem: #7ee081; }
 button.stem-btn.off { color: #6b7686; background: transparent; border-color: var(--line); text-decoration: line-through; }
 button.stem-btn.shadow::after { content: ' ⇆'; font-weight: 400; }
-button.stems-btn.on { background: #2a1836; border-color: #ff6ec7; color: #ffb3e4; }
-select.shadow-sel { font-weight: 700; }
-.stem-stat { max-width: 48ch; white-space: normal; line-height: 1.2; }
-.stems-row .progress { width: 90px; }
+button.stem-btn.quiet { color: #6b7686; background: transparent; border-color: var(--line); }
+/* a mixer strip per stem: name (mute) + S (solo) + ⇆ (shadow), joined */
+.stems { display: inline-flex; align-items: center; gap: 6px; position: relative; padding-bottom: 3px; }
+.stems::after { content: ""; position: absolute; left: 2px; right: 2px; bottom: 0; height: 2px; border-radius: 1px; background: linear-gradient(90deg, #ff6ec7, #ffb000); transform-origin: left; transform: scaleX(var(--pct, 0)); opacity: 0; transition: transform .4s, opacity .3s; }
+.stems.busy::after { opacity: .9; }
+.stem-strip { display: inline-flex; }
+.stem-strip button { border-radius: 0; }
+.stem-strip button:first-child { border-radius: 8px 0 0 8px; }
+.stem-strip button:last-child { border-radius: 0 8px 8px 0; }
+.stem-strip button + button { margin-left: -1px; }
+button.solo-btn, button.shadow-btn { min-width: 24px; padding: 0 5px; font-weight: 800; font-size: 12px; color: var(--muted); }
+button.solo-btn.on { background: #ffb000; border-color: #ffb000; color: #1d1200; }
+button.shadow-btn.on { background: #b06cff; border-color: #b06cff; color: #140a24; }
+.stem-note { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42ch; }
+.stem-note.err { color: #ff7b72; }
 .shadow-badge { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); z-index: 3; padding: 4px 14px; border-radius: 14px; font-size: 13px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; pointer-events: none; background: rgba(12,15,21,.82); border: 1px solid var(--line); backdrop-filter: blur(4px); }
 .shadow-badge.listen { color: #3ddc84; border-color: #3ddc84; }
 .shadow-badge.yours { color: #ffb000; border-color: #ffb000; box-shadow: 0 0 14px rgba(255,176,0,.35); }
@@ -365,9 +376,6 @@ button.drum-btn.on { background: #3a1a14; border-color: #ff5436; color: #ffb3a3;
 .bpm-in { width: 78px; height: 28px; padding: 0 6px; border-radius: 7px; border: 1px solid var(--line); background: #0d1119; color: #ffb74d; font: 700 13px/1 inherit; font-variant-numeric: tabular-nums; }
 .grid-ms { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text, #dfe6f3); }
 button.one-here { color: #ffb74d; }
-.cues { display: inline-flex; gap: 2px; }
-button.cue-btn { min-width: 34px; padding: 0 6px; font-weight: 800; color: var(--cue); border-color: color-mix(in srgb, var(--cue) 35%, transparent); background: transparent; }
-button.cue-btn.set { background: var(--cue); color: #0b0e14; border-color: var(--cue); }
 
 /* Fingers: the beat tools too (they are styled after the rules above). */
 @media (any-pointer: coarse) {

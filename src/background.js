@@ -66,14 +66,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return false;
   if (msg.type === 'ytl-stems' && sender.tab && sender.tab.id != null) {
     const tabId = sender.tab.id;
+    console.debug('stems job', msg.job && msg.job.op, msg.job && msg.job.id, 'from tab', tabId);
     ensureOffscreen()
       .then(() => chrome.runtime.sendMessage({ type: 'ytl-stems-job', tabId, job: msg.job }))
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, why: String((e && e.message) || e) }));
+      .catch((e) => {
+        console.debug('stems job failed', String((e && e.message) || e));
+        sendResponse({ ok: false, why: String((e && e.message) || e) });
+      });
     return true;
   }
   if (msg.type === 'ytl-stems-out' && msg.tabId != null) {
-    chrome.tabs.sendMessage(msg.tabId, msg).catch(() => {});
+    console.debug('stems out', msg.stage, msg.stem || msg.what || '', 'to tab', msg.tabId);
+    if (msg.tabId < 0) return false; // the offscreen page's own notes
+    chrome.tabs.sendMessage(msg.tabId, msg).catch((e) => console.debug('stems out not delivered', String((e && e.message) || e)));
     return false;
   }
   return false;

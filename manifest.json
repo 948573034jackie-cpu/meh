@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "DJ Wave Looper for YouTube",
   "short_name": "Wave Looper",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "See the whole song as a DJ waveform, loop any part with zero gap, slow it down, auto speed-up trainer, beat grid, drum chart, lyrics and chords, and AI stems (vocals / drums / bass / other) for shadowing practice. Built for singers and players.",
   "icons": {
     "16": "icons/icon16.png",
@@ -80,5 +80,17 @@
   },
   "cross_origin_opener_policy": {
     "value": "same-origin"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/vendor/stretch-worklet.js"
+      ],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://music.youtube.com/*"
+      ]
+    }
+  ]
 }

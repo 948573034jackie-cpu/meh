@@ -104,7 +104,7 @@
     lineRest: 0, // Practice: seconds of rest between parts
     quantize: false, // Q: A and B snap to the beat
     qRes: 1, // what Q snaps to, in beats: 1, 0.5, 0.25, or 4 (the start of a bar)
-    stemsOpen: false, // the Stems row (vocals / drums / bass / other on and off)
+    stemsAuto: true, // the stems (vocals / drums / bass / other) are separated by themselves, in the background, and kept
     shadow: 'off', // shadowing: 'vocals' | 'drums' | 'bass' | 'other': one play with it, one without
     seamless: !IS_IOS, // loops play from memory: no gap at all between B and A
     mouseDJ: true, // computer: drag the wave like a record, click = play/pause, double-click = A then B
@@ -123,7 +123,6 @@
     gridBase: null, // beats found in this video's wave: { vid, g, hits }
     grid: null, // the beat grid in use (after the fixes by hand below)
     gridAdj: gridAdjDefault(), // fixes by hand: ½ / 2×, move the 1, ms shift, typed tempo
-    cues: [null, null, null, null], // hot cues 1-4 (seconds)
     gridTried: 0,
     gridCov: 0, // how much of the song had been read when the grid was found
     follow: true, // the zoomed wave moves with the song (on each time the page opens)
@@ -155,7 +154,9 @@
     lastWrapAt: 0,
     adWas: false,
     lineLoop: null, // { a, b, idx }: one lyric line repeating
-    stemOn: { vocals: true, drums: true, bass: true, other: true }, // which stems you hear
+    stemOn: { vocals: true, drums: true, bass: true, other: true }, // stems not muted
+    stemSolo: { vocals: false, drums: false, bass: false, other: false }, // soloed stems (only these are heard)
+    loopRun: { half: 0 }, // shadowing on a plain loop: 0 = this play with the stem, 1 = without
     meta: { vid: null, title: '', author: '' },
     hintOverride: null,
     hintUntil: 0,
@@ -343,15 +344,43 @@
   const STEM_SEG = 9; // seconds per part
   const STEM_MARGIN = 1; // extra second each side, so the parts join without a seam
   const STEM_MODEL_BASE = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/';
-  const ST = { song: null, seg: null, jobId: 0, retryAt: 0, err: '', threads: 0, loopKey: '', loopBufs: null, scanAsked: false, note: '' };
+  const ST = { song: null, seg: null, jobId: 0, retryAt: 0, err: '', threads: 0, engine: '', gpu: null, loopKey: '', loopBufs: null, scanAt: 0, scans: 0, note: '', waiting: false, parts: {}, restoring: '', restored: '' };
+  const STEM_GPU_KEY = 'ytlStemGpu'; // { ok, why, v, t }: whether the graphics chip gave the right answer last time
+
+  // The GPU verdict from the last time (this version, the last 30 days), for the jobs.
+  async function stemsGpuMemory() {
+    if (ST.gpu !== null) return ST.gpu;
+    ST.gpu = '';
+    try {
+      const saved = (await storage.get([STEM_GPU_KEY]))[STEM_GPU_KEY];
+      const v = chrome.runtime.getManifest().version;
+      if (saved && saved.v === v && Date.now() - saved.t < 30 * 86400000) ST.gpu = saved.ok ? 'ok' : 'no';
+    } catch (e) {
+      /* nothing remembered */
+    }
+    return ST.gpu;
+  }
+
+  function stemsGpuRemember(engine, why) {
+    if (!engine) return;
+    const ok = engine === 'webgpu';
+    const was = ST.gpu;
+    ST.gpu = ok ? 'ok' : 'no';
+    if (was === ST.gpu) return;
+    try {
+      storage.set({ [STEM_GPU_KEY]: { ok, why: why || '', v: chrome.runtime.getManifest().version, t: Date.now() } });
+    } catch (e) {
+      /* fine */
+    }
+  }
 
   function stemsAvailable() {
     return alive() && !IS_IOS;
   }
 
-  // Are stems wanted right now (the row is open, a stem is off, or shadowing is on)?
+  // Are stems wanted right now (by themselves, a stem is off, or shadowing is on)?
   function stemsWanted() {
-    return stemsAvailable() && !!S.vid && (settings.stemsOpen || settings.shadow !== 'off' || STEM_NAMES.some((k) => !S.stemOn[k]));
+    return stemsAvailable() && !!S.vid && (settings.stemsAuto || settings.shadow !== 'off' || STEM_NAMES.some((k) => !S.stemOn[k] || S.stemSolo[k]));
   }
 
   function stemsForget() {
@@ -361,7 +390,13 @@
     ST.err = '';
     ST.loopKey = '';
     ST.loopBufs = null;
-    ST.scanAsked = false;
+    ST.scanAt = 0;
+    ST.scans = 0;
+    ST.note = '';
+    ST.waiting = false;
+    ST.parts = {};
+    ST.restoring = '';
+    ST.restored = '';
   }
 
   function stemsCancel() {
@@ -402,11 +437,12 @@
     return out;
   }
 
-  // All the loop's parts are separated (and at the engine's sample rate)?
+  // All the loop's parts are separated (and at the loop's own sample rate)?
   function stemsLoopReady(r) {
     const song = ST.song;
     r = r || slRegion();
     if (!song || !r || !HQ.ctx || song.vid !== S.vid) return false;
+    if (SL.nat && SL.nat.sr !== song.sr) return false;
     return stemSegsFor(r.a, r.b).every((k) => k < song.nSeg && song.done[k]);
   }
 
@@ -418,14 +454,20 @@
     return n / song.nSeg;
   }
 
-  // Next part to do: the loop's parts first, then onwards from there.
-  function stemsNextSeg(song) {
+  // A part whose audio could not be had waits a while (or is given up on).
+  function stemPartOk(k) {
+    const p = ST.parts[k];
+    return !p || (!p.bad && now() >= (p.tryAt || 0));
+  }
+
+  // Next part to do: the loop's parts first (else from where the song is), then onwards from there.
+  function stemsNextSeg(song, nSeg) {
     const r = loopRegion();
     const t = S.video ? S.video.currentTime : 0;
-    const first = r ? Math.floor(r.a / STEM_SEG) : Math.floor(t / STEM_SEG);
-    for (let i = 0; i < song.nSeg; i++) {
-      const k = (first + i) % song.nSeg;
-      if (!song.done[k]) return k;
+    const first = Math.min(nSeg - 1, Math.floor((r ? r.a : t) / STEM_SEG));
+    for (let i = 0; i < nSeg; i++) {
+      const k = (first + i) % nSeg;
+      if (!(song && song.done[k]) && stemPartOk(k)) return k;
     }
     return -1;
   }
@@ -443,21 +485,28 @@
     }
     if (now() < ST.retryAt) return;
     const d = dur();
+    if (!d) return;
     if (d > STEM_MAX_DUR) {
       ST.err = 'Stems work for songs up to 10 minutes.';
       ST.retryAt = now() + 60000;
       return;
     }
+    // The parts saved from before, first.
+    if (ST.restoring) return;
+    if (ST.gpu === null) {
+      stemsGpuMemory();
+      return;
+    }
+    if (ST.restored !== S.vid) {
+      ST.restored = S.vid;
+      stemsRestore(S.vid);
+      return;
+    }
+    if (autoScanWanted()) return; // the song is about to be read: its audio comes then
     const song = stemsSong(0);
     const nSeg = Math.ceil(d / STEM_SEG);
-    let k = 0;
-    if (song) {
-      k = stemsNextSeg(song);
-      if (k < 0) return;
-    } else {
-      const r = loopRegion();
-      k = Math.min(nSeg - 1, Math.floor((r ? r.a : S.video ? S.video.currentTime : 0) / STEM_SEG));
-    }
+    const k = stemsNextSeg(song, nSeg);
+    if (k < 0) return;
     // (the first piece of audio starts a hair after 0)
     const a = Math.max(0.05, k * STEM_SEG - STEM_MARGIN);
     const b = Math.min(d - 0.05, (k + 1) * STEM_SEG + STEM_MARGIN);
@@ -488,25 +537,53 @@
       return;
     }
     if (!m.ok || !(m.ch0 instanceof Float32Array)) {
+      // This part waits; the others go on. (One bad part never stops the song.)
       ST.seg = null;
-      if (m.why === 'not loaded' && Array.isArray(m.missing) && m.missing.length && !S.scan && !ST.scanAsked) {
-        // The audio is not in the page (the wave came from memory): read it once, muted.
-        ST.scanAsked = true;
-        ST.note = 'Reading the song once to get its audio (muted)…';
-        startScan(m.missing.map(([x, y]) => ({ start: x, end: y })));
+      const p = ST.parts[seg.k] || (ST.parts[seg.k] = { fails: 0, tryAt: 0, bad: false });
+      if (m.why === 'not loaded') {
+        // The audio of this part is not in the page (the wave came from memory).
+        // Never take the song over on our own: the part comes as the song plays
+        // through it. Only when you asked for stems (a stem muted, soloed or
+        // shadowed) and the loop needs this part, it is read once, muted.
+        const missing = Array.isArray(m.missing) ? m.missing.filter((x) => x[1] - x[0] > 0.05) : [];
+        const explicit = settings.shadow !== 'off' || STEM_NAMES.some((j) => !S.stemOn[j] || S.stemSolo[j]);
+        const r = loopRegion();
+        const forLoop = !!r && stemSegsFor(r.a, r.b).includes(seg.k);
+        ST.waiting = true;
+        if (explicit && forLoop && settings.autoScan && missing.length && !S.scan && ST.scans < 2 && now() - ST.scanAt > 60000) {
+          ST.scans++;
+          ST.scanAt = now();
+          ST.note = 'Reading this part of the song once to get its audio (muted)…';
+          startScan(missing.map(([x, y]) => ({ start: x, end: y })));
+          p.tryAt = now() + 3000;
+        } else {
+          p.tryAt = now() + 15000;
+          ST.note = explicit && forLoop ? 'This part\'s audio is not loaded yet: play it through once (or turn on "Read the whole song automatically" in ⚙).' : '';
+        }
       } else {
-        ST.err = m.why === 'not loaded' ? 'Part of the song is not loaded: play it once, or "Read whole song now" in ⚙.' : `Could not get the audio (${m.why}).`;
+        p.fails++;
+        p.tryAt = now() + 30000;
+        if (p.fails >= 3) p.bad = true;
+        ST.note = `Part ${seg.k + 1} could not be read (${m.why}).`;
       }
-      ST.retryAt = now() + 4000;
       renderUI();
       return;
     }
-    const song = stemsSong(m.sr);
+    let song = stemsSong(m.sr);
+    if (!song && ST.song && ST.song.sr !== m.sr) {
+      // the saved stems were made from a stream at another rate: start over
+      ST.song = null;
+      ST.loopKey = '';
+      ST.loopBufs = null;
+      song = stemsSong(m.sr);
+    }
     if (!song || m.sr !== song.sr) {
       ST.seg = null;
       ST.retryAt = now() + 2000;
       return;
     }
+    ST.note = '';
+    ST.waiting = false;
     seg.stage = 'sep';
     seg.start = m.start;
     seg.len = m.ch0.length;
@@ -514,7 +591,7 @@
     seg.got = {};
     seg.at = now();
     const job = { op: 'separate', id: seg.id, sr: m.sr, l: int16B64(m.ch0), r: int16B64(m.ch1 instanceof Float32Array ? m.ch1 : m.ch0), stems: STEM_MODELS,
-      modelBase: document.documentElement.dataset.ytlModelBase || STEM_MODEL_BASE };
+      modelBase: document.documentElement.dataset.ytlModelBase || STEM_MODEL_BASE, gpu: ST.gpu || undefined };
     try {
       chrome.runtime.sendMessage({ type: 'ytl-stems', job }, (resp) => {
         if (chrome.runtime.lastError || !resp || !resp.ok) {
@@ -584,11 +661,16 @@
         song.done[seg.k] = 1;
         ST.err = '';
         ST.note = '';
+        delete ST.parts[seg.k];
+        stemsSave(song, seg.k, at, to - from);
       } else {
         ST.err = 'Separation came back incomplete; trying again.';
         ST.retryAt = now() + 5000;
       }
       ST.threads = m.threads || ST.threads;
+      ST.engine = m.engine || ST.engine;
+      ST.errs = 0;
+      stemsGpuRemember(m.engine, m.gpuWhy);
       ST.seg = null;
       if (ST.loopKey) {
         // the loop's stems may have just become complete
@@ -598,10 +680,13 @@
       stemsTick(); // straight on to the next part
     } else if (m.stage === 'error') {
       ST.seg = null;
-      ST.err = /download failed|Failed to fetch|NetworkError/i.test(m.why || '') ? 'Could not download the AI model (internet?). It tries again in a moment.' : `Separation failed (${m.why}).`;
-      ST.retryAt = now() + 10000;
+      ST.errs = (ST.errs || 0) + 1;
+      const wait = Math.min(300000, 10000 * 2 ** Math.min(5, ST.errs - 1)); // 10 s, 20 s, … 5 min
+      ST.err = /download failed|Failed to fetch|NetworkError/i.test(m.why || '') ? `Could not download the AI model (internet?). It tries again in ${Math.round(wait / 1000)} s.` : `Separation failed (${m.why}). It tries again in ${Math.round(wait / 1000)} s.`;
+      ST.retryAt = now() + wait;
     } else if (m.stage === 'pong') {
       ST.threads = m.threads;
+      ST.engine = m.engine || ST.engine;
     }
     renderUI();
   }
@@ -695,7 +780,7 @@
         }
         parts[k].push(out);
       }
-      bufs[k] = toCtxBuffer(parts[k][0], parts[k][1], sr, buf.length);
+      bufs[k] = toCtxBuffer(parts[k][0], parts[k][1], sr);
     }
     ST.loopKey = key;
     ST.loopBufs = bufs;
@@ -716,11 +801,11 @@
     return settings.shadow !== 'off' && STEM_NAMES.includes(settings.shadow) ? settings.shadow : null;
   }
 
-  // The practice that takes turns: line practice / Practice, or the Trainer.
+  // What takes the turns: line practice / Practice, the Trainer, or just the loop.
   function shadowRun() {
     if (S.lineLoop) return S.lineLoop;
     if (S.trainer.running) return S.trainer;
-    return null;
+    return S.loopRun;
   }
 
   // Is the stem being shadowed silent on this play (0 = the current play, 1 = the next)?
@@ -732,8 +817,14 @@
     return (ahead ? 1 - half : half) === 1;
   }
 
+  // Is a stem heard: muted stems are off; with any stem soloed, only the soloed ones play.
+  function stemHeard(k) {
+    const solo = STEM_NAMES.some((j) => S.stemSolo[j]);
+    return solo ? !!S.stemSolo[k] : !!S.stemOn[k];
+  }
+
   function stemGainAt(k, ahead) {
-    if (!S.stemOn[k]) return 0;
+    if (!stemHeard(k)) return 0;
     return shadowStem() === k && shadowMutedAt(ahead) ? 0 : 1;
   }
 
@@ -755,15 +846,23 @@
     }
   }
 
-  function toggleStem(k, solo) {
+  // Mute / unmute a stem (its name button), solo it (S), or shadow it (⇆).
+  function toggleStem(k) {
     if (!stemsAvailable()) return;
-    if (solo) {
-      const alone = S.stemOn[k] && STEM_NAMES.every((j) => j === k || !S.stemOn[j]);
-      for (const j of STEM_NAMES) S.stemOn[j] = alone ? true : j === k;
-    } else S.stemOn[k] = !S.stemOn[k];
+    S.stemOn[k] = !S.stemOn[k];
+    stemsChanged(k);
+  }
+
+  function toggleSolo(k) {
+    if (!stemsAvailable()) return;
+    S.stemSolo[k] = !S.stemSolo[k];
+    stemsChanged(k);
+  }
+
+  function stemsChanged(k) {
     if (!HQ.ctx) hqGesture();
     applyStemGains();
-    if (!stemsLoopReady() && !S.stemOn[k]) flash(stemsStatusText() || 'Separating the loop first…', 3000);
+    if (!stemsLoopReady() && !stemHeard(k) && stemsWanted()) flash(stemsStatusText() || 'Separating the loop first…', 3000);
     S.dirty = true;
     renderUI();
   }
@@ -779,9 +878,9 @@
       }
       if (settings.gap > 0) flash('Shadowing needs no pause between loops: set "Pause between loops" to none in ⚙.', 6000);
       if (!HQ.ctx) hqGesture();
-      const run = shadowRun();
-      if (run) run.half = 0;
+      if (!stemHeard(settings.shadow)) flash(`Shadowing the ${settings.shadow === 'other' ? 'other instruments' : settings.shadow}: they are muted, so you will only hear them on the "listen" plays once you unmute them.`, 5000);
     }
+    for (const run of [S.lineLoop, S.trainer, S.loopRun]) if (run) run.half = 0;
     applyStemGains();
     S.dirty = true;
     renderUI();
@@ -790,15 +889,184 @@
   function stemsStatusText() {
     if (!stemsAvailable()) return '';
     if (ST.err) return ST.err;
-    if (ST.note) return ST.note;
+    if (ST.restoring) return 'Loading the saved stems…';
     const song = ST.song;
-    if (!song) return 'Separating the song into vocals, drums, bass and the rest… (AI models, downloaded once)';
     const seg = ST.seg;
-    const pct = Math.round(stemsPct() * 100);
     if (seg && seg.stage === 'download') return `Downloading the ${seg.stem} AI model (once, 28 MB)… ${Math.round((seg.dl || 0) * 100)}%`;
-    if (seg) return `Separating the song… ${pct}% (part ${seg.k + 1} of ${song.nSeg}, ${seg.stem || 'vocals'})`;
+    if (!song) return ST.note || 'Separating the song into vocals, drums, bass and the rest…';
+    const pct = Math.round(stemsPct() * 100);
     if (pct >= 100) return 'Stems ready for the whole song.';
+    if (seg) return `Separating the song… ${pct}% (part ${seg.k + 1} of ${song.nSeg}, ${seg.stem || 'vocals'}${ST.engine === 'webgpu' ? ', on the GPU' : ''})`;
+    if (ST.note) return ST.note;
+    const bad = Object.keys(ST.parts).filter((k) => ST.parts[k].bad).length;
+    if (bad && !stemsNextSegFree()) return `Stems ready except ${bad} part${bad > 1 ? 's' : ''} that could not be read.`;
+    if (ST.waiting) return `Stems ${pct}%: the rest follows as the song plays through.`;
     return `Separating the song… ${pct}%`;
+  }
+
+  function stemsNextSegFree() {
+    const song = ST.song;
+    if (!song) return true;
+    for (let k = 0; k < song.nSeg; k++) if (!song.done[k] && !(ST.parts[k] && ST.parts[k].bad)) return true;
+    return false;
+  }
+
+  // --- the stems are kept on disk (IndexedDB, part by part), so a song is separated once ---
+  const STEM_DB = 'ytl-stems';
+  const STEM_KEEP = 12; // songs kept; the oldest go when there are more
+  let stemDbP = null;
+  function stemsDb() {
+    if (!stemDbP) {
+      stemDbP = new Promise((resolve, reject) => {
+        const req = indexedDB.open(STEM_DB, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('parts')) db.createObjectStore('parts');
+          if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs');
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          db.onversionchange = () => db.close();
+          resolve(db);
+        };
+        req.onerror = () => reject(req.error || new Error('IndexedDB'));
+        req.onblocked = () => reject(new Error('IndexedDB blocked'));
+      }).catch((e) => {
+        stemDbP = null;
+        throw e;
+      });
+    }
+    return stemDbP;
+  }
+  const idb = (req) => new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('IndexedDB'));
+  });
+  const txDone = (tx) => new Promise((resolve, reject) => {
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error || new Error('IndexedDB'));
+    tx.onabort = () => reject(tx.error || new Error('aborted'));
+  });
+  const partKey = (vid, k) => `${vid}|${String(k).padStart(4, '0')}`;
+  const partRange = (vid) => IDBKeyRange.bound(`${vid}|`, `${vid}|\uffff`);
+
+  async function stemsSave(song, k, at, n) {
+    try {
+      const db = await stemsDb();
+      const rec = { vid: song.vid, k, sr: song.sr, at, n, t: Date.now(), mix: song.mix.slice(at, at + n), stems: {} };
+      for (const st of STEM_NAMES) rec.stems[st] = [song.stems[st][0].slice(at, at + n), song.stems[st][1].slice(at, at + n)];
+      const tx = db.transaction(['parts', 'songs'], 'readwrite');
+      tx.objectStore('parts').put(rec, partKey(song.vid, k));
+      tx.objectStore('songs').put({ vid: song.vid, sr: song.sr, dur: song.dur, nSeg: song.nSeg, t: Date.now() }, song.vid);
+      await txDone(tx);
+      if (!song.savedOnce) {
+        song.savedOnce = true;
+        stemsTrim(db, song.vid).catch(() => {});
+      }
+    } catch (e) {
+      /* no room or no storage: the stems stay for this visit only */
+    }
+  }
+
+  // Keeps the last STEM_KEEP songs on disk.
+  async function stemsTrim(db, keepVid) {
+    const songs = await idb(db.transaction('songs').objectStore('songs').getAll());
+    if (songs.length <= STEM_KEEP) return;
+    songs.sort((a, b) => a.t - b.t);
+    for (const x of songs.slice(0, songs.length - STEM_KEEP)) {
+      if (x.vid === keepVid) continue;
+      const tx = db.transaction(['parts', 'songs'], 'readwrite');
+      tx.objectStore('parts').delete(partRange(x.vid));
+      tx.objectStore('songs').delete(x.vid);
+      await txDone(tx).catch(() => {});
+    }
+  }
+
+  // The parts of this song saved before, if any: into memory, so the stems are there at once.
+  async function stemsRestore(vid) {
+    if (!stemsAvailable() || !vid) return;
+    ST.restoring = vid;
+    try {
+      const db = await stemsDb();
+      const recs = await idb(db.transaction('parts').objectStore('parts').getAll(partRange(vid)));
+      if (S.vid !== vid || ST.restoring !== vid || !recs.length) return;
+      const song = stemsSong(recs[0].sr);
+      if (!song) return;
+      for (const r of recs) {
+        if (r.sr !== song.sr || r.k >= song.nSeg || r.at < 0 || r.at + r.n > song.n) continue;
+        for (const st of STEM_NAMES) for (let c = 0; c < 2; c++) song.stems[st][c].set(r.stems[st][c], r.at);
+        song.mix.set(r.mix, r.at);
+        song.done[r.k] = 1;
+      }
+      song.savedOnce = true;
+      ST.loopKey = '';
+      ST.loopBufs = null;
+      const tx = db.transaction('songs', 'readwrite');
+      tx.objectStore('songs').put({ vid, sr: song.sr, dur: song.dur, nSeg: song.nSeg, t: Date.now() }, vid);
+      await txDone(tx).catch(() => {});
+    } catch (e) {
+      /* nothing saved, or no storage */
+    } finally {
+      if (ST.restoring === vid) ST.restoring = '';
+      renderUI();
+    }
+  }
+
+  // All four stems as WAV files (16-bit stereo): the whole song, or the loop.
+  function downloadStems(what) {
+    const song = ST.song;
+    const r = what === 'loop' ? loopRegion() : null;
+    if (what === 'loop' && !r) return flash('Set a loop (A and B) first.', 3000);
+    if (!song || (what === 'loop' ? !stemsLoopReady(r) : stemsPct() < 1)) {
+      return flash(stemsWanted() ? `The stems are not ready yet. ${stemsStatusText()}` : 'Turn on "Stems by themselves" in ⚙ (or turn a stem off) and wait for the stems.', 5000);
+    }
+    const sr = song.sr;
+    const i0 = r ? Math.max(0, Math.round(r.a * sr)) : 0;
+    const i1 = Math.min(song.n, r ? Math.round(r.b * sr) : Math.ceil(song.dur * sr));
+    const F = C.formatTime;
+    const title = ((S.meta && S.meta.vid === S.vid && S.meta.title) || document.title.replace(/ - YouTube$/, '') || S.vid).replace(/[\\/:*?"<>|]+/g, ' ').trim();
+    const label = r ? ` ${F(r.a)}-${F(r.b)}`.replace(/:/g, '.') : '';
+    STEM_NAMES.forEach((k, j) => {
+      setTimeout(() => saveBlob(wavBlob(song.stems[k][0].subarray(i0, i1), song.stems[k][1].subarray(i0, i1), sr), `${title}${label} - ${k}.wav`), j * 400);
+    });
+    flash('Saving 4 WAV files (vocals, drums, bass, other) to your Downloads…', 5000);
+  }
+
+  function wavBlob(l, r, sr) {
+    const n = l.length;
+    const data = new Int16Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      data[2 * i] = l[i];
+      data[2 * i + 1] = r[i];
+    }
+    const hd = new DataView(new ArrayBuffer(44));
+    const str = (o, x) => { for (let i = 0; i < x.length; i++) hd.setUint8(o + i, x.charCodeAt(i)); };
+    str(0, 'RIFF');
+    hd.setUint32(4, 36 + data.byteLength, true);
+    str(8, 'WAVE');
+    str(12, 'fmt ');
+    hd.setUint32(16, 16, true);
+    hd.setUint16(20, 1, true);
+    hd.setUint16(22, 2, true);
+    hd.setUint32(24, sr, true);
+    hd.setUint32(28, sr * 4, true);
+    hd.setUint16(32, 4, true);
+    hd.setUint16(34, 16, true);
+    str(36, 'data');
+    hd.setUint32(40, data.byteLength, true);
+    return new Blob([hd.buffer, data.buffer], { type: 'audio/wav' });
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.style.display = 'none';
+    (document.body || document.documentElement).appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
   function postToPage(msg) {
@@ -875,8 +1143,9 @@
     S.gridTried = 0;
     S.gridCov = 0;
     S.follow = true;
-    S.cues = [null, null, null, null];
     S.stemOn = { vocals: true, drums: true, bass: true, other: true };
+    S.stemSolo = { vocals: false, drums: false, bass: false, other: false };
+    S.loopRun = { half: 0 };
     stemsForget();
     S.dirty = true;
     renderUI();
@@ -898,7 +1167,6 @@
     const st = r['ytl:v:' + vid];
     if (st) {
       const num = Number.isFinite;
-      if (Array.isArray(st.cues)) S.cues = [0, 1, 2, 3].map((i) => (Number.isFinite(st.cues[i]) ? st.cues[i] : null));
       if (st.gridAdj && [0.5, 1, 2].includes(st.gridAdj.scale)) {
         const g = st.gridAdj;
         S.gridAdj = {
@@ -937,7 +1205,7 @@
     clearTimeout(videoStateTimer);
     if (!S.vid) return;
     const hasLoop = S.a != null && S.b != null;
-    if (!hasLoop && !S.saved.length && !S.rateOwned && gridAdjIsDefault(S.gridAdj) && !S.cues.some((c) => c != null)) {
+    if (!hasLoop && !S.saved.length && !S.rateOwned && gridAdjIsDefault(S.gridAdj)) {
       storage.remove('ytl:v:' + S.vid);
       return;
     }
@@ -950,7 +1218,6 @@
         rateOwned: S.rateOwned,
         saved: S.saved,
         gridAdj: gridAdjIsDefault(S.gridAdj) ? undefined : S.gridAdj,
-        cues: S.cues.some((c) => c != null) ? S.cues : undefined,
         t: Date.now(),
       },
     });
@@ -1030,7 +1297,13 @@
     }
     const canStretch = typeof SignalsmithStretch === 'function' && !!window.AudioWorkletNode;
     try {
-      HQ.ctx = new AudioContext({ latencyHint: 'playback' });
+      // At the stream's own rate (YouTube's audio is 48 kHz): the loop and its
+      // stems then play without any conversion; Chrome converts for the speakers.
+      try {
+        HQ.ctx = new AudioContext({ latencyHint: 'playback', sampleRate: 48000 });
+      } catch (e) {
+        HQ.ctx = new AudioContext({ latencyHint: 'playback' });
+      }
     } catch (e) {
       HQ.failed = true;
       return;
@@ -1049,6 +1322,10 @@
       return;
     }
     HQ.loading = true;
+    // The pitch engine's worklet by the extension's own URL: YouTube's script
+    // policy (strict-dynamic) refuses the blob: URL the library would make.
+    // eslint-disable-next-line no-undef
+    if (alive() && !SignalsmithStretch.moduleUrl) SignalsmithStretch.moduleUrl = chrome.runtime.getURL('src/vendor/stretch-worklet.js');
     // eslint-disable-next-line no-undef
     SignalsmithStretch(HQ.ctx, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] })
       .then(async (node) => {
@@ -1261,6 +1538,7 @@
     if (!m.ok || !(m.ch0 instanceof Float32Array)) {
       SL.failKey = key;
       SL.failAt = now();
+      SL.failWhy = m.why || '';
       return;
     }
     try {
@@ -1284,18 +1562,11 @@
     }
   }
 
-  // A sound buffer for the engine from samples at the stream's rate.
-  function toCtxBuffer(l, r, sr, outLen) {
-    const ctx = HQ.ctx;
-    const RS = globalThis.YTLStems;
-    if (sr !== ctx.sampleRate && RS) {
-      const n = outLen || Math.round((l.length * ctx.sampleRate) / sr);
-      const buf = ctx.createBuffer(2, n, ctx.sampleRate);
-      buf.copyToChannel(RS.resample(l, sr, ctx.sampleRate, n), 0);
-      buf.copyToChannel(RS.resample(r, sr, ctx.sampleRate, n), 1);
-      return buf;
-    }
-    const buf = ctx.createBuffer(2, l.length, sr); // (the engine converts on the way out)
+  // A sound buffer for the engine from samples at the stream's rate. The
+  // engine runs at that rate (48 kHz); if it ever cannot, it converts the
+  // buffer on the way out (the loop and its stems all the same way).
+  function toCtxBuffer(l, r, sr) {
+    const buf = HQ.ctx.createBuffer(2, l.length, sr);
     buf.copyToChannel(l, 0);
     buf.copyToChannel(r, 1);
     return buf;
@@ -1329,6 +1600,7 @@
     const when = ctx.currentTime + 0.005;
     clearTimeout(S.wrapTimer);
     S.wrapTimer = 0;
+    S.loopRun.half = 0; // a fresh loop starts with the shadowed stem on (listen)
     Object.assign(SL, { src: null, stemSrcs: null, mode: 'mix', active: true, a: r.a, len: SL.buf.duration, pos0: offset, ctx0: when, loops: 0 });
     slStartSources(when, Math.min(offset, SL.buf.duration - 0.001), stemsLoopReady(r));
     updateHQ(); // the video's own sound goes quiet
@@ -1693,6 +1965,10 @@
         S.rate = C.trainerRate(LINE_START, 1, ll.ramp, ll.rep);
         applyRate();
       }
+    }
+    if (!S.lineLoop && !S.trainer.running) {
+      // just the loop: with the stem, without it, with, without…
+      S.loopRun.half = shadowing && !S.loopRun.half ? 1 : 0;
     }
     if (S.trainer.running && !S.lineLoop) {
       const tr = S.trainer;
@@ -2235,28 +2511,6 @@
     return ok(S.a, ia) && Math.abs(C.beatTime(B, ia + n) - S.b) < 0.03 ? n : 0;
   }
 
-  // Hot cues 1-4, like a DJ controller: click an empty pad to mark the spot
-  // (on the beat with Q), click it again to jump there and play.
-  // Shift-click or right-click clears it.
-  const CUE_COLORS = ['#ff4d6d', '#ffb000', '#3ddc84', '#4da3ff'];
-  function cueTap(i, e) {
-    const v = S.video;
-    if (!v || !dur()) return;
-    if (e && (e.shiftKey || e.type === 'contextmenu')) {
-      if (e.type === 'contextmenu') e.preventDefault();
-      S.cues[i] = null;
-      flash(`Cue ${i + 1} cleared.`, 1500);
-    } else if (S.cues[i] == null) {
-      S.cues[i] = qT(v.currentTime);
-      flash(`Cue ${i + 1} set at ${C.formatTime(S.cues[i])}${settings.quantize && S.grid ? ` (on the ${Q_NAMES[settings.qRes]} grid)` : ''}. Click it to jump back here.`, 2500);
-    } else {
-      userSeek(S.cues[i]);
-      play();
-    }
-    S.dirty = true;
-    renderUI();
-    saveVideoStateSoon();
-  }
 
   function toggleDrumView() {
     settings.waveStyle = settings.waveStyle === 'drums' ? 'color' : 'drums';
@@ -3697,7 +3951,7 @@
 
   // Beats: Q (quantize), DJ beat loops, tempo and the drum view.
   function buildBeatGroup() {
-    ui.qBtn = btn('Q', 'Quantize (Q): A, B and the hot cues always land on the grid (1/4, 1/8 or 1/16 notes, or bars: pick beside it). ‹ › move by one step.', toggleQuantize, 'q-btn');
+    ui.qBtn = btn('Q', 'Quantize (Q): A and B always land on the grid (1/4, 1/8 or 1/16 notes, or bars: pick beside it). ‹ › move by one step.', toggleQuantize, 'q-btn');
     ui.qResSel = select(Q_RES, (v) => Q_NAMES[v], settings.qRes, setQRes, Q_RES_TITLE);
     ui.qResSel.classList.add('q-res');
     ui.beatBtns = BEAT_LOOPS.map((n) => {
@@ -3707,19 +3961,13 @@
     });
     ui.bpm = h('button', { class: 'bpm', title: 'Tempo found in the song (beats per minute). Click to fix the grid by hand.', text: '— BPM' });
     ui.bpm.addEventListener('click', () => toggleSub('grid'));
-    ui.cueBtns = [0, 1, 2, 3].map((i) => {
-      const b = btn(`C${i + 1}`, `Hot cue ${i + 1}: click to mark this spot (on the beat with Q), click again to jump here. Shift-click or right-click clears it.`, (e) => cueTap(i, e), 'cue-btn');
-      b.style.setProperty('--cue', CUE_COLORS[i]);
-      b.addEventListener('contextmenu', (e) => cueTap(i, e));
-      return b;
-    });
     ui.gridBtn = btn('Grid', 'Fix the beat grid by hand: tempo, where the "1" is, move it by milliseconds, what Q snaps to', () => toggleSub('grid'), 'grid-btn grid-open');
     ui.drumBtn = btn('Drums', 'Drum view: the wave in drum colours with a drum chart under it, one row per drum: CR crash, HH hi-hat / ride, PC percussion, SN snare / clap, TT toms, KK kick', toggleDrumView, 'drum-btn');
     return h('div', { class: 'group beats hide-phone' },
       h('span', { class: 'q-pair' }, ui.qBtn, ui.qResSel),
       h('span', { class: 'beat-loops' }, ...ui.beatBtns),
       ui.bpm,
-      h('span', { class: 'cues' }, ...ui.cueBtns),
+      ui.stemsWrap,
       ui.gridBtn,
       ui.drumBtn);
   }
@@ -3766,7 +4014,6 @@
     ui.bpm.textContent = G ? `${(G.varies && S.video ? bpmAt(S.video.currentTime) : G.bpm).toFixed(1)} BPM` : S.gridBase && S.gridBase.vid === S.vid ? 'no beat' : S.scan || (dur() && S.peaks.coverage(dur()) < 0.9) ? 'analyzing…' : '— BPM';
     ui.bpm.title = (G ? (G.varies ? `The tempo changes in this song (${G.segments ? G.segments.map((x) => x.bpm.toFixed(1)).join(' → ') : 'a live drummer'}): this is the tempo here; the grid follows it.` : `Tempo ${G.bpm} BPM${G.manual ? ' (typed)' : ''}.`) : gridMissingText()) + ' Click to fix the grid by hand.';
     ui.bpm.classList.toggle('manual', !gridAdjIsDefault(S.gridAdj));
-    ui.cueBtns.forEach((b, i) => b.classList.toggle('set', S.cues[i] != null));
     const n = loopBeats();
     for (const b of ui.beatBtns) {
       b.classList.toggle('on', !!n && S.loopOn && Number(b.dataset.n) === n);
@@ -3825,16 +4072,6 @@
     const slower = btn(null, 'Slower by 5%', () => setRate(Math.round((S.rate - 0.05) * 100) / 100), 'icon hide-phone', 'minus');
     const faster = btn(null, 'Faster by 5%', () => setRate(Math.round((S.rate + 0.05) * 100) / 100), 'icon hide-phone', 'plus');
     ui.trainerBtn = btn('Trainer', 'Speed trainer: tap to start (slow, then faster every loop up to 100%); tap again to stop', toggleTrainer, '', 'bolt');
-    ui.stemsBtn = btn('Stems', 'Stems: hear the vocals, drums, bass or the rest on their own (AI separation), and shadowing: one play with a stem, one without', () => {
-      settings.stemsOpen = !settings.stemsOpen;
-      saveSettings();
-      if (settings.stemsOpen && !HQ.ctx) hqGesture();
-      ui.stemsRow.hidden = !settings.stemsOpen;
-      if (settings.collapsed && settings.stemsOpen) toggleCollapse();
-      applyLayout();
-      S.dirty = true;
-      renderUI();
-    }, 'stems-btn');
 
     ui.zoomLoopBtn = btn(null, 'Zoom to the loop', zoomToLoop, 'icon hide-phone', 'zoom');
     ui.zoomBtn = btn('Zoom in', ZOOM_IN_TITLE, toggleZoom, 'zoom-toggle', 'zoom');
@@ -3852,7 +4089,6 @@
       h('div', { class: 'group' }, h('span', { class: 'label hide-narrow', text: 'Speed' }), ...ui.speedBtns, slower, ui.rate, faster),
       h('div', { class: 'sep' }),
       ui.trainerBtn,
-      stemsAvailable() ? ui.stemsBtn : null,
       h('div', { class: 'spacer' }),
       h('div', { class: 'group size-btns' }, ui.smallerBtn, ui.biggerBtn),
       ui.zoomBtn,
@@ -3872,47 +4108,35 @@
     ui.tReps = select(TRAINER_REPS, (v) => `${v}× up + ${trainerAfter(v)}× at 100%`, settings.trainerReps, trainerChoice('trainerReps'), 'How many loops to reach 100%');
     ui.tBar = h('i');
     ui.tStat = h('span', { class: 'tstat' });
-    const SHADOW_TITLE = 'Shadowing: every play twice, first with this stem (listen), then without it (your turn), then faster. Needs the stems (Stems button).';
-    const shadowSelect = () => {
-      const el = h('select', { class: 'shadow-sel', title: SHADOW_TITLE, 'aria-label': SHADOW_TITLE });
-      for (const [v, name] of [['off', 'Shadowing off'], ['vocals', 'Shadow vocals'], ['drums', 'Shadow drums'], ['bass', 'Shadow bass'], ['other', 'Shadow other instruments']]) {
-        el.appendChild(h('option', { value: v, text: name }));
-      }
-      el.value = settings.shadow;
-      el.addEventListener('change', () => {
-        setShadow(el.value);
-        el.blur();
-      });
-      return el;
-    };
-    ui.shadowSel = shadowSelect();
-    ui.shadowSel2 = shadowSelect();
     ui.trainerRow = h('div', { class: 'row sub', hidden: true },
       h('span', { class: 'label hide-phone', text: 'Speed trainer' }),
       h('span', { class: 'label', text: 'from' }), ui.tStart,
       h('span', { class: 'label', text: 'to 100% over' }), ui.tReps,
-      stemsAvailable() ? ui.shadowSel2 : null,
       h('div', { class: 'progress' }, ui.tBar),
       ui.tStat);
 
-    // --- stems row: each stem on / off, shadowing, and how the separation is going ---
+    // --- stems, like a mixer, in the row above the wave: for each stem its name (click = mute / unmute),
+    //     S (solo) and ⇆ (shadow: every play twice, with it then without it); a thin bar under them shows the separation ---
     const STEM_LABELS = { vocals: 'Vocals', drums: 'Drums', bass: 'Bass', other: 'Other' };
+    const STEM_WORDS = { vocals: 'the vocals', drums: 'the drums', bass: 'the bass', other: 'the other instruments' };
     ui.stemBtns = {};
+    ui.soloBtns = {};
+    ui.shadowBtns = {};
+    const strips = [];
     for (const k of STEM_NAMES) {
-      const b = btn(STEM_LABELS[k], `${STEM_LABELS[k]}: click to turn it off / on. Double-click (or Shift-click) to hear it alone.`, (e) => toggleStem(k, e.shiftKey), 'stem-btn');
+      const b = btn(STEM_LABELS[k], `${STEM_LABELS[k]}: click to mute / unmute.`, () => toggleStem(k), 'stem-btn');
       b.dataset.stem = k;
-      b.addEventListener('dblclick', () => toggleStem(k, true));
+      const so = btn('S', `Solo ${STEM_WORDS[k]}: hear only this (and any other soloed stem).`, () => toggleSolo(k), 'solo-btn');
+      so.dataset.stem = k;
+      const sh = btn('⇆', `Shadow ${STEM_WORDS[k]}: every play comes twice, first with ${STEM_WORDS[k]} (listen), then without (your turn). On any loop at any speed; with the Trainer it also gets faster.`, () => setShadow(settings.shadow === k ? 'off' : k), 'shadow-btn');
+      sh.dataset.stem = k;
       ui.stemBtns[k] = b;
+      ui.soloBtns[k] = so;
+      ui.shadowBtns[k] = sh;
+      strips.push(h('span', { class: 'stem-strip', 'data-stem': k }, b, so, sh));
     }
-    ui.stemStat = h('span', { class: 'tstat stem-stat' });
-    ui.stemBar = h('i');
-    ui.stemsRow = h('div', { class: 'row sub stems-row', hidden: !settings.stemsOpen || !stemsAvailable() },
-      h('span', { class: 'label hide-phone', text: 'Stems' }),
-      ...STEM_NAMES.map((k) => ui.stemBtns[k]),
-      h('span', { class: 'sep' }),
-      ui.shadowSel,
-      h('div', { class: 'progress stem-progress' }, ui.stemBar),
-      ui.stemStat);
+    ui.stemsWrap = stemsAvailable() ? h('span', { class: 'stems' }, ...strips) : null;
+    ui.stemNote = h('span', { class: 'stem-note', hidden: true });
 
     // --- settings row ---
     ui.gapSel = select(GAPS, (v) => (v ? `${v}s` : 'none'), settings.gap, (v) => { settings.gap = v; saveSettings(); }, 'Pause before each repeat (time to breathe)');
@@ -3922,6 +4146,16 @@
     ui.scanChk = h('input', { type: 'checkbox' });
     ui.scanChk.checked = settings.autoScan;
     ui.scanChk.addEventListener('change', () => { settings.autoScan = ui.scanChk.checked; saveSettings(); ui.scanChk.blur(); if (settings.autoScan) maybeAutoScan(); });
+    ui.stemsAutoChk = h('input', { type: 'checkbox' });
+    ui.stemsAutoChk.checked = settings.stemsAuto;
+    ui.stemsAutoChk.addEventListener('change', () => {
+      settings.stemsAuto = ui.stemsAutoChk.checked;
+      saveSettings();
+      ui.stemsAutoChk.blur();
+      if (settings.stemsAuto && !HQ.ctx) hqGesture();
+      if (!settings.stemsAuto && ST.seg && !STEM_NAMES.some((k) => !S.stemOn[k]) && settings.shadow === 'off') stemsCancel();
+      renderUI();
+    });
     ui.hqChk = h('input', { type: 'checkbox' });
     ui.hqChk.checked = settings.hqAudio;
     ui.hqChk.addEventListener('change', () => {
@@ -3970,6 +4204,7 @@
       h('span', { class: 'label', text: 'Rest between Practice parts' }), ui.restSel,
       h('label', { class: 'check', title: 'On: slowing down keeps the key (best for singing). Off: tape-style, pitch drops too (50% = one octave lower).' }, ui.pitchChk, 'Keep pitch when slowing down'),
       h('label', { class: 'check' }, ui.scanChk, 'Read the whole song automatically'),
+      stemsAvailable() ? h('label', { class: 'check', title: 'Every song is split into vocals, drums, bass and the rest in the background (AI, in your browser) and kept, so the stems are there next time. Off: only when you turn a stem off or shadow one.' }, ui.stemsAutoChk, 'Stems by themselves (AI, in the background)') : null,
       h('label', { class: 'check', title: 'Cleaner sound when slowed down (Signalsmith Stretch). Turn off if you ever hear a problem.' }, ui.hqChk,
         IS_IOS ? 'Studio-quality slow-down (may go quiet after switching apps)' : 'Studio-quality slow-down'),
       TOUCH ? h('label', { class: 'check' }, ui.tapChk, 'Tap the video to pause / play') : null,
@@ -3982,6 +4217,8 @@
       btn('Song (WAV)', 'Download the whole song as a WAV file (plays everywhere: Music, GarageBand, any player)', () => downloadAudio('song', 'wav'), 'dl-btn'),
       btn('Loop (WAV)', 'Download the part between A and B as a WAV file', () => downloadAudio('loop', 'wav'), 'dl-btn'),
       btn('Song (original)', 'Download the whole song as the original audio file from YouTube (smaller, same quality)', () => downloadAudio('song', 'orig'), 'dl-btn'),
+      stemsAvailable() ? btn('Stems: song (4 WAV)', 'Download the whole song as four WAV files: vocals, drums, bass, other (once the stems are ready)', () => downloadStems('song'), 'dl-btn') : null,
+      stemsAvailable() ? btn('Stems: loop (4 WAV)', 'Download the part between A and B as four WAV files: vocals, drums, bass, other', () => downloadStems('loop'), 'dl-btn') : null,
       btn('How to use', 'Show the help', () => toggleHelp(true), '', 'help'));
 
     // --- waveform ---
@@ -4001,7 +4238,7 @@
     ui.hint = h('div', { class: 'hint' });
     ui.chips = h('div', { class: 'chips' });
     ui.count = h('div', { class: 'count' });
-    const status = h('div', { class: 'status' }, ui.hint, ui.chips, ui.count);
+    const status = h('div', { class: 'status' }, ui.hint, ui.stemNote, ui.chips, ui.count);
 
     ui.help = buildHelp();
     const resize = h('div', { class: 'resize', title: 'Drag up or down to make the wave bigger or smaller' });
@@ -4012,7 +4249,7 @@
       h('div', { class: 'group' }, ui.aMark, ui.bMark),
       buildBeatGroup());
     ui.gridRow = buildGridRow();
-    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.stemsRow, ui.settingsRow, ui.gridRow, transport, ui.stage, status, ui.help);
+    ui.panel = h('div', { class: 'panel' }, resize, bar, ui.trainerRow, ui.settingsRow, ui.gridRow, transport, ui.stage, status, ui.help);
     shadow.appendChild(ui.panel);
 
     setupResize(resize);
@@ -4046,12 +4283,12 @@
           h('li', {}, h('b', { text: 'Chords: ' }), 'tap Chords, then Find on Ultimate Guitar. On the chords page select all and Copy, come back and tap Paste. The chords sit over the right words; ♭ ♯ transpose. Timing: ◀ ▶ move the lyrics by 0.1 s.'),
         ] : [
           h('li', {}, h('b', { text: 'Like a DJ deck: ' }), 'drag the wave and the song moves with it; a click stops / plays. Double-click for A, double-click again for B: it loops. Shift+drag draws a loop. (Turn off "DJ mouse" in ⚙ to click the start and the end instead.)'),
-          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves, also when the tempo changes: 1 2 3 4 on the wave. Q snaps A, B and the hot cues to 1/4, 1/8 or 1/16 notes or bars (pick beside Q); 1 2 4 8 16 loop that many beats; C1–C4 are hot cues (click to set, click to jump, Shift-click to clear). Drums shows a drum chart: crash, hi-hat, percussion, snare, toms, kick. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms. Follow (top right of the wave): off = the wave stays still, drag it, click to play from there. Download the song or the loop in ⚙.'),
+          h('li', {}, h('b', { text: 'Beats: ' }), 'the tempo (BPM) and every beat are found by themselves, also when the tempo changes: 1 2 3 4 on the wave. Q snaps A and B to 1/4, 1/8 or 1/16 notes or bars (pick beside Q); 1 2 4 8 16 loop that many beats. Drums shows a drum chart: crash, hi-hat, percussion, snare, toms, kick. Grid (or click the BPM) fixes the grid by hand: type the tempo, "1 here" on the first kick of a bar, move it by ms. Follow (top right of the wave): off = the wave stays still, drag it, click to play from there. Download the song or the loop in ⚙.'),
           h('li', {}, h('b', { text: 'Fine-tune: ' }), 'drag the green A or red B flag. Use the ‹ › buttons to move them by 0.05s (Shift = 0.01s, Alt = 0.5s). Scroll on the wave to zoom in.'),
         ]),
         h('li', {}, h('b', { text: 'Slow down: ' }), 'press 30%, 50%, 75% or 100%, or use − / + for 5% steps. The key stays the same. While the Trainer runs, a slower speed steps it back so you get those loops again.'),
         h('li', {}, h('b', { text: 'Speed trainer: ' }), 'tap Trainer and it starts right away: slow (30%, 50% or 75%), a little faster every loop, up to 100% over 10, 30 or 50 loops, then 5 or 10 times at 100% and it stops. Tap Trainer again to stop and go back to normal speed.'),
-        stemsAvailable() ? h('li', {}, h('b', { text: 'Stems and shadowing: ' }), 'press Stems: the song is split into vocals, drums, bass and the rest (AI, in your browser; the models download once). Click a stem to turn it off or on, double-click it to hear it alone. Shadowing (pick "Shadow vocals" or another stem, then start the Trainer, a line\'s ⟳ or Practice): every play comes twice, with the stem to listen, then without it for your turn, slow to fast, then nonstop at 100%. Needs an A–B loop with Seamless loop on.') : null,
+        stemsAvailable() ? h('li', {}, h('b', { text: 'Stems and shadowing: ' }), 'every song is split into Vocals, Drums, Bass and Other by itself (AI, in your browser; the models download once) and kept, so next time it is there at once; the thin bar under the stem buttons shows how far it is. Click a stem\'s name to mute it, S to solo it. ⇆ shadows it: every play comes twice, with the stem (listen), then without it (your turn), on any loop at any speed; with the Trainer, a line\'s ⟳ or Practice it also goes slow to fast, then nonstop at 100%. Needs an A–B loop with Seamless loop on. ⚙ downloads all four stems as WAV files.') : null,
         h('li', {}, h('b', { text: 'Jump around: ' }), 'click the time ruler at the top of the wave.'),
         h('li', {}, h('b', { text: 'Bigger wave: ' }), 'press the ↕ buttons, or drag the top edge of the panel up.')),
       TOUCH ? null : h('ul', {},
@@ -4425,22 +4662,26 @@
 
     // Stems and shadowing
     if (stemsAvailable()) {
-      ui.stemsBtn.classList.toggle('on', settings.stemsOpen || !!shadowK || STEM_NAMES.some((k) => !S.stemOn[k]));
       const ready = stemsLoopReady();
       for (const k of STEM_NAMES) {
-        const b = ui.stemBtns[k];
-        b.classList.toggle('off', !S.stemOn[k]);
-        b.classList.toggle('ready', ready);
-        b.classList.toggle('shadow', shadowK === k);
+        ui.stemBtns[k].classList.toggle('off', !S.stemOn[k]);
+        ui.stemBtns[k].classList.toggle('quiet', !stemHeard(k));
+        ui.stemBtns[k].classList.toggle('ready', ready);
+        ui.soloBtns[k].classList.toggle('on', !!S.stemSolo[k]);
+        ui.shadowBtns[k].classList.toggle('on', shadowK === k);
       }
-      for (const sel of [ui.shadowSel, ui.shadowSel2]) if (sel.value !== settings.shadow) sel.value = settings.shadow;
-      if (!ui.stemsRow.hidden) {
-        const pct = stemsPct();
-        ui.stemBar.style.width = `${Math.round(pct * 100)}%`;
-        ui.stemBar.parentNode.hidden = !stemsWanted() || pct >= 1;
-        const txt = !stemsWanted() ? 'Turn a stem off, or pick a stem to shadow.' : stemsStatusText();
-        ui.stemStat.textContent = txt + (stemsWanted() && ST.song && !ready && pct < 1 ? ' This loop: not yet.' : '');
-      }
+      const wanted = stemsWanted();
+      const pct = stemsPct();
+      const busy = wanted && (pct < 1 || !!ST.restoring);
+      ui.stemsWrap.style.setProperty('--pct', String(busy ? Math.max(0.02, pct) : 0));
+      ui.stemsWrap.classList.toggle('busy', busy);
+      ui.stemsWrap.classList.toggle('ready', ready);
+      const status = wanted ? stemsStatusText() : 'Stems: click one to mute it (the song is then separated), S = solo, ⇆ = shadow.';
+      ui.stemsWrap.title = status;
+      const note = !wanted ? '' : ST.err ? ST.err : busy || ST.note ? status : '';
+      ui.stemNote.textContent = note;
+      ui.stemNote.hidden = !note;
+      ui.stemNote.classList.toggle('err', !!ST.err);
       const run = shadowRun();
       const badge = ui.shadowBadge;
       if (shadowK && run && S.video && !S.video.paused) {
@@ -4538,6 +4779,13 @@
     d.gridManual = S.grid && S.grid.manual ? '1' : '';
     d.seamless = SL.active ? 'on' : SL.bufKey ? 'ready' : SL.reqKey ? 'loading' : '';
     {
+      // (tests) why the loop is not playing from memory right now
+      const v = S.video;
+      const r = v ? slRegion() : null;
+      const key = r ? `${S.vid}|${r.a.toFixed(3)}|${r.b.toFixed(3)}` : '';
+      d.slWhy = SL.active ? '' : !v ? 'no video' : !r ? 'no loop' : !HQ.ctx ? 'no ctx' : HQ.ctx.state !== 'running' ? `ctx ${HQ.ctx.state}` : S.scan ? 'scan' : isAd() ? 'ad' : !/^blob:/.test(v.currentSrc || v.src || '') ? 'src' : !(Math.abs(S.rate - 1) < 0.001 || !settings.keepPitch || !!HQ.node) ? 'no pitch engine' : SL.bufKey !== key ? (SL.failKey === key ? `audio failed ${SL.failWhy || ''}` : SL.reqKey === key ? 'audio requested' : `other buffer (${SL.wantKey === key ? 'wanted' : 'not wanted'})`) : v.paused ? 'paused' : 'not started';
+    }
+    {
       // The light on the Loop button: green = zero gap, amber = getting ready, red = jumps back.
       const why = slWhy();
       const st = SL.active ? 'on' : !why ? '' : /ready|Reading/.test(why) ? 'wait' : 'off';
@@ -4547,7 +4795,6 @@
       }
     }
     if (document.documentElement.dataset.ytlDebug === '1') d.slMinRms = SL.analyser ? `${SL.minRms.toFixed(3)}@${(SL.minAt || 0).toFixed(3)}` : '';
-    d.cues = S.cues.map((c) => (c == null ? '' : c.toFixed(3))).join(',');
     d.mouse = settings.mouseDJ ? 'dj' : 'classic';
     d.waveStyle = settings.waveStyle;
     d.hits = S.gridBase && S.gridBase.hits ? ['kick', 'snare', 'hat', 'tom', 'cym', 'perc'].map((k) => S.gridBase.hits.filter((x) => x.kind === k).length).join(',') : '';
@@ -4562,9 +4809,13 @@
       d.stemsLoop = stemsLoopReady() ? 'ready' : '';
       d.stemPlay = SL.active ? SL.mode : '';
       d.stemOn = STEM_NAMES.map((k) => `${k}:${S.stemOn[k] ? 1 : 0}`).join(',');
+      d.stemSolo = STEM_NAMES.map((k) => `${k}:${S.stemSolo[k] ? 1 : 0}`).join(',');
+      d.stemHeard = STEM_NAMES.map((k) => `${k}:${stemHeard(k) ? 1 : 0}`).join(',');
       d.shadow = settings.shadow;
-      d.shadowHalf = shadowStem() && run ? (run.half ? 'without' : 'with') : '';
+      d.shadowHalf = shadowStem() ? (run.half ? 'without' : 'with') : '';
       d.stemThreads = String(ST.threads || '');
+      d.stemEngine = ST.engine || '';
+      d.stemBad = Object.keys(ST.parts).filter((k) => ST.parts[k].bad).join(',');
       d.stemGains = SL.stemSrcs ? STEM_NAMES.map((k) => `${k}:${SL.stemSrcs[k].gain.gain.value.toFixed(2)}`).join(',') : '';
       d.stemErr = ST.err || '';
     }
@@ -5184,20 +5435,6 @@
     drawGrid(ctx, g, top, wh);
     drawTempoTags(ctx, g, top);
     drawLanes(ctx, g, top, wh);
-    // Hot cue markers.
-    S.cues.forEach((c, i) => {
-      if (c == null) return;
-      const x = xAt(c, g);
-      if (x < -8 || x > g.w + 8) return;
-      ctx.fillStyle = CUE_COLORS[i];
-      ctx.fillRect(Math.round(x), top, 1, wh);
-      ctx.beginPath();
-      ctx.moveTo(x, top + wh);
-      ctx.lineTo(x + 9, top + wh);
-      ctx.lineTo(x, top + wh - 11);
-      ctx.closePath();
-      ctx.fill();
-    });
 
     // Loop region
     const showA = S.pendingA != null ? S.pendingA : S.a;

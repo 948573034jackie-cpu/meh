@@ -39,6 +39,7 @@ async function step(name, fn) {
     failures++;
     results.push(`  FAIL ${name}: ${e.message}`);
     console.log(`FAIL ${name}\n     ${e.stack.split('\n').slice(0, 3).join('\n     ')}`);
+    if (process.env.DEBUG && consoleErrors.length) console.log('  console errors so far:\n   ' + consoleErrors.slice(-12).join('\n   '));
     if (page) await page.screenshot({ path: path.join(SHOTS, `fail-${name.replace(/\W+/g, '_')}.png`) }).catch(() => {});
   }
 }
@@ -85,7 +86,8 @@ await ctx.route('https://www.youtube.com/**', (route) => {
       body: pageHtml,
       contentType: 'text/html',
       // Same Trusted Types rule YouTube uses: innerHTML from scripts throws.
-      headers: { 'content-security-policy': "require-trusted-types-for 'script'" },
+      // YouTube's own policy: Trusted Types, and scripts only with its nonce (strict-dynamic: no blob: worklets)
+      headers: { 'content-security-policy': "base-uri 'self';object-src 'none';script-src 'report-sample' 'nonce-ytl-test-nonce' 'unsafe-inline' 'strict-dynamic' https: http: 'unsafe-eval', require-trusted-types-for 'script'" },
     });
   }
   return route.fulfill({ status: 404, body: 'not found' });
@@ -148,11 +150,22 @@ async function clickWaveAt(t, d = DUR) {
 // =============================================================================
 if (!USERSCRIPT) await step('service worker starts', async () => {
   const sw = ctx.serviceWorkers().length ? ctx.serviceWorkers()[0] : await ctx.waitForEvent('serviceworker', { timeout: 5000 });
+  if (process.env.DEBUG) {
+    sw.on('console', (m) => console.log('  [sw]', m.type(), m.text().slice(0, 300)));
+    const tap = (bp) => { bp.on('console', (m) => console.log('  [bg]', m.type(), m.text().slice(0, 300))); bp.on('pageerror', (e) => console.log('  [bg error]', e.message)); };
+    ctx.backgroundPages().forEach(tap);
+    ctx.on('backgroundpage', tap);
+  }
   assert(sw.url().endsWith('src/background.js'), sw.url());
 });
 
+// The AI models come from the local server for the whole run (no internet here), so
+// every song in the run is separated in the background, like for a real user.
+const useLocalModels = () => page.evaluate((base) => { document.documentElement.dataset.ytlModelBase = base; }, MODEL_BASE);
+
 await step('page loads and plays', async () => {
   await page.goto('https://www.youtube.com/watch?v=VIDAAAA1');
+  await useLocalModels();
   await waitFor(async () => (await vstate()).t > 0.5, 15000, 'video playing');
 });
 
@@ -225,7 +238,8 @@ await step('waveform shows loud and quiet parts in the right places', async () =
     const dpr = window.devicePixelRatio || 1;
     const top = 18 * dpr;
     const out = {};
-    for (const t of [1, 3, 9, 11, 21, 23]) {
+    // (half a second into each 2-s block: away from the beat lines of the grid, which sit on whole seconds)
+    for (const t of [1.5, 3.5, 9.5, 11.5, 21.5, 23.5]) {
       const x = Math.round((t / D) * cv.width);
       const col = g.getImageData(x, top, 1, cv.height - top).data;
       let n = 0;
@@ -234,7 +248,7 @@ await step('waveform shows loud and quiet parts in the right places', async () =
     }
     return out;
   }, DUR);
-  for (const [loud, quiet] of [[1, 3], [9, 11], [21, 23]]) {
+  for (const [loud, quiet] of [[1.5, 3.5], [9.5, 11.5], [21.5, 23.5]]) {
     assert(heights[loud] > heights[quiet] * 2, `t=${loud}s should be much taller than t=${quiet}s: ${JSON.stringify(heights)}`);
   }
   await page.screenshot({ path: path.join(SHOTS, '2-full-wave.png') });
@@ -349,7 +363,8 @@ await step('zero-gap loops everywhere in the song, also after jumping around (Yo
       ok = false;
     }
     const vs = ok ? null : await page.evaluate(() => { const v = document.querySelector('#movie_player video'); return `t=${v.currentTime.toFixed(2)} paused=${v.paused} rs=${v.readyState}`; });
-    report.push(`${a}-${b}:${ok ? 'on' : `${(await host()).seamless || 'off'} (${vs}, loop ${(await host()).a}-${(await host()).b})`}`);
+    const hh = await host();
+    report.push(`${a}-${b}:${ok ? 'on' : `${hh.seamless || 'off'} (${vs}, loop ${hh.a}-${hh.b}, sl ${hh.slWhy}, stems ${hh.stems}/${hh.stemsLoop || '-'}/${hh.stemPlay || '-'} ${hh.stemErr})`}`);
     await shadowClick('button', 'Clear the loop');
   }
   assert(report.every((r) => r.endsWith(':on')), `every loop plays from memory with no gap (${report.join(' ')})`);
@@ -1072,7 +1087,7 @@ await step('beat loops: 4 beats from the beat you are on, then 8 keeps the start
   await shadowClick('button', 'Clear the loop');
 });
 
-await step('DJ mouse: drag the wave like a record, click = stop / play, double-click = A then B (on the beat with Q); hot cues', async () => {
+await step('DJ mouse: drag the wave like a record, click = stop / play, double-click = A then B (on the beat with Q)', async () => {
   await page.evaluate(() => {
     const root = document.getElementById('ytl-wave-looper').shadowRoot;
     [...root.querySelectorAll('label.check')].find((l) => l.textContent.includes('DJ mouse')).querySelector('input').click();
@@ -1118,17 +1133,7 @@ await step('DJ mouse: drag the wave like a record, click = stop / play, double-c
   await waitFor(async () => !(await vstate()).paused, 2000, 'the loop plays');
   await shadowClick('button.q-btn');
   await shadowClick('button', 'Clear the loop');
-  // Hot cue 1: set (on the beat with Q), jump back to it.
-  await page.evaluate((t) => { document.querySelector('#movie_player video').currentTime = t; }, beatAt(20) + 0.2);
-  await shadowClick('button.q-btn');
-  await shadowClick('button.cue-btn');
-  const c1 = Number((await host()).cues.split(',')[0]);
-  assert(Math.abs(c1 - beatAt(20)) < 0.03, `cue 1 on the beat (${c1})`);
-  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 3; });
-  await shadowClick('button.cue-btn');
-  v = await vstate();
-  assert(Math.abs(v.t - c1) < 0.1 && !v.paused, `jumped to cue 1 and plays (t=${v.t.toFixed(2)})`);
-  await shadowClick('button.q-btn');
+  assert(!(await page.evaluate(() => !!document.getElementById('ytl-wave-looper').shadowRoot.querySelector('button.cue-btn'))), 'no hot cue buttons (gone in 2.5)');
   await page.screenshot({ path: path.join(SHOTS, '11-dj-mouse.png') });
   // The tests after this one use the classic mouse and the whole-song view.
   await page.evaluate(() => {
@@ -1219,15 +1224,19 @@ await step('grid by hand: ½ / 2×, move the "1", "1 here", move the grid by ms,
   h = await host();
   bars = (Number(h.a) - (await bar1())) / (4 * BEAT);
   assert(Math.abs(bars - Math.round(bars)) < 0.002, `Q on bars: A on a "1" (${h.a})`);
-  // 1/16 notes: a hot cue lands on the nearest sixteenth.
+  // 1/16 notes: A lands on the nearest sixteenth.
   await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 0.25);
+  await shadowClick('button', 'Clear the loop');
   await at(beatAt(10) + PLAYER_DELAY + 0.17);
   await sleep(100);
-  const freeCue = await page.evaluate(() => [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')].findIndex((x) => !x.classList.contains('set')));
-  await page.evaluate((i) => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')[i].click(), freeCue);
-  const cue = Number((await host()).cues.split(',')[freeCue]);
-  assert(Math.abs(cue - (beatAt(10) + PLAYER_DELAY + BEAT / 4)) < 0.002, `hot cue on the 1/16 note (${cue})`);
-  await page.evaluate((i) => document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.cue-btn')[i].dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })), freeCue);
+  // (the key must come from the page, not from the Q select inside the panel)
+  await page.evaluate(() => { const r = document.getElementById('ytl-wave-looper').shadowRoot; if (r.activeElement) r.activeElement.blur(); if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); document.body.focus(); });
+  await sleep(50);
+  await page.keyboard.press('BracketLeft'); // A alone is "pending" until B is set
+  await sleep(100);
+  const a16 = Number((await host()).pending || (await host()).a);
+  assert(Math.abs(a16 - (beatAt(10) + PLAYER_DELAY + BEAT / 4)) < 0.002, `A on the 1/16 note (${a16})`);
+  await page.keyboard.press('Escape');
   await shadowSelect('Q snaps to: 1/4 notes (every beat), 1/8 notes, 1/16 notes, or the start of each bar', 1);
   await shadowClick('button.q-btn');
   await shadowClick('button', 'Clear the loop');
@@ -1344,23 +1353,28 @@ await step('download: the whole song and the loop as WAV, and the original file'
   await shadowClick('button', 'Settings');
 });
 
-await step('stems: the song separated into vocals / drums / bass / other (AI), each stem clean, on and off while it loops', async () => {
+// A WAV file's length in seconds (and that it is one).
+const wavSecs = (b) => {
+  assert(b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WAVE', 'a WAV file');
+  const ch = b.readUInt16LE(22);
+  const sr = b.readUInt32LE(24);
+  return b.readUInt32LE(40) / (sr * ch * 2);
+};
+
+await step('stems: a song is split by itself into vocals / drums / bass / other (AI); each stem checked; mute and solo; the whole song in the background', async () => {
   if (!haveModels) throw new Error('no models in test/fixtures/models (see README: npm run fixtures:models)');
   await page.evaluate(() => window.__navigate('BAND0001'));
   await waitFor(async () => (await host()).vid === 'BAND0001', 5000, 'band video');
-  await waitFor(async () => Number((await host()).cov) > 0.97 && (await host()).scanning !== 'true', 40000, 'the song is read');
-  await page.evaluate((base) => { document.documentElement.dataset.ytlModelBase = base; document.documentElement.dataset.ytlDumpStems = '1'; }, MODEL_BASE);
-  if ((await host()).a) await shadowClick('button', 'Clear the loop');
-  // a loop over two parts of the song (parts are 9 s)
+  // a loop over two parts of the song (parts are 9 s): its parts come first
   await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 4; });
   await page.keyboard.press('BracketLeft');
   await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 10; });
   await page.keyboard.press('BracketRight');
-  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 4.1; v.play().catch(() => {}); });
+  await waitFor(async () => Number((await host()).cov) > 0.97 && (await host()).scanning !== 'true', 40000, 'the song is read');
+  await page.evaluate(() => { document.documentElement.dataset.ytlDumpStems = '1'; const v = document.querySelector('#movie_player video'); v.currentTime = 4.1; v.play().catch(() => {}); });
   let h = await host();
   assert(Math.abs(Number(h.a) - 4) < 0.05 && Math.abs(Number(h.b) - 10) < 0.05, `loop 4-10 (${h.a}-${h.b})`);
-  await shadowClick('button', 'Stems');
-  assert(await page.evaluate(() => !document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.stems-row').hidden), 'Stems row open');
+  assert(await page.evaluate(() => !!document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.bar.transport .stems .stem-strip[data-stem="vocals"]')), 'the stems sit in the row above the wave');
   const t0 = Date.now();
   let lastStage = '';
   await waitFor(async () => {
@@ -1371,15 +1385,39 @@ await step('stems: the song separated into vocals / drums / bass / other (AI), e
     }
     if (x.stems === 'error') throw new Error(`stems error: ${x.stemErr}`);
     return x.stemsLoop === 'ready';
-  }, 420000, 'the loop\'s stems ready');
+  }, 420000, 'the loop\'s stems ready (by themselves, no button pressed)');
   const secs = (Date.now() - t0) / 1000;
   await waitFor(async () => (await host()).stemPlay === 'stems', 8000, 'the loop plays from the stems');
   h = await host();
-  console.log(`  separated 2 parts (18 s) in ${secs.toFixed(0)} s with ${h.stemThreads} thread(s)`);
+  console.log(`  separated 2 parts (18 s) in ${secs.toFixed(0)} s with ${h.stemThreads} thread(s), ${h.stemEngine}`);
   // Every stem checked against the truth (the parts the song was made of).
   const dump = JSON.parse(await page.evaluate(() => document.documentElement.dataset.ytlStems || 'null'));
   assert(dump && dump.sr, 'the stems were dumped for checking');
   if (process.env.DEBUG) fs.writeFileSync(path.join(SHOTS, 'stems-dump.json'), JSON.stringify(dump));
+  const q = stemQuality(dump);
+  console.log(`  SDR dB: vocals ${q.vocals.toFixed(1)}, drums ${q.drums.toFixed(1)}, bass ${q.bass.toFixed(1)}, other ${q.other.toFixed(1)} (the loop itself vs the truth: ${q.mixQ.toFixed(1)}, the codec's own noise; stems vs the loop ${q.exact.toFixed(1)}; shift ${q.shift} samples, hand-over ${dump.shift})`);
+  assert(q.mixQ > 8, `the loop's sound matches the truth (${q.mixQ.toFixed(1)} dB)`);
+  assert(q.exact > 20, `the four stems add up to the loop (${q.exact.toFixed(1)} dB)`);
+  assert(q.vocals > 7 && q.drums > 6 && q.bass > 7, `clean stems: vocals ${q.vocals.toFixed(1)} drums ${q.drums.toFixed(1)} bass ${q.bass.toFixed(1)} dB`);
+  // Mute the vocals, solo the drums, everything back.
+  await shadowClick('button', 'Vocals: click to mute / unmute.');
+  await sleep(100);
+  h = await host();
+  assert(h.stemOn === 'vocals:0,drums:1,bass:1,other:1', `vocals muted (${h.stemOn})`);
+  // (the volume is set by the audio thread, which may be a moment behind while a part is being separated)
+  await waitFor(async () => { h = await host(); return /vocals:0\.00/.test(h.stemGains) && /drums:1\.00/.test(h.stemGains); }, 3000, `vocals silent (${h.stemGains})`);
+  await shadowClick('button', 'Solo the drums: hear only this (and any other soloed stem).');
+  await waitFor(async () => { h = await host(); return h.stemHeard === 'vocals:0,drums:1,bass:0,other:0' && /drums:1\.00/.test(h.stemGains) && /bass:0\.00/.test(h.stemGains) && /other:0\.00/.test(h.stemGains); }, 3000, `drums alone (${h.stemHeard}; ${h.stemGains})`);
+  await shadowClick('button', 'Solo the drums: hear only this (and any other soloed stem).');
+  await shadowClick('button', 'Vocals: click to mute / unmute.');
+  await waitFor(async () => { h = await host(); return h.stemHeard === 'vocals:1,drums:1,bass:1,other:1' && /vocals:1\.00/.test(h.stemGains); }, 3000, `everything back on (${h.stemHeard}; ${h.stemGains})`);
+  await waitFor(async () => (await host()).stems === 'done', 420000, 'the whole song separated in the background');
+  await page.screenshot({ path: path.join(SHOTS, '15-stems.png') });
+});
+
+// SDR of each dumped stem against the parts the test song was made of, the
+// loop against the truth, and whether the four stems add up to the loop.
+function stemQuality(dump) {
   const i16 = (b64) => { const u8 = Buffer.from(b64, 'base64'); return Float32Array.from(new Int16Array(u8.buffer, u8.byteOffset, u8.length >> 1), (v) => v / 32768); };
   const got = {};
   for (const k of ['vocals', 'drums', 'bass', 'other', 'mix']) got[k] = i16(dump[k]);
@@ -1404,77 +1442,158 @@ await step('stems: the song separated into vocals / drums / bass / other (AI), e
   }
   const sdr = (ref, est) => { let s = 0, e = 0; for (let i = 0; i < n; i++) { s += ref[i] * ref[i]; e += (ref[i] - est[i]) ** 2; } return 10 * Math.log10((s + 1e-9) / (e + 1e-9)); };
   const slice = (k) => truth[k].subarray(i0 + bestS, i0 + bestS + n);
-  const q = {};
+  const q = { shift: bestS };
   for (const k of ['vocals', 'drums', 'bass', 'other']) q[k] = sdr(slice(k), got[k]);
-  const mixQ = sdr(truthMix.subarray(i0 + bestS, i0 + bestS + n), got.mix);
+  q.mixQ = sdr(truthMix.subarray(i0 + bestS, i0 + bestS + n), got.mix);
   const sum = new Float32Array(n);
   for (const k of ['vocals', 'drums', 'bass', 'other']) for (let i = 0; i < n; i++) sum[i] += got[k][i];
-  const exact = sdr(got.mix, sum);
-  console.log(`  SDR dB: vocals ${q.vocals.toFixed(1)}, drums ${q.drums.toFixed(1)}, bass ${q.bass.toFixed(1)}, other ${q.other.toFixed(1)} (the loop itself vs the truth: ${mixQ.toFixed(1)}, the codec's own noise; stems vs the loop ${exact.toFixed(1)}; shift ${bestS} samples, hand-over ${dump.shift})`);
-  assert(mixQ > 8, `the loop's sound matches the truth (${mixQ.toFixed(1)} dB)`);
-  // (the stems come from another decode than the loop's own sound: lined up to the sample, not the sub-sample)
-  assert(exact > 20, `the four stems add up to the loop (${exact.toFixed(1)} dB)`);
-  assert(q.vocals > 7 && q.drums > 6 && q.bass > 7, `clean stems: vocals ${q.vocals.toFixed(1)} drums ${q.drums.toFixed(1)} bass ${q.bass.toFixed(1)} dB`);
-  // On and off: the vocals off, then the drums alone, then everything back.
-  await shadowClick('button', 'Vocals: click to turn it off / on. Double-click (or Shift-click) to hear it alone.');
-  await sleep(100);
+  q.exact = sdr(got.mix, sum);
+  return q;
+}
+
+await step('stems: all four as WAV files; saved on disk: back at once after a reload, and they play; another song reads its audio by itself', async () => {
+  if (!haveModels) throw new Error('no models');
+  // All four stems of the whole song as WAV files.
+  const dur = await page.evaluate(() => document.querySelector('#movie_player video').duration);
+  await shadowClick('button', 'Settings');
+  const dls = [];
+  const onDl = (d) => dls.push(d);
+  page.on('download', onDl);
+  await shadowClick('button', 'Download the whole song as four WAV files: vocals, drums, bass, other (once the stems are ready)');
+  await waitFor(async () => dls.length >= 4, 30000, 'four files');
+  page.off('download', onDl);
+  const names = [];
+  for (const d of dls) {
+    const f = path.join(SHOTS, d.suggestedFilename());
+    await d.saveAs(f);
+    const secs = wavSecs(fs.readFileSync(f));
+    names.push(d.suggestedFilename());
+    assert(Math.abs(secs - dur) < 0.6, `${d.suggestedFilename()}: ${secs.toFixed(2)} s for a ${dur.toFixed(2)} s song`);
+  }
+  assert(['vocals', 'drums', 'bass', 'other'].every((k) => names.some((x) => x.endsWith(` - ${k}.wav`))), `four stems (${names.join(', ')})`);
+  await shadowClick('button', 'Settings');
+  // Saved on disk: after a reload (a fresh page: no audio in memory) the stems are back at once.
+  await page.reload({ waitUntil: 'load' });
+  await useLocalModels();
+  await waitFor(async () => { const x = await host(); return !!x && x.vid === 'BAND0001'; }, 15000, 'the panel, on the band video, after the reload');
+  const t1 = Date.now();
+  await waitFor(async () => (await host()).stems === 'done', 15000, 'the saved stems are back, nothing separated');
+  console.log(`  saved stems back in ${((Date.now() - t1) / 1000).toFixed(1)} s`);
+  let h = await host();
+  assert(h.stemsSong === '4/4', `all parts (${h.stemsSong})`);
+  // and they play, lined up with a fresh decode of the loop (the loop 4-10 is remembered for this video)
+  assert(Math.abs(Number(h.a) - 4) < 0.05 && Math.abs(Number(h.b) - 10) < 0.05, `the loop is remembered (${h.a}-${h.b})`);
+  await page.evaluate(() => { document.documentElement.dataset.ytlDumpStems = '1'; const v = document.querySelector('#movie_player video'); v.currentTime = 4.1; v.play().catch(() => {}); });
+  await page.keyboard.press('Shift'); // a key: the sound engine may start
+  await waitFor(async () => (await host()).stemPlay === 'stems', 40000, 'the loop plays from the saved stems');
+  const dump = JSON.parse(await page.evaluate(() => document.documentElement.dataset.ytlStems || 'null'));
+  const q = stemQuality(dump);
+  console.log(`  after the reload: stems vs the loop ${q.exact.toFixed(1)} dB (hand-over ${dump.shift}), vocals ${q.vocals.toFixed(1)} dB`);
+  assert(q.exact > 20 && q.vocals > 7, `the saved stems line up with the loop (${q.exact.toFixed(1)} dB; vocals ${q.vocals.toFixed(1)} dB)`);
+  await shadowClick('button', 'Clear the loop');
+  // Another song whose wave is from memory (no audio in the page beyond what the
+  // player buffers): the first part is there and gets separated; the second is
+  // not, and the song is NOT taken over to read it (that would stop your
+  // playing): it waits. Only when a stem is muted and the loop needs that part,
+  // that part alone is read once (muted) and separated.
+  // (its stems may have been made and saved earlier in this run: forget them for this check)
+  await page.evaluate(() => new Promise((res) => {
+    const req = indexedDB.open('ytl-stems');
+    req.onsuccess = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('parts')) { db.close(); return res(false); }
+      const tx = db.transaction(['parts', 'songs'], 'readwrite');
+      tx.objectStore('parts').delete(IDBKeyRange.bound('VIDAAAA1|', 'VIDAAAA1|\uffff'));
+      tx.objectStore('songs').delete('VIDAAAA1');
+      tx.oncomplete = () => { db.close(); res(true); };
+      tx.onerror = () => { db.close(); res(false); };
+    };
+    req.onerror = () => res(false);
+  }));
+  await page.evaluate(() => window.__navigate('VIDAAAA1'));
+  await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'the first video');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 0.5; });
+  await waitFor(async () => (await host()).stemsSong === '1/4', 240000, `the first part separated from the player's own buffer (${(await host()).stems} ${(await host()).stemsSong})`);
+  await sleep(4000);
   h = await host();
-  assert(h.stemOn === 'vocals:0,drums:1,bass:1,other:1', `vocals off (${h.stemOn})`);
-  // (the volume is set by the audio thread, which may be a moment behind while a part is being separated)
-  await waitFor(async () => { h = await host(); return /vocals:0\.00/.test(h.stemGains) && /drums:1\.00/.test(h.stemGains); }, 3000, `vocals silent (${h.stemGains})`);
-  await page.evaluate(() => { const b = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.stem-btn')].find((x) => x.dataset.stem === 'drums'); b.dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })); });
-  await sleep(100);
-  h = await host();
-  assert(h.stemOn === 'vocals:0,drums:1,bass:0,other:0', `drums alone (${h.stemOn})`);
-  await page.evaluate(() => { const b = [...document.getElementById('ytl-wave-looper').shadowRoot.querySelectorAll('button.stem-btn')].find((x) => x.dataset.stem === 'drums'); b.dispatchEvent(new MouseEvent('click', { shiftKey: true, bubbles: true })); });
-  await sleep(100);
-  assert((await host()).stemOn === 'vocals:1,drums:1,bass:1,other:1', 'everything back on');
-  await waitFor(async () => (await host()).stems === 'done', 420000, 'the whole song separated in the background');
-  await page.screenshot({ path: path.join(SHOTS, '15-stems.png') });
+  assert(h.scanning !== 'true' && h.stemsSong === '1/4', `no reading of the song by itself, the rest waits (${h.stems}; ${h.stemsSong})`);
+  // a loop over the part that is not loaded, then mute the vocals: that part is read once
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 16; });
+  await page.keyboard.press('BracketLeft');
+  await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 17; });
+  await page.keyboard.press('BracketRight');
+  await shadowClick('button', 'Vocals: click to mute / unmute.');
+  await waitFor(async () => (await host()).scanning === 'true', 40000, `that part is read (muted) for the stems you asked for (${(await host()).stems} ${(await host()).stemErr})`);
+  await waitFor(async () => (await host()).scanning !== 'true', 60000, 'read');
+  await waitFor(async () => /^sep:|^download:|^load:/.test((await host()).stems), 30000, `then separated (${(await host()).stems})`);
+  await shadowClick('button', 'Vocals: click to mute / unmute.');
+  await shadowClick('button', 'Clear the loop');
+  await page.evaluate(() => window.__navigate('BAND0001'));
+  await waitFor(async () => (await host()).vid === 'BAND0001', 5000, 'back on the band');
 });
 
-await step('shadowing: with the trainer, every speed twice: once with the vocals (listen), once without (your turn), then faster; nonstop at 100%', async () => {
+await step('shadowing: on a plain loop at any speed, every play twice (with the vocals: listen, without: your turn); with the trainer it also gets faster, then nonstop at 100%', async () => {
   if (!haveModels) throw new Error('no models');
-  const SHADOW = 'Shadowing: every play twice, first with this stem (listen), then without it (your turn), then faster. Needs the stems (Stems button).';
-  // a short loop inside the separated song
-  await shadowClick('button', 'Clear the loop');
+  const SHADOW = 'Shadow the vocals: every play comes twice, first with the vocals (listen), then without (your turn). On any loop at any speed; with the Trainer it also gets faster.';
+  if ((await host()).vid !== 'BAND0001') {
+    await page.evaluate(() => window.__navigate('BAND0001'));
+    await waitFor(async () => (await host()).vid === 'BAND0001', 5000, 'the band');
+  }
+  await waitFor(async () => (await host()).stems === 'done', 20000, 'its stems (saved)');
+  if ((await host()).a) await shadowClick('button', 'Clear the loop');
+  // a short loop inside the separated song, at 75%
   await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.pause(); v.currentTime = 5; });
   await page.keyboard.press('BracketLeft');
   await page.evaluate(() => { document.querySelector('#movie_player video').currentTime = 7; });
   await page.keyboard.press('BracketRight');
-  await shadowSelect(SHADOW, 'vocals');
-  assert((await host()).shadow === 'vocals', 'shadowing vocals');
+  await shadowClick('button.speed', '75%');
+  await shadowClick('button', SHADOW);
+  let h = await host();
+  assert(h.shadow === 'vocals', 'shadowing vocals');
+  await page.evaluate(() => { const v = document.querySelector('#movie_player video'); v.currentTime = 5.1; v.play().catch(() => {}); });
+  await waitFor(async () => (await host()).stemPlay === 'stems', 20000, 'the loop plays from the stems');
+  const watch = async (count, timeout) => {
+    const seen = [];
+    let last = '';
+    await waitFor(async () => {
+      const x = await host();
+      const v = await vstate();
+      const key = `${x.reps}:${x.shadowHalf}`;
+      if (key !== last) {
+        last = key;
+        seen.push({ reps: Number(x.reps), half: x.shadowHalf, rate: Math.round(v.rate * 1000) / 1000, gains: x.stemGains, badge: await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.shadow-badge').textContent) });
+      }
+      return seen.length >= count;
+    }, timeout, `${count} plays`);
+    return seen;
+  };
+  // Plain loop, no trainer: with, without, with, without, at 75% all along.
+  let seen = await watch(4, 30000);
+  let halves = seen.map((x) => x.half).join(' ');
+  assert(/(with without ){1}with without|without with without with/.test(halves + ' '), `with / without in turns on a plain loop (${halves})`);
+  const w = seen.findIndex((x) => x.half === 'without');
+  assert(w >= 0 && /vocals:0\.00/.test(seen[w].gains) && /YOUR TURN/.test(seen[w].badge), `the vocals go silent on "without" (${seen[w] && seen[w].gains}; ${seen[w] && seen[w].badge})`);
+  assert(seen.every((x) => Math.abs(x.rate - 0.75) < 0.001), `at 75% all along (${seen.map((x) => x.rate).join(' ')})`);
+  // With the trainer: every speed twice, then faster.
   await shadowClick('button', 'Trainer');
   await shadowSelect('Starting speed', 75); // 75% over 10 loops: quick enough to watch
   await waitFor(async () => (await host()).stemPlay === 'stems', 10000, 'the loop plays from the stems');
-  // Watch four plays: with, without, with, without; the speed only moves after a pair.
-  const seen = [];
-  let last = '';
-  await waitFor(async () => {
-    const x = await host();
-    const v = await vstate();
-    const key = `${x.reps}:${x.shadowHalf}`;
-    if (key !== last) {
-      last = key;
-      seen.push({ reps: Number(x.reps), half: x.shadowHalf, rate: Math.round(v.rate * 1000) / 1000, gains: x.stemGains, badge: await page.evaluate(() => document.getElementById('ytl-wave-looper').shadowRoot.querySelector('.shadow-badge').textContent) });
-    }
-    return seen.length >= 5;
-  }, 60000, 'five plays');
-  const halves = seen.map((s) => s.half).join(' ');
+  seen = await watch(5, 60000);
+  halves = seen.map((x) => x.half).join(' ');
   assert(/^with without with without with/.test(halves), `with / without in turns (${halves})`);
-  assert(seen[0].rate === seen[1].rate && seen[2].rate === seen[3].rate && seen[2].rate > seen[0].rate, `the speed holds for a pair, then rises (${seen.map((s) => s.rate).join(' ')})`);
+  assert(seen[0].rate === seen[1].rate && seen[2].rate === seen[3].rate && seen[2].rate > seen[0].rate, `the speed holds for a pair, then rises (${seen.map((x) => x.rate).join(' ')})`);
   assert(/vocals:0\.00/.test(seen[1].gains) && /vocals:1\.00/.test(seen[2].gains), `the vocals go silent on "without" (${seen[1].gains} / ${seen[2].gains})`);
   assert(/YOUR TURN/.test(seen[1].badge) && /LISTEN/.test(seen[2].badge), `the badge says whose turn it is (${seen[1].badge} / ${seen[2].badge})`);
   // Jump to 100%: with shadowing the trainer never stops.
   await shadowClick('button.speed', '100%');
   const r0 = Number((await host()).reps);
   await waitFor(async () => Number((await host()).reps) >= r0 + 8, 40000, 'eight more plays at 100%');
-  const h = await host();
+  h = await host();
   assert(h.trainer !== '' && Math.abs((await vstate()).rate - 1) < 0.001, `still training at 100% (${h.trainer})`);
   await page.screenshot({ path: path.join(SHOTS, '16-shadowing.png') });
   await shadowClick('button', 'Trainer');
-  await shadowSelect(SHADOW, 'off');
-  await shadowClick('button', 'Stems');
+  await shadowClick('button', SHADOW);
+  assert((await host()).shadow === 'off', 'shadowing off again');
   await shadowClick('button', 'Clear the loop');
   await page.evaluate(() => window.__navigate('VIDAAAA1'));
   await waitFor(async () => (await host()).vid === 'VIDAAAA1', 5000, 'back');
