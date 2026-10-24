@@ -188,6 +188,7 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .quick .q-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .quick .q-head b { font-size: 14px; }
 .quick .q-body { overflow-y: auto; padding: 4px 14px 14px; }
+.quick label.hl { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
 .quick section { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .quick section:last-child { border-bottom: 0; }
 .quick h4 { margin: 2px 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }

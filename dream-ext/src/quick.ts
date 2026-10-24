@@ -140,7 +140,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
     <section><h4>API keys</h4>
-      ${(['anthropic', 'openai', 'elevenlabs', 'azure'] as const).map((k) => `<label>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech)' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
+      ${(['azure', 'anthropic', 'openai', 'elevenlabs'] as const).map((k) => `<label${k === 'azure' && !keys.azure ? ' class="hl"' : ''}>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech) — the free voice, Key 1' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
       <label>Microsoft region <input type="text" data-name="azureRegion" value="${esc(x.azureRegion ?? 'eastus')}" placeholder="eastus" style="width:140px" autocomplete="off"> <button type="button" data-act="test-azure">Test</button> <span class="muted">(“Location/Region” of your Speech resource)</span></label>
       <p class="muted">Keys stay in Chrome on this computer. Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice.</p>
     </section>
@@ -217,6 +217,17 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       const inp = el.querySelector<HTMLInputElement>(`input[data-key="${k}"]`);
       const v = inp?.value.trim() ?? '';
       if (!v) { ctx.toast('Paste the key first.'); return; }
+      // a Microsoft key pasted into another box (ElevenLabs keys start with sk_, OpenAI ones with sk-): saved as Microsoft
+      if (k !== 'azure' && k !== 'anthropic' && !/^sk[-_]/.test(v)) {
+        void (chrome.runtime.sendMessage({ type: 'dream-test-azure', key: v }) as Promise<{ ok: boolean; message: string } | undefined>).then(async (r) => {
+          if (!r?.ok) { void store.setKey(k, v).then(() => { if (inp) inp.value = ''; ctx.toast('Key saved.'); }); return; }
+          await store.setKey('azure', v);
+          await store.patchExtras({ voice: 'azure' });
+          if (inp) inp.value = '';
+          ctx.toast(`This is your Microsoft key, so it is saved as Microsoft. ${r.message} Your tutor speaks with it now.`, 9000);
+        }, () => ctx.toast('No answer.'));
+        return;
+      }
       void store.setKey(k, v).then(async () => {
         if (inp) inp.value = '';
         if (k !== 'azure') { ctx.toast('Key saved.'); return; }

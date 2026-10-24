@@ -347,13 +347,13 @@ async function azureFail(res: Response): Promise<Error> {
   return new Error(`Microsoft voice: HTTP ${res.status} ${body}`);
 }
 
-/** The key and region work (the voice list costs nothing). */
-export async function testAzure(): Promise<{ ok: boolean; message: string }> {
-  const keys = await getKeys();
-  if (!keys.azure) return { ok: false, message: 'No Microsoft key is saved yet.' };
+/** The key and region work (the voice list costs nothing); `key` = a key not saved yet (is this a Microsoft key?). */
+export async function testAzure(key?: string): Promise<{ ok: boolean; message: string }> {
+  const k = key ?? (await getKeys()).azure;
+  if (!k) return { ok: false, message: 'No Microsoft key is saved yet.' };
   const region = (await getExtras()).azureRegion;
   try {
-    const res = await fetch(`${azureBase(region, (await baseUrls()).azure)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': keys.azure } });
+    const res = await fetch(`${azureBase(region, (await baseUrls()).azure)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': k } });
     if (!res.ok) return { ok: false, message: (await azureFail(res)).message };
     const list = (await res.json()) as { ShortName?: string }[];
     // the voices this region really has (the list in ⚙ shows only these)
@@ -542,7 +542,7 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
     if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
-    if (msg?.type === 'dream-test-azure') { void testAzure().then(sendResponse); return true; }
+    if (msg?.type === 'dream-test-azure') { void testAzure((msg as { key?: string }).key).then(sendResponse); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
     if (msg?.type === 'dream-open' && (msg as { page?: string }).page) { void chrome.tabs.create({ url: chrome.runtime.getURL(`dream/${(msg as { page: string }).page}.html`) }); return false; }

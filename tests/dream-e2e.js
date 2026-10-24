@@ -491,9 +491,16 @@ const api = http.createServer((req, res) => {
 
   // ---- 10e. the Microsoft voice (Azure Speech, free plan): with its key Auto uses it; the tutor speaks with it ----
   await patch('drTestBaseUrls', { azure: 'http://localhost:8790/azure' });
-  await patch('drKeys', { azure: 'az-test-key' });
+  // (as it happened for real) the Microsoft key pasted into the ElevenLabs box: Microsoft takes it, so it is saved as Microsoft
+  await sroot(() => { for (const id of ['dr-stage-host', 'dr-panel-host']) { const b = document.getElementById(id).shadowRoot.querySelector('[data-act="quick"]'); if (b && b.offsetParent) { b.click(); return; } } });
+  await sleep(600);
+  await sroot(() => { for (const id of ['dr-stage-host', 'dr-panel-host']) { const q = document.getElementById(id).shadowRoot.querySelector('.quick'); const inp = q && !q.hidden && q.querySelector('input[data-key="elevenlabs"]'); if (inp) { inp.value = 'az-test-key'; q.querySelector('button[data-act="save-key"][data-k="elevenlabs"]').click(); return; } } });
+  const moved = await until(async () => { const k = await store('drKeys'); return k && k.azure === 'az-test-key' ? k : null; }, 8000);
+  ok('a Microsoft key pasted into the ElevenLabs box is saved as Microsoft (and the tutor switches to it)', !!moved && !moved.elevenlabs, JSON.stringify(moved && Object.keys(moved)));
+  await yt.keyboard.press('Escape');
+  if (!moved) await patch('drKeys', { azure: 'az-test-key' });
   await until(async () => (await dbg()).voice === 'azure', 5000);
-  ok('with a Microsoft key, Auto uses the Microsoft voice (free)', (await dbg()).voice === 'azure', (await dbg()).voice);
+  ok('with a Microsoft key the tutor uses the Microsoft voice (free)', (await dbg()).voice === 'azure', (await dbg()).voice);
   const nAz = apiLog.length;
   await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 12.5; return v.play(); });
   await until(async () => (await vstate()).t > 14.5, 8000);
@@ -502,6 +509,7 @@ const api = http.createServer((req, res) => {
   ok('the explanation is spoken by the Microsoft voice (Ada, the best British woman, high-quality sound, the key stays in the background)', !!az && az.key === 'az-test-key' && /name="en-GB-AdaMultilingualNeural"/.test(az.ssml) && /xml:lang="en-GB"/.test(az.ssml) && az.format === 'audio-48khz-192kbitrate-mono-mp3', JSON.stringify(az && { key: az.key, f: az.format, s: az.ssml.slice(0, 220) }));
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 20000);
   await patch('drKeys', { azure: undefined });
+  await patch('drExtras', { voice: 'auto' });
   await until(async () => (await dbg()).voice === 'openai', 5000);
 
   // ---- 11. one voice at a time; the check report ----
