@@ -27,16 +27,40 @@ export const ELEVEN_VOICES: { id: string; name: string }[] = [
   { id: 'EXAVITQu4vr4xnSDxMaL', name: 'Sarah (American, friendly)' },
 ];
 
-/** Microsoft (Azure Speech) voices that also speak Chinese (multilingual): free 500,000 characters a month (F0) */
-export const AZURE_VOICES: { id: string; name: string }[] = [
-  { id: 'en-US-AvaMultilingualNeural', name: 'Ava (American woman, warm)' },
-  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew (American man, warm)' },
-  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (American woman, cheerful)' },
-  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (American man, relaxed)' },
-  { id: 'en-GB-AdaMultilingualNeural', name: 'Ada (British woman)' },
-  { id: 'en-GB-OllieMultilingualNeural', name: 'Ollie (British man)' },
-  { id: 'en-AU-WilliamMultilingualNeural', name: 'William (Australian man)' },
+/**
+ * Microsoft (Azure Speech) voices, free 500,000 characters a month (F0), by accent. The "Multilingual" ones say the
+ * Chinese in a sentence themselves (in Mandarin); with the others the Chinese goes to a Chinese voice (same gender).
+ */
+export interface AzureVoice { id: string; name: string; accent: 'British' | 'American' | 'Australian' | 'Canadian' | 'Irish' | 'New Zealand'; gender: 'woman' | 'man' }
+export const AZURE_ACCENTS: AzureVoice['accent'][] = ['British', 'American', 'Australian', 'Canadian', 'Irish', 'New Zealand'];
+export const AZURE_VOICES: AzureVoice[] = [
+  { id: 'en-GB-AdaMultilingualNeural', name: 'Ada ★ best British woman', accent: 'British', gender: 'woman' },
+  { id: 'en-GB-OllieMultilingualNeural', name: 'Ollie ★ best British man', accent: 'British', gender: 'man' },
+  { id: 'en-GB-SoniaNeural', name: 'Sonia (clear, like the BBC)', accent: 'British', gender: 'woman' },
+  { id: 'en-GB-RyanNeural', name: 'Ryan (friendly)', accent: 'British', gender: 'man' },
+  { id: 'en-GB-LibbyNeural', name: 'Libby (young)', accent: 'British', gender: 'woman' },
+  { id: 'en-GB-ThomasNeural', name: 'Thomas (calm)', accent: 'British', gender: 'man' },
+  { id: 'en-US-AvaMultilingualNeural', name: 'Ava ★ best American woman', accent: 'American', gender: 'woman' },
+  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew ★ best American man', accent: 'American', gender: 'man' },
+  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (cheerful)', accent: 'American', gender: 'woman' },
+  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (relaxed)', accent: 'American', gender: 'man' },
+  { id: 'en-US-JennyMultilingualNeural', name: 'Jenny (friendly)', accent: 'American', gender: 'woman' },
+  { id: 'en-US-SteffanMultilingualNeural', name: 'Steffan (calm)', accent: 'American', gender: 'man' },
+  { id: 'en-AU-NatashaNeural', name: 'Natasha', accent: 'Australian', gender: 'woman' },
+  { id: 'en-AU-WilliamMultilingualNeural', name: 'William ★', accent: 'Australian', gender: 'man' },
+  { id: 'en-CA-ClaraNeural', name: 'Clara', accent: 'Canadian', gender: 'woman' },
+  { id: 'en-CA-LiamNeural', name: 'Liam', accent: 'Canadian', gender: 'man' },
+  { id: 'en-IE-EmilyNeural', name: 'Emily', accent: 'Irish', gender: 'woman' },
+  { id: 'en-IE-ConnorNeural', name: 'Connor', accent: 'Irish', gender: 'man' },
+  { id: 'en-NZ-MollyNeural', name: 'Molly', accent: 'New Zealand', gender: 'woman' },
+  { id: 'en-NZ-MitchellNeural', name: 'Mitchell', accent: 'New Zealand', gender: 'man' },
 ];
+export const isMultilingual = (voiceId: string): boolean => /Multilingual/i.test(voiceId);
+/** the voice for the Chinese words: the teacher's own when it is multilingual, else a Mandarin voice of the same gender */
+export function azureZhVoice(voiceId: string): string {
+  if (isMultilingual(voiceId)) return voiceId;
+  return AZURE_VOICES.find((v) => v.id === voiceId)?.gender === 'man' ? 'zh-CN-YunxiNeural' : 'zh-CN-XiaoxiaoNeural';
+}
 
 /** test hook and diagnostics: what the cloud voice was asked to say */
 export const cloudSpoken: string[] = [];

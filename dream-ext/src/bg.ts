@@ -299,7 +299,7 @@ const xmlEsc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').rep
  * The SSML for one Microsoft (Azure) request: the multilingual voice says English, and the Chinese in it in Mandarin
  * (<lang xml:lang="zh-CN">). `langTags` false = plain text (a voice that does not take <lang>).
  */
-export function azureSsml(text: string, voice: string, lang: 'en' | 'zh' = 'en', langTags = true): string {
+export function azureSsml(text: string, voice: string, lang: 'en' | 'zh' = 'en', langTags = /Multilingual/i.test(voice)): string {
   const locale = /^[a-z]{2}-[A-Z]{2}/.exec(voice)?.[0] ?? 'en-US';
   const zh = (t: string) => (langTags ? `<lang xml:lang="zh-CN">${xmlEsc(t)}</lang>` : xmlEsc(t));
   const body = lang === 'zh' ? zh(text) : splitByScript(text).map((r) => (r.zh ? zh(r.text) : xmlEsc(r.text))).join('');
@@ -356,6 +356,8 @@ export async function testAzure(): Promise<{ ok: boolean; message: string }> {
     const res = await fetch(`${azureBase(region, (await baseUrls()).azure)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': keys.azure } });
     if (!res.ok) return { ok: false, message: (await azureFail(res)).message };
     const list = (await res.json()) as { ShortName?: string }[];
+    // the voices this region really has (the list in ⚙ shows only these)
+    await chrome.storage.local.set({ drAzureVoices: list.map((v) => v.ShortName ?? '').filter(Boolean) }).catch(() => undefined);
     return { ok: true, message: `The Microsoft voice works (${list.length} voices, region ${region}).` };
   } catch (e) { return { ok: false, message: `Microsoft voice: ${(e as Error).message}. Check the region (for example eastus).` }; }
 }
@@ -368,7 +370,7 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   if (a.engine === 'azure') {
     if (!keys.azure) throw new Error('Add your Microsoft (Azure Speech) key in ⚙ → API keys to use the Microsoft voice.');
     const base = azureBase((await getExtras()).azureRegion, urls.azure);
-    const voice = a.voice || 'en-US-AvaMultilingualNeural';
+    const voice = a.voice || 'en-GB-AdaMultilingualNeural';
     let res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang));
     // a voice that does not take <lang> (not multilingual): the plain text
     if (res.status === 400 && /[\u3400-\u9FFF]/.test(text)) res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang, false));

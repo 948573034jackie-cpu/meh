@@ -40,7 +40,7 @@ import { VideoEngine } from './video-engine';
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown } from './vocab';
-import { cloudEngine, resolveVoice, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
+import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
@@ -370,7 +370,18 @@ class Session {
       .filter((v) => /^en\b|^en[-_]/i.test(v.lang) && (!novelty.test(v.name) || v.id === this.macVoice))
       .map((v) => ({ id: v.id, name: v.name, lang: v.lang }))
       .sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+    await this.loadAzureAvail();
     this.applyVoice();
+  }
+
+  /** the teacher's voice says the Chinese in a sentence itself (cloud voices; Microsoft only its multilingual ones) */
+  private saysChineseItself(): boolean { return this.voiceKind !== 'mac' && (this.voiceKind !== 'azure' || isMultilingual(this.voiceId)); }
+
+  /** the Microsoft voices the learner's region has (from the key test), for the list in ⚙ */
+  azureAvail: string[] | null = null;
+  async loadAzureAvail(): Promise<void> {
+    const o = await chrome.storage.local.get('drAzureVoices').catch(() => ({} as Record<string, unknown>));
+    this.azureAvail = Array.isArray(o.drAzureVoices) ? (o.drAzureVoices as string[]) : null;
   }
 
   /** the tutor's voice: OpenAI / ElevenLabs (with the Mac voice behind it) or the Mac voice */
@@ -386,7 +397,7 @@ class Session {
       this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, (e) => this.toast(`The ${name} voice failed (${e.message}) · the Mac voice speaks now.`, 9000));
       this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', () => undefined);
       this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
-      this.zhVoice = this.voiceId;
+      this.zhVoice = kind === 'azure' ? azureZhVoice(this.voiceId) : this.voiceId;
     }
     // the sentence plays again from the video (after the explanation): the word card has done its job
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
@@ -451,7 +462,7 @@ class Session {
       explainVoice: () => ({ voiceId: this.voiceKind === 'mac' ? (settings.voice.explainVoiceId || this.voiceId) : this.voiceId, rate: Math.min(settings.voice.rate, 1.2) }),
       // (Chinese Bridge speaks Chinese on purpose)
       zhVoiceId: () => (settings.ai.speakChinese || settings.ai.activeStyle === 'way-bridge' ? this.zhVoice : null),
-      mixedVoice: () => this.voiceKind !== 'mac',
+      mixedVoice: () => this.saysChineseItself(),
       contextZh: (lemma) => this.hints[lemma],
       explain: (req, onDelta) => {
         (window as unknown as { __drRequests?: ExplainRequest[] }).__drRequests?.push(structuredClone(req));
@@ -838,7 +849,7 @@ class Session {
         if (lang === 'zh') return this.zhVoice ? this.zhOut?.speak(text, { voiceId: this.zhVoice, rate: settings.voice.rate }) ?? null : null;
         return this.teachOut?.speak(text, { voiceId: this.voiceId, rate: settings.voice.rate }) ?? null;
       },
-      mixed: () => this.voiceKind !== 'mac' && !!this.zhVoice,
+      mixed: () => this.saysChineseItself() && !!this.zhVoice,
       prefetch: (text, lang) => {
         if (lang === 'zh') { if (this.zhVoice) this.zhOut?.prefetch(text, this.zhVoice, settings.voice.rate); }
         else this.teachOut?.prefetch(text, this.voiceId, settings.voice.rate);
@@ -1751,7 +1762,7 @@ class Session {
     this.quickRoot = root;
     this.renderQuickIfOpen();
   }
-  private renderQuickIfOpen(): void {
+  renderQuickIfOpen(): void {
     const root = this.quickRoot;
     const q = root?.querySelector<HTMLElement>('.quick');
     if (!root || !q) return;
@@ -1761,7 +1772,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -2575,6 +2586,7 @@ async function boot(): Promise<void> {
     if (ch[store.STORAGE_KEYS.extras]) { const prev = extras; extras = { ...store.DEFAULT_EXTRAS, ...ch[store.STORAGE_KEYS.extras].newValue }; session?.extrasChanged(prev); refresh(); }
     if (ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...(ch[store.STORAGE_KEYS.vocab].newValue?.words ?? {}) }, marked: {} }; session?.countKnown(); }
     if (ch[store.STORAGE_KEYS.keys]) session?.keysChanged({ ...(ch[store.STORAGE_KEYS.keys].newValue ?? {}) });
+    if (ch.drAzureVoices) void session?.loadAzureAvail().then(() => session?.renderQuickIfOpen());
     if (ch.sendOn || ch.target) setTimeout(refresh, 50); // youtube.js reads the same change first
   });
   // capture on window: before YouTube's own keys (← would jump back 5 s)

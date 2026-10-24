@@ -6,7 +6,7 @@
 import type { Settings } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import * as store from './store';
-import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES } from './voice';
+import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_ACCENTS } from './voice';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { isWay, wayOf, wayStyle, bandOf } from './teaching-ways';
 import { SHORTCUTS, shortcutMap, comboLabel, comboOf } from './shortcuts';
@@ -18,6 +18,8 @@ export interface QuickCtx {
   keys: store.Keys;
   /** the voice really speaking now (a cloud voice without its key = the Mac voice) */
   voiceNow: 'mac' | 'openai' | 'elevenlabs' | 'azure';
+  /** the Microsoft voices the learner's region has (null = not checked yet: all are shown) */
+  azureAvail?: string[] | null;
   /** the Mac's English voices, and the one the tutor uses */
   macVoices: { id: string; name: string; lang: string }[];
   macVoice: string;
@@ -57,13 +59,22 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <p class="muted">${esc(active.description || '')}${isWay(active.id) ? ` · the ${bandOf(s.learnerLevel)} version (your level ${esc(s.learnerLevel)})` : ''}</p>
       ${editing ? `<label class="col">For a word <textarea data-name="wayWord" rows="7">${esc(active.wordPrompt)}</textarea></label><label class="col">For a sentence or phrase <textarea data-name="waySentence" rows="7">${esc(active.sentencePrompt)}</textarea></label>` : ''}`;
   const options = (list: { id: string; name: string }[], val: string) => list.map((v) => `<option value="${esc(v.id)}"${v.id === val ? ' selected' : ''}>${esc(v.name)}</option>`).join('');
+  // Microsoft: grouped by accent, woman / man, only the voices the learner's region has
+  const azureOptions = (val: string) => {
+    const have = ctx.azureAvail ? new Set(ctx.azureAvail) : null;
+    const list = AZURE_VOICES.filter((v) => !have || have.has(v.id) || v.id === val);
+    return AZURE_ACCENTS.map((acc) => {
+      const vs = list.filter((v) => v.accent === acc);
+      return vs.length ? `<optgroup label="${acc}">${vs.map((v) => `<option value="${esc(v.id)}"${v.id === val ? ' selected' : ''}>${esc(`${v.name} · ${v.gender}`)}</option>`).join('')}</optgroup>` : '';
+    }).join('');
+  };
   // the voice you really hear: a cloud voice without its key falls back to the Mac voice, so say so
   const now = ctx.voiceNow;
   const missing = now === 'mac' ? (x.voice === 'elevenlabs' ? 'ElevenLabs' : x.voice === 'azure' ? 'Microsoft' : x.voice === 'openai' ? 'OpenAI' : '') : '';
   const voiceRows = [
     missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
     now === 'mac' && x.voice === 'auto' ? '<p class="warn">No Microsoft or OpenAI key is saved, so you hear the Mac voice now. Paste a free Microsoft key below (API keys) for a natural voice.</p>' : '',
-    now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${options(AZURE_VOICES, x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(free: 500,000 characters a month, about 9 hours)</span></label>` : '',
+    now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${azureOptions(x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(free: 500,000 characters a month, about 9 hours · ★ = the best, they also say Chinese words)</span></label>` : '',
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
     now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
     now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',

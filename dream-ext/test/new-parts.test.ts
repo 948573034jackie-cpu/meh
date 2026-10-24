@@ -10,7 +10,7 @@ import { parseHardSentences } from '../src/hard-sentences';
 import { comboOf, actionFor, comboLabel } from '../src/shortcuts';
 import { realtimeUsd, liveSessionLadder, pickProvider, azureSsml, azureTurn } from '../src/bg';
 import { sessionFor, liveInstructions } from '../src/live';
-import { resolveVoice, SentenceFromVideo } from '../src/voice';
+import { resolveVoice, SentenceFromVideo, azureZhVoice } from '../src/voice';
 import { Playback } from '@core/listen/playback';
 import { ListenController, type CommandWindow } from '@core/listen/controller';
 import { FakeTtsEngine } from '@core/tts/fake';
@@ -151,6 +151,12 @@ describe('the live call and the voice', () => {
     expect(ssml).toContain('<lang xml:lang="zh-CN">主修</lang>');
     expect(ssml).toContain('&amp; more &lt;now&gt;.');
     expect(azureSsml('主修', 'en-US-AvaMultilingualNeural', 'zh', false)).toContain('<voice name="en-US-AvaMultilingualNeural">主修</voice>');
+    // a voice that is not multilingual: no <lang>; its Chinese words go to a Mandarin voice of the same gender
+    expect(azureSsml('It means 主修.', 'en-CA-LiamNeural')).not.toContain('<lang');
+    expect(azureSsml('主修', 'zh-CN-YunxiNeural', 'zh')).toContain('<voice name="zh-CN-YunxiNeural">主修</voice>');
+    expect(azureZhVoice('en-CA-LiamNeural')).toBe('zh-CN-YunxiNeural');
+    expect(azureZhVoice('en-AU-NatashaNeural')).toBe('zh-CN-XiaoxiaoNeural');
+    expect(azureZhVoice('en-GB-AdaMultilingualNeural')).toBe('en-GB-AdaMultilingualNeural');
     expect(azureRegionOf('East US')).toBe('eastus');
     expect(azureRegionOf('https://westeurope.api.cognitive.microsoft.com/')).toBe('westeurope');
   });

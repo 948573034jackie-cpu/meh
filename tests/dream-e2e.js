@@ -499,7 +499,7 @@ const api = http.createServer((req, res) => {
   await until(async () => (await vstate()).t > 14.5, 8000);
   await yt.keyboard.press('ArrowLeft');
   const az = await until(() => apiLog.slice(nAz).find((r) => r.kind === 'azure'), 15000);
-  ok('the explanation is spoken by the Microsoft voice (Ava, high-quality sound, the key stays in the background)', !!az && az.key === 'az-test-key' && /name="en-US-AvaMultilingualNeural"/.test(az.ssml) && /xml:lang="en-US"/.test(az.ssml) && az.format === 'audio-48khz-192kbitrate-mono-mp3', JSON.stringify(az && { key: az.key, f: az.format, s: az.ssml.slice(0, 220) }));
+  ok('the explanation is spoken by the Microsoft voice (Ada, the best British woman, high-quality sound, the key stays in the background)', !!az && az.key === 'az-test-key' && /name="en-GB-AdaMultilingualNeural"/.test(az.ssml) && /xml:lang="en-GB"/.test(az.ssml) && az.format === 'audio-48khz-192kbitrate-mono-mp3', JSON.stringify(az && { key: az.key, f: az.format, s: az.ssml.slice(0, 220) }));
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 20000);
   await patch('drKeys', { azure: undefined });
   await until(async () => (await dbg()).voice === 'openai', 5000);
