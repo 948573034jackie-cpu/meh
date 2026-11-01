@@ -2,7 +2,9 @@ import Foundation
 import Speech
 import AVFoundation
 
-/// Listens to the microphone (only while the app is waiting for "let's go") and reports what it hears.
+/// Listens to the microphone (while the app waits for "let's go", and while My tutor wants an answer: a stop's
+/// window, a call, voice mode) and reports what it hears: the words so far, then the closed sentence as final.
+/// On the iPhone itself when it can (no 1-minute limit, private); a session that ends is started again by the page.
 final class SpeechListener {
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let engine = AVAudioEngine()
@@ -10,7 +12,8 @@ final class SpeechListener {
     private var task: SFSpeechRecognitionTask?
     private(set) var running = false
 
-    var onText: ((String) -> Void)?
+    /// the words heard so far, and whether that is the closed (final) sentence
+    var onText: ((String, Bool) -> Void)?
     /// Called when listening stopped by itself. `error` is "not-allowed" when a permission was refused.
     var onEnd: ((String?) -> Void)?
 
@@ -34,12 +37,11 @@ final class SpeechListener {
         if running { return }
         guard let recognizer = recognizer, recognizer.isAvailable else { onEnd?("service-not-allowed"); return }
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker])
-            try session.setActive(true, options: [])
+            AudioSession.set(mode: "record")
 
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
+            if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
             request = req
 
             let input = engine.inputNode
@@ -55,10 +57,11 @@ final class SpeechListener {
             task = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 DispatchQueue.main.async {
                     guard let self = self, self.running else { return }
+                    let final = result?.isFinal ?? false
                     if let result = result {
-                        self.onText?(result.bestTranscription.formattedString)
+                        self.onText?(result.bestTranscription.formattedString, final)
                     }
-                    if error != nil || (result?.isFinal ?? false) {
+                    if error != nil || final {
                         self.cleanup()
                         self.onEnd?(nil)
                     }
@@ -67,6 +70,21 @@ final class SpeechListener {
         } catch {
             cleanup()
             onEnd?("audio-capture")
+        }
+    }
+
+    /// Like Chrome's stop(): no more sound; what was heard comes as final, then the end.
+    func finish() {
+        guard running else { return }
+        if engine.isRunning { engine.stop() }
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        // (no final answer within 2 s: end anyway)
+        let t = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self = self, self.running, self.task === t else { return }
+            self.cleanup()
+            self.onEnd?(nil)
         }
     }
 
@@ -82,6 +100,6 @@ final class SpeechListener {
         task?.cancel()
         request = nil
         task = nil
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+        AudioSession.set(mode: "play")
     }
 }

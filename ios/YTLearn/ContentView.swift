@@ -10,10 +10,55 @@ struct ContentView: View {
             GeometryReader { geo in
                 panes(in: geo.size)
             }
+            tutorBar
         }
         .onAppear { model.start() }
         .overlay(alignment: .bottom) { toastView }
         .sheet(isPresented: $showSettings) { SettingsView(model: model) }
+    }
+
+    /// My tutor's buttons (there is no keyboard on the phone): the same actions as its keyboard shortcuts
+    private var tutorBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Button { model.dream("tutor") } label: {
+                    Text(model.tutorOn ? "My tutor ● on" : "My tutor ○ off")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15)))
+                }
+                .buttonStyle(.plain)
+                if model.tutorOn {
+                    tutorButton("stop", "playpause.fill", "Stop / play")
+                    tutorButton("explainLast", "text.bubble", "Explain 30 s")
+                    tutorButton("explainSentence", "arrow.uturn.backward", "Last sentence")
+                    tutorButton("talk", "phone.fill", "Talk")
+                    tutorButton("voiceMode", "mic", "Voice")
+                    tutorButton("pageAuto", "doc.text", "Page")
+                    tutorButton("listening", "book", "Listening")
+                    tutorButton("vocab", "character.book.closed", "Words")
+                    tutorButton("quick", "slider.horizontal.3", "Settings")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .background(Color(.secondarySystemBackground))
+        // (its own view: two sheets on one view do not work on every iOS)
+        .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
+    }
+
+    private func tutorButton(_ action: String, _ symbol: String, _ title: String) -> some View {
+        Button { model.dream(action) } label: {
+            VStack(spacing: 2) {
+                Image(systemName: symbol).font(.system(size: 17))
+                Text(title).font(.system(size: 10))
+            }
+            .frame(minWidth: 52)
+        }
+        .accessibilityLabel(title)
     }
 
     private var toolbar: some View {
@@ -62,11 +107,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private func panes(in size: CGSize) -> some View {
-        // video on top (the main thing), the AI window under it (a small strip until you open it)
-        VStack(spacing: 0) {
-            WebHost(webView: model.youtube).frame(height: model.videoLength(in: size))
-            Divider()
-            WebHost(webView: model.chat)
+        // video on top (the main thing), the AI window under it (a small strip until you open it).
+        // With My tutor on, YouTube gets the whole height (the tutor's panel is under the video in the page).
+        if model.tutorOn {
+            WebHost(webView: model.youtube)
+        } else {
+            VStack(spacing: 0) {
+                WebHost(webView: model.youtube).frame(height: model.videoLength(in: size))
+                Divider()
+                WebHost(webView: model.chat)
+            }
         }
     }
 
@@ -114,6 +164,22 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
+        }
+        .navigationViewStyle(.stack)
+    }
+}
+
+/// My tutor's settings page or My Vocabulary (ytlearn://app/dream/…), in a sheet
+struct TutorPageView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        NavigationView {
+            WebHost(webView: model.sheet)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("My tutor")
+                .navigationBarTitleDisplayMode(.inline)
+                .navigationBarItems(trailing: Button("Done") { model.sheetOpen = false })
         }
         .navigationViewStyle(.stack)
     }

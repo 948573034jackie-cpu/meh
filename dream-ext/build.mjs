@@ -1,5 +1,6 @@
 // Builds the Dream Tutor parts of the Chrome extension into ../youtube-to-claude/dream/ (committed, so the
 // extension loads unpacked without a build step). `node build.mjs --watch` rebuilds on every change.
+// The same files run in the iPhone / iPad app (ios/sync-scripts.sh copies them), so the target is Safari 16.4 too.
 import * as esbuild from 'esbuild';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -18,7 +19,7 @@ const entries = [
 // every build gets its own stamp: the YouTube script carries it, and the folder has it in build-stamp.txt
 const stamp = Date.now().toString(36);
 const common = {
-  bundle: true, format: 'iife', platform: 'browser', target: ['chrome116'], alias, logLevel: 'info', legalComments: 'none',
+  bundle: true, format: 'iife', platform: 'browser', target: ['chrome116', 'safari16.4'], alias, logLevel: 'info', legalComments: 'none',
   define: { 'process.env.NODE_ENV': '"production"', __DREAM_BUILD__: JSON.stringify(stamp) }, sourcemap: false, minify: true, loader: { '.css': 'text' },
 };
 fs.mkdirSync(out, { recursive: true });

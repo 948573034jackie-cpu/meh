@@ -62,7 +62,10 @@ jobs:
         run: |
           APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
           ls "$APP" | head -30
-          for f in shim-common shim-youtube shim-chat lib background youtube chat mic-mix; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          for f in shim-common shim-youtube shim-chat shim-dream lib background youtube chat mic-mix dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
+          for f in dict.json.gz options.html options.js vocab.html vocab-page.js pages.css; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
       - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube + ChatGPT pages
         working-directory: ios
@@ -196,6 +199,9 @@ jobs:
       - name: Voice-call mixer test (the call hears what the app reads into it)
         if: always()
         run: node tests/mic-mix-test.js
+      - name: My tutor in the iPhone/iPad app, in WebKit (the app's scripts + a stand-in for its Swift side)
+        if: always()
+        run: ./ios/sync-scripts.sh && node tests/ios-webkit-test.js
 
   dream-tutor:
     runs-on: ubuntu-latest

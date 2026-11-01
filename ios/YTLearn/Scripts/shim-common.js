@@ -8,8 +8,20 @@
   const post = (obj) => window.webkit.messageHandlers.ytc.postMessage(obj);
   const listeners = [];
   const changeListeners = [];
-  const local = Object.assign({}, window.__ytcStorageInit || {});
-  const session = {};
+  const stores = { local: Object.assign({}, window.__ytcStorageInit || {}), sync: {}, session: {} };
+
+  // the saved values come from Swift (JSON files in the app's Documents folder); every read waits for them once.
+  // The values cross the bridge as JSON text, so numbers, true/false and null stay exactly what they were.
+  const loaded = {};
+  function ready(name) {
+    if (name === 'session') return Promise.resolve();
+    if (!loaded[name]) {
+      loaded[name] = post({ kind: 'storageAll', area: name })
+        .then((text) => { const saved = text ? JSON.parse(text) : {}; stores[name] = Object.assign(saved, stores[name]); })
+        .catch(() => undefined);
+    }
+    return loaded[name];
+  }
 
   function pick(store, keys) {
     if (keys === null || keys === undefined) return Object.assign({}, store);
@@ -19,29 +31,48 @@
     Object.keys(keys).forEach((k) => { out[k] = k in store ? store[k] : keys[k]; });
     return out;
   }
-  function fire(changes) { changeListeners.slice().forEach((fn) => { try { fn(changes, 'local'); } catch (e) { console.warn(e); } }); }
+  function fire(changes, name) {
+    if (!Object.keys(changes).length) return;
+    changeListeners.slice().forEach((fn) => { try { fn(changes, name || 'local'); } catch (e) { console.warn(e); } });
+  }
+  window.__ytcFireChanged = fire;
 
-  function area(store, persist) {
+  function area(name) {
+    const persist = name !== 'session';
     return {
-      get: (keys) => Promise.resolve(pick(store, keys)),
-      set: (obj) => {
+      get: async (keys, cb) => { await ready(name); const r = pick(stores[name], keys); if (typeof cb === 'function') cb(r); return r; },
+      set: async (obj, cb) => {
+        await ready(name);
+        const store = stores[name];
         const ch = {};
         Object.keys(obj).forEach((k) => { ch[k] = { oldValue: store[k], newValue: obj[k] }; store[k] = obj[k]; });
-        if (persist) { post({ kind: 'storageSet', obj }).catch(() => {}); fire(ch); }
-        return Promise.resolve();
+        if (persist) post({ kind: 'storageSet', area: name, json: JSON.stringify(obj) }).catch(() => {});
+        fire(ch, name);
+        if (typeof cb === 'function') cb();
       },
-      remove: (keys) => {
-        [].concat(keys).forEach((k) => { delete store[k]; });
-        return Promise.resolve();
+      remove: async (keys, cb) => {
+        await ready(name);
+        const store = stores[name];
+        const ch = {};
+        [].concat(keys).forEach((k) => { if (k in store) { ch[k] = { oldValue: store[k] }; delete store[k]; } });
+        if (persist) post({ kind: 'storageRemove', area: name, keys: [].concat(keys) }).catch(() => {});
+        fire(ch, name);
+        if (typeof cb === 'function') cb();
       }
     };
   }
 
-  // Swift changed a setting (or is telling us the starting values)
-  window.__ytcStorageChanged = (obj) => {
+  // Swift changed a setting, or another window of the app saved something (the settings page, the old-mode switches)
+  window.__ytcStorageChanged = (obj, name) => {
+    name = name || 'local';
+    const store = stores[name];
     const ch = {};
-    Object.keys(obj).forEach((k) => { ch[k] = { oldValue: local[k], newValue: obj[k] }; local[k] = obj[k]; });
-    fire(ch);
+    Object.keys(obj).forEach((k) => {
+      const v = obj[k];
+      ch[k] = { oldValue: store[k], newValue: v === null ? undefined : v };
+      if (v === null) delete store[k]; else store[k] = v;
+    });
+    fire(ch, name);
   };
 
   // deliver a message to every listener; the first sendResponse() wins (like chrome.runtime)
@@ -72,7 +103,7 @@
 
   window.chrome = window.chrome || {};
   window.chrome.__ytc = true;
-  window.chrome.storage = { local: area(local, true), session: area(session, false), onChanged: { addListener: (fn) => changeListeners.push(fn) } };
+  window.chrome.storage = { local: area('local'), sync: area('sync'), session: area('session'), onChanged: { addListener: (fn) => changeListeners.push(fn) } };
   window.chrome.runtime = {
     onMessage: { addListener: (fn) => listeners.push(fn) },
     sendMessage: (msg) => dispatch(msg, window.__ytcSender ? window.__ytcSender() : {}),

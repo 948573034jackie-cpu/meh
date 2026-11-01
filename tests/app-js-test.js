@@ -82,7 +82,8 @@ setTimeout(() => { console.log('FAIL  test took longer than 9 minutes (stuck) - 
       case 'chatInfo': return { url: chat.url() };
       case 'tabsSend': return await chat.evaluate((x) => window.__ytcDeliver(x), m.msg);
       case 'navigateChat': await chat.goto(swap(m.url).replace(/\/new$/, '/')); await injectChat(); return null;
-      case 'storageSet': Object.assign(store, m.obj); return null;
+      case 'storageAll': return m.area === 'local' ? JSON.stringify(store) : '{}'; // (Store.swift: the saved values as JSON text)
+      case 'storageSet': if (m.area === 'local') Object.assign(store, JSON.parse(m.json)); return null;
       case 'speech': return null;
       default: return null;
     }
@@ -90,7 +91,7 @@ setTimeout(() => { console.log('FAIL  test took longer than 9 minutes (stuck) - 
   const bridgeInit = `window.webkit = { messageHandlers: { ytc: { postMessage: (m) => window.__native(m) } } };`;
   for (const p of [yt, chat]) { await p.exposeFunction('__native', native); await p.addInitScript(bridgeInit); }
   async function injectChat() { await chat.evaluate(swap(rd('shim-common.js') + rd('shim-chat.js') + rd('chat.js'))); }
-  async function injectYT() { await yt.evaluate(`window.__ytcStorageInit=${JSON.stringify(store)};` + swap(rd('shim-common.js') + rd('shim-youtube.js') + rd('lib.js') + rd('background.js') + rd('youtube.js'))); }
+  async function injectYT() { await yt.evaluate(swap(rd('shim-common.js') + rd('shim-youtube.js') + rd('lib.js') + rd('background.js') + rd('youtube.js'))); }
   await chat.goto('http://localhost:8768/'); await injectChat();
   await yt.goto('http://localhost:8767/watch?v=abc12345678'); await injectYT();
   const sent = (p) => p.evaluate(() => window.__sent);

@@ -9,6 +9,15 @@ When you **pause** a video, the app shows the last ~25 seconds as big subtitles 
 
 It runs the *same JavaScript* as the Chrome extension (`youtube-to-claude/`), so both behave the same.
 
+## My tutor (new)
+The Chrome extension's **My tutor** now runs inside the app too: tap **My tutor ○ off** in the bar at the bottom to turn it on. The video stops at words, phrases and sentences above your level, the tutor explains them with your rules and speaks (Microsoft voice, or the iPhone's own voice), you can talk with it (📞), and it keeps My Vocabulary and your level, like in Chrome.
+
+* **First run:** open a video, turn My tutor on, bottom bar → **Settings** (⚙) → **API keys**: your Claude key, and your Microsoft key + region for the free natural voice. The keys are kept in the iPhone's **Keychain** (never in the app's files, never sent anywhere except to Claude / Microsoft).
+* **Bottom bar:** ⏸/▶ stop everything / play on · Explain 30 s · Last sentence · 📞 Talk · 🎙 Voice mode · 📄 the big page at stops on/off · 📖 Listening mode · Words (My Vocabulary) · ⚙ quick settings. On the big page, tap **I know** / **I don't know** (or say it).
+* **Allow** Microphone and Speech Recognition when iOS asks (for I know / I don't know, questions, the call, voice mode).
+* **Better iPhone voice:** iOS Settings → Accessibility → Spoken Content → Voices → English → download a *Premium* or *Enhanced* voice; the tutor picks it by itself.
+* How it is built: `My-tutor-iPhone-build-guide.md` (section 7). The app runs the same `youtube-to-claude/dream/` files as Chrome (`./sync-scripts.sh` copies them); `tests/ios-webkit-test.js` tests them in WebKit with a stand-in for the Swift side.
+
 ## Install on your iPhone / iPad
 
 Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pick one way:

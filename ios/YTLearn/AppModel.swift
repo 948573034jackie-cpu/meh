@@ -19,13 +19,29 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     @Published var layoutIndex = 0
     @Published var toast: String?
+    @Published var tutorOn = false       // My tutor is on (its buttons show in the bottom bar)
+    @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
 
     let youtube: WKWebView
     let chat: WKWebView
     static let world = WKContentWorld.world(name: "ytc")
 
+    /// The scripts of each window, in this order (tests/ios-webkit-test.js reads these lists).
+    /// YouTube: the shims, the old mode (lib, background, youtube), then My tutor (its background, then its page part).
+    static let youtubeScripts = ["shim-common", "shim-youtube", "shim-dream", "lib", "background", "youtube", "dream-bg", "dream-yt"]
+    static let chatScripts = ["shim-common", "shim-chat", "chat"]
+    /// My tutor's settings and vocabulary pages (in the page world, before the page's own script)
+    static let sheetScripts = ["shim-common", "shim-dream", "dream-bg"]
+
     private let speech = SpeechListener()
     private let voice = Voice()
+    let tutorVoice = TutorVoice()
+    private let pageBridge = Bridge(world: .page)
+    private(set) lazy var sheet: WKWebView = {
+        let web = WKWebView(frame: .zero, configuration: AppModel.makeSheetConfig(bridge: self.pageBridge))
+        web.navigationDelegate = self
+        return web
+    }()
     private let feeder = CallFeeder()
     private var dictating = false
     private var dictated = ""
@@ -75,29 +91,27 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         self.speakOn = speakOn
         self.sendOn = sendOn
 
-        let bridge = Bridge()
+        let bridge = Bridge(world: AppModel.world)
         self.bridge = bridge
-        let storage: [String: Any] = [
-            "target": target, "pauseOn": pauseOn, "replayOn": replayOn,
-            "sendTranscript": sendTranscript, "voiceOn": voiceOn, "textLevel": textLevel,
-            "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false, "sendOn": sendOn
-        ]
-        self.youtube = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: true, storage: storage))
-        self.chat = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: false, storage: storage))
+        self.youtube = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: true))
+        self.chat = WKWebView(frame: .zero, configuration: AppModel.makeConfig(bridge: bridge, isYouTube: false))
         super.init()
 
         bridge.model = self
+        pageBridge.model = self
+        tutorOn = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["tutorOn"] as? Bool) ?? false
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in Store.shared.flush() }
         feeder.chat = chat
         youtube.navigationDelegate = self
         chat.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
         chat.allowsBackForwardNavigationGestures = true
 
-        speech.onText = { [weak self] text in
+        speech.onText = { [weak self] text, final in
             guard let self = self else { return }
             if self.dictating { self.heardQuestion(text); return }
             if self.voice.isSpeaking { return }   // do not listen to our own voice
-            self.sendSpeech(["type": "result", "text": text])
+            self.sendSpeech(["type": "result", "text": text, "final": final])
         }
         speech.onEnd = { [weak self] reason in
             guard let self = self else { return }
@@ -155,6 +169,12 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
               out.captionTracks = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer ? (pr.captions.playerCaptionsTracklistRenderer.captionTracks || []).length : 0;
             } catch (e) { out.htmlError = String(e); }
             try { out.transcript = await window.__ytcDebug.load(); } catch (e) { out.transcriptError = String(e); }
+            // My tutor: loaded, its dictionary from the app, its background answers through the in-page port and messages
+            out.tutor = { loaded: !!window.__ytcDream, buttons: typeof (window.__ytcDream && window.__ytcDream.action) };
+            try { out.tutor.dictionaryBytes = (await (await fetch(chrome.runtime.getURL('dream/dict.json.gz'))).arrayBuffer()).byteLength; } catch (e) { out.tutor.dictionaryError = String(e); }
+            try { out.tutor.keyTest = await chrome.runtime.sendMessage({ type: 'dream-test-key', provider: 'anthropic' }); } catch (e) { out.tutor.keyTestError = String(e); }
+            try { out.tutor.voices = speechSynthesis.getVoices().length; } catch (e) { out.tutor.voicesError = String(e); }
+            try { out.tutor.diag = window.__ytcDream && window.__ytcDream.diag(); } catch (e) { out.tutor.diagError = String(e); }
             if (v) {
               v.muted = true;
               try { await Promise.race([v.play(), new Promise(r => setTimeout(r, 5000))]); } catch (e) { out.playError = String(e); }
@@ -463,12 +483,6 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if let text = body["url"] as? String, let url = URL(string: text) { chat.load(URLRequest(url: url)) }
             reply(nil, nil)
 
-        case "storageSet":
-            if let obj = body["obj"] as? [String: Any] {
-                for (key, value) in obj { defaults.set(value, forKey: key) }
-            }
-            reply(nil, nil)
-
         case "speakIntoCall":
             feeder.speak(body["text"] as? String ?? "")
             reply(nil, nil)
@@ -478,7 +492,11 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             reply(nil, nil)
 
         case "speech":
-            if (body["op"] as? String) == "start" { speech.start() } else { speech.stop() }
+            switch body["op"] as? String {
+            case "start": speech.start()
+            case "finish": speech.finish()
+            default: speech.stop()
+            }
             reply(nil, nil)
 
         case "log":
@@ -520,7 +538,84 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         return text
     }
 
-    static func makeConfig(bridge: Bridge, isYouTube: Bool, storage: [String: Any]) -> WKWebViewConfiguration {
+    // ---- My tutor ----
+    /// the old mode's switches (UserDefaults) are part of chrome.storage.local for the pages
+    private static let oldModeKeys = ["target", "pauseOn", "replayOn", "sendTranscript", "voiceOn", "textLevel", "tapOn", "badgeOn", "sendOn"]
+    private var oldModeSettings: [String: Any] {
+        ["target": target, "pauseOn": pauseOn, "replayOn": replayOn, "sendTranscript": sendTranscript, "voiceOn": voiceOn,
+         "textLevel": textLevel, "tapOn": tapOn, "badgeOn": badgeOn, "barOn": false, "sendOn": sendOn]
+    }
+
+    func storageAll(area: String) -> String {
+        Store.shared.allJSON(area: area, overrides: area == "local" ? oldModeSettings : [:])
+    }
+
+    func storageSet(area: String, json: String, from web: WKWebView?) {
+        let obj = Store.shared.set(area: area, json: json)
+        if area == "local" {
+            for (key, value) in obj where AppModel.oldModeKeys.contains(key) { defaults.set(value, forKey: key) }
+            if let on = obj["sendOn"] as? Bool, on != sendOn { sendOn = on }   // My tutor came on: the chat buttons go red
+            if let extras = obj["drExtras"] as? [String: Any], let on = extras["tutorOn"] as? Bool, on != tutorOn { tutorOn = on }
+        }
+        tellOtherWindows(obj, area: area, except: web)
+    }
+
+    func storageRemove(area: String, keys: [String], from web: WKWebView?) {
+        Store.shared.remove(area: area, keys: keys)
+        var gone: [String: Any] = [:]
+        for k in keys { gone[k] = NSNull() }
+        tellOtherWindows(gone, area: area, except: web)
+    }
+
+    func keysChanged(name: String, value: String?, from web: WKWebView?) {
+        var parsed: Any = NSNull()
+        if let value = value, let data = value.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data) { parsed = obj }
+        tellOtherWindows([name: parsed], area: "local", except: web)
+    }
+
+    /// what one window saved, the other window (YouTube / the settings sheet) learns at once (chrome.storage.onChanged)
+    private func tellOtherWindows(_ obj: [String: Any], area: String, except web: WKWebView?) {
+        if obj.isEmpty { return }
+        var targets: [(WKWebView, WKContentWorld)] = [(youtube, AppModel.world)]
+        if sheetOpen { targets.append((sheet, .page)) }
+        for (view, world) in targets where view !== web {
+            view.callAsyncJavaScript("window.__ytcStorageChanged && window.__ytcStorageChanged(obj, area)",
+                                     arguments: ["obj": obj, "area": area], in: nil, in: world, completionHandler: nil)
+        }
+    }
+
+    /// My tutor opens its settings or My Vocabulary (ytlearn://app/dream/…) in a sheet
+    func openPage(_ address: String) {
+        guard let url = URL(string: address), url.scheme == SchemeHandler.scheme else { return }
+        sheet.load(URLRequest(url: url))
+        sheetOpen = true
+    }
+
+    /// a button of the bottom bar: the same as the tutor's keyboard shortcut of that name (window.__ytcDream.action)
+    func dream(_ action: String) {
+        youtube.callAsyncJavaScript("return window.__ytcDream && window.__ytcDream.action ? window.__ytcDream.action(id) : null;",
+                                    arguments: ["id": action], in: nil, in: AppModel.world) { [weak self] result in
+            DispatchQueue.main.async {
+                // (no answer at all: the tutor is not on this page)
+                if case .success(let value) = result, value is NSNull { self?.show("Open a YouTube video first.") }
+                if case .failure = result { self?.show("Open a YouTube video first.") }
+            }
+        }
+    }
+
+    static func makeSheetConfig(bridge: Bridge) -> WKWebViewConfiguration {
+        let config = WKWebViewConfiguration()
+        config.setURLSchemeHandler(SchemeHandler(), forURLScheme: SchemeHandler.scheme)
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let controller = config.userContentController
+        controller.addScriptMessageHandler(bridge, contentWorld: .page, name: "ytc")
+        let source = sheetScripts.map(script).joined(separator: "\n;\n")
+        controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        return config
+    }
+
+    static func makeConfig(bridge: Bridge, isYouTube: Bool) -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []   // lets the replay start by itself
@@ -529,35 +624,13 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let controller = config.userContentController
         controller.addScriptMessageHandler(bridge, contentWorld: world, name: "ytc")
 
-        var source: String
-        if isYouTube {
-            source = "window.__ytcStorageInit = \(jsonString(storage));\n"
-            source += ["shim-common", "shim-youtube", "lib", "background", "youtube"].map(script).joined(separator: "\n;\n")
-        } else {
-            source = ["shim-common", "shim-chat", "chat"].map(script).joined(separator: "\n;\n")
-        }
+        // (the saved settings are read from Store when the page starts: storageAll)
+        let source = (isYouTube ? youtubeScripts : chatScripts).map(script).joined(separator: "\n;\n")
         controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))
         if !isYouTube {
             // the voice call's microphone = your voice + the part the app reads into it
             controller.addUserScript(WKUserScript(source: script("mic-mix"), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         }
         return config
-    }
-}
-
-/// Receives messages from the JavaScript and answers them (the answer becomes a JavaScript Promise result).
-final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
-    weak var model: AppModel?
-
-    func userContentController(_ userContentController: WKUserContentController,
-                               didReceive message: WKScriptMessage,
-                               replyHandler: @escaping (Any?, String?) -> Void) {
-        guard let model = model, let body = message.body as? [String: Any], let kind = body["kind"] as? String else {
-            replyHandler(nil, nil)
-            return
-        }
-        DispatchQueue.main.async {
-            model.handle(kind: kind, body: body, reply: replyHandler)
-        }
     }
 }

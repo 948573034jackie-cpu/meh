@@ -46,7 +46,7 @@ import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
 import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from './zh';
 import { buildHardSentencesPrompt, parseHardSentences, HARD_PER_SECONDS } from './hard-sentences';
-import { actionFor, comboLabel, shortcutMap } from './shortcuts';
+import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } from './shortcuts';
 import { renderQuick } from './quick';
 
 interface YtcInfo { title: string; channel?: string; url: string; cues: unknown[]; errors: string[]; source: string | null }
@@ -74,6 +74,8 @@ interface DreamHook {
   callChanged(): void;
   /** for the 🩺 check */
   diag(): Record<string, unknown> | null;
+  /** a button of the iPhone app's bar: a shortcut id (`stop`, `explainLast`, …) or `voiceMode`, `pageAuto`, `vocab`, `quick` */
+  action?(id: string): boolean;
 }
 declare global { interface Window { __ytcApi?: YtcApi; __ytcDream?: DreamHook; __drDebug?: unknown } }
 /** the parts of Chrome's SpeechRecognition the 🎤 button uses */
@@ -105,6 +107,7 @@ function pageStyle(): void {
   st.textContent = `
     html.dr-panel #secondary > :not(#dr-panel-host), html.dr-panel #secondary-inner { display: none !important; }
     #dr-panel-host { display: block; position: sticky; top: 68px; height: calc(100vh - 84px); min-height: 360px; margin: 0 0 12px; z-index: 5; }
+    html.dr-panel-under #dr-panel-host { position: relative; top: auto; height: 62vh; min-height: 300px; margin: 6px 8px 12px; }
     html.dr-band.dr-hide-cc .ytp-caption-window-container, html.dr-stage.dr-hide-cc .ytp-caption-window-container { display: none !important; }
     #dr-band-host { position: absolute; inset: 0; pointer-events: none; z-index: 61; }
     #dr-stage-host { position: fixed; inset: 0; z-index: 2147482000; }
@@ -117,6 +120,20 @@ function pageStyle(): void {
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) { --ytd-watch-flexy-min-player-width: 280px !important; --ytd-watch-flexy-max-player-width: 4000px !important; }
   `;
   (document.head || document.documentElement).appendChild(st);
+}
+
+/**
+ * Puts the panel in its place: YouTube's right column, or, on the phone page (m.youtube.com, the iPhone app) that has
+ * no right column, right under the player. False = the page is not built yet.
+ */
+function placePanel(host: HTMLElement): boolean {
+  const sec = document.querySelector('#secondary');
+  if (sec) { sec.prepend(host); return true; }
+  const player = document.querySelector('#player-container-id, ytm-player, .player-container');
+  if (!player?.parentElement) return false;
+  player.after(host);
+  document.documentElement.classList.add('dr-panel-under');
+  return true;
 }
 
 function makeHost(id: string): { host: HTMLElement; root: ShadowRoot } {
@@ -713,7 +730,7 @@ class Session {
   private follow(): void {
     if (this.disposed || !this.vb) return;
     // YouTube redrew its right column and dropped the panel: put it back
-    if (this.panel && !this.panel.host.isConnected) { const sec = document.querySelector('#secondary'); if (sec) { sec.prepend(this.panel.host); this.scrollToCur(true); } }
+    if (this.panel && !this.panel.host.isConnected && placePanel(this.panel.host)) this.scrollToCur(true);
     const v = video();
     if (!v) return;
     const ad = !!window.__ytcApi?.isAd();
@@ -1637,16 +1654,14 @@ class Session {
   // =============================================================================================================
   private mountPanel(): void {
     if (!extras.panel) return;
-    const sec = document.querySelector('#secondary');
-    if (!sec) { setTimeout(() => { if (!this.disposed && !this.panel) this.mountPanel(); }, 800); return; }
     const { host, root } = makeHost('dr-panel-host');
+    if (!placePanel(host)) { setTimeout(() => { if (!this.disposed && !this.panel) this.mountPanel(); }, 800); return; }
     const el = document.createElement('div');
     el.className = 'panel';
     el.innerHTML = `<div class="head"></div><div class="status"></div><div class="lines"><div class="doc-inner"></div></div><div class="talk" hidden></div><div class="transcript"></div>
       <form class="ask"><input type="text" placeholder="Type a question (pronunciation does not matter)" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit">Ask</button></form>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
-    sec.prepend(host);
     document.documentElement.classList.add('dr-panel');
     this.panel = { host, root, el };
     this.applyLook();
@@ -2450,35 +2465,35 @@ class Session {
     const swallow = () => { e.preventDefault(); e.stopImmediatePropagation(); };
     if (e.code === 'Escape' && this.quickRoot) { swallow(); this.closeQuick(); return; }
     if (a?.id === 'goOn' && this.mode === 'tutor' && (this.controller?.busy || this.flow) && !this.cmdWin) { swallow(); this.byeBye(); return; }
-    if (!a) return;
+    if (a && this.runAction(a)) swallow();
+  }
+
+  /** a shortcut's action (from a key or, on the iPhone, a button); true = it acted (the key is then swallowed) */
+  private runAction(a: ShortcutAction): boolean {
     const windowOpen = !!this.cmdWin || !!this.callStop || !!this.card;
     const tutor = this.mode === 'tutor';
     if (a.when === 'window') {
-      if (!windowOpen && !(tutor && this.talk)) return;
-      swallow();
+      if (!windowOpen && !(tutor && this.talk)) return false;
       if (a.id === 'know') { if (this.card && !this.cmdWin && !this.callStop && !this.talk) { this.controller?.markKnown(this.card.lemma); void this.changeStatus(this.card.lemma, 'known'); this.closeCard(); } else this.answerKnow(); }
       else if (a.id === 'dontKnow') this.answerDontKnow();
       else if (a.id === 'goOn') { if (this.cmdWin || this.callStop) this.answerGoOn(); else if (this.talk) this.byeBye(); else this.closeCard(); }
-      return;
+      return true;
     }
     if (a.when === 'explaining') {
       // Space pauses the teacher (only while it explains or talks in the call; otherwise YouTube's play / pause)
-      if (tutor && this.talk?.chat?.busy) { swallow(); this.talk.chat.interrupt(); return; }
-      if (!tutor || !this.controller?.busy) return;
-      swallow();
+      if (tutor && this.talk?.chat?.busy) { this.talk.chat.interrupt(); return true; }
+      if (!tutor || !this.controller?.busy) return false;
       this.interrupt();
-      return;
+      return true;
     }
     if (a.when === 'page') {
-      if (!tutor || !(this.talk || this.flow || this.cmdWin || (this.stageVisible() && normalView()))) return;
-      swallow();
+      if (!tutor || !(this.talk || this.flow || this.cmdWin || (this.stageVisible() && normalView()))) return false;
       if (this.talk || this.flow || this.cmdWin) this.goOn(); else this.hideStage();
-      return;
+      return true;
     }
     // the rest; in the website-call mode only the look changes (YouTube keeps ← and the others)
     const lookOnly = ['listening', 'page', 'bigger', 'smaller', 'zh', 'band'];
-    if (!tutor && !lookOnly.includes(a.id)) return;
-    swallow();
+    if (!tutor && !lookOnly.includes(a.id)) return false;
     if (a.id === 'explainSentence') this.explainSentence();
     else if (a.id === 'explainLast') this.explainLast();
     else if (a.id === 'stop') this.stopOrPlay();
@@ -2488,6 +2503,26 @@ class Session {
     else if (a.id === 'bigger' || a.id === 'smaller') this.resize(a.id === 'bigger' ? 1 : -1);
     else if (a.id === 'zh') void store.patchExtras({ zhLines: !extras.zhLines });
     else if (a.id === 'band') { const on = !this.bandVisible(); void store.patchExtras({ band: on ? 'on' : 'off' }); this.toast(on ? 'Subtitles on the video: on' : 'Subtitles on the video: off'); }
+    else return false;
+    return true;
+  }
+
+  /**
+   * A button of the iPhone app's bar (there is no keyboard): the shortcut of the same name, or one of the panel's
+   * buttons. False = nothing to do now (e.g. "I know" with no window open).
+   */
+  action(id: string): boolean {
+    if (id === 'voiceMode') { this.toggleVoiceMode(); return true; }
+    if (id === 'pageAuto') { this.togglePageAuto(); return true; }
+    if (id === 'vocab') { void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' }); return true; }
+    if (id === 'quick') {
+      const el = this.stageVisible() ? this.stage?.el : this.panel?.el;
+      if (!el) return false;
+      this.toggleQuick(el);
+      return true;
+    }
+    const a = SHORTCUTS.find((x) => x.id === id);
+    return !!a && this.runAction(a);
   }
 
   dispose(): void {
@@ -2505,7 +2540,7 @@ class Session {
     this.panel?.host.remove();
     this.band?.host.remove();
     this.stage?.host.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-stage');
+    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-stage');
     applyPageLook(false);
   }
 
@@ -2710,6 +2745,10 @@ async function boot(): Promise<void> {
     },
     callChanged: () => { if (window.__ytcApi?.settings().sendOn && extras.tutorOn) void setTutor(false); else refresh(); },
     diag: () => (session ? session.diag() : { mode: 'off', on: extras.tutorOn }),
+    action: (id) => {
+      if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
+      return session ? session.action(id) : false;
+    },
   };
   const bar = document.getElementById('yt2c-bar');
   if (bar) window.__ytcDream.decorateBar(bar);

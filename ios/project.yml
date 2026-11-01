@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: local.ytlearn
   xcodeVersion: "14.3"   # keeps the project file readable by Xcode 14 and 15
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "16.4"   # My tutor needs Safari 16.4's JavaScript (DecompressionStream for its dictionary)
   createIntermediateGroups: true
 targets:
   YTLearn:
@@ -11,6 +11,16 @@ targets:
     platform: iOS
     sources:
       - path: YTLearn
+        excludes:
+          - "Web/**"
+          - "Info.plist"
+      # My tutor's own files, kept in their folders (ytlearn://app/dream/… : the dictionary, settings, My Vocabulary)
+      - path: YTLearn/Web
+        type: folder
+    info:
+      path: YTLearn/Info.plist
+      properties:
+        UIBackgroundModes: [audio]   # the tutor keeps talking with the screen off
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.ytlearn.app
@@ -26,5 +36,5 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "The microphone is used only while a paused video is waiting for you to say “let's go”."
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Speech recognition is used to hear “let's go” so the video can play again."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "The microphone is used only while My tutor waits for your answer (I know, a question, a call, voice mode) or a paused video waits for “let's go”."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Speech recognition writes down what you say to My tutor (questions, I know / I don't know, “let's go”), on the iPhone when it can."

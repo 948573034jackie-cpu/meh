@@ -48,13 +48,15 @@
   class NativeSpeechRecognition {
     constructor() { this.continuous = false; this.interimResults = false; this.lang = 'en-US'; this.onresult = null; this.onerror = null; this.onend = null; }
     start() { window.__ytcActiveSR = this; post({ kind: 'speech', op: 'start' }).catch(() => {}); }
-    abort() { if (window.__ytcActiveSR === this) window.__ytcActiveSR = null; post({ kind: 'speech', op: 'stop' }).catch(() => {}); }
-    stop() { this.abort(); }
+    // (only the listener that has the microphone can close it: the 🎤 Speak button's own listener takes it over)
+    abort() { if (window.__ytcActiveSR !== this) return; window.__ytcActiveSR = null; post({ kind: 'speech', op: 'stop' }).catch(() => {}); }
+    // like Chrome: what is being heard now comes as final, then "end" (the listener starts again by itself)
+    stop() { if (window.__ytcActiveSR === this) post({ kind: 'speech', op: 'finish' }).catch(() => {}); }
   }
   window.__ytcSpeech = (ev) => {
     const r = window.__ytcActiveSR;
     if (!r) return;
-    if (ev.type === 'result' && r.onresult) r.onresult({ resultIndex: 0, results: [[{ transcript: ev.text }]] });
+    if (ev.type === 'result' && r.onresult) { const res = [{ transcript: ev.text }]; res.isFinal = !!ev.final; r.onresult({ resultIndex: 0, results: [res] }); }
     if (ev.type === 'error' && r.onerror) r.onerror({ error: ev.error });
     if (ev.type === 'end') { window.__ytcActiveSR = null; if (r.onend) r.onend(); }
   };
