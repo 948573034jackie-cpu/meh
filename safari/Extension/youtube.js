@@ -203,17 +203,18 @@
 
   // Method 5: open YouTube's own "Show transcript" panel and read it.
   async function fromTranscriptPanel() {
-    const expand = document.querySelector('#description-inline-expander #expand, ytd-text-inline-expander #expand');
+    // the description (with its "Show transcript" button) is drawn late on a fresh page: wait for it
+    const expand = await waitFor(() => document.querySelector('#description-inline-expander #expand, ytd-text-inline-expander #expand'), 8000);
     if (expand) expand.click();
     const btn = await waitFor(() => {
       const b = document.querySelector('ytd-video-description-transcript-section-renderer button');
       return b || Array.from(document.querySelectorAll('button')).find((x) => /show transcript/i.test(x.textContent || x.getAttribute('aria-label') || ''));
-    }, 3000);
+    }, 10000);
     if (!btn) throw new Error('no "Show transcript" button on this page');
     btn.click();
     // YouTube has two page designs for the panel lines; read both
     const SEG = 'ytd-transcript-segment-renderer, transcript-segment-view-model';
-    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 8000);
+    const first = await waitFor(() => document.querySelectorAll(SEG).length || null, 12000);
     if (!first) throw new Error('transcript panel did not load');
     // A long video fills the panel piece by piece: wait until it stops growing.
     let count = document.querySelectorAll(SEG).length, lastChange = Date.now();
@@ -315,6 +316,8 @@
     settings: () => ({ sendOn: settings.sendOn, target: settings.target, voiceOn: settings.voiceOn }),
     buildSentences: (cues) => buildSentences(cues, { words: true }),
     setBarStatus: (text, bad) => setBarStatus(text, bad),
+    // what the microphone hears now is closed (Chrome gives it as final), then it listens again
+    finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
   };
 
   window.__ytcDebug = {
@@ -843,12 +846,18 @@
     if (!ALWAYS_LISTEN) stopListening();
   }
 
+  // My tutor: the microphone only while the tutor waits for you (a question, a talk) unless you want it always:
+  // on a Mac a microphone in use with echo cancelling makes all other sound quieter and muffled, with small breaks
+  function dreamWantsMic() { try { const d = window.__ytcDream; return !d || !d.wantsMic || !!d.wantsMic(); } catch (e) { return true; } }
   if (ALWAYS_LISTEN) {
     setInterval(() => {
-      const want = settings.voiceOn && (settings.sendOn || dreamOwns()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
+      // (iPhone / iPad: voice commands are off to keep the mic for the website's voice call; My tutor has no such call,
+      // so its questions and talks may use it)
+      const micOk = settings.voiceOn || (TOUCH && dreamOwns());
+      const want = micOk && (settings.sendOn || (dreamOwns() && dreamWantsMic())) && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
-    }, 1500);
+    }, 500);
   }
 
   function startListening() {
@@ -864,6 +873,17 @@
       const session = ++recSession;
       r.onresult = (e) => {
         if (rec !== r) return; // an old listener
+        if (dreamOwns()) {
+          // the tutor gets each closed sentence, then everything still being heard as ONE line (Chrome sends the
+          // unfinished words in two or more pieces)
+          let tail = '', tailKey = '';
+          for (let i = e.resultIndex; i < e.results.length; i++) {
+            if (e.results[i].isFinal) onHeard(e.results[i][0].transcript, true, session + ':' + i);
+            else { if (!tailKey) tailKey = session + ':' + i; tail += ' ' + e.results[i][0].transcript; }
+          }
+          if (tailKey) onHeard(tail.replace(/\s+/g, ' ').trim(), false, tailKey);
+          return;
+        }
         for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal, session + ':' + i);
       };
       r.onerror = (e) => {

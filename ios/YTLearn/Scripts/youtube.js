@@ -851,7 +851,10 @@
   function dreamWantsMic() { try { const d = window.__ytcDream; return !d || !d.wantsMic || !!d.wantsMic(); } catch (e) { return true; } }
   if (ALWAYS_LISTEN) {
     setInterval(() => {
-      const want = settings.voiceOn && (settings.sendOn || (dreamOwns() && dreamWantsMic())) && location.pathname === '/watch' && !!video; // off (red) = no microphone
+      // (iPhone / iPad: voice commands are off to keep the mic for the website's voice call; My tutor has no such call,
+      // so its questions and talks may use it)
+      const micOk = settings.voiceOn || (TOUCH && dreamOwns());
+      const want = micOk && (settings.sendOn || (dreamOwns() && dreamWantsMic())) && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
     }, 500);

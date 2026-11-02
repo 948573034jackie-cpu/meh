@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube to Claude / ChatGPT",
-  "version": "3.1",
-  "description": "Safari (iPhone/iPad): YouTube English: send the video and the part you paused at to Claude / ChatGPT, with subtitles, replay and your voice.",
+  "version": "3.2",
+  "description": "Safari (iPhone/iPad): YouTube English: learn with your own AI tutor (stops at hard words, explains them, a voice, Chinese) or send the part you paused at to Claude / ChatGPT.",
   "permissions": [
     "tabs",
     "scripting",
@@ -11,8 +11,13 @@
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
     "https://claude.ai/*",
-    "https://chatgpt.com/*"
+    "https://chatgpt.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://api.elevenlabs.io/*",
+    "https://*.tts.speech.microsoft.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -24,12 +29,15 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.youtube.com/*"
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
       ],
       "js": [
         "browser-shim.js",
         "lib.js",
-        "youtube.js"
+        "youtube.js",
+        "dream/dream-yt.js",
+        "tutor-bar.js"
       ]
     },
     {
@@ -47,5 +55,22 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dream/dict.json.gz"
+      ],
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ]
+    }
+  ],
+  "options_page": "dream/options.html",
+  "browser_specific_settings": {
+    "safari": {
+      "strict_min_version": "16.4"
+    }
   }
 }

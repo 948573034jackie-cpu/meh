@@ -9,8 +9,8 @@ There are 3 versions:
 | Version | Device | Where you use it |
 |---|---|---|
 | **Chrome extension** (v3.2) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
-| **YT Safari** (v2.9) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari) |
-| **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside |
+| **YT Safari** (v3.2) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari), plus **My tutor** (section 7) |
+| **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside, plus **My tutor** (section 7) |
 
 ---
 
@@ -127,13 +127,18 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 - iPad Safari pauses pages you cannot see, so keep YouTube and claude.ai side by side (Split View).
 - During any voice call, the iPad makes other sound quieter.
-- On iPhone, YouTube must be the desktop site (aA → Request Desktop Website).
+- On iPhone, sending to Claude / ChatGPT needs YouTube's desktop site (aA → Request Desktop Website). My tutor works on the phone's site too.
 - Jumping back 30 s can take a moment while YouTube loads that part again.
 - With a free Apple ID, the iPad apps must be reinstalled every 7 days (Sideloadly on the Mac).
 
 ---
 
-## 7. My tutor (Chrome only, v3.2): your own AI teacher on YouTube
+## 7. My tutor (Chrome, YT Safari and YT Learn, v3.2): your own AI teacher on YouTube
+
+On the iPhone / iPad there is no keyboard: a bar at the bottom of the page (YT Safari) or of the app (YT Learn) has the
+buttons instead: My tutor on / off, Stop / play, Explain 30 s, Last sentence, Talk, Voice, Page, Listening, Words,
+Settings. In YT Safari the API keys are kept in the extension's own storage (⚙ → All settings); in YT Learn, in the
+iPhone's Keychain. Needs iOS 16.4 or newer.
 
 Two ways to learn, never at the same time (turning one on turns the other off):
 

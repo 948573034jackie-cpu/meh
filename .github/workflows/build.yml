@@ -138,7 +138,8 @@ jobs:
           APPEX=$(find "$APP/PlugIns" -name '*.appex' -maxdepth 1 | head -1)
           echo "extension: $APPEX"; ls "$APPEX"
           plutil -p "$APPEX/Info.plist" | grep -E "NSExtensionPointIdentifier|CFBundleIdentifier"
-          for f in manifest.json browser-shim.js lib.js youtube.js chat.js background.js popup.html popup.js; do
+          for f in manifest.json browser-shim.js lib.js youtube.js chat.js background.js popup.html popup.js tutor-bar.js \
+                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/options.html dream/options.js dream/vocab.html; do
             test -f "$APPEX/$f" || test -f "$APPEX/Resources/$f" || { echo "MISSING $f"; exit 1; }; done
       - name: Start the app in an iPad Simulator (screenshot)
         shell: bash
@@ -196,6 +197,9 @@ jobs:
       - name: Safari build of the extension, in WebKit (Safari's engine)
         if: always()
         run: ./safari/make-extension.sh && ENGINE=webkit node tests/safari-webkit-test.js
+      - name: My tutor in the Safari extension (iPhone), in WebKit
+        if: always()
+        run: ./safari/make-extension.sh && node tests/safari-tutor-webkit-test.js
       - name: Voice-call mixer test (the call hears what the app reads into it)
         if: always()
         run: node tests/mic-mix-test.js

@@ -40,7 +40,7 @@ const fakeSafari = (store) => {
   window.webkitSpeechRecognition = function () { window.__recStarts++; this.start = () => {}; this.stop = () => {}; this.abort = () => {}; };
   const changed = [];
   window.browser = {
-    runtime: { id: 'safari-ext', getURL: (p) => p,
+    runtime: { id: 'safari-ext', getURL: (p) => p, getManifest: () => ({ manifest_version: 3, version: '3.2' }), // (My tutor checks its extension is still there)
       sendMessage: (m) => { window.__calls.push(m); return Promise.resolve(window.__reply ? window.__reply(m) : {}); },
       onMessage: { addListener: (f) => window.__listeners.push(f) } },
     storage: { local: {

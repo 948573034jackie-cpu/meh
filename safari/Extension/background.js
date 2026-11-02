@@ -7,6 +7,8 @@
     }
   } catch (e) { /* ignore */ }
 })();
+// The Dream Tutor's AI (your own API key), its jobs and the settings / vocabulary pages: dream/dream-bg.js (built from dream-ext/).
+if (typeof importScripts === 'function') { try { importScripts('dream/dream-bg.js'); } catch (e) { console.error('Dream Tutor background failed to load', e); } }
 
 // Popup button → read the YouTube video (link + transcript) → type it into your claude.ai chat.
 
@@ -328,7 +330,8 @@ async function diagnose() {
   const yts = tabs.filter((t) => /^https:\/\/(www|m)\.youtube\.com\//.test(t.url || ''));
   if (!yts.length) problems.push('No YouTube tab found. Open a video on youtube.com (and allow the extension on youtube.com).');
   for (const t of yts.slice(0, 2)) {
-    if (/^https:\/\/m\./.test(t.url)) problems.push('YouTube is the MOBILE site (m.youtube.com). Tap aA → Request Desktop Website.');
+    // (My tutor works on the phone's site; sending to Claude / ChatGPT wants the desktop one)
+    if (/^https:\/\/m\./.test(t.url) && !(st.drExtras && st.drExtras.tutorOn)) problems.push('YouTube is the MOBILE site (m.youtube.com). Tap aA → Request Desktop Website (or use My tutor, which works on it).');
     const r = await within(chrome.tabs.sendMessage(t.id, { type: 'yt-diag' }).catch((e) => ({ error: e.message })), 3000);
     add('YouTube tab', r || 'no answer');
     if (!r || r.error) problems.push('The YouTube page does not answer. Reload it, and allow the extension on youtube.com (aA → Manage Extensions).');
@@ -336,26 +339,26 @@ async function diagnose() {
       if (!r.video) problems.push('No video found on the YouTube page.');
       if (r.subtitles && /^none|error/.test(r.subtitles)) problems.push('No subtitles for this video: ' + r.subtitles);
       const tutorOn = !!(st.drExtras && st.drExtras.tutorOn);
-      if (!r.settings.sendOn && !tutorOn) problems.push(self.__ytcSafari ? 'ChatGPT and Claude are both OFF (red). Press Claude under the video so it turns green.' : 'Everything is OFF (red). Under the video press My tutor (your own API key) or Claude / ChatGPT (the website) so it turns green.');
+      if (!r.settings.sendOn && !tutorOn) problems.push(self.__ytcSafari ? 'ChatGPT and Claude are both OFF (red), and My tutor is off. Press My tutor (your own API key) or Claude under the video so it turns green.' : 'Everything is OFF (red). Under the video press My tutor (your own API key) or Claude / ChatGPT (the website) so it turns green.');
       if (r.tutor && r.tutor.problem) problems.push(r.tutor.problem);
       if (r.muted) problems.push('The video is MUTED. Tap the speaker icon in the player.');
       if (r.settings.voiceOn && r.touch) problems.push('Voice commands are ON: the YouTube page uses the microphone, so the Claude voice call may lose it and the video sound gets quiet. Turn "Voice commands" off.');
     }
   }
 
-  // My tutor (Chrome): on / off, which keys are saved (never the keys themselves), the voice and the AI it uses
-  if (!self.__ytcSafari) {
+  // My tutor: on / off, which keys are saved (never the keys themselves), the voice and the AI it uses
+  {
     const ex = st.drExtras || {}, ds = st.drSettings || {}, ks = st.drKeys || {};
     const saved = Object.keys(ks).filter((k) => ks[k]);
     add('My tutor', { on: !!ex.tutorOn, keys: saved.length ? saved : 'none saved', ai: ds.ai ? (ds.ai.provider + ' ' + (ds.ai.provider === 'openai' ? ds.ai.openaiModel : ds.ai.anthropicModel)) : 'default', level: ds.learnerLevel || 'B2', voice: ex.voice || 'auto', liveTalk: ks.openai ? 'real time (OpenAI)' : 'slower (no OpenAI key)' });
-    if (ex.tutorOn && !saved.length) problems.push('My tutor is ON but no API key is saved. Click the extension icon → Dream Tutor settings → paste your key → Save → Test.');
-    if (ex.tutorOn && ex.voice === 'openai' && !ks.openai) problems.push('The OpenAI voice is chosen but no OpenAI API key is saved (Dream Tutor settings). The Mac voice is used until then.');
-    if (ex.tutorOn && ex.voice === 'elevenlabs' && !ks.elevenlabs) problems.push('The ElevenLabs voice is chosen but no ElevenLabs key is saved (Dream Tutor settings). The Mac voice is used until then.');
+    if (ex.tutorOn && !saved.length) problems.push('My tutor is ON but no API key is saved. ' + (self.__ytcSafari ? 'Tap ⚙ in the tutor bar → All settings' : 'Click the extension icon → Dream Tutor settings') + ' → paste your key → Save → Test.');
+    if (ex.tutorOn && ex.voice === 'openai' && !ks.openai) problems.push('The OpenAI voice is chosen but no OpenAI API key is saved (Dream Tutor settings). ' + (self.__ytcSafari ? 'The iPhone voice' : 'The Mac voice') + ' is used until then.');
+    if (ex.tutorOn && ex.voice === 'elevenlabs' && !ks.elevenlabs) problems.push('The ElevenLabs voice is chosen but no ElevenLabs key is saved (Dream Tutor settings). ' + (self.__ytcSafari ? 'The iPhone voice' : 'The Mac voice') + ' is used until then.');
   }
 
   const T = await getTarget();
   const chats = tabs.filter((t) => (t.url || '').startsWith(T.url.replace('*', '')));
-  const tutorOnly = !self.__ytcSafari && st.drExtras && st.drExtras.tutorOn && !st.sendOn;
+  const tutorOnly = st.drExtras && st.drExtras.tutorOn && !st.sendOn;
   if (!chats.length && !tutorOnly) problems.push('No ' + T.name + ' tab found. Open ' + T.name + ' (' + T.url.replace('/*', '') + ')' + (self.__ytcSafari ? ' in a second Safari window next to YouTube.' : ' in another tab.'));
   for (const t of chats.slice(0, 2)) {
     const r = await within(chrome.tabs.sendMessage(t.id, { type: 'chat-diag' }).catch((e) => ({ error: e.message })), 3000);
