@@ -86,6 +86,7 @@ const api = http.createServer((req, res) => {
     apiLog.push({ path: req.url, kind, model: j.model, user, sys, ssml: kind === 'azure' ? body : undefined, at: Date.now() });
     if (kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg' }); res.end(ttsWav); return; }
     if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify([{ ShortName: 'en-GB-AdaMultilingualNeural' }])); return; }
+    if (/These rules are absolute/.test(sys) && /@@<its number>/.test(user)) return sse(res, [...user.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\nThis part is the hard one. It means something simple here, and it shows how the person feels.`).join('\n'));
     if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } })); return; }
     if (kind === 'hints') return sse(res, JSON.stringify({ meticulous: ['一丝不苟的', '细致的'], ephemeral: ['短暂的', '转瞬即逝的'], gregarious: ['爱交际的', '合群的'] }));
     if (kind === 'phrases') return sse(res, '{"phrases":[]}');
@@ -371,20 +372,22 @@ const fakeWebkit = () => {
   await lv.evaluate(() => document.querySelector('video').play().catch(() => {}));
   await sleep(600);
   ok('...the video waits', await lv.evaluate(() => document.querySelector('video').paused));
+  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
   await inG((r) => r.querySelector('[data-a=check]').click());
   const chips = await until(() => inG((r) => { const n = r.querySelectorAll('.chip').length; return n ? [...r.querySelectorAll('.chip')].map((b) => b.textContent) : /no new words/.test(r.textContent) ? [] : null; }), 20000);
   ok('...the test comes from this video', Array.isArray(chips) && chips.every((c) => LINES.join(' ').toLowerCase().includes(c.toLowerCase())), JSON.stringify(chips));
   const fit = await inG((r) => { const d = r.querySelector('.done') || r.querySelector('button'); return { bottom: d.getBoundingClientRect().bottom, screen: innerHeight }; });
   ok('...it fits the phone screen', fit.bottom <= fit.screen, JSON.stringify(fit));
   await inG((r) => (r.querySelector('.done') || r.querySelector('[data-a=skip]')).click());
-  const plays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 10000);
+  const plays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 30000);
   ok('...after it the video plays by itself', !!plays);
   const lvDbg = () => lv.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
-  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
   const stop = await until(async () => { const d = await lvDbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 150);
   ok('a stop comes, counted', !!stop, JSON.stringify(await lvDbg()).slice(0, 300));
   ok('...its explanation is asked for with the hard rule', !!(await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000)));
   const goesOn = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 30000, 150);
+  const lvEnd = await lvDbg();
+  ok('the analysis was one call, nothing asked of the AI at the stop', lvEnd.level.aiCalls === 1 && apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule).length === 1, JSON.stringify({ calls: lvEnd.level.aiCalls }));
   ok('...and the video goes on by itself', !!goesOn, JSON.stringify(await lvDbg()).slice(0, 200));
   const count = await lv.evaluate(() => document.getElementById('dr-stop-counter')?.textContent || '');
   ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(count) && +/\((\d+)%/.exec(count)[1] <= 50, count);

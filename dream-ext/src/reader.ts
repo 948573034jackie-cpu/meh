@@ -13,7 +13,7 @@ import { getEngine, useFakeEngine, defaultVoiceFor } from '@core/tts/registry';
 import { getSentence, contextAround } from '@core/nav';
 import { detectNames } from '@core/dict/names';
 import { StreamSentenceSplitter } from '@core/listen/sentences';
-import { explain as aiExplain, complete, getDictionary, getZipf } from './ai-client';
+import { explain as aiExplain, complete, completeStream, getDictionary, getZipf } from './ai-client';
 import * as store from './store';
 import { cloudEngine, resolveVoice, VoiceWithBackup } from './voice';
 import { unknownChance, phraseSig, type LevelMeta } from './level-db';
@@ -21,6 +21,7 @@ import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type AiItem 
 import { scoreSentences, selectStops, mayStop, counterText, itemsToHits, type SentenceScore } from './level-stops';
 import { RuleGuard, type RuleRequest } from './level-rule';
 import { LevelGate } from './level-gate';
+import { Analysis, analysisId, type AnalysisStop } from './level-analysis';
 import { buildHardSentencesPrompt, parseHardSentences } from './hard-sentences';
 import { textBook, orderOf, pdfToText } from './reader-text';
 
@@ -52,10 +53,11 @@ const spokenLog: string[] = [];
 let explaining: { cancel(): void } | null = null;
 let rejected = 0;
 let loop = 0;
+let analysis: Analysis | null = null;
 
 function debug(): void {
   if (!extras?.fakeVoice) return;
-  document.documentElement.dataset.drDebug = JSON.stringify({ index, playing, stops, heard: heard.size, total: order.length, chosen: stopSet.size, spoken: spokenLog.slice(-40), rejected, say: $('say').textContent });
+  document.documentElement.dataset.drDebug = JSON.stringify({ index, playing, stops, heard: heard.size, total: order.length, chosen: stopSet.size, spoken: spokenLog.slice(-40), rejected: rejected + (analysis?.rejected ?? 0), say: $('say').textContent, aiCalls: analysis?.calls ?? 0 });
 }
 const paintCounter = () => { $('counter').textContent = counterText(stops, heard.size); debug(); };
 
@@ -140,6 +142,15 @@ async function explainThis(req: RuleRequest): Promise<string> {
   return final;
 }
 
+/** an explanation from the one analysis: shown and read, sentence by sentence */
+async function readSaved(text: string): Promise<void> {
+  const panel = $('say');
+  panel.hidden = false;
+  panel.textContent = text;
+  const mine = loop;
+  for (const s of new StreamSentenceSplitter().flush(text)) if (mine !== loop || !(await say(s))) return;
+}
+
 function requestFor(kind: 'word' | 'sentence', target: string, pos: Position): RuleRequest {
   const ctx = contextAround(book, pos, 80, 40);
   const known = new Set<string>();
@@ -160,7 +171,10 @@ async function stopAt(pos: Position): Promise<void> {
   const sc = scores.get(key);
   const text = getSentence(book, pos)?.text ?? '';
   sc?.lemmas.forEach((lemma, i) => { if (!vocab.words[lemma]) { vocab.words[lemma] = 'learning'; void store.setWordStatus(lemma, 'learning', { word: sc.items[i], sentence: text }); } });
-  await explainThis(requestFor('sentence', text, pos));
+  // written once, ahead of the stop: no AI call here
+  const saved = analysis ? await analysis.wait(analysisId(text)) : null;
+  if (saved) await readSaved(saved);
+  else await explainThis(requestFor('sentence', text, pos));
   const el = sentenceEl(pos);
   el?.classList.add('again');
   el?.scrollIntoView({ block: 'center' });
@@ -176,6 +190,7 @@ async function readOn(): Promise<void> {
     heard.add(sentenceKey(pos));
     markCurrent(pos);
     paintCounter();
+    analysis?.plan(index);
     const ended = await say(getSentence(book, pos)?.text ?? '');
     if (mine !== loop || !playing || !ended) return;
     const key = sentenceKey(pos);
@@ -259,6 +274,18 @@ async function aiJobs(ask: Promise<AiItem[] | null>): Promise<void> {
   }
   hard = new Set(list.map((i) => sentenceKey(order[i])));
   recompute();
+  analysis?.plan(index);
+}
+
+function readerStops(): AnalysisStop[] {
+  const out: AnalysisStop[] = [];
+  order.forEach((pos, i) => {
+    const key = sentenceKey(pos);
+    if (!stopSet.has(key)) return;
+    const text = getSentence(book, pos)?.text ?? '';
+    out.push({ id: analysisId(text), index: i, text, items: scores.get(key)?.items ?? [] });
+  });
+  return out;
 }
 
 async function open(title: string, text: string, kind: 'pdf' | 'text'): Promise<void> {
@@ -286,6 +313,17 @@ async function open(title: string, text: string, kind: 'pdf' | 'text'): Promise<
   const ask: Promise<AiItem[] | null> = cached ? Promise.resolve(cached) : keys.anthropic || keys.openai
     ? complete(buildItemsPrompt(lines, title)).then((raw) => { const it = parseItems(raw, lines); void store.setLevelItems(id, it).catch(() => undefined); return it; }).catch(() => null)
     : Promise.resolve(null);
+  // the explanations are written once, ahead of the stops, and saved with this text
+  analysis = keys.anthropic || keys.openai ? new Analysis({
+    load: () => store.getAnalysis(id),
+    save: (texts) => store.setAnalysis(id, texts),
+    stops: readerStops,
+    lineAt: (i) => getSentence(book, order[i])?.text ?? '',
+    total: () => order.length,
+    title: () => book.title,
+    level: () => level.currentLevel || 'B2',
+    stream: (prompt, onDelta) => completeStream(prompt, onDelta, true),
+  }) : null;
   void aiJobs(ask);
   if (extras.levelAsk === false) { setPlaying(true); return; }
   const gate = new LevelGate({

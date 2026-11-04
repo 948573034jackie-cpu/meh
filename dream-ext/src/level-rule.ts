@@ -7,13 +7,11 @@ import type { PromptBundle } from '@core/ai/prompts';
 import type { ExplainRequest } from '@shared/api';
 
 export interface LevelRule { items: string[]; known?: string[]; level: string }
-export type RuleRequest = ExplainRequest & { levelRule?: LevelRule };
+/** levelCheap: the rest of what the learner asks for with Level Check on ("Explain 30 s"): the same cheap model */
+export type RuleRequest = ExplainRequest & { levelRule?: LevelRule; levelCheap?: boolean };
 
-export function buildRulePrompt(req: RuleRequest): PromptBundle {
-  const r = req.levelRule!;
-  const single = req.kind !== 'sentence';
-  const items = single ? [req.target] : r.items;
-  const system = `You explain one hard moment of a video or book, out loud, to an English learner whose level is about ${r.level}.
+export function ruleSystem(level: string): string {
+  return `You explain one hard moment of a video or book, out loud, to an English learner whose level is about ${level}.
 
 These rules are absolute.
 Give only the explanation. No heading, no label, no title, no intro and no filler. Never write things like "Teacher's note", "Let's look at", "The whole sentence", "Let's read it again", "Great", "OK so" or anything similar, and never say what you are going to do.
@@ -22,6 +20,13 @@ Break the sentence down and explain every hard part from the context: what is ha
 Explain each hard word fully: its meaning, its feeling, and how it is used in this sentence.
 Use very easy English in plain, flowing sentences. Be longer and clear, about 100 to 200 words. Write only English: no Chinese and no pronunciation symbols. No lists, no numbers, no markdown.
 The app plays the sentence from the video before and after you, so do not read the whole sentence out at the end.`;
+}
+
+export function buildRulePrompt(req: RuleRequest): PromptBundle {
+  const r = req.levelRule!;
+  const single = req.kind !== 'sentence';
+  const items = single ? [req.target] : r.items;
+  const system = ruleSystem(r.level);
   const ctx = [
     `Source: ${req.book.title || 'Untitled'}`,
     req.before ? `Just before this:\n${req.before}` : '',

@@ -16,6 +16,7 @@ async function until(cond, ms = 15000, step = 200) { const end = Date.now() + ms
 setTimeout(() => { console.log('FAIL  stuck: stopping after 6 minutes'); process.exit(1); }, 6 * 60 * 1000).unref();
 
 const said = [];
+const calls = { analysis: 0, stop: 0 };
 const sse = (res, text) => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'access-control-allow-origin': '*' });
   const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -31,7 +32,8 @@ const api = http.createServer((req, res) => {
   req.on('end', () => {
     let j = {}; try { j = JSON.parse(Buffer.concat(c).toString()); } catch (e) { /* none */ }
     const sys = JSON.stringify(j.system || ''), user = JSON.stringify(j.messages || '');
-    if (/These rules are absolute/.test(sys)) { said.push((/The sentence:\\n(.*?)\\n/.exec(user) || [])[1]); return sse(res, 'OK so "this part" is hard. It means something simple here. People say it when they feel strongly about it.'); }
+    if (/These rules are absolute/.test(sys) && /@@<its number>/.test(user)) { calls.analysis++; const n = [...user.matchAll(/\*(\d+)\. (.*?)(?:  \[hard|\\n)/g)]; said.push(...n.map((m) => m[2])); return sse(res, n.map((m) => `@@${m[1]}\nOK so "this part" is hard. It means something simple here. People say it when they feel strongly about it.`).join('\n')); }
+    if (/These rules are absolute/.test(sys)) { calls.stop++; return sse(res, 'It means something simple here.'); }
     if (/well-punctuated sentences/.test(sys)) { const words = [...user.matchAll(/(\d+):(\S+?)(?= \d+:|\\n|"|$)/g)].map((m) => [Number(m[1]), m[2]]); const out = []; let cur = []; for (const [n, w] of words) { cur.push(w); if (/[.?!]$/.test(w)) { out.push(`${n}|${cur.join(' ')}`); cur = []; } } if (cur.length) out.push(`${words[words.length - 1][0]}|${cur.join(' ')}`); return sse(res, out.join('\n')); }
     if (/judge which spoken sentences/.test(sys)) return sse(res, '{"hard":[]}');
     if (/find the phrases in a text/.test(sys)) return sse(res, '{"items":[]}');
@@ -72,13 +74,21 @@ const api = http.createServer((req, res) => {
   // (the screen's Play is a click in real use: here the player gets one too, when it did not start)
   await sleep(4000);
   await page.evaluate(() => { const v = document.querySelector('video'); if (v && v.paused) { v.muted = true; const m = document.getElementById('movie_player'); if (m && m.playVideo) m.playVideo(); else document.querySelector('.ytp-play-button')?.click(); } });
-  const played = await until(() => page.evaluate(() => { const v = document.querySelector('video'); return !!v && !v.paused && v.currentTime > 0.5; }), 25000);
+  const state = () => page.evaluate(() => { const v = document.querySelector('video'); return { t: v && +v.currentTime.toFixed(1), paused: v && v.paused, duration: v && Math.round(v.duration), ad: !!document.querySelector('.ad-showing') }; });
+  // (the talk's first words are at 0:27: past any ad and the music)
+  const played = await until(async () => { const s = await state(); return s.t > 0.5 && !s.paused && !s.ad; }, 90000);
+  console.log('video:', JSON.stringify(await state()));
   if (!played) console.log('player state:', JSON.stringify(await page.evaluate(() => { const m = document.getElementById('movie_player'); const v = document.querySelector('video'); return { error: document.querySelector('.ytp-error')?.textContent?.slice(0, 200) ?? null, state: m && m.getPlayerState ? m.getPlayerState() : null, ready: v && v.readyState, src: v && !!v.src, ad: !!document.querySelector('.ad-showing') }; })));
-  console.log(played ? 'the video plays in this test browser' : 'NOTE: the video does not play in this test browser (YouTube often blocks its picture there); stops need it');
-  if (played) {
-    const stop = await until(async () => { const l = await lv(); return l && l.stops >= 2 ? l : null; }, 120000, 500);
-    ok('stops happen on the real video, counted', !!stop, JSON.stringify(await lv()));
-    console.log('sentences stopped at:', JSON.stringify(said.slice(0, 4)));
+  // (YouTube pauses automated browsers by itself, also with no extension at all: a play, then a pause at once)
+  const t1 = (await state()).t;
+  await sleep(6000);
+  const keepsPlaying = played && !(await state()).paused && (await state()).t > t1 + 2;
+  console.log(keepsPlaying ? 'the video keeps playing in this test browser' : 'NOTE: YouTube does not let this automated browser play the video, so stops on the real video cannot be tested here');
+  if (keepsPlaying) {
+    const stop = await until(async () => { const l = await lv(); return l && l.stops >= 2 ? l : null; }, 150000, 500);
+    ok('stops happen on the real video, counted', !!stop, JSON.stringify({ level: await lv(), video: await state() }).slice(0, 600));
+    ok('no AI call at those stops: the analysis wrote them', calls.stop === 0 && calls.analysis >= 1, JSON.stringify(calls));
+    console.log('sentences stopped at:', JSON.stringify(((await lv()) || { stoppedAt: [] }).stoppedAt.slice(0, 4)));
     console.log('counter:', await page.evaluate(() => document.getElementById('dr-stop-counter')?.textContent));
   }
   await ctx.close();

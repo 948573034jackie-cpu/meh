@@ -31,7 +31,7 @@ export function explain(req: ExplainRequest, onDelta: (full: string) => void): {
 }
 
 /** A completion with the cheap model whose text arrives piece by piece (live Chinese translation). */
-export function completeStream(prompt: PromptBundle, onDelta: (full: string) => void): { done: Promise<string>; cancel(): void } {
+export function completeStream(prompt: PromptBundle, onDelta: (full: string) => void, analysis = false): { done: Promise<string>; cancel(): void } {
   let port: chrome.runtime.Port | null = null;
   let full = '';
   let settled = false;
@@ -48,7 +48,7 @@ export function completeStream(prompt: PromptBundle, onDelta: (full: string) => 
       else end(() => reject(Object.assign(new Error(m.message ?? 'AI error'), { code: m.code })));
     });
     port.onDisconnect.addListener(() => end(() => reject(new Error('The extension stopped.'))));
-    port.postMessage({ type: 'complete', prompt, stream: true });
+    port.postMessage({ type: 'complete', prompt, stream: true, analysis });
   } catch (e) { end(() => reject(e as Error)); }
   return { done, cancel: () => end(() => reject(Object.assign(new Error('cancelled'), { code: 'cancelled' }))) };
 }

@@ -203,8 +203,10 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const part = req.kind === 'passage';
   const style = styled || part ? resolveStyle((req.styleId as StyleId) ?? s.ai.activeStyle, s.ai.styles) : null;
   const picked = pickProvider(s, keys);
-  const provider = style?.provider && keys[style.provider] ? style.provider : picked.provider;
-  const model = style?.model && provider === style.provider ? style.model : picked.model;
+  // (Level Check: always the cheap model)
+  const cheap = (req as RuleRequest).levelRule || (req as RuleRequest).levelCheap ? levelModelFor(s, keys, (await getExtras()).analysisModel) : null;
+  const provider = cheap ? cheap.provider : style?.provider && keys[style.provider] ? style.provider : picked.provider;
+  const model = cheap ? cheap.model : style?.model && provider === style.provider ? style.model : picked.model;
   const key = keys[provider];
   if (!key) throw noKey(provider);
   const monthly = usdSince(await getUsage(), periodStarts().month);
@@ -224,11 +226,19 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
 }
 
 /** A background job (Chinese hints, phrases) with the cheap hints model; nothing streamed. */
-export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, onDelta?: (t: string) => void): Promise<{ text: string; usd: number }> {
+/** Level Check: the one analysis, and what the learner asks for beside it, use the cheap model (or the one chosen). */
+function levelModelFor(s: Settings, keys: Keys, chosen?: string): { provider: AiProviderId; model: string } {
+  const picked = pickProvider(s, keys);
+  const hints = s.ai.hintsModel?.trim();
+  if (picked.provider === 'anthropic') return { provider: 'anthropic', model: chosen?.startsWith('claude') ? chosen : hints?.startsWith('claude') ? hints : DEFAULT_ANTHROPIC_HINTS_MODEL };
+  return { provider: picked.provider, model: chosen && !chosen.startsWith('claude') ? chosen : hints && !hints.startsWith('claude') ? hints : picked.model };
+}
+
+export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, onDelta?: (t: string) => void, analysis = false): Promise<{ text: string; usd: number }> {
   const s = await getSettings();
   const keys = await getKeys();
   const picked = pickProvider(s, keys);
-  const { provider, model } = picked.provider === s.ai.provider ? hintsModelFor(s) : { provider: picked.provider, model: picked.provider === 'anthropic' ? DEFAULT_ANTHROPIC_HINTS_MODEL : s.ai.openaiModel };
+  const { provider, model } = analysis ? levelModelFor(s, keys, (await getExtras()).analysisModel) : picked.provider === s.ai.provider ? hintsModelFor(s) : { provider: picked.provider, model: picked.provider === 'anthropic' ? DEFAULT_ANTHROPIC_HINTS_MODEL : s.ai.openaiModel };
   const key = keys[provider];
   if (!key) throw noKey(provider);
   const monthly = usdSince(await getUsage(), periodStarts().month);
@@ -545,7 +555,7 @@ export function installDreamBackground(): void {
     const ctrl = new AbortController();
     port.onDisconnect.addListener(() => ctrl.abort());
     const post = (m: unknown) => { try { port.postMessage(m); } catch { /* the page went away */ } };
-    port.onMessage.addListener((msg: { type: string; req?: ExplainRequest; prompt?: PromptBundle; stream?: boolean; system?: string; messages?: ChatTurn[] }) => {
+    port.onMessage.addListener((msg: { type: string; req?: ExplainRequest; prompt?: PromptBundle; stream?: boolean; analysis?: boolean; system?: string; messages?: ChatTurn[] }) => {
       if (msg?.type === 'chat' && msg.system && msg.messages) {
         keepAwake(runChat(msg.system, msg.messages, ctrl.signal, (t) => post({ type: 'delta', text: t })))
           .then((r) => post({ type: 'done', text: r.text, usd: r.usd }))
@@ -557,7 +567,7 @@ export function installDreamBackground(): void {
           .then((r) => post({ type: 'done', text: r.text, usage: r.usage }))
           .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
       } else if (msg?.type === 'complete' && msg.prompt) {
-        keepAwake(runCompletion(msg.prompt, ctrl.signal, msg.stream ? (t) => post({ type: 'delta', text: t }) : undefined))
+        keepAwake(runCompletion(msg.prompt, ctrl.signal, msg.stream ? (t) => post({ type: 'delta', text: t }) : undefined, msg.analysis))
           .then((r) => post({ type: 'done', text: r.text, usd: r.usd }))
           .catch((e: Error & { code?: string }) => post({ type: 'error', message: e.message, code: e.code ?? 'other' }));
       }

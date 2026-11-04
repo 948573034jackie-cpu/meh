@@ -53,6 +53,7 @@ import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGro
 import { scoreSentences, selectStops, mayStop, counterText, type SentenceScore } from './level-stops';
 import { RuleGuard, type LevelRule, type RuleRequest } from './level-rule';
 import { LevelGate } from './level-gate';
+import { Analysis, analysisId, type AnalysisStop } from './level-analysis';
 
 interface YtcInfo { title: string; channel?: string; url: string; cues: unknown[]; errors: string[]; source: string | null }
 interface YtcApi {
@@ -312,6 +313,11 @@ class Session {
   private heardKeys = new Set<string>();
   private stopped = new Set<string>();
   private counterEl: HTMLElement | null = null;
+  /** the explanations written once, ahead of the stops; the video waits for the first of them */
+  private analysis: Analysis | null = null;
+  private aiJobsDone = false;
+  private gatePassed = false;
+  private gateTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(videoId: string, mode: Mode) {
     this.videoId = videoId;
@@ -545,30 +551,104 @@ class Session {
   levelOn(): boolean { return this.mode === 'tutor' && extras.levelMode !== false; }
   ruleRejects = 0;
 
-  /** before the video plays: "Check my words" or "Skip, just play" (once per video in this tab) */
+  /**
+   * Before the video plays: "Check my words" or "Skip, just play" (once per video in this tab), then the one analysis.
+   * The video waits for both; when they are done it plays by itself, in Listening mode.
+   */
   private openGate(): void {
-    if (!this.levelOn() || extras.levelAsk === false) return;
+    if (!this.levelOn()) { this.gatePassed = true; return; }
     const asked = `drLevelAsked:${this.videoId}`;
-    try { if (sessionStorage.getItem(asked)) return; sessionStorage.setItem(asked, '1'); } catch { /* no storage here: it asks */ }
+    let ask = extras.levelAsk !== false;
+    try { if (sessionStorage.getItem(asked)) ask = false; else sessionStorage.setItem(asked, '1'); } catch { /* no storage here: it asks */ }
     this.gate = new LevelGate({
       build: () => this.buildTest(),
       save: async (shown, known, scores) => (await store.saveTestResult(shown, known, this.vb?.book.title ?? '', scores)).label,
-      done: () => this.releaseGate(),
+      done: () => this.afterGate(),
     }, document.title.replace(/ - YouTube$/, ''));
-    this.gate.show();
     // the video waits (YouTube starts it by itself); ads are not held
-    const hold = () => { const v = video(); if (this.gate?.open && v && !v.paused && !window.__ytcApi?.isAd()) { this.engine.markOwn('pause'); v.pause(); } };
+    const hold = () => { const v = video(); if (this.gateHold && v && !v.paused && !window.__ytcApi?.isAd()) { this.engine.markOwn('pause'); v.pause(); } };
     const t = setInterval(hold, 150);
     document.addEventListener('play', hold, true);
     this.gateHold = () => { clearInterval(t); document.removeEventListener('play', hold, true); this.gateHold = null; };
     hold();
+    if (ask) this.gate.show(); else this.afterGate();
+  }
+
+  private afterGate(): void {
+    if (this.disposed) return;
+    this.gatePassed = true;
+    this.gate?.wait('Reading the subtitles…', () => this.releaseGate());
+    // (never longer than this: the analysis goes on while the video plays)
+    this.gateTimer = setTimeout(() => this.releaseGate(), 120_000);
+    void this.bookIsReady.then((ok) => { if (ok) this.startAnalysis(); else this.releaseGate(); });
+  }
+
+  /** the test is done and the AI knows the video's sentences and hard parts: now the explanations */
+  private startAnalysis(): void {
+    if (this.disposed || !this.gatePassed || !this.levelOn()) return;
+    if (!this.aiJobsDone) { this.gate?.setWait('Finding the sentences and the hard parts…'); return; }
+    if (!this.keys.anthropic && !this.keys.openai) { this.releaseGate(); return; }
+    this.recomputeStops();
+    this.planAnalysis();
+  }
+
+  private currentIndex(): number {
+    const p = this.playback?.position ?? this.cur;
+    return p ? this.scores.get(sentenceKey(p))?.index ?? 0 : 0;
+  }
+
+  /** the stops that may still come, for the analysis */
+  private analysisStops(): AnalysisStop[] {
+    if (!this.vb) return [];
+    const out: AnalysisStop[] = [];
+    this.vb.order.forEach((pos, index) => {
+      const key = sentenceKey(pos);
+      if (!this.stopSet.has(key) || this.doneBefore.has(key)) return;
+      const text = getSentence(this.vb!.book, pos)?.text ?? '';
+      out.push({ id: analysisId(text), index, text, items: this.scores.get(key)?.items ?? [] });
+    });
+    return out;
+  }
+
+  /** the explanations ahead of the learner: written once, saved with the video */
+  private planAnalysis(): void {
+    if (!this.levelOn() || !this.gatePassed || !this.aiJobsDone || !this.vb || (!this.keys.anthropic && !this.keys.openai)) return;
+    this.analysis ??= new Analysis({
+      load: () => store.getAnalysis(this.videoId),
+      save: (texts) => store.setAnalysis(this.videoId, texts),
+      stops: () => this.analysisStops(),
+      lineAt: (i) => (this.vb ? getSentence(this.vb.book, this.vb.order[i])?.text ?? '' : ''),
+      total: () => this.vb?.order.length ?? 0,
+      title: () => this.vb?.book.title ?? '',
+      level: () => levelMeta.currentLevel || settings.learnerLevel,
+      stream: (prompt, onDelta) => completeStream(prompt, onDelta, true),
+      onChange: () => this.analysisChanged(),
+    });
+    const a = this.analysis;
+    void a.ready.then(() => { if (this.analysis === a) a.plan(this.currentIndex()); });
+  }
+
+  /** a part of the analysis came in: the video starts as soon as its first stops can be explained */
+  private analysisChanged(): void {
+    const a = this.analysis;
+    if (!a || !this.gateHold) return;
+    const next = a.upcoming(this.currentIndex()).slice(0, 2);
+    this.gate?.setWait(a.busy ? `Writing the explanations… ${next.filter((s) => a.settled(s.id)).length} of ${next.length} ready to start` : 'Almost ready…');
+    if (next.every((s) => a.settled(s.id))) this.releaseGate();
   }
 
   private releaseGate(): void {
-    this.gateHold?.();
+    if (!this.gateHold) return;
+    if (this.gateTimer) clearTimeout(this.gateTimer);
+    this.gateTimer = null;
+    this.gateHold();
+    this.gate?.close();
     this.gate = null;
+    if (this.disposed) return;
+    // every video goes on in Listening mode (🎬 Video on the page goes back to the picture)
+    if (extras.levelListening !== false && extras.view !== 'listening' && this.vb) void store.patchExtras({ view: 'listening' });
     const v = video();
-    if (v && v.paused && !this.disposed) void v.play().catch(() => this.toast('Press play on the video.', 5000));
+    if (v && v.paused) void v.play().catch(() => this.toast('Press play on the video.', 5000));
   }
 
   private inDatabase = (key: string, sig: string): boolean => {
@@ -617,6 +697,7 @@ class Session {
     if (!this.levelOn()) return;
     this.heardKeys.add(sentenceKey(pos));
     this.paintCounter();
+    this.planAnalysis();
   }
 
   /** this sentence stops now, or not: one of the hardest, not stopped at before, and never over 50 % so far */
@@ -655,7 +736,8 @@ class Session {
 
   /** (Level Check) the hard rule goes with the request of an explanation */
   private withRule(req: ExplainRequest): ExplainRequest {
-    if (!this.levelOn() || req.question || (req.kind !== 'word' && req.kind !== 'phrase' && req.kind !== 'sentence')) return req;
+    if (!this.levelOn()) return req;
+    if (req.question || (req.kind !== 'word' && req.kind !== 'phrase' && req.kind !== 'sentence')) return { ...req, levelCheap: true } as RuleRequest;
     const sc = req.position ? this.scores.get(sentenceKey(req.position)) : undefined;
     const known = new Set<string>();
     if (req.position && this.vb && this.dict) for (const t of getSentence(this.vb.book, req.position)?.sentence.tokens ?? []) if (t.kind === 'word' && vocab.words[this.dict.lemmaOf(t.text)] === 'known') known.add(t.text.toLowerCase());
@@ -699,6 +781,22 @@ class Session {
         const guard = this.levelOn() && req.kind !== 'question' ? new RuleGuard((req as RuleRequest).levelRule ? { sentence: req.sentence, items: req.kind === 'sentence' ? (req as RuleRequest).levelRule!.items : [req.target] } : {}) : null;
         const onDelta = guard ? (full: string) => onDelta0(guard.push(full)) : onDelta0;
         const checked = <T extends { done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void }>(job: T) => (guard ? { done: job.done.then((res) => { const text = guard.finish(res.text); this.ruleRejects += guard.rejected; return { ...res, text }; }), cancel: () => job.cancel() } : job);
+        // (Level Check) the explanation was written once, ahead of the stop: no AI call here
+        const analysis = this.analysis;
+        if (analysis && req.kind === 'sentence' && (req as RuleRequest).levelRule) {
+          let cancelled = false;
+          let live: { done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void } | null = null;
+          return {
+            done: analysis.wait(analysisId(req.sentence)).then((text) => {
+              if (cancelled) throw Object.assign(new Error('cancelled'), { code: 'cancelled' });
+              if (text !== null) { onDelta0(`${text} `); return { text, usage: { usd: 0, dailyUsd: 0, monthlyUsd: 0 } }; }
+              // (the analysis did not write this one: only this one is asked for)
+              live = checked(aiExplain(req, onDelta));
+              return live.done;
+            }),
+            cancel: () => { cancelled = true; live?.cancel(); },
+          };
+        }
         // asked for already when the video stopped: the voice starts at once
         const pre = this.takePrefetch(req, onDelta);
         if (pre) return checked(pre);
@@ -783,7 +881,7 @@ class Session {
   // ---- the AI reads the video first: complete sentences, then the hard words, phrases and sentences --------------
   private async runAiJobs(): Promise<void> {
     const keys = await store.getKeys().catch(() => ({} as store.Keys));
-    if (!keys.anthropic && !keys.openai) return;
+    if (!keys.anthropic && !keys.openai) { this.aiJobsDone = true; this.startAnalysis(); return; }
     if (extras.aiSentences && this.source === 'rule' && this.vb) {
       try {
         this.setStatus(`${this.statusText} · the AI is finding the complete sentences…`);
@@ -803,6 +901,8 @@ class Session {
       }
     }
     await this.runHintsJob();
+    this.aiJobsDone = true;
+    this.startAnalysis();
   }
 
   /** waits until nothing is going on (no stop, no explanation, no talk), so the book can change */
@@ -859,7 +959,8 @@ class Session {
         if (pb.state !== 'playing') return; // already stopped (an explanation, a stop)
         // you stopped the video: the part plays again on the page, the teacher breaks it down (or just pause)
         this.trail('you paused the video');
-        if (extras.explainOnStop) void this.partFlow(v.currentTime);
+        // (Level Check: a pause is a pause, no AI; "Explain 30 s" asks for it)
+        if (extras.explainOnStop && !this.levelOn()) void this.partFlow(v.currentTime);
         else pb.pause();
       }, 120);
     };
@@ -1656,7 +1757,7 @@ class Session {
       if (tm) this.showStage(this.partAt(tm.end - 0.01, settings.listen.lastSecondsWindow));
     }
     if (pos) this.engine.target = pos;
-    if (pos && t.lemma) this.prefetchExplain(t.kind as 'word' | 'phrase' | 'sentence', t.target, pos, t.lemma);
+    if (pos && t.lemma && !this.levelOn()) this.prefetchExplain(t.kind as 'word' | 'phrase' | 'sentence', t.target, pos, t.lemma);
     if (t.lemma && t.kind !== 'sentence') this.anchorStopCard(t.kind, t.target, t.lemma);
     else if (pos) { this.closeCard(); this.setCurrent(pos); this.markStopSentence(pos); }
   }
@@ -2698,6 +2799,8 @@ class Session {
     this.disposed = true;
     this.gate?.close();
     this.gateHold?.();
+    if (this.gateTimer) clearTimeout(this.gateTimer);
+    this.analysis?.dispose();
     this.counterEl?.remove();
     this.bookReady(false);
     this.endFlow();
@@ -2760,7 +2863,7 @@ class Session {
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
-      level: { stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects, gate: !!this.gate?.open },
+      level: { stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,

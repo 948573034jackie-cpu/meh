@@ -66,7 +66,7 @@ const sse = (res, text) => {
   };
   tick();
 };
-const kindOf = (sys, user) => (/These rules are absolute/.test(sys) ? 'rule' : /find the phrases in a text/.test(sys) ? 'items' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning/.test(sys) ? 'zhword' : 'other');
+const kindOf = (sys, user) => (/These rules are absolute/.test(sys) ? (/@@<its number>/.test(user) ? 'analysis' : 'rule') : /The learner just paused the video/.test(user) ? 'passage' : /find the phrases in a text/.test(sys) ? 'items' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning/.test(sys) ? 'zhword' : 'other');
 const api = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' }); return res.end(); }
   const chunks = [];
@@ -76,7 +76,7 @@ const api = http.createServer((req, res) => {
     try { j = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { /* no json */ }
     const sys = JSON.stringify(j.system || ''), user = JSON.stringify(j.messages || '');
     const kind = kindOf(sys, user);
-    apiLog.push({ kind, user, sys, at: Date.now() });
+    apiLog.push({ kind, user, sys, model: j.model, at: Date.now() });
     if (kind === 'items') return sse(res, JSON.stringify({ items: [{ t: 'fallen on his feet', level: 'C1', kind: 'idiom' }, { t: 'kick the bucket', level: 'C1', kind: 'idiom' }, { t: 'a cup of tea', level: 'B2', kind: 'phrase' }] }));
     if (kind === 'hints') return sse(res, '{}');
     if (kind === 'phrases') return sse(res, '{"phrases":[]}');
@@ -84,6 +84,8 @@ const api = http.createServer((req, res) => {
     if (kind === 'hard') return sse(res, JSON.stringify({ hard: [] }));
     if (kind === 'zhlines') { const n = [...user.matchAll(/\\n(\d+)\. /g)].map((m) => Number(m[1])); return sse(res, n.map((k) => `${k}. 中文${k}`).join('\n')); }
     if (kind === 'zhword') return sse(res, '细致');
+    if (kind === 'passage') return sse(res, 'In this part the speaker talks about the lesson. That is the main point.');
+    if (kind === 'analysis') return sse(res, [...user.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\nOK so "this part" is the hard one. Teacher's note: it means something very careful (细致的). Let's look at the next part. The whole sentence shows how the person feels /məˈtɪkjələs/. People use it about someone who cares a lot.`).join('\n'));
     if (kind === 'rule') return sse(res, `OK so "this part" is the hard one. Teacher's note: it means something very careful (细致的). Let's look at the next part. The whole sentence shows how the person feels /məˈtɪkjələs/. People use it about someone who cares a lot.`);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id: 'm', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
@@ -205,9 +207,13 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   // ---- 2. it plays by itself; the stops ----
   const log = () => yt.evaluate(() => (window.__ev || []).slice());
   await yt.evaluate(() => { window.__ev = []; const v = document.querySelector('video'); for (const t of ['play', 'pause', 'seeked']) v.addEventListener(t, () => window.__ev.push([t, +v.currentTime.toFixed(2), Date.now()])); });
-  const playing = await until(() => yt.evaluate(() => !document.querySelector('video').paused), 8000);
-  ok('then it plays by itself', !!playing && !(await yt.evaluate(() => document.getElementById('dr-level-host'))));
   const dbg = () => yt.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const playing = await until(() => yt.evaluate(() => !document.querySelector('video').paused), 30000);
+  ok('after the one analysis it plays by itself', !!playing && !(await yt.evaluate(() => document.getElementById('dr-level-host'))));
+  const inListening = await until(async () => { const d = await dbg(); return d && d.view === 'listening' && await yt.evaluate(() => { const h = document.getElementById('dr-stage-host'); return !!h && h.style.display !== 'none'; }); }, 6000);
+  ok('...in Listening mode, by itself', !!inListening, JSON.stringify((await dbg() || {}).view));
+  const callsAt = (k) => apiLog.filter((r) => r.kind === k).length;
+  ok('the analysis used the cheap model (Claude Haiku), one call for the whole of this short video', callsAt('analysis') === 1 && apiLog.find((r) => r.kind === 'analysis').model === 'claude-haiku-5-5', JSON.stringify(apiLog.filter((r) => r.kind === 'analysis').map((r) => r.model)));
   const counter = () => yt.evaluate(() => (document.getElementById('dr-stop-counter') || {}).textContent || '');
   const firstStop = await until(async () => { const d = await dbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 100);
   ok('the first stop comes', !!firstStop, JSON.stringify(await dbg()).slice(0, 300));
@@ -221,8 +227,9 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const jumps = ev.filter((e) => e[0] === 'seeked');
   const stopSpoke = (await dbg()).spoken;
   ok('at a stop: the sentence plays from the video, then again after the explanation (two jumps back to its start)', jumps.length >= 2, JSON.stringify(ev.slice(0, 12)));
-  const rules = apiLog.filter((r) => r.kind === 'rule');
-  ok('the explanation was asked for with the hard rule, the hard words named', rules.length >= 1 && /no Chinese/.test(rules[0].sys) && /The hard parts for this learner|Find the hardest part/.test(rules[0].user), rules[0] && rules[0].user.slice(-200));
+  const rules = apiLog.filter((r) => r.kind === 'analysis');
+  ok('the analysis was asked for with the hard rule, the hard words named', rules.length >= 1 && /no Chinese/.test(rules[0].sys) && /\[hard: /.test(rules[0].user), rules[0] && rules[0].user.slice(-300));
+  ok('NO AI call at the stop: it reads what the analysis wrote', callsAt('rule') === 0 && callsAt('analysis') === 1, JSON.stringify({ rule: callsAt('rule'), analysis: callsAt('analysis') }));
   const ruleBreakers = /OK so|Teacher's note|Let's look|whole sentence|细致|məˈ|Great,/;
   const said = stopSpoke.filter((s) => /something very careful|how the person|cares a lot/i.test(s));
   ok('the explanation spoken: nothing of what the AI must not say got through', said.length >= 1 && !stopSpoke.some((s) => ruleBreakers.test(s)), JSON.stringify(stopSpoke.slice(-8)));
@@ -259,24 +266,35 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const pct = Math.round(100 * final.level.stops / final.level.total);
   ok('at most 50% of the sentences stopped', final.level.stops <= final.level.total / 2 && final.level.stops >= 2, `${final.level.stops} of ${final.level.total} sentences = ${pct}%`);
   ok('the counter never went over 50%', worst <= 0.5, `worst ${Math.round(worst * 100)}% · last ${await counter()}`);
-  const asked = apiLog.filter((r) => r.kind === 'rule' && /The hard parts|Find the hardest/.test(r.user));
-  const askedAbout = (s) => asked.some((r) => r.user.includes('The sentence:\\n' + s));
-  ok('known words never cause a stop: only known words ("threaten", "violence") = no stop', !askedAbout(LINES[3]) && !askedAbout(LINES[12]), asked.map((r) => (/The sentence:\\n(.*?)\\n/.exec(r.user) || [])[1]).join(' | '));
+  const askedAbout = (s) => final.level.stoppedAt.includes(s);
+  ok('known words never cause a stop: only known words ("threaten", "violence") = no stop', !askedAbout(LINES[3]) && !askedAbout(LINES[12]), final.level.stoppedAt.join(' | '));
   ok('a word double-tapped known no longer stops ("quixotic")', !askedAbout(LINES[16]));
   ok('easy sentences never stop', !askedAbout(LINES[2]) && !askedAbout(LINES[6]) && !askedAbout(LINES[15]));
-  ok('still-learning words do ("squander")', askedAbout(LINES[9]) || final.level.stops === Math.floor(final.level.total / 2), asked.length + ' stops');
+  ok('still-learning words do ("squander")', askedAbout(LINES[9]) || final.level.stops === Math.floor(final.level.total / 2), final.level.stoppedAt.length + ' stops');
+  ok('the whole video: one analysis call, and no AI call at any stop', callsAt('analysis') === 1 && callsAt('rule') === 0, JSON.stringify({ analysis: callsAt('analysis'), rule: callsAt('rule'), stops: final.level.stops }));
+  // a pause is a pause: no AI
+  const nAll = apiLog.length;
+  const midLine = LINES.indexOf('We had a nice dinner with our family.');
+  await yt.evaluate((t) => { const v = document.querySelector('video'); v.currentTime = t; return v.play(); }, midLine * SEC + 0.2);
+  await until(async () => (await dbg()).state === 'playing', 8000);
+  await sleep(500);
+  await yt.evaluate(() => document.querySelector('video').pause());
+  await sleep(2500);
+  ok('pausing the video is only a pause: no AI call, it stays paused', apiLog.length === nAll && await yt.evaluate(() => document.querySelector('video').paused), `${apiLog.length - nAll} calls`);
   // single tap on a word of the sentence being heard: explained in the same style, then it goes on by itself
   const lineOf = LINES.indexOf('I think we should go to the park today.');
   await yt.evaluate((t) => { const v = document.querySelector('video'); v.currentTime = t; return v.play(); }, lineOf * SEC + 0.2);
   await until(async () => (await dbg()).state === 'playing', 8000);
   const nR = apiLog.filter((r) => r.kind === 'rule').length;
+  await yt.evaluate(() => document.querySelector('video').play());
+  await until(async () => (await dbg()).state === 'playing', 8000);
   await tapWord('park', 'single');
   const cardNow = () => yt.evaluate(() => { for (const id of ['dr-panel-host', 'dr-stage-host', 'dr-band-host']) { const c = document.getElementById(id)?.shadowRoot?.querySelector('.card'); if (c && !c.hidden) return { ipa: !!c.querySelector('.ipa'), zh: !!c.querySelector('.zh'), zhBtn: !!c.querySelector('[data-act=zh]'), word: c.querySelector('.word')?.textContent }; } return null; });
   const card = await until(cardNow, 4000, 40);
   const tapSaved = await until(() => { const d = readDoc(); return d && d.stillLearning.some((k) => k.item === 'park' && k.sentence === LINES[lineOf]) ? d : null; }, 4000);
   ok('single tap = don\'t know: still learning in the file, with its sentence', !!tapSaved, JSON.stringify((readDoc() || { stillLearning: [] }).stillLearning.filter((w) => /park/.test(w.item))));
   const tapExplained = await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR).find((r) => /tapped ..park/.test(r.user)), 8000);
-  ok('...explained in the same style', !!tapExplained, JSON.stringify(apiLog.filter((r) => r.kind === 'rule').slice(nR).map((r) => r.user.slice(-160))));
+  ok('...explained in the same style, by the cheap model', !!tapExplained && tapExplained.model === 'claude-haiku-5-5', JSON.stringify(apiLog.filter((r) => r.kind === 'rule').slice(nR).map((r) => [r.model, r.user.slice(-160)])));
   ok('...its card has no IPA and no Chinese', card && card.word === 'park' && !card.ipa && !card.zh && !card.zhBtn, JSON.stringify(card));
   const goesOn = await until(async () => { const v = await yt.evaluate(() => !document.querySelector('video').paused); return v && (await dbg()).state === 'playing' && (await yt.evaluate(() => document.querySelector('video').currentTime)) > (lineOf + 1) * SEC - 0.5; }, 20000, 150);
   ok('...then it continues by itself', !!goesOn, JSON.stringify(await yt.evaluate(() => ({ p: document.querySelector('video').paused, t: document.querySelector('video').currentTime }))));
@@ -290,7 +308,25 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await until(async () => (await dbg()).state === 'playing', 20000, 100);
   const tNow = await yt.evaluate(() => document.querySelector('video').currentTime);
   ok('a tap on a word in another sentence does not move the video: it goes on where it was', tNow >= lineNow * SEC - 0.5, `t=${tNow.toFixed(1)}, the sentence starts at ${lineNow * SEC}`);
+  // "Explain 30 s" is the learner's own: the cheap model too
+  await yt.evaluate(() => { const b = document.getElementById('dr-panel-host').shadowRoot.querySelector('[data-act=last]') || document.getElementById('dr-stage-host').shadowRoot.querySelector('[data-act=last]'); b && b.click(); });
+  const passage = await until(() => apiLog.find((r) => r.kind === 'passage'), 25000);
+  ok('"Explain 30 s" uses the cheap model too', passage && passage.model === 'claude-haiku-5-5', passage && passage.model);
   await yt.close();
+
+  // ---- 4b. watching the same video again: nothing is asked of the AI again ----
+  const nAnalysis = callsAt('analysis');
+  const marked = (r) => [...r.user.matchAll(/\*\d+\. (.*?)(?:  \[hard|\\n)/g)].map((m) => m[1]);
+  const paidFor = new Set(apiLog.filter((r) => r.kind === 'analysis').flatMap(marked));
+  const again = await ctx.newPage();
+  await again.goto('https://www.youtube.com/watch?v=lvl00000001');
+  await until(() => again.evaluate(() => { const h = document.getElementById('dr-level-host'); const b = h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=skip]'); if (b) b.click(); return !!b; }), 15000);
+  const againPlays = await until(() => again.evaluate(() => !document.querySelector('video').paused && !document.getElementById('dr-level-host')), 20000);
+  await sleep(3000);
+  // (the words tapped as unknown since then make their sentences hard: only those are new)
+  const newMarked = apiLog.filter((r) => r.kind === 'analysis').slice(nAnalysis).flatMap(marked);
+  ok('watching the same video again: nothing already analyzed is paid for again', !!againPlays && paidFor.size >= 1 && newMarked.every((t) => !paidFor.has(t)), JSON.stringify(newMarked));
+  await again.close();
 
   // ---- 5. "Skip, just play": the saved database decides ----
   const yt2 = await ctx.newPage();
@@ -298,7 +334,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await until(() => yt2.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=skip]')); }), 15000);
   const nTests = (readDoc() || { tests: [] }).tests.length;
   await yt2.evaluate(() => document.getElementById('dr-level-host').shadowRoot.querySelector('[data-a=skip]').click());
-  const skipPlays = await until(() => yt2.evaluate(() => !document.querySelector('video').paused && !document.getElementById('dr-level-host')), 8000);
+  const skipPlays = await until(() => yt2.evaluate(() => !document.querySelector('video').paused && !document.getElementById('dr-level-host')), 25000);
   ok('"Skip, just play": no test, it plays', !!skipPlays && (readDoc() || { tests: [] }).tests.length === nTests);
   const skipStops = await until(() => yt2.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug).level; } catch (e) { return null; } }), 8000);
   ok('...with stops chosen from my saved database, 50% or fewer', skipStops && skipStops.chosen > 0 && skipStops.chosen <= skipStops.total / 2, JSON.stringify(skipStops));
@@ -309,7 +345,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const yt3 = await ctx.newPage();
   await yt3.goto('https://www.youtube.com/watch?v=lvl00000003');
   await until(() => yt3.evaluate(() => !!document.getElementById('dr-stop-counter')), 15000);
-  ok('"Ask Level Check before every video": off = no screen', !(await yt3.evaluate(() => document.getElementById('dr-level-host'))));
+  ok('"Ask Level Check before every video": off = no test screen', !(await yt3.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=check]')); })));
   await yt3.close();
   const opt = await ctx.newPage();
   await opt.goto(`chrome-extension://${extId}/dream/options.html`);
@@ -333,6 +369,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await phone.close();
 
   // ---- 7. a PDF ----
+  const rulesBeforePdf = callsAt('rule');
   const pdfPath = path.join(tmp, 'Short Story.pdf');
   fs.writeFileSync(pdfPath, makePdf(PDF_PAGES));
   const rd = await ctx.newPage();
@@ -362,7 +399,8 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   ok('the explanations were read after their sentences, without labels or filler', rd1.spoken.some((s) => /something very careful/.test(s)) && !rd1.spoken.some((s) => ruleBreakers.test(s)), JSON.stringify(rd1.spoken.slice(0, 6)));
   const iSent = rd1.spoken.findIndex((s) => /something very careful/.test(s));
   ok('...and an explanation comes right after a sentence, not before', iSent > 0 && PDF_SENTENCES.includes(rd1.spoken[iSent - 1]) || iSent > 0, rd1.spoken[iSent - 1]);
-  ok('the known word "threaten" caused no stop in the PDF', !apiLog.some((r) => r.kind === 'rule' && r.user.includes('The sentence:\\n' + PDF_SENTENCES[7])));
+  ok('the known word "threaten" caused no stop in the PDF', !apiLog.some((r) => r.kind === 'analysis' && /\*\d+\. The bad man/.test(r.user)));
+  ok('the PDF is analyzed once too: no AI call at its stops', rd1.aiCalls === 1 && callsAt('rule') === rulesBeforePdf, JSON.stringify({ aiCalls: rd1.aiCalls, rule: callsAt('rule') - rulesBeforePdf }));
   const pdfTapped = await rd.evaluate(() => { const w = document.querySelector('.w[data-lemma="pensive"]'); if (!w) return false; for (const t of ['click', 'click', 'dblclick']) w.dispatchEvent(new MouseEvent(t, { bubbles: true })); return true; });
   const pdfKnown = pdfTapped && await until(() => { const d = readDoc(); return d && d.known.some((k) => k.item === 'pensive') ? d : null; }, 4000);
   ok('double tap in the PDF = known, in the file', !!pdfKnown);

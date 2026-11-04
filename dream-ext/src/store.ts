@@ -98,6 +98,10 @@ export interface YtExtras {
   levelAsk: boolean;
   /** stops by the Level Check rules: at most 50 % of the sentences, the hardest; original, explanation, original, on */
   levelMode: boolean;
+  /** with Level Check every video goes into Listening mode after its analysis */
+  levelListening: boolean;
+  /** the model of the one analysis ('' = the cheap one, Claude Haiku) */
+  analysisModel: string;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
@@ -108,7 +112,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '',
 };
 
 /**
@@ -407,18 +411,27 @@ export async function getLevelItems(id: string): Promise<AiItem[] | null> {
   const k = `drLevelItems:${id}`;
   return ((await area().get(k))[k] as AiItem[] | undefined) ?? null;
 }
+/** the explanations of a video, written once by the AI (level-analysis.ts): sentence -> explanation */
+export async function getAnalysis(id: string): Promise<Record<string, string>> {
+  const k = `drAnalysis:${id}`;
+  return ((await area().get(k))[k] as Record<string, string> | undefined) ?? {};
+}
+export async function setAnalysis(id: string, texts: Record<string, string>): Promise<void> {
+  await area().set({ [`drAnalysis:${id}`]: texts });
+  await remember('drAnalysis', id, 30);
+}
 export async function setLevelItems(id: string, items: AiItem[]): Promise<void> {
   await area().set({ [`drLevelItems:${id}`]: items });
   await remember('drLevelItems', id);
 }
 
 /** Per-video caches (the AI's complete sentences, the Chinese lines); the oldest are removed after 80 videos. */
-async function remember(prefix: string, videoId: string): Promise<void> {
+async function remember(prefix: string, videoId: string, keep = 80): Promise<void> {
   const idxKey = `${prefix}Index`;
   const o = await area().get(idxKey);
   const list = ((o[idxKey] as string[] | undefined) ?? []).filter((x) => x !== videoId);
   list.push(videoId);
-  const drop = list.splice(0, Math.max(0, list.length - 80));
+  const drop = list.splice(0, Math.max(0, list.length - keep));
   await area().set({ [idxKey]: list });
   if (drop.length) await area().remove(drop.map((id) => `${prefix}:${id}`));
 }

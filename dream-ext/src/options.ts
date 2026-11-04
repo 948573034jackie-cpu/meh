@@ -43,6 +43,10 @@ async function init(): Promise<void> {
   [S, X] = await Promise.all([store.getSettings(), store.getExtras()]);
   bindCheck('levelAsk', () => X.levelAsk !== false, (b) => saveX({ levelAsk: b }));
   bindCheck('levelMode', () => X.levelMode !== false, (b) => saveX({ levelMode: b }));
+  bindCheck('levelListening', () => X.levelListening !== false, (b) => saveX({ levelListening: b }));
+  const am0 = $<HTMLSelectElement>('analysisModel');
+  am0.value = X.analysisModel ?? '';
+  am0.addEventListener('change', () => void saveX({ analysisModel: am0.value }));
   $('copy-level').addEventListener('click', async () => {
     const msg = $('copy-msg');
     try { if ((await copyLevel()) === 'copied') { msg.textContent = 'Copied. Paste it to Claude.'; msg.className = 'msg ok'; } }

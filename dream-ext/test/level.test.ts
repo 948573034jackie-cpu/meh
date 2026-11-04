@@ -5,6 +5,7 @@ import { collectItems, parseItems, pickForScreen, scoreTest, chipsHeight, MIN_PE
 import { scoreSentences, selectStops, mayStop, counterText, itemsToHits, MAX_STOP_RATIO } from '../src/level-stops';
 import { checkExplanation, cleanRuleSentence, RuleGuard, buildRulePrompt, type RuleRequest } from '../src/level-rule';
 import { textBook, orderOf, paragraphsOf, pagesToText } from '../src/reader-text';
+import { Analysis, analysisId, buildAnalysisPrompt, parseAnalysis, STOPS_PER_PART, LOOK_AHEAD, type AnalysisStop } from '../src/level-analysis';
 import { sentenceKey, sentenceText } from '@core/model';
 
 const dict = realDictionary();
@@ -241,5 +242,96 @@ describe('the reading mode\'s text', () => {
     const item = (str: string, y: number) => ({ str, transform: [1, 0, 0, 1, 0, y], hasEOL: true });
     const text = pagesToText([[item('First line of', 700), item('the paragraph.', 686), item('Second paragraph starts', 650), item('and goes on to the', 636)], [item('next page here.', 700)]]);
     expect(paragraphsOf(text)).toEqual(['First line of the paragraph.', 'Second paragraph starts and goes on to the next page here.']);
+  });
+});
+
+describe('analyze once', () => {
+  const stopsOf = (n: number, every = 2): AnalysisStop[] => Array.from({ length: n }, (_, i) => ({ id: `s${i * every}`, index: i * every, text: `Sentence number ${i * every} is hard.`, items: ['hard'] }));
+  const reply = (part: string) => [...part.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\n"hard" means something here. OK so this is fine (细致).`).join('\n');
+  function make(stops: AnalysisStop[], saved: Record<string, string> = {}, fail = false) {
+    const prompts: string[] = [];
+    const log = { saved: {} as Record<string, string> };
+    const a = new Analysis({
+      load: async () => saved, save: async (t) => { log.saved = { ...t }; }, stops: () => stops,
+      lineAt: (i) => `Sentence number ${i} is hard.`, total: () => 1000, title: () => 'T', level: () => 'B2',
+      stream: (p, onDelta) => {
+        prompts.push(p.user);
+        const text = reply(p.user);
+        return { done: fail ? Promise.reject(new Error('no')) : Promise.resolve().then(() => { onDelta(text); return text; }), cancel: () => undefined };
+      },
+    });
+    return { a, prompts, log };
+  }
+  it('one call for many stops, a part ahead, not one call per stop', async () => {
+    const stops = stopsOf(50);
+    const { a, prompts, log } = make(stops);
+    await a.ready;
+    a.plan(0);
+    expect(await a.wait(stops[0].id)).toContain('means something here');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(prompts).toHaveLength(1);
+    for (const s of stops.slice(0, STOPS_PER_PART)) expect(await a.wait(s.id)).toBeTruthy();
+    expect(prompts).toHaveLength(1);
+    expect(Object.keys(log.saved)).toHaveLength(STOPS_PER_PART);
+    // far from the end of what is written: nothing new is asked
+    a.plan(stops[3].index);
+    expect(prompts).toHaveLength(1);
+    // close to it: the next part, once
+    a.plan(stops[STOPS_PER_PART - LOOK_AHEAD + 1].index);
+    expect(prompts).toHaveLength(2);
+  });
+  it('what is saved costs nothing again', async () => {
+    const stops = stopsOf(3);
+    const saved = Object.fromEntries(stops.map((s) => [s.id, 'Saved words.']));
+    const { a, prompts } = make(stops, saved);
+    await a.ready;
+    a.plan(0);
+    expect(await a.wait(stops[1].id)).toBe('Saved words.');
+    expect(prompts).toHaveLength(0);
+  });
+  it('a stop reached while its explanation is being written waits for it (no AI call of its own)', async () => {
+    const stops = stopsOf(3);
+    let finish!: (t: string) => void;
+    let calls = 0;
+    const list = [...stops];
+    const a = new Analysis({
+      load: async () => ({}), save: async () => undefined, stops: () => list, lineAt: (i) => `Line ${i}.`, total: () => 100, title: () => 'T', level: () => 'B2',
+      stream: () => { calls++; return { done: new Promise<string>((r) => { finish = r; }), cancel: () => undefined }; },
+    });
+    await a.ready;
+    a.plan(0);
+    // (the stop is going on, and the stop list no longer offers it)
+    list.shift();
+    const waiting = a.wait(stops[0].id);
+    finish(`@@1\n"hard" is explained here.\n@@3\n"hard" again.\n@@5\n"hard" once more.`);
+    expect(await waiting).toContain('explained here');
+    expect(calls).toBe(1);
+  });
+  it('the rule\'s check runs on what the analysis wrote', async () => {
+    const stops = stopsOf(1);
+    const { a } = make(stops);
+    await a.ready;
+    a.plan(0);
+    const t = await a.wait(stops[0].id);
+    expect(t).not.toMatch(/OK so|细致/);
+    expect(a.rejected).toBeGreaterThan(0);
+  });
+  it('a failed analysis does not hang: the stop goes on without it', async () => {
+    const stops = stopsOf(2);
+    const { a } = make(stops, {}, true);
+    await a.ready;
+    a.plan(0);
+    expect(await a.wait(stops[0].id)).toBeNull();
+    expect(a.settled(stops[0].id)).toBe(true);
+  });
+  it('the format', () => {
+    expect(parseAnalysis('@@3\nOne two.\n@@7\nThree', false)).toEqual([{ n: 3, text: 'One two.' }]);
+    expect(parseAnalysis('@@3\nOne two.\n@@7\nThree', true)).toEqual([{ n: 3, text: 'One two.' }, { n: 7, text: 'Three' }]);
+    expect(analysisId('It\u2019s a  TEST, here!')).toBe('it s a test here');
+    const p = buildAnalysisPrompt({ title: 'T', level: 'B2', part: stopsOf(2), lineAt: (i) => `Line ${i}.`, total: 10 });
+    expect(p.user).toContain('*1. Line 0.  [hard: hard]');
+    expect(p.user).toContain('2. Line 1.');
+    expect(p.user).toContain('*3. Line 2.');
+    expect(p.system).toContain('These rules are absolute');
   });
 });

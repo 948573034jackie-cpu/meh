@@ -80,6 +80,7 @@ const api = http.createServer((req, res) => {
     apiLog.push({ path: req.url, kind, model: j.model, user, sys, ssml: kind === 'azure' ? body : undefined, at: Date.now() });
     if (kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg' }); res.end(ttsWav); return; }
     if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify([{ ShortName: 'en-GB-AdaMultilingualNeural' }])); return; }
+    if (/These rules are absolute/.test(sys) && /@@<its number>/.test(user)) return sse(res, [...user.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\nThis part is the hard one. It means something simple here, and it shows how the person feels.`).join('\n'));
     if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } })); return; }
     if (kind === 'hints') return sse(res, JSON.stringify({ meticulous: ['一丝不苟的', '细致的'], ephemeral: ['短暂的', '转瞬即逝的'], gregarious: ['爱交际的', '合群的'] }));
     if (kind === 'phrases') return sse(res, '{"phrases":[]}');
@@ -437,21 +438,23 @@ async function hub(page, o) {
   await lv.evaluate(() => document.querySelector('video').play().catch(() => {}));
   await sleep(600);
   ok('...the video waits', await lv.evaluate(() => document.querySelector('video').paused));
+  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
   await inG((r) => r.querySelector('[data-a=check]').click());
   const lvChips = await until(async () => { const c = await inG((r) => { const n = r.querySelectorAll('.chip').length; const t = r.textContent; return n ? [...r.querySelectorAll('.chip')].map((b) => b.textContent) : /no new words/.test(t) ? [] : null; }); return c; }, 20000);
   ok('...the test is built from this video', Array.isArray(lvChips), JSON.stringify(lvChips));
   const lvFit = await inG((r) => { const d = r.querySelector('.done') || r.querySelector('button'); const c = r.querySelector('.card').getBoundingClientRect(); return { doneBottom: d.getBoundingClientRect().bottom, screen: innerHeight, top: c.top }; });
   ok('...it fits the phone screen', lvFit.doneBottom <= lvFit.screen && lvFit.top >= 0, JSON.stringify(lvFit));
   await inG((r) => (r.querySelector('.done') || r.querySelector('[data-a=skip]')).click());
-  const lvPlays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 10000);
+  const lvPlays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 30000);
   ok('...after it the video plays by itself', !!lvPlays);
   const lvDbg = () => lv.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
-  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
   const lvStop = await until(async () => { const d = await lvDbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 150);
   ok('a stop comes, counted', !!lvStop, JSON.stringify(await lvDbg()).slice(0, 300));
   const lvRule = await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000);
   ok('...its explanation is asked for with the hard rule', !!lvRule);
   const lvOn = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 30000, 150);
+  const lvEnd = await lvDbg();
+  ok('the analysis was one call, nothing asked of the AI at the stop', lvEnd.level.aiCalls === 1 && apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule).length === 1, JSON.stringify({ calls: lvEnd.level.aiCalls }));
   ok('...and the video goes on by itself', !!lvOn, JSON.stringify(await lvDbg()).slice(0, 200));
   const lvCount = await lv.evaluate(() => document.getElementById('dr-stop-counter')?.textContent || '');
   ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(lvCount) && +/\((\d+)%/.exec(lvCount)[1] <= 50, lvCount);

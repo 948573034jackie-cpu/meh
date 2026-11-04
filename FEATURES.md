@@ -137,6 +137,8 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 Before a video, book, PDF or text: **Check my words** (a tap test built only from this text: B2, C1, C2 + idioms + slang; tap what you know, then Done) or **Skip, just play**. ⚙ → "Ask Level Check before every video" turns it off.
 
+**Each video is analyzed once.** After Level Check the AI writes the explanations of the coming stops in one go (the cheap model, Claude Haiku; a better one can be chosen in All settings), a part at a time ahead of where you are. They are saved with the video, so the stops make no AI call and watching again costs nothing. Then it goes into Listening mode by itself. A tap on a word asks the AI once for that word; pausing is just a pause; "Explain 30 s" uses the cheap model too.
+
 The tutor stops at **50% of the sentences or fewer**, only the hardest, and never because of a word you know. At a stop: the sentence from the video, the explanation (spoken and shown, starting with the hard words, no labels, no filler, no Chinese, no IPA), the sentence again, then on by itself. Tap a word: don't know (explained, then on). Double tap: known. The small counter shows stops / sentences so far. The older stops (I know / I don't know, the word repeated) are one setting away: "Stop by Level Check" in All settings.
 
 **My vocabulary file:** `~/Documents/MEH English/vocabulary.json`, with a copy in `My Drive/MEH English/` when Google Drive for desktop is installed. A Chrome extension cannot write files itself, so a small helper does it: All settings → Level Check shows the one command to run once. On iPhone / iPad the words stay in the app or extension. **Copy my level for Claude** is in ⚙, All settings and My Vocabulary.

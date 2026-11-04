@@ -44,6 +44,11 @@ export class LevelGate {
   get open(): boolean { return !!this.host; }
 
   show(): void {
+    this.mount();
+    this.ask();
+  }
+
+  private mount(): void {
     if (this.host) return;
     const host = document.createElement('div');
     host.id = 'dr-level-host';
@@ -52,8 +57,16 @@ export class LevelGate {
     this.host = host; this.root = root;
     // (the page's own keys and clicks stay out of it)
     for (const type of ['keydown', 'keyup', 'click']) host.addEventListener(type, (e) => e.stopPropagation());
-    this.ask();
   }
+
+  /** the video is being analyzed, once; "Play now" starts it right away (the analysis goes on) */
+  wait(text: string, onPlay: () => void): void {
+    this.mount();
+    this.page(`<h2>Analyzing this video, once</h2><p class="sub" data-wait></p><div class="main"><button class="skip" data-a="play">Play now</button></div>`);
+    this.setWait(text);
+    this.root!.querySelector('[data-a=play]')!.addEventListener('click', () => onPlay());
+  }
+  setWait(text: string): void { const el = this.root?.querySelector('[data-wait]'); if (el) el.textContent = text; }
 
   setTitle(title: string): void { this.title = title; const el = this.root?.querySelector('.sub[data-title]'); if (el) el.textContent = title; }
 
