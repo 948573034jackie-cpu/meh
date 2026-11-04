@@ -5,7 +5,7 @@ Chrome extension **"YouTube to Claude / ChatGPT", version 3.3** (Mac, Google Chr
 > **Note (version 3.4):** this guide was written for 3.3. The voice part (section 8) still holds, but 3.4 also has
 > Level Check, analyze-once stops and the iPhone apps, and some settings and buttons have other names now
 > (for example ⚙ → "Talk to my tutor" for the voice call, and the Microsoft region is typed in ⚙ → API keys).
-> **FEATURES.md is the current description.**
+> **FEATURES.md is the current description.** Since 3.5 the tutor is the only mode: sections 1, 2 (ChatGPT), 4 (Claude / ChatGPT) and 6 ("hi bro" to the chat) of this file describe what was removed.
 
 ---
 

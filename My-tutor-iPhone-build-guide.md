@@ -97,8 +97,8 @@ Shortcuts: every action rebindable (click, press keys).
 ### 1.10 Keyboard shortcuts (`shortcuts.ts`, defaults)
 `ArrowLeft` explain the last sentence · `Shift+E` explain the last part · `Shift+T` talk · `Shift+L` listening mode · `Shift+B` show/hide the page · `Shift+P` stop everything / play on · `]` `[` bigger/smaller text · `Shift+C` Chinese on/off · `Shift+S` subtitles band · `Shift+M` tutor on/off · `Space` pause the teacher and ask (while explaining) · `Enter` go on (page/talk open) · `K` I know · `D` I don't know · `Esc` bye bye. On iPhone these become buttons (there is no keyboard).
 
-### 1.11 The old "call" mode (youtube.js, kept)
-Buttons `ChatGPT ○ off` / `Claude ○ off` under the player: the paused part (and a screenshot) is sent to the Claude/ChatGPT website tab; "hi bro" stops and sends, "shut up" replays, "let's go" continues. My tutor turns this off when it is on (one at a time). YT Learn on iPhone today does exactly this mode.
+### 1.11 The old "call" mode (youtube.js)
+Removed in 3.5: My tutor is the only mode. youtube.js now only reads the subtitles, runs the microphone for the tutor and keeps the small bar under the video (My tutor on / off, 🩺 Check).
 
 ---
 

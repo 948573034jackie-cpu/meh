@@ -1,21 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "YouTube to Claude / ChatGPT",
-  "version": "3.4",
-  "description": "YouTube English: learn with your own AI tutor (stops at hard words, phrases and sentences, a natural voice, live voice call, Chinese) or send the part you paused at to Claude / ChatGPT.",
+  "name": "My tutor: YouTube English",
+  "version": "3.5",
+  "description": "Your own AI English teacher on YouTube (your own API key): a Level Check, stops at what is hard for you, explanations with a natural voice, a voice call, Chinese, and one vocabulary database for your Mac and iPhone.",
   "permissions": [
     "tabs",
-    "scripting",
     "storage",
     "unlimitedStorage",
-    "debugger",
-    "tts",
     "nativeMessaging"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
-    "https://claude.ai/*",
-    "https://chatgpt.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
     "https://api.elevenlabs.io/*", "https://*.tts.speech.microsoft.com/*"
@@ -24,22 +19,10 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Send this video to Claude",
+    "default_title": "My tutor",
     "default_popup": "popup.html"
   },
   "content_scripts": [
-    {
-      "matches": [
-        "https://claude.ai/*",
-        "https://chatgpt.com/*"
-      ],
-      "js": [
-        "mic-mix.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    },
     {
       "matches": [
         "https://www.youtube.com/*"
@@ -48,15 +31,6 @@
         "lib.js",
         "youtube.js",
         "dream/dream-yt.js"
-      ]
-    },
-    {
-      "matches": [
-        "https://claude.ai/*",
-        "https://chatgpt.com/*"
-      ],
-      "js": [
-        "chat.js"
       ]
     }
   ],

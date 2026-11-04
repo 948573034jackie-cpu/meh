@@ -2,11 +2,6 @@ name: Build ClaudeSnap
 on:
   push:
   workflow_dispatch:
-    inputs:
-      send_real_message:
-        description: 'Also send ONE real test message to ChatGPT from the simulator (off by default)'
-        type: boolean
-        default: false
 permissions:
   contents: write
 concurrency:
@@ -62,12 +57,12 @@ jobs:
         run: |
           APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
           ls "$APP" | head -30
-          for f in shim-common shim-youtube shim-chat shim-dream lib background youtube chat mic-mix dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
           for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
-      - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube + ChatGPT pages
+      - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube page
         working-directory: ios
         shell: bash
         run: |
@@ -80,8 +75,7 @@ jobs:
             xcrun simctl boot "$UDID"
             xcrun simctl bootstatus "$UDID" -b
             xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
-            EXTRA=""; if [ "${{ inputs.send_real_message }}" = "true" ]; then EXTRA="-selftest-send"; fi
-            xcrun simctl launch "$UDID" local.ytlearn.app -selftest $EXTRA
+            xcrun simctl launch "$UDID" local.ytlearn.app -selftest
             sleep 75
             xcrun simctl io "$UDID" screenshot "../shots/simulator-$(echo "$KIND" | tr -cd 'A-Za-z0-9').png"
             DATA=$(xcrun simctl get_app_container "$UDID" local.ytlearn.app data)
@@ -138,7 +132,7 @@ jobs:
           APPEX=$(find "$APP/PlugIns" -name '*.appex' -maxdepth 1 | head -1)
           echo "extension: $APPEX"; ls "$APPEX"
           plutil -p "$APPEX/Info.plist" | grep -E "NSExtensionPointIdentifier|CFBundleIdentifier"
-          for f in manifest.json browser-shim.js lib.js youtube.js chat.js background.js popup.html popup.js tutor-bar.js \
+          for f in manifest.json browser-shim.js lib.js youtube.js background.js popup.html popup.js tutor-bar.js \
                    dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/zipf.json.gz dream/options.html dream/options.js dream/vocab.html dream/reader.html dream/reader.js; do
             test -f "$APPEX/$f" || test -f "$APPEX/Resources/$f" || { echo "MISSING $f"; exit 1; }; done
       - name: Start the app in an iPad Simulator (screenshot)
@@ -182,27 +176,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Playwright (Chromium + WebKit = Safari's engine)
+      - name: Install Playwright (WebKit = Safari's engine)
         run: |
           npm init -y >/dev/null
           npm i playwright@1.56.1 >/dev/null
-          npx playwright install --with-deps chromium webkit >/dev/null
+          npx playwright install --with-deps webkit >/dev/null
       - name: Unit tests (sentences, subtitle-list formats)
         run: node tests/lib-unit.js
-      - name: App JavaScript test in WebKit (the iPhone/iPad engine)
-        run: ENGINE=webkit node tests/app-js-test.js
-      - name: Same test in Chromium
-        if: always()
-        run: ENGINE=chromium node tests/app-js-test.js
-      - name: Safari build of the extension, in WebKit (Safari's engine)
-        if: always()
-        run: ./safari/make-extension.sh && ENGINE=webkit node tests/safari-webkit-test.js
       - name: My tutor in the Safari extension (iPhone), in WebKit
         if: always()
         run: ./safari/make-extension.sh && node tests/safari-tutor-webkit-test.js
-      - name: Voice-call mixer test (the call hears what the app reads into it)
-        if: always()
-        run: node tests/mic-mix-test.js
       - name: My tutor in the iPhone/iPad app, in WebKit (the app's scripts + a stand-in for its Swift side)
         if: always()
         run: ./ios/sync-scripts.sh && node tests/ios-webkit-test.js
@@ -233,9 +216,6 @@ jobs:
       - name: Level Check - the real extension, the real helper and files, a video and a PDF
         if: always()
         run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/level-check-e2e.js
-      - name: The real extension in Chrome - the website-call (Claude / ChatGPT) flow
-        if: always()
-        run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/extension-e2e.js
 
   real-sites:
     runs-on: ubuntu-latest
@@ -251,10 +231,7 @@ jobs:
           npm init -y >/dev/null
           npm i playwright@1.56.1 >/dev/null
           npx playwright install --with-deps chromium >/dev/null
-      - name: Test the extension on the real YouTube / ChatGPT / Claude pages
-        run: node tests/real-sites.js
       - name: Level Check on a real YouTube video (subtitles, the test, the chosen stops)
-        if: always()
         run: node tests/real-level-check.js
       - uses: actions/upload-artifact@v4
         if: always()

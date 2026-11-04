@@ -107,7 +107,6 @@ async function init(): Promise<void> {
   bindNumber('repeatWindowWords', () => S.listen.repeatWindowWords, (n) => ({ listen: { ...S.listen, repeatWindowWords: Math.max(0, n) } }));
   bindNumber('maxStopsPer10Min', () => S.listen.maxStopsPer10Min, (n) => ({ listen: { ...S.listen, maxStopsPer10Min: Math.max(0, n) } }));
   bindCheck('explainOnStop', () => X.explainOnStop, (b) => saveX({ explainOnStop: b }));
-  bindCheck('stopInCall', () => X.stopInCall, (b) => saveX({ stopInCall: b }));
   const lw = $<HTMLSelectElement>('lastSecondsWindow');
   lw.value = String(S.listen.lastSecondsWindow);
   lw.addEventListener('change', () => void save({ listen: { ...S.listen, lastSecondsWindow: Number(lw.value) as Settings['listen']['lastSecondsWindow'] } }));

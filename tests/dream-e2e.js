@@ -144,7 +144,6 @@ const api = http.createServer((req, res) => {
     if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
     return route.fulfill({ status: 200, contentType: 'text/html', body: u.includes('drm00000002') ? ytHtmlLate : ytHtml });
   });
-  await ctx.route('https://claude.ai/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: claudeHtml }));
   const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
   const extId = sw.url().split('/')[2];
   console.log('extension loaded, version', await sw.evaluate(() => chrome.runtime.getManifest().version));
@@ -153,7 +152,7 @@ const api = http.createServer((req, res) => {
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' },
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
-    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
+    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
     drTestBaseUrls: { anthropic: 'http://localhost:8790', openai: 'http://localhost:8790/v1' },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,
@@ -558,13 +557,7 @@ const api = http.createServer((req, res) => {
   await patch('drExtras', { voice: 'auto' });
   await until(async () => (await dbg()).voice === 'openai', 5000);
 
-  // ---- 11. one voice at a time; the check report ----
-  await yt.evaluate(() => document.getElementById('yt2c-b-claude').click());
-  const off = await until(async () => { const b = await yt.evaluate(() => document.getElementById('yt2c-b-tutor').textContent); const d = await dbg(); return /off/.test(b) && d && d.mode === 'call' ? { b, mode: d.mode } : null; }, 8000);
-  ok('Claude on → My tutor off, the panel stays in call mode (highlights, no stops)', !!off, JSON.stringify(off));
-  await yt.evaluate(() => document.getElementById('yt2c-b-tutor').click());
-  const tutorAgain = await until(async () => { const s = await yt.evaluate(() => ({ t: document.getElementById('yt2c-b-tutor').textContent, c: document.getElementById('yt2c-b-claude').textContent })); return /on/.test(s.t) && /off/.test(s.c) ? s : null; }, 8000);
-  ok('My tutor on → Claude off', !!tutorAgain, JSON.stringify(tutorAgain));
+  // ---- 11. the check report ----
   const report = await sw.evaluate(() => diagnose());
   ok('🩺 Check (Chrome): reports My tutor (keys saved, voice, live talk), no Safari advice', /My tutor: \{"on":true/.test(report) && /"keys":\["anthropic","openai"\]/.test(report) && !/Split View|Safari window|Safari pauses|Safari stops/.test(report) && /"tutor":\{/.test(report), report.slice(0, 400));
 

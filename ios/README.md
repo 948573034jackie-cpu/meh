@@ -1,22 +1,32 @@
 # YT Learn — iPhone & iPad app
 
-The same idea as the Chrome extension, as a real iPhone/iPad app. Inside the app there are two browser windows:
+Your own app: YouTube inside it (search, your account, any video), with **My tutor**, the same AI English teacher as the
+Chrome extension, with your own API key. Version 1.1: the tutor is the only mode (the Claude / ChatGPT chat window was
+removed).
 
-* **YouTube** (top / left) — watch any video.
-* **Claude or ChatGPT** (bottom / right) — your chat. Pick which one with the switch at the top.
+## What you see
+* The top bar: **YouTube home**, **Open copied YouTube link**, **Settings** (⚙).
+* YouTube, as it is. My tutor's panel sits under the video; its big reading page covers the screen at stops.
+* The bottom bar: **My tutor ● on / ○ off** and its buttons: ⏯ Stop / play · Explain 30 s · Last sentence · 📞 Talk ·
+  🎙 Voice · 📄 Page · 📖 Listening · 📒 Words · ⚙ Settings.
 
-When you **pause** a video, the app shows the last ~25 seconds as big subtitles (complete sentences), plays that part once, and — in the last second — sends the text to your chat with one plain instruction (explain it like an English teacher, then repeat the sentences). Say **“let's go”** (or press ▶ / tap the video) to play that part again and keep going.
+## First run
+1. Open a video. Tap ⚙ in the bottom bar → **All settings** → **API keys**: your Claude key → Save → Test. (Optional: a
+   Microsoft key for the free natural voice.)
+2. **Allow** Microphone and Speech Recognition when iOS asks (for I know / I don't know, questions, the call, voice mode).
+3. The **Level Check** screen comes before each video: tap the words you know, or skip it. Then the video is analyzed
+   once and plays in Listening mode (stops at the hardest sentences, 50 % at most).
+4. **Better iPhone voice:** iOS Settings → Accessibility → Spoken Content → Voices → English → download a *Premium* or
+   *Enhanced* voice; the tutor picks it.
 
-It runs the *same JavaScript* as the Chrome extension (`youtube-to-claude/`), so both behave the same.
-
-## My tutor (new)
-The Chrome extension's **My tutor** now runs inside the app too: tap **My tutor ○ off** in the bar at the bottom to turn it on. The video stops at words, phrases and sentences above your level, the tutor explains them with your rules and speaks (Microsoft voice, or the iPhone's own voice), you can talk with it (📞), and it keeps My Vocabulary and your level, like in Chrome.
-
-* **First run:** open a video, turn My tutor on, bottom bar → **Settings** (⚙) → **API keys**: your Claude key, and your Microsoft key + region for the free natural voice. The keys are kept in the iPhone's **Keychain** (never in the app's files, never sent anywhere except to Claude / Microsoft).
-* **Bottom bar:** ⏸/▶ stop everything / play on · Explain 30 s · Last sentence · 📞 Talk · 🎙 Voice mode · 📄 the big page at stops on/off · 📖 Listening mode · Words (My Vocabulary) · ⚙ quick settings. On the big page, tap **I know** / **I don't know** (or say it).
-* **Allow** Microphone and Speech Recognition when iOS asks (for I know / I don't know, questions, the call, voice mode).
-* **Better iPhone voice:** iOS Settings → Accessibility → Spoken Content → Voices → English → download a *Premium* or *Enhanced* voice; the tutor picks it by itself.
-* How it is built: `My-tutor-iPhone-build-guide.md` (section 7). The app runs the same `youtube-to-claude/dream/` files as Chrome (`./sync-scripts.sh` copies them); `tests/ios-webkit-test.js` tests them in WebKit with a stand-in for the Swift side.
+## One vocabulary file for the Mac and the phone
+* On the Mac, Chrome writes `vocabulary.json` in Documents ▸ MEH English, in **iCloud Drive ▸ MEH English**, and in
+  Google Drive ▸ MEH English (when Google Drive for desktop is installed).
+* On the phone: the app's **Settings (⚙ at the top) → Choose the folder** → pick that **MEH English** folder in iCloud
+  Drive (or Google Drive) in the Files app. From then on both devices read and write the same file: each one's words
+  are merged in, nothing is lost (the newest status of a word wins).
+* Without a folder, the words stay in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json). **Copy my level for
+  Claude** (⚙ on the page) always works.
 
 ## Install on your iPhone / iPad
 
@@ -34,25 +44,14 @@ Apple only lets apps onto a phone if they are *signed*. Nobody can skip this. Pi
 1. Download `YTLearn-unsigned.ipa` from the release page.
 2. Install **Sideloadly** (sideloadly.io) or **AltStore** (altstore.io) on your Mac, sign in with your Apple ID, and install the `.ipa` on your phone. They sign it for you. Same 7-day rule for free Apple IDs.
 
-## First run
-* Sign in to **Claude** or **ChatGPT** inside the app's chat window (use *email* login — “Sign in with Google” is blocked by Google inside apps).
-* The first time you say “let's go”, iOS asks for the **microphone** and **speech recognition**. Allow both. (Space/▶/tap always work too.)
 
-## Buttons (top bar)
-**Ask** (big blue button): tap, say your question, and hear the answer · Claude | ChatGPT switch · **AI** = make the AI window small / half / big · **…** menu: send video + transcript, YouTube home, open a copied link, settings (text size, replay, voice).
-
-## If the video says “Sign in to confirm you're not a bot”
-YouTube sometimes asks this on some internet connections. The small label in the corner of the video shows it too (“subtitles: none (Sign in…)”). Sign in to YouTube in the video window (the account picture, top right), then open the video again. Subtitles are read with your own YouTube session.
+## If the video says "Sign in to confirm you're not a bot"
+YouTube sometimes asks this on some internet connections. Sign in to YouTube inside the app (the home button, then your
+account), or try another connection.
 
 ## Limits (honest)
-* Needs an Apple ID for signing (see above). The app is not on the App Store.
+* Needs an Apple ID for signing (see above). The app is not on the App Store. With a free Apple ID: reinstall every 7 days.
 * Works with videos that have captions or YouTube's *Show transcript*.
-* If Claude/ChatGPT change their web pages, the sending step may need an update.
-* Use a normal text chat, not voice mode, in Claude/ChatGPT.
-* The AI window starts as a small strip so the video is big. Tap the **AI** button to open it when you want to read the answer.
-
-## Version 3 (same as Chrome extension 2.5)
-* Top bar: **ChatGPT** and **Claude** buttons. Red = off: a normal YouTube player. Tap one → green: the link + full transcript go to that chat **once**; after that every pause (or "hi bro") sends only the ~30 s part (complete sentences) + a picture after 1 s.
-* Say **"hi bro"** to stop and send, **"shut up"** to replay that part once and keep playing.
-* **Voice call (Claude / ChatGPT website inside the app):** the app reads the paused part with its own voice straight into the call's microphone line, so the AI hears it and answers by voice. (An iPhone app cannot copy YouTube's sound, so the part is read, not replayed, into the call. You hear the real video.)
-* Why not the official Claude / ChatGPT apps or Chrome? iOS does not let one app type or send sound into another app, and Chrome on iOS has no extensions. Only this app, with both websites inside it, can do all of it.
+* How it is built: `My-tutor-iPhone-build-guide.md` (section 7). The app runs the same `youtube-to-claude/dream/` files
+  as Chrome (`./sync-scripts.sh` copies them in). The app's own JavaScript is in `YTLearn/Scripts/` (the shims that make
+  `chrome.*` work inside the app) and `YTLearn/Web/` (the tutor's pages and dictionary).

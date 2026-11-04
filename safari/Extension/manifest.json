@@ -1,19 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "YouTube to Claude / ChatGPT",
-  "version": "3.4",
-  "description": "Safari (iPhone/iPad): YouTube English: learn with your own AI tutor (stops at hard words, explains them, a voice, Chinese) or send the part you paused at to Claude / ChatGPT.",
+  "name": "My tutor: YouTube English",
+  "version": "3.5",
+  "description": "Safari (iPhone/iPad): My tutor, your own AI English teacher on YouTube (your own API key): a Level Check, stops at what is hard for you, explanations with a voice, Chinese.",
   "permissions": [
     "tabs",
-    "scripting",
     "storage",
     "unlimitedStorage"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://m.youtube.com/*",
-    "https://claude.ai/*",
-    "https://chatgpt.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
     "https://api.elevenlabs.io/*",
@@ -23,7 +20,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Send this video to Claude",
+    "default_title": "My tutor",
     "default_popup": "popup.html"
   },
   "content_scripts": [
@@ -38,16 +35,6 @@
         "youtube.js",
         "dream/dream-yt.js",
         "tutor-bar.js"
-      ]
-    },
-    {
-      "matches": [
-        "https://claude.ai/*",
-        "https://chatgpt.com/*"
-      ],
-      "js": [
-        "browser-shim.js",
-        "chat.js"
       ]
     }
   ],

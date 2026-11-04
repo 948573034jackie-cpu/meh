@@ -61,7 +61,8 @@ interface YtcApi {
   video(): HTMLVideoElement | null;
   videoId(): string | null;
   isAd(): boolean;
-  settings(): { sendOn: boolean; target: string; voiceOn: boolean };
+  /** voiceOn: the browser can hear you (speech recognition) */
+  settings(): { voiceOn: boolean };
   buildSentences(cues: unknown[]): TimedSentence[];
   setBarStatus(text: string, bad?: boolean): void;
   /** the browser refused the microphone */
@@ -81,7 +82,6 @@ interface DreamHook {
   /** youtube.js built its bar: add the Tutor button */
   decorateBar(bar: HTMLElement): void;
   /** ChatGPT or Claude was turned on in youtube.js: the tutor goes off */
-  callChanged(): void;
   /** for the 🩺 check */
   diag(): Record<string, unknown> | null;
   /** a button of the iPhone app's bar: a shortcut id (`stop`, `explainLast`, …) or `voiceMode`, `pageAuto`, `vocab`, `quick` */
@@ -166,7 +166,7 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n
 // ---------------------------------------------------------------------------------------------------------------
 // one video
 // ---------------------------------------------------------------------------------------------------------------
-type Mode = 'tutor' | 'call';
+type Mode = 'tutor';
 interface Ui { host: HTMLElement; root: ShadowRoot; el: HTMLElement }
 interface TalkLine { id: string; who: 'you' | 'tutor'; text: string; final: boolean }
 interface Talk {
@@ -266,8 +266,6 @@ class Session {
   private card: { lemma: string; word: string; pos: Position; token: number; kind: 'word' | 'phrase'; entryId: number | null } | null = null;
   private cardClose: ReturnType<typeof setTimeout> | null = null;
   private followTimer: ReturnType<typeof setInterval> | null = null;
-  private callStop: { pos: Position; lemma: string; target: string; waiting: boolean; resolve?: (a: 'know' | 'dont_know' | 'bye' | 'timeout') => void } | null = null;
-  private callHandled = new Map<string, number>();
   private statusText = '';
   private statusBad = false;
   private talkOn = false;
@@ -341,7 +339,7 @@ class Session {
 
   get book(): Book | null { return this.vb?.book ?? null; }
   /** youtube.js must leave the video alone */
-  owns(): boolean { return !this.disposed && (this.mode === 'tutor' || !!this.callStop); }
+  owns(): boolean { return !this.disposed; }
 
   /**
    * The microphone is needed: a window waits for "I know / I don't know", a talk is open (the OpenAI call has its own
@@ -350,7 +348,7 @@ class Session {
   wantsMic(): boolean {
     if (this.disposed || this.pttActive) return false;
     if (extras.micAlways || extras.voiceMode) return true;
-    return !!this.cmdWin || this.windowOpen || !!this.callStop || !!(this.talk && !this.talk.live);
+    return !!this.cmdWin || this.windowOpen || !!(this.talk && !this.talk.live);
   }
 
   /** a real voice call with Claude is open: it listens even with voice commands off */
@@ -891,22 +889,6 @@ class Session {
     }
   }
 
-  /** the learner switched between the tutor and the website call */
-  setMode(mode: Mode): void {
-    if (this.mode === mode) return;
-    this.mode = mode;
-    if (!this.controller || !this.playback || !this.vb) return;
-    this.controller.enabled = mode === 'tutor';
-    if (mode === 'call') { this.endFlow(); this.closeTalk(); this.controller.skip(); this.engine.target = null; this.playback.stop(); this.tts?.cancelAll(); if (extras.view !== 'listening') this.hideStage(); }
-    else {
-      const v = video();
-      if (v && !v.paused) { this.engine.resumeHere = true; this.playback.play(this.vb.positionAt(v.currentTime) ?? undefined); }
-      void this.checkKey();
-    }
-    this.renderHead();
-    this.renderStageTop();
-  }
-
   // ---- the AI reads the video first: complete sentences, then the hard words, phrases and sentences --------------
   private async runAiJobs(): Promise<void> {
     const keys = await store.getKeys().catch(() => ({} as store.Keys));
@@ -938,7 +920,7 @@ class Session {
   private async whenCalm(): Promise<void> {
     for (let i = 0; i < 600 && !this.disposed; i++) {
       const c = this.controller;
-      if (!c || (!c.busy && !this.cmdWin && !this.talk && !this.flow && !this.callStop && this.playback?.state !== 'explaining')) return;
+      if (!c || (!c.busy && !this.cmdWin && !this.talk && !this.flow && this.playback?.state !== 'explaining')) return;
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
@@ -1047,7 +1029,6 @@ class Session {
       let wi = -1;
       for (let i = 0; i < t.tokenStart.length; i++) { const s = t.tokenStart[i]; if (s !== null && s <= v.currentTime + 0.03) wi = i; }
       if (wi !== this.curWord) this.setWord(pos, wi);
-      if (this.mode === 'call' && extras.stopInCall && !v.paused && !this.callStop) this.maybeCallStop(pos, v.currentTime);
     }
   }
 
@@ -1425,64 +1406,8 @@ class Session {
     for (const r of [this.stage?.el]) { const el = r?.querySelector<HTMLElement>('.flowstate'); if (el) { el.textContent = text; el.hidden = !text; } }
   }
 
-  // ---- call mode: optional stops at hard words (silent card; the word goes to the call) -------------------------
-  private maybeCallStop(pos: Position, now: number): void {
-    const c = this.controller, t = this.vb?.timingOf(pos);
-    if (!c || !t) return;
-    for (const tr of c.triggersFor(pos)) {
-      if (!tr.lemma) continue;
-      const end = t.tokenEnd[tr.end] ?? t.tokenStart[tr.end];
-      if (end === null || end === undefined || now < end || now > end + 1.2) continue;
-      const key = `${sentenceKey(pos)}:${tr.lemma}`;
-      if (this.callHandled.has(key)) continue;
-      this.callHandled.set(key, Date.now());
-      void this.runCallStop(pos, tr.lemma, tr.target, tr.kind === 'phrase' ? 'phrase' : 'word', tr.token);
-      return;
-    }
-  }
-
-  private async runCallStop(pos: Position, lemma: string, target: string, kind: 'word' | 'phrase', token: number): Promise<void> {
-    const v = video();
-    if (!v) return;
-    this.callStop = { pos, lemma, target, waiting: false };
-    this.engine.hold();
-    this.openCard(pos, token, lemma, target, kind, null);
-    const ms = settings.listen.commandWindowMs || 5000;
-    const answer = await new Promise<'know' | 'dont_know' | 'bye' | 'timeout'>((resolve) => {
-      const t = setTimeout(() => resolve('timeout'), ms);
-      this.callStop!.resolve = (a) => { clearTimeout(t); resolve(a); };
-      this.showCommandWindow({ phase: 'before', ms, target, kind });
-    });
-    this.showCommandWindow(null);
-    const sentence = getSentence(this.vb!.book, pos)?.text ?? '';
-    if (answer === 'know') { await this.changeStatus(lemma, 'known'); this.closeCard(); this.callStop = null; this.replayFrom(pos); return; }
-    if (answer === 'bye') { await this.changeStatus(lemma, 'learning'); this.closeCard(); this.callStop = null; this.replayFrom(pos); return; }
-    // send the word to the call; the video waits for you (play, "go on" or "shut up")
-    await this.changeStatus(lemma, 'learning');
-    const s = window.__ytcApi?.settings();
-    const text = `In this video I just heard: "${sentence}"\n\nWhat does "${target}" mean here? Explain it in easy spoken English, in this exact context, in a few short sentences. At the end, give its two Chinese meanings that fit this sentence. No headings, no lists, no filler.`;
-    this.toast(`Asking ${s?.target === 'chatgpt' ? 'ChatGPT' : 'Claude'} about “${target}”… press play (or say “go on”) to continue.`, 7000);
-    chrome.runtime.sendMessage({ type: 'ask', text, target: s?.target }).then((r: { result?: string } | undefined) => {
-      if (r?.result && !/^Sent /.test(r.result)) window.__ytcApi?.setBarStatus(`⚠ NOT sent: ${r.result.slice(0, 160)}`, true);
-    }).catch(() => undefined);
-    this.callStop.waiting = true;
-    const resume = () => { v.removeEventListener('play', onPlay); if (this.callStop?.pos === pos) this.callStop = null; this.closeCard(); this.replayFrom(pos); };
-    const onPlay = () => { if (!this.engine.isOwn('play')) resume(); };
-    v.addEventListener('play', onPlay);
-    this.callStop.resolve = () => resume();
-  }
-
-  private replayFrom(pos: Position): void {
-    const v = video(), t = this.vb?.timingOf(pos);
-    if (!v || !t) return;
-    // back to the start of the interrupted sentence, then on
-    this.engine.markOwn('seek'); v.currentTime = Math.max(0, t.start - 0.15);
-    if (v.paused) { this.engine.markOwn('play'); void v.play().catch(() => undefined); }
-  }
-
   // ---- answers (voice, keys, buttons) ----------------------------------------------------------------------
   answerKnow(): void {
-    if (this.callStop) { this.callStop.resolve?.('know'); return; }
     const c = this.controller; if (!c) return;
     if (c.stopWindow === 'before') this.dropPrefetch();
     const l = c.lastExplained;
@@ -1491,7 +1416,6 @@ class Session {
     if (!c.answerWindow('know')) this.goOn();
   }
   answerDontKnow(): void {
-    if (this.callStop) { this.callStop.resolve?.('dont_know'); return; }
     const c = this.controller; if (!c) return;
     if (c.answerWindow('dont_know')) return;
     const l = c.lastExplained;
@@ -1499,7 +1423,6 @@ class Session {
     void c.explainAgain();
   }
   answerGoOn(): void {
-    if (this.callStop) { this.callStop.resolve?.('bye'); return; }
     const c = this.controller; if (!c) return;
     if (c.stopWindow === 'before') { c.answerWindow('bye'); return; }
     this.goOn();
@@ -1618,7 +1541,6 @@ class Session {
   }
   /** "shut up": the tutor stops talking */
   shutUp(): void {
-    if (this.callStop) { this.callStop.resolve?.('bye'); return; }
     if (this.talk?.live?.speaking) { this.talk.live.interrupt(); return; }
     this.controller?.skip();
     this.tts?.cancelAll();
@@ -1668,7 +1590,6 @@ class Session {
     this.watchStill(t, final, key);
     const act = (fn: () => void) => { if (key) { this.acted.add(key); if (this.acted.size > 300) this.acted.clear(); } fn(); };
     const lower = t.toLowerCase();
-    if (this.mode !== 'tutor' && !this.callStop) return false; // call mode: youtube.js handles "hi bro" / "shut up"
     // voice mode: hello / stop / play (said alone, not the video's or the tutor's own words)
     const cmd = this.mode === 'tutor' ? this.voiceCommand(lower, final) : null;
     if (cmd) { act(cmd); return true; }
@@ -1712,14 +1633,14 @@ class Session {
       act(() => chat.ask(t));
       return true;
     }
-    const inWindow = this.windowOpen || !!this.cmdWin || !!this.callStop;
+    const inWindow = this.windowOpen || !!this.cmdWin;
     // "bye bye" stops the AI whatever it does (it is never in an explanation, so it is safe while the tutor talks)
     if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && (final || /bye[\s-]*bye/.test(lower))) { act(() => this.byeBye()); return true; }
     // the tutor's own voice must not be taken for the learner's
     if (this.controller?.busy || Date.now() - this.lastTtsEnd < 700) { if (/\bshut\s*up\b/.test(lower)) act(() => this.shutUp()); return true; }
     if (final) this.lastHeardAt = Date.now();
     if (/\bshut\s*up\b/.test(lower)) { act(() => this.shutUp()); return true; }
-    if (/\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/.test(lower)) { if (!this.callStop) act(() => this.explainLast()); return true; }
+    if (/\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/.test(lower)) { act(() => this.explainLast()); return true; }
     if (this.talk) {
       // the talk without the live call: commands, or a question for the tutor
       if (!final) return true;
@@ -1751,7 +1672,6 @@ class Session {
   ask(question: string, spoken = false): void {
     const c = this.controller; if (!c || !this.vb) return;
     const pos = this.talk?.pos ?? this.playback?.position ?? this.cur ?? this.vb.order[0];
-    if (this.mode === 'call') { void chrome.runtime.sendMessage({ type: 'ask', text: question, target: window.__ytcApi?.settings().target }); this.toast('Sent to the call.'); return; }
     // in the live call, a typed question goes to the call
     if (this.talk?.live && this.talk.live.state === 'ready') { this.talk.live.ask(question); this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); return; }
     if (this.talk?.chat && !this.talk.chat.closed) { this.talk.call = true; this.putLine(this.talk, { id: `t${Date.now()}`, who: 'you', text: question, final: true }); this.talk.chat.ask(question); return; }
@@ -2263,8 +2183,7 @@ class Session {
     if (!head) return;
     const tutor = this.mode === 'tutor';
     const sc = shortcutMap(extras.shortcuts);
-    const callName = window.__ytcApi?.settings().target === 'chatgpt' ? 'ChatGPT call' : 'Claude call';
-    head.innerHTML = `<span class="brand">Dream</span><span class="mode ${tutor ? 'tutor' : ''}">${tutor ? 'My tutor' : esc(callName)}</span><span class="grow"></span>
+    head.innerHTML = `<span class="brand">Dream</span><span class="mode tutor">My tutor</span><span class="grow"></span>
       ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hi bro”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
       ${tutor ? `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="The big page at stops and pauses: on / off (off = you only watch the video)">📄 ${extras.stageOn ? 'on' : 'off'}</button>` : ''}
@@ -2563,7 +2482,6 @@ class Session {
     const glosses = entry?.zh ? parseGloss(entry.zh).slice(0, here ? 1 : 2) : [];
     const level = entry?.level ?? (this.phrases[sentenceKey(pos)]?.find((p) => p.lemma === lemma)?.level as string | undefined) ?? '';
     const status = vocab.words[lemma];
-    const call = this.mode === 'call';
     // (Level Check: the explanation has no Chinese and no IPA, so neither has its card)
     const plain = this.levelOn();
     cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !plain ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word">▶</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
@@ -2571,7 +2489,7 @@ class Session {
       ${glosses.length ? `<div class="zh">${glosses.map((g) => `<span>${g.pos ? `<span class="pos">${esc(g.pos)}</span>` : ''}${esc(g.zh)}</span>`).join('')}</div>` : '<div class="muted">Not in the offline dictionary.</div>'}`}
       <div class="en"></div>
       <div class="row"><button data-act="known" class="${status === 'known' ? 'active' : ''}">I know</button><button data-act="dontknow" class="${status === 'learning' ? 'active' : ''}">I don't know</button><button data-act="ignore">Ignore</button>
-      ${call ? '<button data-act="ask">Ask in the call</button>' : plain ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
+      ${plain ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
     cardEl.hidden = false;
     // the AI's meaning in this very sentence, written live (when the video's hints do not have this word)
     if (!plain && !here && this.vb && (this.keys.anthropic || this.keys.openai)) {
@@ -2609,15 +2527,10 @@ class Session {
       const c = this.card;
       if (act === 'close') this.closeCard();
       else if (act === 'say') { const h = this.wordOut?.speak(c.word, { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) }); void h; }
-      else if (act === 'known') { if (this.callStop) this.answerKnow(); else { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); if (this.controller?.stopWindow) this.answerKnow(); this.closeCard(); } }
-      else if (act === 'dontknow') { if (this.callStop || this.controller?.stopWindow) this.answerDontKnow(); else if (this.mode === 'tutor') { void this.changeStatus(c.lemma, 'learning'); this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } }
+      else if (act === 'known') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); if (this.controller?.stopWindow) this.answerKnow(); this.closeCard(); }
+      else if (act === 'dontknow') { if (this.controller?.stopWindow) this.answerDontKnow(); else { void this.changeStatus(c.lemma, 'learning'); this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } }
       else if (act === 'ignore') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'ignored'); this.closeCard(); if (this.controller?.stopWindow) this.answerGoOn(); }
       else if (act === 'zh') { void store.patchSettings({ ai: { ...settings.ai, speakChinese: !settings.ai.speakChinese } }); }
-      else if (act === 'ask') {
-        const sent = this.vb ? getSentence(this.vb.book, c.pos)?.text ?? '' : '';
-        void chrome.runtime.sendMessage({ type: 'ask', text: `In this video I just heard: "${sent}"\n\nWhat does "${c.word}" mean here? Explain it in easy spoken English in this context, then give its two Chinese meanings that fit this sentence.`, target: window.__ytcApi?.settings().target });
-        this.toast('Sent to the call.');
-      }
     };
   }
 
@@ -2807,13 +2720,13 @@ class Session {
 
   /** a shortcut's action (from a key or, on the iPhone, a button); true = it acted (the key is then swallowed) */
   private runAction(a: ShortcutAction): boolean {
-    const windowOpen = !!this.cmdWin || !!this.callStop || !!this.card;
+    const windowOpen = !!this.cmdWin || !!this.card;
     const tutor = this.mode === 'tutor';
     if (a.when === 'window') {
       if (!windowOpen && !(tutor && this.talk)) return false;
-      if (a.id === 'know') { if (this.card && !this.cmdWin && !this.callStop && !this.talk) { this.controller?.markKnown(this.card.lemma); void this.changeStatus(this.card.lemma, 'known'); this.closeCard(); } else this.answerKnow(); }
+      if (a.id === 'know') { if (this.card && !this.cmdWin && !this.talk) { this.controller?.markKnown(this.card.lemma); void this.changeStatus(this.card.lemma, 'known'); this.closeCard(); } else this.answerKnow(); }
       else if (a.id === 'dontKnow') this.answerDontKnow();
-      else if (a.id === 'goOn') { if (this.cmdWin || this.callStop) this.answerGoOn(); else if (this.talk) this.byeBye(); else this.closeCard(); }
+      else if (a.id === 'goOn') { if (this.cmdWin) this.answerGoOn(); else if (this.talk) this.byeBye(); else this.closeCard(); }
       return true;
     }
     if (a.when === 'explaining') {
@@ -2929,7 +2842,7 @@ class Session {
       spokenVol: (this.macRaw as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
       callOpen: this.callOpen(),
       cloud: cloudSpoken.slice(-30),
-      hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
+      hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       level: { stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
@@ -2979,11 +2892,7 @@ function video(): HTMLVideoElement | null {
 // ---------------------------------------------------------------------------------------------------------------
 // which mode, which video
 // ---------------------------------------------------------------------------------------------------------------
-function wantedMode(): Mode | null {
-  if (extras.tutorOn) return 'tutor';
-  const s = window.__ytcApi?.settings();
-  return s?.sendOn ? 'call' : null;
-}
+function wantedMode(): Mode | null { return extras.tutorOn ? 'tutor' : null; }
 
 function refresh(): void {
   const api = window.__ytcApi;
@@ -2993,7 +2902,6 @@ function refresh(): void {
   if (!id || !mode) { session?.dispose(); session = null; paintTutorButton(); return; }
   if (session && session.videoId !== id) { session.dispose(); session = null; }
   if (!session) { session = new Session(id, mode); window.__drDebug = () => session?.debug(); void session.start(); }
-  else session.setMode(mode);
   paintTutorButton();
 }
 
@@ -3008,8 +2916,6 @@ function paintTutorButton(): void {
 async function setTutor(on: boolean): Promise<void> {
   await store.patchExtras({ tutorOn: on });
   extras.tutorOn = on;
-  // one voice at a time: the website call goes off when the tutor comes on
-  if (on) await chrome.storage.local.set({ sendOn: false });
   refresh();
 }
 
@@ -3084,12 +2990,10 @@ async function boot(): Promise<void> {
       b.id = 'yt2c-b-tutor';
       b.style.cssText = 'border:0;border-radius:14px;padding:6px 12px;font:inherit;cursor:pointer;color:#fff;background:' + RED;
       b.onclick = () => void setTutor(!extras.tutorOn);
-      const claude = bar.querySelector('#yt2c-b-claude');
-      if (claude && claude.nextSibling) bar.insertBefore(b, claude.nextSibling); else bar.appendChild(b);
+      bar.insertBefore(b, bar.firstChild);
       tutorBtn = b;
       paintTutorButton();
     },
-    callChanged: () => { if (window.__ytcApi?.settings().sendOn && extras.tutorOn) void setTutor(false); else refresh(); },
     diag: () => (session ? session.diag() : { mode: 'off', on: extras.tutorOn }),
     action: (id) => {
       if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
@@ -3107,7 +3011,6 @@ async function boot(): Promise<void> {
     if (ch[store.STORAGE_KEYS.keys]) session?.keysChanged({ ...(ch[store.STORAGE_KEYS.keys].newValue ?? {}) });
     if (ch[store.LEVEL_KEY]) { levelMeta = { ...EMPTY_META, ...(ch[store.LEVEL_KEY].newValue as Partial<LevelMeta> | undefined) }; session?.levelChanged(); }
     if (ch.drAzureVoices) void session?.loadAzureAvail().then(() => session?.renderQuickIfOpen());
-    if (ch.sendOn || ch.target) setTimeout(refresh, 50); // youtube.js reads the same change first
   });
   // capture on window: before YouTube's own keys (← would jump back 5 s)
   window.addEventListener('keydown', (e) => {

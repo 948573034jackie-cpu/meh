@@ -1,10 +1,12 @@
-// Runs on youtube.com. Reads the video info + transcript when the service worker asks.
+// Runs on youtube.com. Reads the video and its subtitles for My tutor (dream/dream-yt.js, the same isolated world),
+// listens to the microphone while the tutor waits for you, and keeps the small bar under the video (My tutor on / off,
+// 🩺 Check, the tutor's status). The extension does nothing else on the page: the tutor does the teaching.
 
 (function () {
   'use strict';
   if (window.__ytToClaudeLoaded) return;
   window.__ytToClaudeLoaded = true;
-  const { parseJson3, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, extractPlayerResponse, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences, fmtTime } = window.YTC;
+  const { parseJson3, parseClock, parseTranscriptResponse, judgeCues, extractPlayerResponse, pickTrack, buildSentences } = window.YTC;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -290,33 +292,19 @@
       if (best) {
         const cues = best.cues;
         lastLoaded = { cues };
-        return { ...info, cues, sentences: buildSentences(cues), transcript: formatTranscript(cues), source: best.source, lines: cues.length, errors };
+        return { ...info, cues, sentences: buildSentences(cues), source: best.source, lines: cues.length, errors };
       }
       cache.promise = null; // nothing found: try again next time
-      return { ...info, cues: [], sentences: [], transcript: null, source: null, lines: 0, errors };
+      return { ...info, cues: [], sentences: [], source: null, lines: 0, errors };
     })();
     return cache.promise;
   }
 
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg && msg.type === 'reload-subs') { // you loaded a subtitle file: read this video again
-      cache = { id: null, promise: null };
-      preloadedFor = null;
-      loadTranscript().then((d) => sendResponse({ lines: d.lines, source: d.source, errors: d.errors }));
-      return true;
-    }
-    if (!msg || msg.type !== 'yt-get') return;
-    loadTranscript().then((d) => sendResponse({
-      title: d.title, channel: d.channel, url: d.url, transcript: d.transcript,
-      source: d.source, lines: d.lines, errors: d.errors
-    }));
-    return true;
-  });
-
-  // the Dream Tutor (dream/dream-yt.js, same isolated world) reads the video and its subtitles through this
+  // My tutor (dream/dream-yt.js, the same isolated world) reads the video and its subtitles through this
   window.__ytcApi = {
     loadTranscript, videoId, isAd: () => isAd(), video: () => video || document.querySelector('video'),
-    settings: () => ({ sendOn: settings.sendOn, target: settings.target, voiceOn: settings.voiceOn }),
+    // "voiceOn": the browser can hear you (the tutor then says "just talk" in a call)
+    settings: () => ({ voiceOn: !!(window.SpeechRecognition || window.webkitSpeechRecognition) }),
     buildSentences: (cues) => buildSentences(cues, { words: true }),
     setBarStatus: (text, bad) => setBarStatus(text, bad),
     // what the microphone hears now is closed (Chrome gives it as final), then it listens again
@@ -325,265 +313,38 @@
   };
 
   window.__ytcDebug = {
-    load: () => loadTranscript().then((d) => ({ title: d.title, lines: d.lines, sentences: d.sentences.length, source: d.source, errors: d.errors, first: d.sentences[0] && d.sentences[0].text, lastStart: d.cues.reduce((m, c) => Math.max(m, c.start), 0) }))
+    load: () => loadTranscript().then((d) => ({ title: d.title, lines: d.lines, sentences: d.sentences.length, source: d.source, errors: d.errors, first: d.sentences[0] && d.sentences[0].text, lastStart: d.cues.length ? d.cues[d.cues.length - 1].start : null })),
   };
 
-  // ---- settings (set in the popup) ----
-  // iPad / iPhone (Safari): you touch the video instead of talking to it. The microphone stays free for your
-  // Claude voice call (when this page listens, iPadOS turns the video's sound down and takes the mic from the call).
-  const TOUCH = !window.__ytcShimYT && (!!window.__ytcSafari || navigator.maxTouchPoints > 0); // (the YT Learn app keeps its own settings)
-  const settings = { pauseOn: true, replayOn: true, textLevel: TOUCH ? 4.5 : 6, voiceOn: !TOUCH, target: 'claude', tapOn: TOUCH, badgeOn: false, imageOn: true, barOn: true, sendOn: false, talkOn: false, picOnly: TOUCH };
+  // ---- settings ----
+  const settings = { barOn: true }; // the small bar under the video (the iPhone app has its own buttons: it sets barOn false)
   function readSettings(s) {
-    if ('pauseOn' in s) settings.pauseOn = s.pauseOn !== false;
-    if ('voiceOn' in s) settings.voiceOn = TOUCH ? s.voiceOn === true : s.voiceOn !== false;
-    if ('replayOn' in s) settings.replayOn = s.replayOn !== false;
-    if ('textLevel' in s) settings.textLevel = Math.min(10, Math.max(1, Number(s.textLevel) || 6)); // 1..10, in steps of 0.25
-    if ('target' in s) settings.target = s.target === 'chatgpt' ? 'chatgpt' : 'claude';
-    if ('tapOn' in s) settings.tapOn = s.tapOn === true;     // touch the video = pause / play (phone + iPad app)
-    if ('badgeOn' in s) settings.badgeOn = s.badgeOn === true; // small status label on the video
-    if ('talkOn' in s) settings.talkOn = s.talkOn === true; // read the answers aloud; what you say after "hi bro" goes to the chat
-    if ('sendOn' in s) settings.sendOn = s.sendOn === true; // a button under the video is green: pauses are sent to that chat
-    if ('barOn' in s) settings.barOn = s.barOn !== false;       // small Claude | ChatGPT | Send bar under the video
-    if ('imageOn' in s) settings.imageOn = s.imageOn !== false; // Claude only: also send a picture of the paused video
-    if ('picOnly' in s) settings.picOnly = s.picOnly === true; // Claude only: send ONLY the picture (words + question on it), no text
+    if ('barOn' in s) settings.barOn = s.barOn !== false;
   }
-  chrome.storage.local.get(['pauseOn', 'replayOn', 'voiceOn', 'textLevel', 'target', 'tapOn', 'badgeOn', 'imageOn', 'barOn', 'sendOn', 'talkOn', 'picOnly']).then(readSettings);
+  chrome.storage.local.get(['barOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
     const s = {};
     for (const k of Object.keys(ch)) s[k] = ch[k].newValue;
     readSettings(s);
-    if (ch.textLevel) rerender();
-    if (ch.target || ch.sendOn) { try { updateBar(); } catch (e) { /* ignore */ } }
+    if (ch.barOn) { try { updateBar(); } catch (e) { /* ignore */ } }
   });
-  const targetName = () => (settings.target === 'chatgpt' ? 'ChatGPT' : 'Claude');
 
-  window.addEventListener('resize', () => { try { rerender(); } catch (e) { /* ignore */ } });
-
-  // ---- the sentences, shown as ONE tight paragraph over the video ----
-  const OVERLAY_ID = 'yt2c-overlay';
-  // Text size: level 1..10 in small steps (10 = the biggest). Font size = share of the player height.
-  // level 6 = medium (6.75 %), level 10 = 8.95 %.
-  const levelShare = (lv) => 0.04 + (lv - 1) * 0.0055;
-  // Size is written in CSS "container" units (cqh = 1% of the player's height, cqw = 1% of its width), so the
-  // browser recalculates it whenever the player changes size (fullscreen, theater mode, window resize).
-  // Nothing is measured in JavaScript, so it cannot come out random. Hard limits: never below 14px or above 120px.
-  const fontSizeCss = (lv) => {
-    const share = levelShare(lv);
-    return 'clamp(14px, min(' + (share * 100 * 1.097).toFixed(3) + 'cqh, ' + (share * 190).toFixed(3) + 'cqw), 120px)';
-  };
-  let lastShown = null;
-
-  let placeTimer = null;
-
-  function hideOverlay() {
-    const el = document.getElementById(OVERLAY_ID);
-    if (el) el.remove();
-    if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
-    lastShown = null;
-  }
-
-  // used when the page has no usable player box (some mobile layouts): cover exactly the video
-  function placeFixed(el) {
-    const r = video ? video.getBoundingClientRect() : null;
-    const ok = r && r.width > 80 && r.height > 60;
-    el.style.left = (ok ? r.left : 0) + 'px';
-    el.style.top = (ok ? r.top : 0) + 'px';
-    el.style.width = (ok ? r.width : window.innerWidth) + 'px';
-    el.style.height = (ok ? r.height : window.innerHeight) + 'px';
-  }
-
-  function setActive(index) {
-    const el = document.getElementById(OVERLAY_ID);
-    if (!el) return;
-    if (lastShown) lastShown.activeIndex = index;
-    let activeEl = null;
-    el.querySelectorAll('[data-i]').forEach((n) => {
-      const on = Number(n.dataset.i) === index;
-      n.style.color = on ? '#ffd60a' : '#ffffff';
-      if (on) activeEl = n;
-    });
-    const wrap = document.getElementById('yt2c-wrap');
-    if (wrap && activeEl && wrap.scrollHeight > wrap.clientHeight + 1) {
-      // long text at a big size: keep the sentence you paused in in view
-      const w = wrap.getBoundingClientRect(), a = activeEl.getBoundingClientRect();
-      wrap.scrollTop += (a.top + a.height / 2) - (w.top + w.height / 2);
-    }
-  }
-
-  function rerender() {
-    if (!lastShown || !document.getElementById(OVERLAY_ID)) return;
-    const keep = {};
-    for (const id of ['yt2c-foot', 'yt2c-hint']) {
-      const n = document.getElementById(id);
-      keep[id] = n ? { text: n.textContent, color: n.style.color } : null;
-    }
-    showOverlay(lastShown);
-    for (const id of Object.keys(keep)) {
-      const n = document.getElementById(id);
-      if (n && keep[id]) { n.textContent = keep[id].text; n.style.color = keep[id].color; }
-    }
-  }
-
-  function showOverlay(args) {
-    const { note, seg, activeIndex } = args;
-    lastShown = { note, seg, activeIndex };
-    let host = (video && video.closest('#movie_player, .html5-video-player')) || document.querySelector('#movie_player') || (video && video.parentElement);
-    const usable = (h) => !!h && h.clientWidth > 80 && h.clientHeight > 60;
-    const fixed = !usable(host);
-    if (fixed) host = document.documentElement;
-    const old = document.getElementById(OVERLAY_ID);
-    if (old) old.remove();
-    if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
-    const el = document.createElement('div');
-    el.id = OVERLAY_ID;
-    // pointer-events:none → clicking the video still pauses/plays as normal
-    el.style.cssText = (fixed ? 'position:fixed;z-index:2147483647;' : 'position:absolute;inset:0;z-index:2000;') +
-      'display:flex;flex-direction:column;container-type:size;' +
-      'padding:2.5% 4%;background:rgba(0,0,0,.95);color:#fff;font-family:system-ui,Arial,sans-serif;' +
-      'pointer-events:none;box-sizing:border-box;overflow:hidden';
-    const mk = (id, css, text) => {
-      const d = document.createElement('div');
-      d.id = id; d.style.cssText = css; d.textContent = text || '';
-      return d;
-    };
-    el.appendChild(mk('yt2c-head', 'font-size:20px;color:#cfcfcf;flex:none;text-align:center', note));
-    const wrap = mk('yt2c-wrap', 'flex:1 1 auto;min-height:0;overflow:hidden;display:flex;flex-direction:column');
-    const body = mk('yt2c-body', 'margin:auto 0;line-height:1.35;font-weight:600;text-align:left;text-shadow:0 2px 6px #000');
-    if (seg) {
-      // every full sentence gets its own block; tiny phrases stay with a neighbouring sentence
-      groupSentences(seg.items).forEach((g) => {
-        const block = document.createElement('div');
-        block.style.cssText = 'margin:0 0 .45em';
-        g.idx.forEach((i) => {
-          const sp = document.createElement('span');
-          sp.dataset.i = String(i);
-          sp.textContent = seg.items[i].text + ' ';
-          block.appendChild(sp);
-        });
-        body.appendChild(block);
-      });
-    }
-    wrap.appendChild(body);
-    el.appendChild(wrap);
-    el.appendChild(mk('yt2c-foot', 'font-size:15px;color:#ff8a80;margin-top:1%;flex:none;text-align:center'));  // only shows if something goes wrong
-    el.appendChild(mk('yt2c-hint', 'display:none'));
-    // play / pause only: does not send anything and does not jump (bottom right, away from the touch area)
-    const pp = document.createElement('button');
-    pp.id = 'yt2c-pp';
-    pp.setAttribute('aria-label', 'Play / pause (does not send)');
-    pp.style.cssText = 'position:absolute;right:2.5%;bottom:14%;width:64px;height:64px;border-radius:50%;border:2px solid rgba(255,255,255,.7);' +
-      'background:rgba(40,40,40,.85);color:#fff;font:700 26px/1 system-ui,Arial,sans-serif;pointer-events:auto;cursor:pointer;z-index:2147483646;' +
-      '-webkit-tap-highlight-color:transparent;touch-action:manipulation;padding:0';
-    const ppIcon = () => { pp.textContent = video && !video.paused ? '❚❚' : '▶'; };
-    ppIcon();
-    pp.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      if (!video) return;
-      if (video.paused) { ourPlay = true; video.play().catch(() => { ourPlay = false; }); }
-      else { ourPause = true; video.pause(); }
-      setTimeout(ppIcon, 150);
-    }, true);
-    const ppTimer = setInterval(() => { if (!document.contains(pp)) clearInterval(ppTimer); else ppIcon(); }, 400);
-    el.appendChild(pp);
-    host.appendChild(el);
-    if (fixed) { placeFixed(el); placeTimer = setInterval(() => placeFixed(el), 300); }
-    if (seg) {
-      if (window.CSS && CSS.supports && CSS.supports('width', '1cqh')) {
-        body.style.fontSize = fontSizeCss(settings.textLevel);
-      } else { // older browsers (iOS 15): measure once; it is refreshed on resize
-        body.style.fontSize = Math.min(120, Math.max(14, el.clientHeight * levelShare(settings.textLevel))) + 'px';
-      }
-      setActive(activeIndex === undefined ? seg.items.length - 1 : activeIndex);
-    }
-  }
-
-  // Only problems are written on the video; success shows nothing (you only want to see the subtitles).
-  function setFoot(text, ok) {
-    const f = document.getElementById('yt2c-foot');
-    if (f) f.textContent = ok ? '' : text;
-  }
-  function setHint(text) {
-    if (text && /blocked/i.test(text)) setFoot(text, false);
-  }
-
-  // ---- pause → show the sentences + send them; "let's go" / Space / play → back to the start of that part, then keep playing ----
+  // ---- the video ----
   let video = null;
-  let handling = false;
-  let pending = null;     // the passage waiting for "let's go" / Space / Enter
-  let replaying = null;   // { seg, timer } while the passage is being played again
-  let ourPause = false;   // true while WE pause the video, so it does not count as "you paused"
-  let deferredSend = null; // the message to Claude/ChatGPT, sent when the replay has stopped
-
-  function runDeferredSend() {
-    const f = deferredSend;
-    deferredSend = null;
-    if (f) f();
-  }
-  function cancelReplay() {
-    if (replaying) { clearInterval(replaying.timer); replaying = null; }
-    stopFeed();
-  }
-  let sendTimer = null;
-
-  function askCallState() {
-    if (window.__ytcSafari) return Promise.resolve(false); // Safari cannot play into a call: do not wait for the answer
-    return new Promise((resolve) => {
-      const t = setTimeout(() => resolve(false), 800);
-      try {
-        chrome.runtime.sendMessage({ type: 'call-state', target: settings.target })
-          .then((r) => { clearTimeout(t); resolve(!!(r && r.inCall)); }, () => { clearTimeout(t); resolve(false); });
-      } catch (e) { clearTimeout(t); resolve(false); }
-    });
-  }
-
-  // ---- the replay's own sound, sent live into the chat's voice call (Chrome's echo cancellation cannot remove it) ----
-  let feedRec = null, feedChain = Promise.resolve(), feedSeq = 0;
-  const toB64 = (blob) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => res(''); r.readAsDataURL(blob); });
-  function feedSend(msg) { try { chrome.runtime.sendMessage(Object.assign({ type: 'feed' }, msg)).catch(() => {}); } catch (e) { /* ignore */ } }
-  function startFeed() {
-    stopFeed();
-    try {
-      if (!video || !video.captureStream || !window.MediaRecorder) return false;
-      const tracks = video.captureStream().getAudioTracks();
-      if (!tracks.length) return false;
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-      const r = new MediaRecorder(new MediaStream(tracks), { mimeType: mime, audioBitsPerSecond: 64000 });
-      feedSeq = 0;
-      feedSend({ op: 'start', mime });
-      r.ondataavailable = (e) => {
-        if (!e.data || !e.data.size) return;
-        const seq = feedSeq++;
-        feedChain = feedChain.then(() => toB64(e.data)).then((data) => feedSend({ op: 'chunk', seq, data }));
-      };
-      r.onstop = () => { feedChain = feedChain.then(() => feedSend({ op: 'stop' })); };
-      r.start(250);
-      feedRec = r;
-      lastSend = 'playing this part into the voice call';
-      return true;
-    } catch (e) { return false; }
-  }
-  function stopFeed() {
-    if (feedRec) { try { if (feedRec.state !== 'inactive') feedRec.stop(); } catch (e) { /* ignore */ } feedRec = null; }
-  }
-
   function isAd() {
     const p = document.querySelector('#movie_player');
     return !!(p && p.classList.contains('ad-showing'));
   }
-
   function bind() {
     const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
-    if (v && v !== video) {
-      video = v;
-      v.addEventListener('pause', onPause);
-      v.addEventListener('play', onPlay);
-    }
+    if (v && v !== video) video = v;
   }
   setInterval(bind, 1000);
   bind();
 
-  // Fetch the subtitles as soon as a video page is open, so the first pause is instant.
+  // Fetch the subtitles as soon as a video page is open, so the tutor starts at once.
   let preloadedFor = null;
+  let subState = 'no video yet';
   setInterval(() => {
     const id = location.pathname === '/watch' ? videoId() : null;
     if (id && id !== preloadedFor) {
@@ -596,37 +357,14 @@
     }
   }, 1000);
 
-  // ---- status label + "touch the video" layer (used by the iPhone / iPad app) ----
-  let subState = 'no video yet';
-  let lastSend = '';
-  let tapLayer = null;
-  let badge = null;
-
   function describeSubs(d) {
     if (d.sentences.length) return d.sentences.length + ' sentences';
     const why = (d.errors.join(' ').match(/playability ([A-Z_]+)(?: \(([^)]*)\))?/) || []);
     return 'none' + (why[1] && why[1] !== 'OK' ? ' (' + (why[2] || why[1]) + ')' : '');
   }
 
-  // iPad / iPhone: touch the middle of the video.
-  //   1st touch (playing): stop, go back to the start of the ~30 s part, play it once, stop, send it.
-  //   2nd touch (stopped): back to the start of that part again, then keep playing to the end.
-  function onTap(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!video) return;
-    if (dreamOwns()) { if (video.paused) video.play().catch(() => {}); else video.pause(); return; } // the tutor decides what a stop means
-    if (pending) { continueFromStart(); return; }      // touching the stopped part = "let's go"
-    if (replaying) { const seg = replaying.seg; cancelReplay(); beginWaiting(seg); runDeferredSend(); continueFromStart(); return; } // touch during the replay: send it, play on from its start
-    if (video.paused) { video.play().catch(() => {}); return; }
-    video.pause();                                     // touching a playing video = pause -> replay the part + send it
-  }
-
-  // ---- two buttons just under the video: ChatGPT and Claude. Green = on, red = off. ----
-  // Turning one on sends the link + FULL transcript to that chat once. After that every pause sends
-  // only the part you paused at (about 30 s). Turning it off again: pauses are not sent anywhere.
+  // ---- the small bar just under the video: My tutor on / off (dream-yt.js adds that button), 🩺 Check, the status ----
   let bar = null;
-  const GREEN = '#1e8e3e', RED = '#d93025';
   function updateBar(r) {
     const want = settings.barOn && location.pathname === '/watch';
     if (!want) { if (bar) { bar.remove(); bar = null; } return; }
@@ -634,66 +372,22 @@
       bar = document.createElement('div');
       bar.id = 'yt2c-bar';
       bar.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 0;font:600 12px/1 system-ui,Arial,sans-serif;z-index:2147483000';
-      const mk = (id, text) => { const b = document.createElement('button'); b.id = id; b.textContent = text; b.style.cssText = 'border:0;border-radius:14px;padding:6px 12px;font:inherit;cursor:pointer;color:#fff;background:' + RED; return b; };
-      const gpt = mk('yt2c-b-chatgpt', 'ChatGPT'), claude = mk('yt2c-b-claude', 'Claude');
       const status = document.createElement('span');
       status.id = 'yt2c-b-status';
       status.style.cssText = 'font-weight:400;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw';
-      const toggle = async (t) => {
-        const isOn = settings.sendOn && settings.target === t;
-        if (isOn) { // green -> red: stop sending
-          settings.sendOn = false;
-          chrome.storage.local.set({ sendOn: false });
-          status.textContent = 'Off: pauses are not sent.';
-          updateBar();
-          return;
-        }
-        settings.target = t; settings.sendOn = true; // red -> green (the other one turns red)
-        chrome.storage.local.set({ target: t, sendOn: true });
-        try { if (window.__ytcDream) window.__ytcDream.callChanged(); } catch (e) { /* ignore */ }
-        updateBar();
-        const name = t === 'chatgpt' ? 'ChatGPT' : 'Claude';
-        status.textContent = 'Sending the full transcript to ' + name + '…';
-        try {
-          const res = await chrome.runtime.sendMessage({ type: 'send', target: t });
-          const text = (res && res.result) || 'no answer';
-          status.textContent = /^Sent /.test(text) ? 'On: full transcript sent to ' + name + ' ✓  Now every pause sends only that part.' : shortReason(text);
-        } catch (e) { status.textContent = 'Not sent: reload this YouTube page'; }
-      };
-      gpt.onclick = () => toggle('chatgpt');
-      claude.onclick = () => toggle('claude');
-      // subtitle size: A- smaller, A+ bigger (saved)
-      const size = (id, text, step) => {
-        const b = document.createElement('button'); b.id = id; b.textContent = text;
-        b.title = step < 0 ? 'Smaller subtitles' : 'Bigger subtitles';
-        b.style.cssText = 'border:1px solid #888;border-radius:14px;padding:6px 10px;font:inherit;cursor:pointer;color:inherit;background:transparent;min-width:40px';
-        b.onclick = () => {
-          settings.textLevel = Math.min(10, Math.max(1, (Number(settings.textLevel) || 6) + step));
-          chrome.storage.local.set({ textLevel: settings.textLevel });
-          status.textContent = 'Subtitle size ' + settings.textLevel + ' of 10';
-          try { rerender(); } catch (e) { /* ignore */ }
-        };
-        return b;
-      };
-      const check = size('yt2c-b-check', '🩺 Check', 0);
+      const check = document.createElement('button');
+      check.id = 'yt2c-b-check';
+      check.textContent = '🩺 Check';
       check.title = 'Find out what is not working (you can copy the report)';
+      check.style.cssText = 'border:1px solid #888;border-radius:14px;padding:6px 10px;font:inherit;cursor:pointer;color:inherit;background:transparent;min-width:40px';
       check.onclick = () => showReport();
-      bar.append(gpt, claude, size('yt2c-b-smaller', 'A−', -0.5), size('yt2c-b-bigger', 'A+', 0.5), check, status);
+      bar.append(check, status);
       try { if (window.__ytcDream) window.__ytcDream.decorateBar(bar); } catch (e) { /* ignore */ }
-    }
-    for (const id of ['chatgpt', 'claude']) {
-      const b = bar.querySelector('#yt2c-b-' + id);
-      const on = settings.sendOn && settings.target === id;
-      const label = (id === 'chatgpt' ? 'ChatGPT' : 'Claude') + (on ? ' ● on' : ' ○ off');
-      if (b.textContent === label) continue; // nothing changed: do not touch the page (keeps the video smooth)
-      b.style.background = on ? GREEN : RED;
-      b.textContent = label;
-      b.title = on ? 'On: every pause is sent here. Click to turn off.' : 'Click to turn on: sends the full transcript once, then every pause.';
     }
     const below = document.querySelector('#below');   // desktop YouTube: right under the player, above the title
     if (below) {
       if (bar.parentElement !== below || below.firstChild !== bar) { bar.style.position = ''; below.insertBefore(bar, below.firstChild); }
-    } else {                                           // other layouts: float just under the video
+    } else {                                           // other layouts (the phone's site): float just under the video
       if (bar.parentElement !== document.documentElement) document.documentElement.appendChild(bar);
       if (!r) { const v = video; r = v ? v.getBoundingClientRect() : null; }
       bar.style.position = 'fixed';
@@ -705,22 +399,23 @@
       bar.style.padding = '4px 8px';
     }
   }
+  function placeBar() {
+    const r = video ? video.getBoundingClientRect() : null;
+    try { updateBar(r); } catch (e) { /* ignore */ }
+  }
+  setInterval(placeBar, 300);
+  for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => setTimeout(placeBar, 50));
+  window.addEventListener('scroll', placeBar, true);
 
-  // the reason only, short (the long technical details stay in the extension's "last result")
-  function shortReason(text) {
-    const t = String(text || '').split(' | steps:')[0].replace(/^(Claude|ChatGPT) page problem: /, '');
-    return t.length > 170 ? t.slice(0, 167) + '…' : t;
+  function setBarStatus(text, bad) {
+    const st = document.getElementById('yt2c-b-status');
+    if (!st) return;
+    st.textContent = text;
+    st.style.color = bad ? '#ff6b5e' : '';
+    st.style.whiteSpace = bad ? 'normal' : 'nowrap';
   }
-  // Safari sometimes loses the answer of a long send: read the result the background writes down instead (up to 60 s)
-  async function resultLater(before) {
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const o = await chrome.storage.local.get('last').catch(() => ({}));
-      const last = o && o.last;
-      if (last && last !== before && /— Paused at /.test(last)) return { result: last.replace(/^.*?— Paused at [\d:]+: /, '') };
-    }
-    return { result: 'no answer from the extension in 60 s (press 🩺 Check under the video)' };
-  }
+
+  // ---- 🩺 Check on the page (the phone has no extension window): the report, with a Copy button ----
   async function showReport() {
     let panel = document.getElementById('yt2c-report');
     if (panel) panel.remove();
@@ -745,126 +440,24 @@
     (document.fullscreenElement || document.webkitFullscreenElement || document.documentElement).appendChild(panel);
     try {
       const r = await chrome.runtime.sendMessage({ type: 'diagnose' });
-      pre.textContent = (r && r.report) || 'No answer from the extension. Close Safari fully (swipe it away), open it again, and press Check again. If it still says this: Settings → Apps → Safari → Extensions → turn the extension off and on.';
+      pre.textContent = (r && r.report) || 'No answer from the extension. Close Safari fully (swipe it away), open it again, and press Check again. If it still says this: Settings → Apps → Safari → Extensions → the extension must be on, and allowed on youtube.com.';
     } catch (e) { pre.textContent = 'The extension did not answer (' + e.message + '). Reload this page and press Check again.'; }
   }
 
-  function setBarStatus(text, bad) {
-    const st = document.getElementById('yt2c-b-status');
-    if (!st) return;
-    st.textContent = text;
-    st.style.color = bad ? '#ff6b5e' : '';
-    st.style.whiteSpace = bad ? 'normal' : 'nowrap';
-  }
-
-  function updateTapLayer() {
-    const r = video ? video.getBoundingClientRect() : null;
-    const ok = !!r && r.width > 80 && r.height > 60 && location.pathname === '/watch';
-    try { updateBar(r); } catch (e) { /* ignore */ }
-    // the touch area: the middle of the picture (the buttons on the edges keep working)
-    if (settings.tapOn && settings.sendOn && ok) {
-      if (!tapLayer) {
-        tapLayer = document.createElement('div');
-        tapLayer.id = 'yt2c-tap';
-        tapLayer.style.cssText = 'position:fixed;z-index:2147483000;background:transparent;-webkit-tap-highlight-color:transparent;touch-action:manipulation';
-        tapLayer.addEventListener('click', onTap, true);
-        document.documentElement.appendChild(tapLayer);
-      }
-      const fs = document.fullscreenElement || document.webkitFullscreenElement || null; // full screen: the touch area must be INSIDE it
-      const parent = fs && fs.contains(video) ? fs : document.documentElement;
-      if (tapLayer.parentElement !== parent) parent.appendChild(tapLayer);
-      const place = [r.left + r.width * 0.12, r.top + r.height * 0.14, r.width * 0.76, r.height * 0.62].map((x) => Math.round(x) + 'px');
-      if (tapLayer.dataset.place !== place.join()) {
-        tapLayer.dataset.place = place.join();
-        [tapLayer.style.left, tapLayer.style.top, tapLayer.style.width, tapLayer.style.height] = place;
-      }
-    } else if (tapLayer) { tapLayer.remove(); tapLayer = null; }
-
-    if (settings.badgeOn) {
-      if (!badge) {
-        badge = document.createElement('div');
-        badge.id = 'yt2c-badge';
-        badge.style.cssText = 'position:fixed;z-index:2147483001;pointer-events:none;font:11px/1.3 system-ui,Arial,sans-serif;' +
-          'color:#fff;background:rgba(0,0,0,.6);padding:2px 6px;border-radius:0 0 6px 0;max-width:90vw';
-        document.documentElement.appendChild(badge);
-      }
-      badge.style.left = (r && r.width > 80 ? Math.round(r.left) : 0) + 'px';
-      badge.style.top = (r && r.height > 60 ? Math.round(r.top) : 0) + 'px';
-      badge.textContent = 'YT Learn · ' + (video ? 'video ✓' : 'no video') + ' · subtitles: ' + subState + (lastSend ? ' · ' + lastSend : '') + (lastHeard ? ' · heard: ' + lastHeard : '');
-    } else if (badge) { badge.remove(); badge = null; }
-  }
-  setInterval(updateTapLayer, 300);
-  for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(ev, () => setTimeout(updateTapLayer, 50));
-  window.addEventListener('scroll', updateTapLayer, true);
-
-  // the Dream Tutor ("My tutor" on the bar) reads the video itself: this script leaves pauses, plays and voice commands to it
-  function dreamOwns() { try { return !!(window.__ytcDream && window.__ytcDream.owns()); } catch (e) { return false; } }
-
-  function onPlay() {
-    if (dreamOwns()) { ourPlay = false; return; }
-    if (ourPlay) { ourPlay = false; return; } // "shut up": keep playing from here
-    if (replaying) return;
-    if (pending) { continueFromStart(); return; } // Space, the play arrow or a click on the video = "let's go"
-    endWaiting();
-    hideOverlay();
-  }
-
-  function onPause() {
-    if (dreamOwns()) { ourPause = false; return; }
-    if (ourPause) { ourPause = false; return; }
-    lastUserPause = Date.now();
-    if (replaying) { // you paused during the replay: leave it there and send now
-      const seg = replaying.seg;
-      cancelReplay();
-      beginWaiting(seg);
-      runDeferredSend();
-      return;
-    }
-    if (!settings.pauseOn) return;
-    if (Date.now() < quietUntil) return; // a pause right after our own jump/play is the player settling, not you
-    if (!settings.sendOn) return; // both buttons red: plain YouTube, the extension does nothing
-    const v = video;
-    // wait a moment: ignore pauses caused by seeking, the video ending, or ads
-    setTimeout(() => {
-      if (v.paused && !v.ended && !v.seeking && !isAd() && !handling) handlePause();
-    }, TOUCH ? 120 : 250);
-  }
-
-  // ---- waiting for "let's go" ----
+  // ---- the microphone: only while the tutor waits for you (I know / I don't know, a question, a call, voice mode) ----
+  // (a microphone in use with echo cancelling makes all other sound quieter and muffled on a Mac: so never otherwise)
   let rec = null;
   let recWanted = false;
-
-  // Chrome: the microphone listens the whole time you are on a video (voice commands).
-  // iPhone / iPad app: only while a paused part waits (the app has its own Ask button).
-  const ALWAYS_LISTEN = true;
-  const IN_APP = !!window.__ytcShimYT; // the iPhone / iPad app
   let recSession = 0;
-  const firedFor = new Set(); // (recognition result, command) pairs already acted on
-  function beginWaiting(seg) {
-    pending = seg;
-    if (settings.voiceOn) startListening();
-  }
-
-  function endWaiting() {
-    pending = null;
-    if (!ALWAYS_LISTEN) stopListening();
-  }
-
-  // My tutor: the microphone only while the tutor waits for you (a question, a talk) unless you want it always:
-  // on a Mac a microphone in use with echo cancelling makes all other sound quieter and muffled, with small breaks
-  function dreamWantsMic() { try { const d = window.__ytcDream; return !d || !d.wantsMic || !!d.wantsMic(); } catch (e) { return true; } }
-  // a voice call with the tutor listens even with voice commands off
+  function dreamOwns() { try { return !!(window.__ytcDream && window.__ytcDream.owns()); } catch (e) { return false; } }
+  function dreamWantsMic() { try { const d = window.__ytcDream; return !!(d && (!d.wantsMic || d.wantsMic())); } catch (e) { return false; } }
+  // a voice call with the tutor listens whatever else is going on
   function dreamCallOpen() { try { const d = window.__ytcDream; return !!(d && d.callOpen && d.callOpen()); } catch (e) { return false; } }
-  if (ALWAYS_LISTEN) {
-    setInterval(() => {
-      // (iPhone / iPad: voice commands are off to keep the mic for the website's voice call; My tutor has no such call,
-      // so its questions and talks may use it)
-      const micOk = settings.voiceOn || (TOUCH && dreamOwns());
-      const want = ((micOk && (settings.sendOn || (dreamOwns() && dreamWantsMic()))) || dreamCallOpen()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
-      if (want && !rec && recWanted !== 'blocked') startListening();
-      if (!want && rec) stopListening();
-    }, 500);
-  }
+  setInterval(() => {
+    const want = ((dreamOwns() && dreamWantsMic()) || dreamCallOpen()) && location.pathname === '/watch' && !!video;
+    if (want && !rec && recWanted !== 'blocked') startListening();
+    if (!want && rec) stopListening();
+  }, 500);
 
   function startListening() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -879,29 +472,27 @@
       const session = ++recSession;
       r.onresult = (e) => {
         if (rec !== r) return; // an old listener
-        if (dreamOwns()) {
-          // the tutor gets each closed sentence, then everything still being heard as ONE line (Chrome sends the
-          // unfinished words in two or more pieces)
-          let tail = '', tailKey = '';
-          for (let i = e.resultIndex; i < e.results.length; i++) {
-            if (e.results[i].isFinal) onHeard(e.results[i][0].transcript, true, session + ':' + i);
-            else { if (!tailKey) tailKey = session + ':' + i; tail += ' ' + e.results[i][0].transcript; }
-          }
-          if (tailKey) onHeard(tail.replace(/\s+/g, ' ').trim(), false, tailKey);
-          return;
+        // the tutor gets each closed sentence, then everything still being heard as ONE line (Chrome sends the
+        // unfinished words in two or more pieces)
+        let tail = '', tailKey = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) onHeard(e.results[i][0].transcript, true, session + ':' + i);
+          else { if (!tailKey) tailKey = session + ':' + i; tail += ' ' + e.results[i][0].transcript; }
         }
-        for (let i = e.resultIndex; i < e.results.length; i++) onHeard(e.results[i][0].transcript, !!e.results[i].isFinal, session + ':' + i);
+        if (tailKey) onHeard(tail.replace(/\s+/g, ' ').trim(), false, tailKey);
       };
       r.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           recWanted = 'blocked';
-          setHint('Microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (Enter still works.)');
+          setBarStatus(window.__ytcSafari || navigator.maxTouchPoints > 1
+            ? 'The microphone is blocked. iPhone Settings → this app → allow the Microphone and Speech Recognition. (You can type.)'
+            : 'The microphone is blocked for youtube.com. Click the lock icon in the address bar → allow Microphone. (You can type.)', true);
         }
       };
       r.onend = () => { // Chrome stops after silence: listen again (a late "end" of an OLD listener changes nothing)
         if (rec !== r) return;
         rec = null;
-        if (recWanted === true && (pending || ALWAYS_LISTEN)) setTimeout(startListening, 300);
+        if (recWanted === true) setTimeout(startListening, 300);
       };
       r.start();
     } catch (e) { rec = null; }
@@ -912,20 +503,8 @@
     if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
   }
 
-  // ---- voice commands ----
-  //   "hi bro"   -> stop the video and send this part (the same as pausing it yourself)
-  //   "shut up"  -> the AI stops talking; the video goes back to the start of that part, plays it again and keeps going
-  //   "let's go" -> play this part again from its start and keep going (as before)
-  //   anything else you say while the video is stopped (talk mode) -> goes to the chat as your question
-  const HI_BRO = /\b(hi|hey|high|hai|hay|yo)[\s,.!]*(bro|bruh|brah|bra|brother|bros)\b/i;
-  const SHUT_UP = /\bshut[\s-]*up\b/i;
-  const LETS_GO = /\blet'?s\s+go\b|\blet\s+us\s+go\b/i;
-  let lastCommand = { what: '', at: 0 };
-  let aiSpeaking = false;          // the extension is reading an answer aloud (so we do not hear ourselves)
-  let aiSpeakingEnded = 0;
-  let askedText = '';
-
   // What the video itself is saying right now: if its own subtitles say "bro", that "hi bro" was not you.
+  const HI_BRO = /\b(hi|hey|high|hai|hay|yo)[\s,.!]*(bro|bruh|brah|bra|brother|bros)\b/i;
   function videoIsSaying(re) {
     try {
       const d = cache.promise && cache.id === videoId() ? lastLoaded : null;
@@ -935,305 +514,30 @@
     } catch (e) { return false; }
   }
 
-  // A spoken sentence keeps GROWING while sound goes on (e.g. the video after "shut up"), and every update
-  // still contains the command. Act once per sentence, then start the recognizer fresh (empty sentence).
-  function once(what, key) {
-    if (key) {
-      if (firedFor.has(key + '|' + what)) return false;
-      firedFor.add(key + '|' + what);
-      if (firedFor.size > 200) firedFor.clear();
-      freshListen();
-      return true;
-    }
-    const now = Date.now();
-    if (lastCommand.what === what && now - lastCommand.at < 4000) return false;
-    lastCommand = { what, at: now };
-    return true;
-  }
-
-  function freshListen() { // throw away the current (growing) sentence and listen again from empty
-    if (!rec) return;
-    const r = rec;
-    setTimeout(() => {
-      if (rec !== r) return;
-      rec = null;                                   // (the iPhone app never reports "end" after a stop)
-      try { r.abort(); } catch (e) { /* ignore */ }
-      if (recWanted === true) setTimeout(startListening, 300);
-    }, 50);
-  }
-
+  // what was heard goes to the tutor (I know / I don't know / go on, hi bro, shut up, a question)
   function onHeard(text, isFinal, key) {
     text = String(text || '');
-    if (dreamOwns()) { // the tutor's commands (I know / I don't know / go on, hi bro, shut up)
-      if (HI_BRO.test(text) && videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
-      try { window.__ytcDream.heard(text, isFinal, key); } catch (e) { /* ignore */ }
-      return;
-    }
-    if (!settings.sendOn) return; // both buttons red: no voice commands
-    if (SHUT_UP.test(text)) { if (once('shut', key)) shutUp(); return; }
-    if (HI_BRO.test(text)) {
-      if (!video || videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
-      if (!once('hi', key)) return;
-      try { chrome.runtime.sendMessage({ type: 'voice-wake' }).catch(() => {}); } catch (e) { /* ignore */ }
-      if (!video.paused && !replaying) { lastHeard = 'hi bro → stop + send'; video.pause(); } // -> onPause -> show + send this part
-      return;
-    }
-    if (pending && LETS_GO.test(text)) { if (once('go', key)) continueFromStart(); return; }
-    // talk mode: while the video is stopped, what you say is a question for the AI
-    if (IN_APP || !isFinal || !pending || !settings.talkOn || !settings.sendOn) return;
-    if (aiSpeaking || Date.now() - aiSpeakingEnded < 800) return; // that was the answer being read aloud
-    const q = text.trim();
-    if (q.split(/\s+/).length < 2 || q === askedText) return;
-    askedText = q;
-    lastHeard = 'asked: ' + q;
-    try {
-      chrome.runtime.sendMessage({ type: 'ask', text: q, target: settings.target })
-        .then((r) => { lastSend = r && /^Sent /.test(r.result) ? 'question sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer'); })
-        .catch(() => {});
-    } catch (e) { /* ignore */ }
+    if (!dreamOwns()) return;
+    if (HI_BRO.test(text) && videoIsSaying(/\bbro\b|\bbruh\b/i)) return;
+    try { window.__ytcDream.heard(text, isFinal, key); } catch (e) { /* ignore */ }
   }
-
-  // "shut up": the AI stops talking (its tab is muted until the next "hi bro"), the video plays on.
-  function shutUp() {
-    lastHeard = 'shut up → quiet, replay the part, keep playing';
-    const seg = pending || (replaying && replaying.seg) || lastSeg;
-    aiSpeaking = false;
-    try { chrome.runtime.sendMessage({ type: 'shut-up' }).catch(() => {}); } catch (e) { /* ignore */ }
-    deferredSend = null;       // nothing more goes out for this part
-    if (sendTimer) { clearTimeout(sendTimer); sendTimer = null; }
-    cancelReplay();
-    endWaiting();
-    hideOverlay();
-    if (!video) return;
-    jumpAndPlay(seg ? seg.start - 0.3 : video.currentTime, true); // back to the start of that paragraph (~30 s of complete sentences), then on to the end
-  }
-  let ourPlay = false;
-  let lastHeard = '';
-  let lastSeg = null;
-  let quietUntil = 0;
-  let lastUserPause = 0;
-  function jumpAndPlay(t, quiet) { // go to t and play on (and make sure it really plays)
-    if (!video) return;
-    if (quiet) quietUntil = Date.now() + 2000;
-    video.currentTime = Math.max(0, t);
-    if (video.paused) { ourPlay = true; video.play().catch(() => {}); }
-    const at = Date.now();
-    // after "shut up" only: if the player stayed stopped (and nobody paused it since), start it
-    if (quiet) setTimeout(() => { if (video && video.paused && !pending && !replaying && lastUserPause < at) { ourPlay = true; video.play().catch(() => {}); } }, 900);
-  }
-
-  // back to the start of the passage, then keep playing through the rest of the video
-  function continueFromStart() {
-    const seg = pending;
-    if (!seg || !video) return;
-    endWaiting();
-    hideOverlay();
-    jumpAndPlay(seg.start - 0.3);
-  }
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' || !pending) return;
-    const t = e.target;
-    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    e.preventDefault();
-    continueFromStart();
-  }, true);
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === 'reload-subs') { // you loaded a subtitle file: read this video again
+      cache = { id: null, promise: null };
+      preloadedFor = null;
+      loadTranscript().then((d) => sendResponse({ lines: d.lines, source: d.source, errors: d.errors }));
+      return true;
+    }
     if (msg && msg.type === 'yt-diag') { // for the 🩺 check
       const r = video ? video.getBoundingClientRect() : null;
       sendResponse({ url: location.href.slice(0, 80), visible: document.visibilityState, video: !!video,
         videoSize: r ? Math.round(r.width) + 'x' + Math.round(r.height) : null, paused: video ? video.paused : null, muted: video ? video.muted : null,
-        volume: video ? video.volume : null, time: video ? +video.currentTime.toFixed(1) : null, subtitles: subState, lastSend, lastHeard,
-        waiting: !!pending, replaying: !!replaying, touchArea: !!tapLayer, bar: !!bar,
-        settings: { sendOn: settings.sendOn, target: settings.target, picOnly: settings.picOnly, replayOn: settings.replayOn, voiceOn: settings.voiceOn, tapOn: settings.tapOn, textLevel: settings.textLevel },
-        safari: !!window.__ytcSafari, touch: TOUCH, tutor: window.__ytcDream && window.__ytcDream.diag ? window.__ytcDream.diag() : null });
+        volume: video ? video.volume : null, time: video ? +video.currentTime.toFixed(1) : null, subtitles: subState, bar: !!bar,
+        microphone: recWanted === 'blocked' ? 'blocked' : rec ? 'listening' : 'off',
+        safari: !!window.__ytcSafari, touch: navigator.maxTouchPoints > 0, tutor: window.__ytcDream && window.__ytcDream.diag ? window.__ytcDream.diag() : null });
       return;
     }
-    if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false, msg.key); // used by tests / other parts of the extension
-    if (msg && msg.type === 'tts-state') { aiSpeaking = !!msg.speaking; if (!msg.speaking) aiSpeakingEnded = Date.now(); }
+    if (msg && msg.type === 'heard') onHeard(msg.text, msg.final !== false, msg.key); // used by the tests
   });
-
-  // play the passage once at normal speed, then stop
-  function startReplay(seg, intoCall) {
-    cancelReplay();
-    const timer = setInterval(() => {
-      const ct = video.currentTime;
-      let idx = 0;
-      seg.items.forEach((s, i) => { if (ct >= s.start - 0.1) idx = i; });
-      setActive(idx);
-      if (deferredSend && ct >= seg.end - 1.0) runDeferredSend(); // the last second of the replay: send now
-      if (ct >= seg.end + 0.15) {
-        cancelReplay();
-        ourPause = true;
-        video.pause();
-        setActive(seg.items.length - 1);
-        beginWaiting(seg);
-        runDeferredSend(); // (only if it was not sent already)
-      }
-    }, TOUCH ? 120 : 50);
-    replaying = { seg, timer };
-    quietUntil = Date.now() + 1500;
-    video.currentTime = Math.max(0, seg.start - 0.3);
-    video.play().then(() => {
-      if (!intoCall || !replaying || replaying.seg !== seg) return;
-      if (startFeed()) return;
-      if (IN_APP) { // iPhone / iPad: the video's sound cannot be copied, so the app's own voice reads the part INTO the call
-        try { window.webkit.messageHandlers.ytc.postMessage({ kind: 'speakIntoCall', text: groupSentences(seg.items).map((g) => g.text).join(' ') }); } catch (e) { /* ignore */ }
-        lastSend = 'reading this part into the voice call';
-      }
-    })
-      .catch(() => { cancelReplay(); beginWaiting(seg); runDeferredSend(); });
-  }
-
-  // ---- the picture for Claude: the subtitle screen, taken 3 seconds after you stop the video ----
-  // 1) Chrome: a real screenshot of the tab, cut down to the subtitle area (no description, no comments).
-  // 2) Anywhere else (iPhone / iPad app, or if Chrome refuses): the same screen drawn again from the text.
-  function cropTo(dataUrl, rect) {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const k = img.naturalWidth / window.innerWidth; // screenshot pixels per page pixel
-          const x = Math.max(0, Math.round(rect.left * k)), y = Math.max(0, Math.round(rect.top * k));
-          const w = Math.min(img.naturalWidth - x, Math.round(rect.width * k)), h = Math.min(img.naturalHeight - y, Math.round(rect.height * k));
-          if (w < 100 || h < 60) return resolve(null);
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, x, y, w, h, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', 0.85));
-        } catch (e) { resolve(null); }
-      };
-      img.onerror = () => resolve(null);
-      img.src = dataUrl;
-    });
-  }
-
-  function renderSubtitlePicture(seg, withCard) {
-    try {
-      const W = 1280, H = 720, pad = 48;
-      const c = document.createElement('canvas');
-      c.width = W; c.height = H;
-      const g = c.getContext('2d');
-      g.fillStyle = '#000';
-      g.fillRect(0, 0, W, H);
-      const groups = groupSentences(seg.items).map((x) => x.text);
-      let fs = Math.min(70, Math.max(24, H * levelShare(settings.textLevel) * 1.15));
-      let blocks;
-      for (;;) {
-        g.font = '600 ' + fs + 'px system-ui, Arial, sans-serif';
-        blocks = groups.map((t) => {
-          const lines = [];
-          let line = '';
-          for (const word of t.split(/\s+/)) {
-            const test = line ? line + ' ' + word : word;
-            if (line && g.measureText(test).width > W - pad * 2) { lines.push(line); line = word; } else line = test;
-          }
-          if (line) lines.push(line);
-          return lines;
-        });
-        const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
-        if (total <= H - pad * 2 - (withCard ? 150 : 0) || fs <= 18) break;
-        fs -= 2;
-      }
-      const total = blocks.reduce((n, l) => n + l.length * fs * 1.35 + fs * 0.45, 0);
-      const top = withCard ? 62 : 0;
-      let y = Math.max(pad + top, top + (H - top - (withCard ? 88 : 0) - total) / 2) + fs;
-      g.textBaseline = 'alphabetic';
-      if (withCard) { // for Claude's voice mode, where nothing can be typed: the picture carries the question too
-        g.fillStyle = '#8ab4f8';
-        g.font = '600 26px system-ui, Arial, sans-serif';
-        g.fillText('Paused at ' + fmtTime(seg.pausedAt !== undefined ? seg.pausedAt : seg.end) + '  ·  this part of the video: ' + fmtTime(seg.start) + ' – ' + fmtTime(seg.end), pad, 44);
-        g.font = '600 ' + fs + 'px system-ui, Arial, sans-serif';
-      }
-      blocks.forEach((lines, bi) => {
-        g.fillStyle = bi === blocks.length - 1 ? '#ffd60a' : '#ffffff'; // the sentence you stopped at is yellow
-        lines.forEach((ln) => { g.fillText(ln, pad, y); y += fs * 1.35; });
-        y += fs * 0.45;
-      });
-      if (withCard) {
-        g.fillStyle = '#8ab4f8';
-        g.font = '600 24px system-ui, Arial, sans-serif';
-        const ask = ['Please explain this part to me like an English teacher: what is happening and the important idea.', 'Then say the sentences above once more. Answer by voice, with no greeting and no lists.'];
-        ask.forEach((ln, i) => g.fillText(ln, pad, H - 58 + i * 32));
-      }
-      return c.toDataURL('image/jpeg', 0.88);
-    } catch (e) { return null; }
-  }
-
-  async function capturePicture(seg) {
-    try {
-      const el = document.getElementById(OVERLAY_ID);
-      const r = await chrome.runtime.sendMessage({ type: 'capture' });
-      if (r && r.dataUrl && el) {
-        const cropped = await cropTo(r.dataUrl, el.getBoundingClientRect());
-        if (cropped) return cropped;
-      }
-    } catch (e) { /* use the drawn picture */ }
-    return renderSubtitlePicture(seg);
-  }
-  window.__ytcDebug.picture = (seg) => capturePicture(seg || (lastShown && lastShown.seg));
-  window.__ytcDebug.card = (seg) => renderSubtitlePicture(seg || (lastShown && lastShown.seg), true);
-
-  async function handlePause() {
-    handling = true;
-    try {
-      const t = video.currentTime;
-      endWaiting();
-      deferredSend = null;
-      showOverlay({ note: '…' });
-      const d = await loadTranscript();
-      if (!video.paused) { hideOverlay(); return; } // you pressed play again meanwhile
-      if (!d.sentences.length) {
-        const why = (d.errors.join(' ').match(/playability ([A-Z_]+)(?: \(([^)]*)\))?/) || []);
-        showOverlay({ note: 'No subtitles could be read for this video.' + (why[1] && why[1] !== 'OK' ? ' YouTube says: ' + (why[2] || why[1]) + '.' : '') + ' Tip: turn on CC in the player, or load a subtitle file (.srt / .vtt) in the extension window.' });
-        return;
-      }
-      const seg = pickSegment(d.sentences, t);
-      lastSeg = seg;
-      showOverlay({ seg });
-      // Claude only: 1 second after you stopped (the big subtitles are on screen by then) take the picture
-      const picOnly = settings.target === 'claude' && settings.picOnly;
-      const wantPicture = settings.sendOn && settings.target === 'claude' && (settings.imageOn || picOnly);
-      const pictureReady = !wantPicture ? Promise.resolve(null)
-        : picOnly ? new Promise((resolve) => setTimeout(() => { let card = null; try { card = renderSubtitlePicture(seg, true); } catch (e) { /* none */ } resolve({ shot: null, card }); }, 700)) // drawn once the replay runs (the replay starts at once)
-        : new Promise((resolve) => setTimeout(() => capturePicture(seg).then((shot) => resolve({ shot, card: renderSubtitlePicture(seg, true) }), () => resolve(null)), 900));
-      deferredSend = null;
-      const sendNow = async (inCall) => {
-        if (!settings.sendOn) { // both buttons under the video are red: only watch, send nothing
-          lastSend = 'not sent (ChatGPT and Claude are off)';
-          const f = document.getElementById('yt2c-foot');
-          if (f) { f.textContent = 'Not sent: press ChatGPT or Claude under the video to turn it on (green).'; f.style.color = '#9aa0a6'; }
-          return;
-        }
-        lastSend = 'sending…';
-        const pics = await pictureReady; // (already done long before the end of the replay; only waits when replay is off)
-        const image = pics && pics.shot, card = pics && pics.card;
-        const lastBefore = await chrome.storage.local.get('last').then((o) => o.last || '', () => '');
-        setBarStatus('Sending to ' + targetName() + '…', false);
-        try {
-          chrome.runtime.sendMessage({ type: 'pause-send', inCall: !!inCall, videoId: videoId(), title: d.title, url: d.url, seg, image: picOnly ? null : image, card, pictureOnly: picOnly && !!card, lines: groupSentences(seg.items).map((g) => g.text) })
-            .then(async (r) => {
-              if (!r || !r.result) r = await resultLater(lastBefore);
-              const ok = !!(r && /^Sent /.test(r.result));
-              lastSend = ok ? 'sent to ' + targetName() + ' ✓' : 'NOT sent: ' + ((r && r.result) || 'no answer');
-              const why = shortReason((r && r.result) || 'no answer');
-              setFoot('Not sent to ' + targetName() + ': ' + why, ok);
-              setBarStatus(ok ? 'Sent to ' + targetName() + ' ✓ (' + fmtTime(seg.start) + '–' + fmtTime(seg.end) + ')' : '⚠ NOT sent: ' + why, !ok);
-            })
-            .catch(() => { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); setBarStatus('⚠ NOT sent: reload this YouTube page', true); });
-        } catch (e) { lastSend = 'NOT sent (reload the page)'; setFoot('Not sent: refresh this YouTube page (Cmd+R)', false); }
-      };
-      // Is the chat in a voice call right now? Then the replay is also played INTO the call (Claude hears it).
-      const inCall = await askCallState();
-      sendTimer = setTimeout(() => { sendTimer = null; sendNow(inCall); }, 1000); // 1 s after the pause (picture ready)
-      if (settings.replayOn) {
-        startReplay(seg, inCall);
-      } else {
-        beginWaiting(seg);
-      }
-    } finally {
-      handling = false;
-    }
-  }
 })();

@@ -198,7 +198,7 @@ const fakeWebkit = () => {
 
   // what the app has saved before (the tutor on, test-friendly timings); the Claude key is in the Keychain
   Object.assign(stores.local, {
-    voiceOn: true, sendOn: false, target: 'claude', barOn: true,
+    barOn: true,
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
     drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
@@ -292,22 +292,20 @@ const fakeWebkit = () => {
   const back = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 10000);
   ok('"let\'s go": the call ends and the video plays on', !!back, JSON.stringify({ talk: (await dbg()).talk, v: await vstate() }));
 
-  // ---- 4b. voice commands off in the app: a call still turns the microphone on ----
+  // ---- 4b. a call turns the microphone on (the tutor listens only while it waits for you), and off again after ----
   const talkBar = () => yt.evaluate(() => { const b = document.getElementById('dr-panel-host').shadowRoot.querySelector('.talk .tstate'); return b ? b.textContent : ''; });
-  await yt.evaluate(() => chrome.storage.local.set({ voiceOn: false }));
   await until(() => yt.evaluate(() => !window.__ytcActiveSR), 5000, 100);
   const micOff = nativeLog.filter((l) => l.kind === 'speech' && l.op === 'start').length;
   await act('talk');
   const callMic = await until(async () => (await dbg()).callOpen === true && nativeLog.filter((l) => l.kind === 'speech' && l.op === 'start').length > micOff, 8000);
-  ok('voice commands off: the call still turns the iOS microphone on', !!callMic, JSON.stringify(nativeLog.filter((l) => l.kind === 'speech').slice(-3)));
+  ok('📞: the call turns the iOS microphone on', !!callMic, JSON.stringify(nativeLog.filter((l) => l.kind === 'speech').slice(-3)));
   const yourTurn = await until(async () => /Your turn: just talk/.test(await talkBar()), 12000);
-  ok('...and the talk bar says "just talk" (not "turn on voice commands")', !!yourTurn, await talkBar());
+  ok('...and the talk bar says "just talk"', !!yourTurn, await talkBar());
   await sleep(1200);
   await hear('ok let\'s go');
   await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused; }, 10000);
   const micShut = await until(() => yt.evaluate(() => !window.__ytcActiveSR), 5000, 100);
   ok('the call is over: the microphone is off again', !!micShut);
-  await yt.evaluate(() => chrome.storage.local.set({ voiceOn: true }));
 
   // ---- 5. the keys: only in the Keychain; a new key saved in ⚙ goes there too ----
   await yt.evaluate(() => chrome.storage.local.get('drKeys').then((o) => chrome.storage.local.set({ drKeys: { ...o.drKeys, azure: 'azure-test-key-1234' } })));

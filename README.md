@@ -1,26 +1,30 @@
-# Learn English with YouTube + Claude / ChatGPT
+# My tutor: learn English with YouTube and your own AI key
 
-Everything is on the release page: https://github.com/948573034jackie-cpu/meh/releases/tag/claudesnap-latest
+Everything is on the release page: https://github.com/948573034jackie-cpu/meh/releases/tag/level-check-latest
 
 | What | File | For |
 |---|---|---|
-| **YouTube → Claude / ChatGPT** (Chrome extension) | `YouTube-to-Claude.zip` | Chrome on a computer |
-| **YT Learn** (iPhone + iPad app) | `YTLearn-unsigned.ipa` or `YTLearn-Xcode-project.zip` | iPhone, iPad |
-| ClaudeSnap Voice (Chrome extension: screenshot when you speak) | `ClaudeSnap-Chrome.zip` | Chrome |
-| ClaudeSnap (Mac app: screenshot when you speak) | `ClaudeSnap.zip` | macOS 12+ |
+| **My tutor** (Chrome extension) | `YouTube-to-Claude.zip` | Chrome on a Mac / computer |
+| **YT Learn** (iPhone + iPad app: YouTube inside it, with My tutor) | `YTLearn-unsigned.ipa` or `YTLearn-Xcode-project.zip` | iPhone, iPad |
+| **YT Safari** (the extension for Safari on iPhone / iPad) | `YTSafari-unsigned.ipa` | iPhone, iPad |
+| ClaudeSnap Voice / ClaudeSnap (a screenshot when you speak; a separate tool) | `ClaudeSnap-Chrome.zip`, `ClaudeSnap.zip` | Chrome / macOS 12+ |
 
-## The idea (YouTube → Claude / ChatGPT, extension and iPhone/iPad app)
-1. Pick **Claude** or **ChatGPT** as your chat.
-2. Watch a YouTube video. **Pause it** (Space / tap).
-3. The last ~25 seconds appear over the video as big, clear, complete sentences (only the subtitles, nothing else). Text size is a 1–10 slider.
-4. The video plays that part again once. In its last second the text is sent to your chat with one plain instruction: explain it like an English teacher, then repeat the sentences — no greetings, titles or bullet points. The first time for a video, the link and full transcript go with it.
-5. Talk about it. Say **“let's go”** (or press ▶ / Space / Enter): the video jumps back to the start of that part and keeps playing.
+## The idea
+1. Open a YouTube video. My tutor reads the subtitles.
+2. **Level Check**: a 2-minute tap test made only from this video's words (B2, C1, C2 + idioms + slang). Or skip it.
+3. The video is analyzed **once** (Claude Haiku by default, cheap). Then it plays in Listening mode: at the hardest
+   sentences (50 % at most) it stops, plays the sentence, explains it (spoken and shown), plays it again, and goes on
+   by itself. Tap a word = explain it; double tap = I know it.
+4. Your words, tests and level go into **one vocabulary file** (`vocabulary.json`), shared by the Mac and the iPhone
+   (iCloud Drive or Google Drive). **Copy my level for Claude** gives Claude your level in one paste.
 
-* Chrome extension: see `youtube-to-claude/README.md`
-* iPhone / iPad app: see `ios/README.md`
+* The Chrome extension: `youtube-to-claude/README.md` · the iPhone app: `ios/README.md` · everything it can do: `FEATURES.md`.
 
-## How it was tested
-* The JavaScript that does the work is shared by the extension and the iPhone/iPad app (`youtube-to-claude/`, copied into `ios/YTLearn/Scripts/`).
-* `tests/app-js-test.js` runs it (fake YouTube + fake Claude/ChatGPT pages) in **Chromium and WebKit (Safari's engine)** on every push.
-* The iPhone/iPad app is compiled by Xcode on a Mac server, started in an **iPhone Simulator**, and tried against the real m.youtube.com and chatgpt.com on every push.
-* Not verifiable from the build servers: signing in to Claude/ChatGPT (needs your account) and YouTube captions from a home connection (YouTube shows a bot check to data-centre connections). If something fails on your side the extension / app shows the exact reason on screen or in its “Last:” line.
+## How it is tested
+* `dream-ext/` (TypeScript) is My tutor. It is built into `youtube-to-claude/dream/` and copied into the iPhone app and
+  the Safari extension, so all three run the same code.
+* On every push: the unit tests, the real extension in Chrome on a test YouTube page with a test AI
+  (`tests/dream-e2e.js`, `tests/level-check-e2e.js`), the Safari extension and the app's scripts in WebKit (Safari's
+  engine), and the app compiled by Xcode and started in an iPhone Simulator.
+* Not verifiable from the build servers: real API keys, a real microphone and speakers, and YouTube on a data-centre
+  connection (it shows a bot check there).

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
@@ -7,9 +8,8 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
-            GeometryReader { geo in
-                panes(in: geo.size)
-            }
+            // YouTube itself (search, your account, any video), with My tutor inside the page
+            WebHost(webView: model.youtube)
             tutorBar
         }
         .onAppear { model.start() }
@@ -62,62 +62,17 @@ struct ContentView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 10) {
-            // green = on (the full transcript goes once, then every pause), red = off (plain YouTube)
-            chatToggle("chatgpt", "ChatGPT")
-            chatToggle("claude", "Claude")
-
+        HStack(spacing: 14) {
+            Text("YT Learn").font(.subheadline.weight(.semibold))
             Spacer(minLength: 0)
-
-            // the one big button: tap, say your question, and hear the answer
-            Button { model.micTapped() } label: {
-                Label(model.listening ? "Send" : "Ask",
-                      systemImage: model.listening ? "waveform" : "mic.fill")
-                    .font(.subheadline.weight(.semibold))
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(model.listening ? .red : .blue)
-
-            Button { model.cycleLayout() } label: { Label("AI", systemImage: "bubble.left.and.bubble.right").font(.footnote) }
-
-            Menu {
-                Button { model.sendVideoNow() } label: { Label("Send video + full transcript (once)", systemImage: "paperplane") }
-                Button { model.goHome() } label: { Label("YouTube home", systemImage: "house") }
-                Button { model.pasteLink() } label: { Label("Open copied YouTube link", systemImage: "link") }
-                Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
-            } label: { Image(systemName: "ellipsis.circle").font(.title3) }
+            Button { model.goHome() } label: { Label("YouTube home", systemImage: "house") }
+            Button { model.pasteLink() } label: { Label("Open copied YouTube link", systemImage: "link") }
+            Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
         }
-        .padding(.horizontal, 10)
+        .labelStyle(.iconOnly)
+        .font(.title3)
+        .padding(.horizontal, 12)
         .padding(.vertical, 6)
-    }
-
-    private func chatToggle(_ id: String, _ name: String) -> some View {
-        let on = model.sendOn && model.target == id
-        return Button { model.toggleChat(id) } label: {
-            Text((on ? "● " : "○ ") + name)
-                .font(.footnote.weight(.semibold))
-                .foregroundColor(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(on ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15)))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(name + (on ? " on" : " off"))
-    }
-
-    @ViewBuilder
-    private func panes(in size: CGSize) -> some View {
-        // video on top (the main thing), the AI window under it (a small strip until you open it).
-        // With My tutor on, YouTube gets the whole height (the tutor's panel is under the video in the page).
-        if model.tutorOn {
-            WebHost(webView: model.youtube)
-        } else {
-            VStack(spacing: 0) {
-                WebHost(webView: model.youtube).frame(height: model.videoLength(in: size))
-                Divider()
-                WebHost(webView: model.chat)
-            }
-        }
     }
 
     @ViewBuilder
@@ -136,36 +91,59 @@ struct ContentView: View {
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.presentationMode) private var presentation
+    @State private var pickFolder = false
 
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Chat")) {
-                    Picker("Send to", selection: $model.target) {
-                        Text("Claude").tag("claude")
-                        Text("ChatGPT").tag("chatgpt")
+                Section(header: Text("My tutor")) {
+                    Button("All settings (API keys, voice, Level Check…)") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/options.html") }
+                    Button("My Vocabulary") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/vocab.html") }
+                }
+                Section(header: Text("My vocabulary file (one for the Mac and this phone)"),
+                        footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). Choose that MEH English folder here (iCloud Drive or Google Drive): the Mac and this phone then share one database, each adds its words, nothing is lost. Without a folder the words stay in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json).")) {
+                    Text(model.vocabFolder.map { "Shared folder: \($0)" } ?? "No shared folder yet: the words stay in the app")
+                    if !model.vocabStatus.isEmpty {
+                        Text(model.vocabStatus).font(.footnote).foregroundColor(.secondary)
                     }
-                    .pickerStyle(.segmented)
-                    Toggle("Read the AI's answer out loud", isOn: $model.speakOn)
+                    Button("Choose the folder (iCloud Drive or Google Drive)…") { pickFolder = true }
+                    if model.vocabFolder != nil {
+                        Button("Stop sharing (keep the words in the app)", role: .destructive) { model.forgetVocabFolder() }
+                    }
                 }
-                Section(header: Text("When I pause the video")) {
-                    Toggle("Show the last ~30 seconds as subtitles and send them", isOn: $model.pauseOn)
-                    Toggle("Play those sentences again once", isOn: $model.replayOn)
-                    Toggle("Say “let's go” to play that part again and keep going", isOn: $model.voiceOn)
-                }
-                Section(header: Text("Touch the video"), footer: Text("Touch the middle of the video: it pauses, shows the sentences and sends them. Touch again: it plays that part again and keeps going. The small label in the corner shows what the app is doing.")) {
-                    Toggle("Touching the video pauses / plays it", isOn: $model.tapOn)
-                    Toggle("Show the small status label on the video", isOn: $model.badgeOn)
-                }
-                Section(header: Text("Text size on the video: \(String(format: "%.2f", model.textLevel))"),
-                        footer: Text("1 = smallest, 6 = medium, 10 = biggest. Play (▶) or tap the video also means “let's go”.")) {
-                    Slider(value: $model.textLevel, in: 1...10, step: 0.25)
+                Section(header: Text("Microphone and voice"), footer: Text("Allow the Microphone and Speech Recognition when iOS asks: the tutor listens only while it waits for you (I know / I don't know, a question, a call, voice mode). Better voices: iOS Settings ▸ Accessibility ▸ Spoken Content ▸ Voices ▸ English ▸ download a Premium or Enhanced voice.")) {
+                    EmptyView()
                 }
             }
             .navigationTitle("Settings")
             .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
         }
         .navigationViewStyle(.stack)
+        .sheet(isPresented: $pickFolder) { FolderPicker { url in model.chooseVocabFolder(url) } }
+    }
+}
+
+/// the Files app: pick a folder (iCloud Drive, Google Drive, On My iPhone, …)
+struct FolderPicker: UIViewControllerRepresentable {
+    let picked: (URL) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(picked: picked) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder], asCopy: false)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ picker: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let picked: (URL) -> Void
+        init(picked: @escaping (URL) -> Void) { self.picked = picked }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            if let url = urls.first { picked(url) }
+        }
     }
 }
 

@@ -7,8 +7,6 @@ DST=YTLearn/Scripts
 WEB=YTLearn/Web/dream
 cp "$SRC/lib.js" "$DST/lib.js"
 cp "$SRC/youtube.js" "$DST/youtube.js"
-cp "$SRC/chat.js" "$DST/chat.js"
-cp "$SRC/mic-mix.js" "$DST/mic-mix.js"
 # the extension's background script runs inside the YouTube page here; wrap it so its names stay private
 { echo "(function () {"; cat "$SRC/background.js"; echo "})();"; } > "$DST/background.js"
 # My tutor (built by dream-ext/build.mjs): its background runs in the page too ("self" = the page's window)
