@@ -196,7 +196,8 @@ const fakeWebkit = () => {
   // what the app has saved before (the tutor on, test-friendly timings); the Claude key is in the Keychain
   Object.assign(stores.local, {
     voiceOn: true, sendOn: false, target: 'claude', barOn: true,
-    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
+    drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
+    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
   });
   keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key' });

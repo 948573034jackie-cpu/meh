@@ -132,6 +132,13 @@ export interface ListenDeps {
    * (played once, the commands window, the explanation); `lemma` is its key in the vocabulary ("I know" = known).
    */
   sentenceTrigger?: (pos: Position) => { lemma: string } | null;
+  /**
+   * (YouTube, Level Check) the app chooses the stops itself: a stop is only at the end of a sentence it names, and it
+   * goes the sentence from the video, the explanation, the sentence from the video, on (no windows, no word repeats).
+   * A word explained by hand is only the explanation.
+   */
+  directStop?: () => boolean;
+  directTrigger?: (pos: Position) => { lemma: string } | null;
 }
 
 /** The last word/phrase/sentence explanation (what "I know" and "I don't know" refer to). */
@@ -253,6 +260,7 @@ export class ListenController {
     this.rereadGuard = null;
     if (guard && samePosition(guard, pos)) return null;
     if (!this.enabled) return null;
+    if (this.deps.directStop?.()) return this.deps.directTrigger?.(pos) ? 'end' : null;
     const s = this.deps.settings();
     if (s.listen.maxStopsPer10Min > 0) {
       const cutoff = Date.now() - 10 * 60 * 1000;
@@ -267,6 +275,10 @@ export class ListenController {
   }
 
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
+    if (this.deps.directStop?.()) {
+      const d = this.deps.directTrigger?.(pos);
+      return d ? this.directStopFlow(pos, d.lemma) : 'next';
+    }
     const triggers = this.pick(this.triggersFor(pos), pos);
     if (!triggers.length) return 'next';
     this.stopTimes.push(Date.now());
@@ -357,6 +369,29 @@ export class ListenController {
     return 'stop';
   }
 
+  /** (Level Check) the sentence from the video, the explanation, the sentence from the video, then the reading goes on. */
+  private async directStopFlow(pos: Position, lemma: string): Promise<'next' | 'stop'> {
+    const cur = getSentence(this.deps.book, pos)!;
+    this.skipRequested = false;
+    this.rereadGuard = pos;
+    let aborted = false;
+    const off = this.playback.on('state', (st) => { if (st !== 'explaining') aborted = true; });
+    const over = () => aborted || this.disposed || this.skipRequested;
+    this.deps.onStopTarget?.({ kind: 'sentence', target: cur.text, lemma });
+    try {
+      this.last = { kind: 'sentence', target: cur.text, pos, dict: null, lemma };
+      const said = await this.sayTarget(cur.text, lemma, 1);
+      if (said !== 'skipped' && !over()) {
+        await this.runExplanation('sentence', cur.text, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }, { type: 'say', text: cur.text, lang: 'en', role: 'sentence' }], lemma);
+      }
+    } finally { this.deps.onStopTarget?.(null); off(); }
+    if (aborted || this.disposed) return 'stop';
+    if (this.held || this.current) return 'stop'; // the learner is talking / a newer explanation resumes the reading
+    this.rereadGuard = pos;
+    this.playback.play(pos);
+    return 'stop';
+  }
+
   /** Says the word or phrase `times` times with the reading voice (slowly); 'skipped' when it was cancelled. */
   private async sayTarget(target: string, lemma: string | undefined, times: number): Promise<'done' | 'skipped'> {
     let cancelled = false;
@@ -430,6 +465,7 @@ export class ListenController {
 
   /** Listening: a short silence, then the book continues. Reading: stop and wait for the learner. */
   private async afterExplanation(): Promise<'next' | 'stop'> {
+    if (this.deps.directStop?.()) return 'next'; // (Level Check: on by itself, no window)
     if ((this.deps.mode?.() ?? 'listening') === 'reading') { this.readingWindow(); return 'stop'; }
     const ms = this.deps.settings().listen.pauseAfterExplainMs;
     if (ms > 0 && !this.skipRequested) {
@@ -542,10 +578,11 @@ export class ListenController {
     const cur = getSentence(this.deps.book, pos);
     const sentence = cur?.text ?? target;
     const s = this.deps.settings();
-    const script = scriptFor(kind, target, sentence, s);
+    const script = this.deps.directStop?.() && !question ? plainScript() : scriptFor(kind, target, sentence, s);
     if (kind === 'word' || kind === 'phrase' || kind === 'sentence') this.last = { kind, target, pos, dict, lemma };
     const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again, spoken);
-    const readOn = kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
+    // (Level Check: a word tapped anywhere does not move the reading: it goes on where it was)
+    const readOn = this.deps.directStop?.() ? resumeAt : kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
     // Reading mode: stop and wait. Listening mode: the pause, then on with the book.
     const listening = (this.deps.mode?.() ?? 'listening') === 'listening';
     const resume = wasPlaying && listening && res !== 'aborted' && (res !== 'done' || (await this.afterExplanation()) === 'next');

@@ -94,7 +94,7 @@ document.getElementById('ver').textContent = 'version ' + chrome.runtime.getMani
 }
 
 // ---- the Dream Tutor's own pages ----
-for (const [id, page] of [['dream-settings', 'options'], ['dream-vocab', 'vocab']]) {
+for (const [id, page] of [['dream-settings', 'options'], ['dream-vocab', 'vocab'], ['dream-reader', 'reader']]) {
   const b = document.getElementById(id);
   if (b) b.addEventListener('click', () => chrome.tabs.create({ url: chrome.runtime.getURL('dream/' + page + '.html') }));
 }

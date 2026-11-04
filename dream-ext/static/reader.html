@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Read with My tutor</title><link rel="stylesheet" href="pages.css">
+<style>
+#open{display:flex;flex-direction:column;gap:10px;max-width:640px}
+#paste{width:100%;min-height:160px;background:var(--bg-sunken);color:var(--fg);border:1px solid var(--border-strong);border-radius:8px;padding:8px;font:inherit}
+#bar{position:sticky;top:0;display:flex;gap:8px;align-items:center;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--border);z-index:2}
+#title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+#counter{font-size:12px;color:var(--fg-muted)}
+#text{font:18px/1.75 var(--font-serif);max-width:720px;padding-bottom:45vh}
+#text p,#text h1,#text h2,#text li{margin:0 0 1em;font:inherit}
+.s{border-radius:4px}
+.s.cur{background:var(--accent-soft)}
+.s.again{outline:2px solid var(--accent)}
+.w{cursor:pointer;border-radius:3px}
+.w.learning{background:rgba(255,214,102,.22)}
+.w.hard{text-decoration:underline dotted var(--hl-unknown)}
+.w.cur-w{text-decoration:underline solid var(--accent) 3px}
+#say{position:fixed;left:0;right:0;bottom:0;max-height:42vh;overflow:auto;background:var(--bg-elevated);border-top:1px solid var(--border-strong);padding:12px 16px;font:16px/1.55 var(--font-sans)}
+</style></head>
+<body><main>
+<h1>Read with My tutor</h1>
+<section id="open">
+  <div class="row"><input id="file" type="file" accept=".pdf,.txt,.md,text/plain,application/pdf"><span class="msg bad" id="open-msg"></span></div>
+  <textarea id="paste" placeholder="Or paste a text here"></textarea>
+  <div class="row"><input id="paste-title" type="text" placeholder="Its title"><button id="paste-go" class="primary">Read this text</button></div>
+</section>
+<section id="reader" hidden>
+  <div id="bar"><button id="play" class="primary">▶ Play</button><button id="prev">⏮</button><button id="next">⏭</button><span id="title"></span><span id="counter" title="Stops made / sentences so far"></span></div>
+  <div id="text"></div>
+</section>
+</main><div id="say" hidden></div><script src="reader.js"></script></body></html>

@@ -139,7 +139,7 @@ jobs:
           echo "extension: $APPEX"; ls "$APPEX"
           plutil -p "$APPEX/Info.plist" | grep -E "NSExtensionPointIdentifier|CFBundleIdentifier"
           for f in manifest.json browser-shim.js lib.js youtube.js chat.js background.js popup.html popup.js tutor-bar.js \
-                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/options.html dream/options.js dream/vocab.html; do
+                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/zipf.json.gz dream/options.html dream/options.js dream/vocab.html dream/reader.html dream/reader.js dream/pdf.worker.min.mjs; do
             test -f "$APPEX/$f" || test -f "$APPEX/Resources/$f" || { echo "MISSING $f"; exit 1; }; done
       - name: Start the app in an iPad Simulator (screenshot)
         shell: bash
@@ -230,6 +230,9 @@ jobs:
           npx playwright install --with-deps chromium >/dev/null
       - name: The real extension in Chrome - the Dream Tutor on a test YouTube page with a test AI
         run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/dream-e2e.js
+      - name: Level Check - the real extension, the real helper and files, a video and a PDF
+        if: always()
+        run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/level-check-e2e.js
       - name: The real extension in Chrome - the website-call (Claude / ChatGPT) flow
         if: always()
         run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/extension-e2e.js
@@ -250,6 +253,9 @@ jobs:
           npx playwright install --with-deps chromium >/dev/null
       - name: Test the extension on the real YouTube / ChatGPT / Claude pages
         run: node tests/real-sites.js
+      - name: Level Check on a real YouTube video (subtitles, the test, the chosen stops)
+        if: always()
+        run: node tests/real-level-check.js
       - uses: actions/upload-artifact@v4
         if: always()
         with:

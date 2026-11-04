@@ -21,7 +21,11 @@ import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodSt
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
+import { installLevelDb, writeDatabase, currentDoc, NATIVE_HOST } from './level-db-bg';
+import { levelSummary } from './level-db';
+import { buildRulePrompt, type RuleRequest } from './level-rule';
 import { splitByScript } from '@core/listen/script';
+import { getLevel, updateLevel } from './store';
 import { getSound, putSound, CACHE_MAX_CHARS } from './tts-cache';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
@@ -207,7 +211,9 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error(`Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in the Dream Tutor settings to continue.`), { code: 'budget' });
   // (YouTube) "you stopped the video": the part just heard, taught as a whole with the learner's rules
   const partPrompt = part && style ? { ...style, sentencePrompt: PART_PROMPT.replace('{{part}}', req.target).replace('{{seconds}}', String((req as ExplainRequest & { seconds?: number }).seconds ?? 30)), maxTokens: Math.max(style.maxTokens, 1400) } : null;
-  const prompt = await withTeacher(style
+  // (Level Check) the hard rule of the explanations at a stop: it replaces the styles and teacher instructions
+  const rule = (req as RuleRequest).levelRule;
+  const prompt = rule && styled ? buildRulePrompt(req as RuleRequest) : await withTeacher(style
     ? buildStyledPrompt(partPrompt ? { ...req, kind: 'sentence' } : req, { style: partPrompt ?? style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
     : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }), part ? undefined : style?.id);
   try {
@@ -533,6 +539,7 @@ async function afterDevReload(): Promise<void> {
 export function installDreamBackground(): void {
   void afterDevReload();
   installVocabSync();
+  installLevelDb();
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'dream-ai') return;
     const ctrl = new AbortController();
@@ -564,6 +571,16 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-test-azure') { void testAzure((msg as { key?: string }).key).then(sendResponse); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
+    if (msg?.type === 'dream-db-write') { void writeDatabase().then(sendResponse); return true; }
+    if (msg?.type === 'dream-db-host') { sendResponse({ host: NATIVE_HOST, id: chrome.runtime.id }); return false; }
+    if (msg?.type === 'dream-level-copy') {
+      void (async () => {
+        const text = levelSummary(await currentDoc(), (await getLevel()).lastCopyAt);
+        await updateLevel((m) => ({ ...m, lastCopyAt: new Date().toISOString() }));
+        sendResponse({ text });
+      })();
+      return true;
+    }
     if (msg?.type === 'dream-open' && (msg as { page?: string }).page) { void chrome.tabs.create({ url: chrome.runtime.getURL(`dream/${(msg as { page: string }).page}.html`) }); return false; }
     return false;
   });

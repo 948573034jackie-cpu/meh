@@ -23,8 +23,33 @@ function bindCheck(id: string, get: () => boolean, set: (b: boolean) => Promise<
   el.addEventListener('change', () => void set(el.checked));
 }
 
+/** where the database goes, and what is still missing */
+async function renderDb(): Promise<void> {
+  const o = await chrome.storage.local.get(store.DB_STATUS_KEY);
+  const st = o[store.DB_STATUS_KEY] as store.DbStatus | undefined;
+  const el = $('db-status');
+  const noHelper = !st || (!st.ok && st.notInstalled);
+  $('db-install').hidden = !noHelper;
+  $('db-command').textContent = `bash native-host/install.sh ${chrome.runtime.id}`;
+  if (st?.noDevice) el.textContent = 'On this device your words stay inside the app or extension (there is no file).';
+  else if (noHelper) el.textContent = 'Not saved to a file yet: the helper is not installed on this Mac.';
+  else if (!st.ok) el.textContent = `Could not save: ${st.error ?? 'unknown problem'}`;
+  else el.textContent = `Saved ${new Date(st.at).toLocaleString()}: ${st.path}`;
+  $('db-drive').textContent = !st?.ok ? '' : st.driveOk ? `Internet copy: ${st.drive}` : `Internet copy not saved: ${st.driveError ?? 'unknown problem'}. Install Google Drive for desktop and sign in.`;
+}
+
 async function init(): Promise<void> {
   [S, X] = await Promise.all([store.getSettings(), store.getExtras()]);
+  bindCheck('levelAsk', () => X.levelAsk !== false, (b) => saveX({ levelAsk: b }));
+  bindCheck('levelMode', () => X.levelMode !== false, (b) => saveX({ levelMode: b }));
+  $('copy-level').addEventListener('click', async () => {
+    const msg = $('copy-msg');
+    try { const r = await chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as { text: string }; await navigator.clipboard.writeText(r.text); msg.textContent = 'Copied. Paste it to Claude.'; msg.className = 'msg ok'; }
+    catch { msg.textContent = 'It could not be copied.'; msg.className = 'msg bad'; }
+  });
+  $('open-reader').addEventListener('click', () => void chrome.runtime.sendMessage({ type: 'dream-open', page: 'reader' }));
+  void chrome.runtime.sendMessage({ type: 'dream-db-write' }).catch(() => undefined).finally(() => void renderDb());
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch[store.DB_STATUS_KEY]) void renderDb(); });
   const keys = await store.getKeys();
   // ---- keys
   $<HTMLSelectElement>('provider').value = S.ai.provider;

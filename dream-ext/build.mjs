@@ -14,6 +14,7 @@ const entries = [
   ['src/yt.ts', 'dream-yt.js'],
   ['src/options.ts', 'options.js'],
   ['src/vocab-page.ts', 'vocab-page.js'],
+  ['src/reader.ts', 'reader.js'],
 ].filter(([src]) => fs.existsSync(path.join(root, src)));
 
 // every build gets its own stamp: the YouTube script carries it, and the folder has it in build-stamp.txt
@@ -29,6 +30,8 @@ for (const [src, file] of entries) {
   if (watch) await (await esbuild.context(opts)).watch();
   else await esbuild.build(opts);
 }
+// the PDF reader's worker (pdf.js), for the reading mode
+fs.copyFileSync(path.join(root, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs'), path.join(out, 'pdf.worker.min.mjs'));
 for (const f of fs.readdirSync(path.join(root, 'static'))) fs.copyFileSync(path.join(root, 'static', f), path.join(out, f));
 // a new build on disk: an unpacked extension notices it and reloads itself (see devReload in src/bg.ts)
 if (!watch) fs.writeFileSync(path.join(out, 'build-stamp.txt'), `${stamp}\n`);

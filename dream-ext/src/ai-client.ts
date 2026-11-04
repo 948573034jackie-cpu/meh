@@ -110,6 +110,20 @@ export function getDictData(): Promise<DictData> {
   dictData.catch(() => { dictData = null; });
   return dictData;
 }
+let zipf: Promise<(word: string) => number | null> | null = null;
+/** How common a word is (wordfreq's Zipf scale: 7 = "the", 3 = rare); null = not in the table. */
+export function getZipf(): Promise<(word: string) => number | null> {
+  zipf ??= (async () => {
+    const res = await fetch(chrome.runtime.getURL('dream/zipf.json.gz'));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const buf = await res.arrayBuffer();
+    const text = new Uint8Array(buf)[0] === 0x1f ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(buf);
+    const table = new Map<string, number>();
+    for (const [z, words] of Object.entries(JSON.parse(text) as Record<string, string>)) for (const w of words.split(' ')) table.set(w, Number(z) / 10);
+    return (word: string) => table.get(word.toLowerCase()) ?? null;
+  })().catch(() => () => null);
+  return zipf;
+}
 export function getDictionary(): Promise<Dictionary> {
   dictionary ??= getDictData().then((d) => createDictionary(d));
   dictionary.catch(() => { dictionary = null; });

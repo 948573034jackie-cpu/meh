@@ -16,5 +16,5 @@ cp "$SRC/mic-mix.js" "$DST/mic-mix.js"
 cp "$SRC/dream/dream-yt.js" "$DST/dream-yt.js"
 # the files the tutor opens by address (ytlearn://app/dream/…): the dictionary and the settings / vocabulary pages
 mkdir -p "$WEB"
-for f in dict.json.gz options.html options.js vocab.html vocab-page.js pages.css; do cp "$SRC/dream/$f" "$WEB/$f"; done
+for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css; do cp "$SRC/dream/$f" "$WEB/$f"; done
 echo "scripts synced"

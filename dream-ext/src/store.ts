@@ -9,6 +9,9 @@ import { mergeEntry } from './vocab';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
 import type { StyleOverride } from '@shared/styles';
+import type { Dictionary } from '@core/dict/types';
+import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta } from './level-db';
+import type { AiItem, TestGroups } from './level-check';
 
 /** YouTube-only choices (not in the Mac app). */
 export interface YtExtras {
@@ -91,6 +94,10 @@ export interface YtExtras {
   migrated: number;
   /** my level follows my own words (up when I know most of the next level's words, down when I know few of mine) */
   levelAuto: boolean;
+  /** ask "Level Check" before every video, book, PDF or text */
+  levelAsk: boolean;
+  /** stops by the Level Check rules: at most 50 % of the sentences, the hardest; original, explanation, original, on */
+  levelMode: boolean;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
@@ -101,7 +108,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: false, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true,
 };
 
 /**
@@ -200,10 +207,13 @@ export async function getVocab(): Promise<VocabState> {
   const v = o[K.vocab] as VocabState | undefined;
   return { words: { ...(v?.words ?? {}) }, marked: { ...(v?.marked ?? {}) } };
 }
-export async function setWordStatus(lemma: string, status: WordStatus | null): Promise<VocabState> {
+export async function setWordStatus(lemma: string, status: WordStatus | null, met?: { word?: string; sentence?: string }): Promise<VocabState> {
   const v = await getVocab();
+  const changed = v.words[lemma] !== (status ?? undefined);
   if (status) v.words[lemma] = status; else delete v.words[lemma];
   await area().set({ [K.vocab]: v });
+  // the database: when it got this status, and where it was met
+  if (changed || met) await logWord(lemma, status, met);
   // My Vocabulary follows: known / learning
   if (status === 'known' || status === 'learning') {
     const entries = await getEntries();
@@ -337,6 +347,70 @@ export async function getVideoHints(videoId: string): Promise<VideoHints | null>
 export async function setVideoHints(videoId: string, h: VideoHints): Promise<void> { await area().set({ [`drHints:${videoId}`]: h }); }
 
 export const STORAGE_KEYS = K;
+
+// ---- the vocabulary database (level-db.ts): the tests, the level, when each word got its status --------------------
+export const LEVEL_KEY = 'drLevel';
+export const DB_STATUS_KEY = 'drDbStatus';
+export interface DbStatus { ok: boolean; at: string; path?: string; drive?: string | null; driveOk?: boolean; driveError?: string; error?: string; notInstalled?: boolean; noDevice?: boolean }
+
+export async function getLevel(): Promise<LevelMeta> {
+  const o = await area().get(LEVEL_KEY);
+  return { ...EMPTY_META, ...(o[LEVEL_KEY] as Partial<LevelMeta> | undefined) };
+}
+export function updateLevel(fn: (cur: LevelMeta) => LevelMeta): Promise<LevelMeta> {
+  return oneAtATime(async () => {
+    const next = fn(await getLevel());
+    await area().set({ [LEVEL_KEY]: next });
+    return next;
+  });
+}
+function logWord(lemma: string, status: WordStatus | null, met?: { word?: string; sentence?: string }): Promise<LevelMeta> {
+  return updateLevel((m) => {
+    const log = { ...m.log };
+    if (!status) delete log[lemma];
+    else log[lemma] = { ...log[lemma], word: met?.word || log[lemma]?.word || lemma, date: new Date().toISOString().slice(0, 10), ...(met?.sentence ? { sentence: met.sentence } : {}) };
+    return { ...m, log };
+  });
+}
+
+/** The learner's starting data goes in once (nothing that is already known is taken back). */
+export async function ensureSeeded(dict: Pick<Dictionary, 'lemmaOf'>): Promise<boolean> {
+  if ((await getLevel()).seeded >= SEED_VERSION) return false;
+  const seed = seedWords(dict);
+  const v = await getVocab();
+  for (const [k, st] of Object.entries(seed.words)) if (!v.words[k] || (st === 'known' && v.words[k] === 'learning')) v.words[k] = st;
+  await area().set({ [K.vocab]: v });
+  await updateLevel((m) => ({ ...m, tests: [...SEED.tests, ...m.tests], currentLevel: m.currentLevel || SEED.currentLevel, log: { ...seed.log, ...m.log }, seeded: SEED_VERSION }));
+  await patchSettings({ learnerLevel: 'B2' });
+  return true;
+}
+
+/** The tap test is done: tapped = known, the others = still learning (with their sentence); the test and the level saved. */
+export async function saveTestResult(shown: TestGroups, knownKeys: ReadonlySet<string>, source: string, scores: GroupScores): Promise<ReturnType<typeof estimateLevel>> {
+  const est = estimateLevel(scores);
+  const today = new Date().toISOString().slice(0, 10);
+  const v = await getVocab();
+  const log: LevelMeta['log'] = {};
+  for (const group of ['b2', 'c1', 'c2'] as const) for (const it of shown[group]) {
+    const known = knownKeys.has(it.key);
+    v.words[it.key] = known ? 'known' : 'learning';
+    log[it.key] = { word: it.text, date: today, group, ...(known ? {} : { sentence: it.sentence }) };
+  }
+  await area().set({ [K.vocab]: v });
+  await updateLevel((m) => ({ ...m, tests: [...m.tests, { date: today, source, scores, level: est.label }], currentLevel: `about ${est.label}`, log: { ...m.log, ...log } }));
+  await patchSettings({ learnerLevel: est.cefr });
+  return est;
+}
+
+/** the AI's idioms and slang of a text, kept with the text (so its test opens at once next time) */
+export async function getLevelItems(id: string): Promise<AiItem[] | null> {
+  const k = `drLevelItems:${id}`;
+  return ((await area().get(k))[k] as AiItem[] | undefined) ?? null;
+}
+export async function setLevelItems(id: string, items: AiItem[]): Promise<void> {
+  await area().set({ [`drLevelItems:${id}`]: items });
+  await remember('drLevelItems', id);
+}
 
 /** Per-video caches (the AI's complete sentences, the Chinese lines); the oldest are removed after 80 videos. */
 async function remember(prefix: string, videoId: string): Promise<void> {

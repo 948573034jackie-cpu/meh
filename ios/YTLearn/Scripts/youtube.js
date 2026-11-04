@@ -77,7 +77,10 @@
 
   // download one caption track (timed text) and turn it into cues
   async function cuesFromTrack(track, via) {
-    const url = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
+    // (set, not added: the phone-app list's address already asks for fmt=srv3, and YouTube follows the first one)
+    const u0 = new URL(track.baseUrl, location.href);
+    u0.searchParams.set('fmt', 'json3');
+    const url = u0.href;
     const res = await fetch(url, { credentials: 'include' });
     const body = await res.text();
     if (!body) throw new Error('YouTube returned an empty caption file (status ' + res.status + ', list from the ' + via + ')');

@@ -133,6 +133,16 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 
 ---
 
+## 7a. Level Check and smart stops
+
+Before a video, book, PDF or text: **Check my words** (a tap test built only from this text: B2, C1, C2 + idioms + slang; tap what you know, then Done) or **Skip, just play**. ⚙ → "Ask Level Check before every video" turns it off.
+
+The tutor stops at **50% of the sentences or fewer**, only the hardest, and never because of a word you know. At a stop: the sentence from the video, the explanation (spoken and shown, starting with the hard words, no labels, no filler, no Chinese, no IPA), the sentence again, then on by itself. Tap a word: don't know (explained, then on). Double tap: known. The small counter shows stops / sentences so far. The older stops (I know / I don't know, the word repeated) are one setting away: "Stop by Level Check" in All settings.
+
+**My vocabulary file:** `~/Documents/MEH English/vocabulary.json`, with a copy in `My Drive/MEH English/` when Google Drive for desktop is installed. A Chrome extension cannot write files itself, so a small helper does it: All settings → Level Check shows the one command to run once. On iPhone / iPad the words stay in the app or extension. **Copy my level for Claude** is in ⚙, All settings and My Vocabulary.
+
+**Reading mode:** the extension's window → "Read a PDF or text" (Chrome): open a PDF or text file, or paste a text. The same Level Check, database and 50% rule: it reads to the end of a sentence, shows and reads the explanation, shows the sentence again. The text is never changed, cut or reordered.
+
 ## 7. My tutor (Chrome, YT Safari and YT Learn, v3.2): your own AI teacher on YouTube
 
 On the iPhone / iPad there is no keyboard: a bar at the bottom of the page (YT Safari) or of the app (YT Learn) has the

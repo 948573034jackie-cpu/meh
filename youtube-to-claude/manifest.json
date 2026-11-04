@@ -9,7 +9,8 @@
     "storage",
     "unlimitedStorage",
     "debugger",
-    "tts"
+    "tts",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "https://www.youtube.com/*",
@@ -67,7 +68,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "dream/dict.json.gz"
+        "dream/dict.json.gz",
+        "dream/zipf.json.gz"
       ],
       "matches": [
         "https://www.youtube.com/*"

@@ -19,6 +19,15 @@
   <div class="field"><label for="learnerLevel">My English level</label><select id="learnerLevel"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select><div class="hint">Words, phrases and slang above this level are highlighted, get a Chinese hint, and make the video stop.</div></div>
 </section>
 
+<section id="level"><h2>Level Check and my vocabulary file</h2>
+  <label class="check"><input type="checkbox" id="levelAsk"> Ask Level Check before every video</label>
+  <label class="check"><input type="checkbox" id="levelMode"> Stop by Level Check: at most 50% of the sentences, the hardest. The original, the explanation, the original, then on. (Off: the older stops below.)</label>
+  <div class="field"><label>My vocabulary file</label><div class="muted" id="db-status">…</div>
+    <div id="db-install" hidden><div class="hint">To save it on this Mac, open Terminal in the extension's folder (the one you loaded in Chrome), run this once, then reload the extension:</div><pre id="db-command" style="white-space:pre-wrap;word-break:break-all;background:#f3f4f6;padding:8px;border-radius:8px"></pre></div>
+    <div class="hint" id="db-drive"></div></div>
+  <div class="row"><button id="copy-level" class="primary">Copy my level for Claude</button><button id="open-reader">📖 Read a PDF or text</button><span class="msg" id="copy-msg"></span></div>
+</section>
+
 <section><h2>Stopping at hard words (like Dream Read's Listening mode)</h2>
   <label class="check"><input type="checkbox" id="autoExplainWords"> Stop at every word above my level (and every yellow "learning" word)</label>
   <label class="check"><input type="checkbox" id="autoExplainPhrases"> Stop at phrases, idioms and slang above my level (2 to 5 words)</label>

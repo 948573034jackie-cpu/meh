@@ -242,7 +242,7 @@ async function hub(page, o) {
     const p = new URL(route.request().url()).pathname;
     if (p === '/_bg.html') { // (the files importScripts may load, in the page: a test page cannot load them synchronously)
       const src = JSON.stringify({ 'dream/dream-bg.js': fs.readFileSync(path.join(EXT, 'dream/dream-bg.js'), 'utf8') }).replace(/</g, '\\u003c');
-      return route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><title>background</title><script>window.__importSrc = ${src};</script><script src="/background.js"></script>` });
+      return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><title>background</title><script>window.__importSrc = ${src};</script><script src="/background.js"></script>` });
     }
     const f = path.join(EXT, path.normalize(decodeURIComponent(p)).replace(/^(\.\.[/\\])+/, ''));
     if (!fs.existsSync(f) || fs.statSync(f).isDirectory()) return route.fulfill({ status: 404, body: '' });
@@ -274,7 +274,8 @@ async function hub(page, o) {
   // (No "voiceOn": on an iPhone voice commands are off, the tutor still gets the microphone for its questions.)
   Object.assign(stores.local, {
     sendOn: false, target: 'claude', barOn: true,
-    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
+    drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
+    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
     drKeys: { anthropic: 'sk-ant-test-key' },
   });
@@ -422,6 +423,39 @@ async function hub(page, o) {
   const nT = svc.length;
   const test = await opt.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-test-key', provider: 'anthropic' }));
   ok('its Test button reaches Claude through the background', test && test.ok && svc.slice(nT).some((f) => f.fromBg && f.headers['x-api-key'] === 'sk-ant-new-key-5678'), JSON.stringify(test));
+
+  // ---- 10. Level Check in WebKit on the phone: the screen, the test, a stop in the new order, the counter ----
+  stores.local.drExtras = { ...stores.local.drExtras, levelAsk: true, levelMode: true };
+  const lv = await ctx.newPage();
+  lv.on('pageerror', (e) => console.log('PAGE ERROR (level)', String(e.message || e).slice(0, 300)));
+  await lv.goto('https://m.youtube.com/watch?v=saf00000002');
+  tabs.set(2, lv); tabIdOf.set(lv, 2);
+  for (const f of ytScripts.js) await lv.addScriptTag({ content: fs.readFileSync(path.join(EXT, f), 'utf8') });
+  const inG = (fn) => lv.evaluate(`(${fn})(document.getElementById('dr-level-host').shadowRoot)`);
+  const lvGate = await until(() => lv.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=check]')); }), 15000);
+  ok('Level Check: the screen comes before the video, in WebKit on the phone', !!lvGate);
+  await lv.evaluate(() => document.querySelector('video').play().catch(() => {}));
+  await sleep(600);
+  ok('...the video waits', await lv.evaluate(() => document.querySelector('video').paused));
+  await inG((r) => r.querySelector('[data-a=check]').click());
+  const lvChips = await until(async () => { const c = await inG((r) => { const n = r.querySelectorAll('.chip').length; const t = r.textContent; return n ? [...r.querySelectorAll('.chip')].map((b) => b.textContent) : /no new words/.test(t) ? [] : null; }); return c; }, 20000);
+  ok('...the test is built from this video', Array.isArray(lvChips), JSON.stringify(lvChips));
+  const lvFit = await inG((r) => { const d = r.querySelector('.done') || r.querySelector('button'); const c = r.querySelector('.card').getBoundingClientRect(); return { doneBottom: d.getBoundingClientRect().bottom, screen: innerHeight, top: c.top }; });
+  ok('...it fits the phone screen', lvFit.doneBottom <= lvFit.screen && lvFit.top >= 0, JSON.stringify(lvFit));
+  await inG((r) => (r.querySelector('.done') || r.querySelector('[data-a=skip]')).click());
+  const lvPlays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 10000);
+  ok('...after it the video plays by itself', !!lvPlays);
+  const lvDbg = () => lv.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
+  const lvStop = await until(async () => { const d = await lvDbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 150);
+  ok('a stop comes, counted', !!lvStop, JSON.stringify(await lvDbg()).slice(0, 300));
+  const lvRule = await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000);
+  ok('...its explanation is asked for with the hard rule', !!lvRule);
+  const lvOn = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 30000, 150);
+  ok('...and the video goes on by itself', !!lvOn, JSON.stringify(await lvDbg()).slice(0, 200));
+  const lvCount = await lv.evaluate(() => document.getElementById('dr-stop-counter')?.textContent || '');
+  ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(lvCount) && +/\((\d+)%/.exec(lvCount)[1] <= 50, lvCount);
+  await lv.close();
 
   await browser.close();
   api.close();

@@ -24,7 +24,7 @@ python3 - "$SRC/manifest.json" "$OUT/manifest.json" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1]))
 YT = ['https://www.youtube.com/*', 'https://m.youtube.com/*']
-m['permissions'] = [p for p in m['permissions'] if p not in ('debugger', 'tts')]
+m['permissions'] = [p for p in m['permissions'] if p not in ('debugger', 'tts', 'nativeMessaging')]
 m['host_permissions'] = list(dict.fromkeys(m['host_permissions'][:1] + YT[1:] + m['host_permissions'][1:]))
 cs = []
 for c in m['content_scripts']:

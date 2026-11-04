@@ -150,7 +150,8 @@ const api = http.createServer((req, res) => {
   const patch = (k, v) => sw.evaluate(([key, val]) => chrome.storage.local.get(key).then((o) => chrome.storage.local.set({ [key]: { ...(o[key] || {}), ...val } })), [k, v]);
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' },
-    drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
+    drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
+    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, stopInCall: false, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
     drTestBaseUrls: { anthropic: 'http://localhost:8790', openai: 'http://localhost:8790/v1' },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,

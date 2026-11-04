@@ -153,7 +153,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <div class="keys">${SHORTCUTS.map((a) => `<div><span>${esc(a.label)}</span><button type="button" data-sc="${a.id}">${esc(comboLabel(sc[a.id]))}</button></div>`).join('')}</div>
       <span><button type="button" data-act="sc-reset">Default shortcuts</button></span>
     </section>
-    <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button></section>
+    <section><h4>Level Check</h4>
+      <label>Ask Level Check before every video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
+      <button type="button" data-act="copy-level">Copy my level for Claude</button>
+    </section>
+    <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button>${chrome.runtime.getManifest().update_url === 'ios' ? '' : '<button type="button" data-act="reader">📖 Read a PDF or text</button>'}</section>
   </div>`;
 
   // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)
@@ -192,6 +196,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'seconds') patchListen({ lastSecondsWindow: Number(v) as Settings['listen']['lastSecondsWindow'] });
       else if (segName === 'zhLines') void store.patchExtras({ zhLines: v === 'on' });
       else if (segName === 'hints') patchLook({ showHints: v === 'on' });
+      else if (segName === 'levelAsk') void store.patchExtras({ levelAsk: v === 'on' });
       else if (segName === 'hideCc') void store.patchExtras({ hideYtCaptions: v === 'on' });
       else if (segName === 'voice') void store.patchExtras({ voice: v as store.VoiceChoice });
       else if (segName === 'speakChinese') patchAi({ speakChinese: v === 'on' });
@@ -253,6 +258,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     } else if (act === 'sc-reset') void store.patchExtras({ shortcuts: {} });
     else if (act === 'all') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'options' });
     else if (act === 'vocab') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' });
+    else if (act === 'reader') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'reader' });
+    else if (act === 'copy-level') void (chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as Promise<{ text: string }>).then((r) => navigator.clipboard.writeText(r.text)).then(() => ctx.toast('Your level is copied. Paste it to Claude.'), () => ctx.toast('It could not be copied.'));
     else if (b.dataset.sc) {
       const id = b.dataset.sc;
       b.textContent = 'press keys…';

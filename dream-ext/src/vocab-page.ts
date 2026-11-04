@@ -86,6 +86,12 @@ $('rows').addEventListener('click', async (ev) => {
   else if (btn.dataset.act === 'status') { const e = (await store.getEntries())[lemma]; await store.setWordStatus(lemma, e?.status === 'known' ? 'learning' : 'known'); }
   void renderWords();
 });
+$('copy-level').addEventListener('click', async () => {
+  const b = $('copy-level');
+  try { const r = await chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as { text: string }; await navigator.clipboard.writeText(r.text); b.textContent = 'Copied ✓'; }
+  catch { b.textContent = 'Could not copy'; }
+  setTimeout(() => { b.textContent = 'Copy my level for Claude'; }, 2500);
+});
 $('csv').addEventListener('click', async () => {
   const csv = toCsv(Object.values(await store.getEntries()));
   const a = document.createElement('a');
