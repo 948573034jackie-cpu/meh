@@ -86,6 +86,7 @@ const sse = (req, res, text) => {
   };
   tick();
 };
+let failNextTts = 0;
 const kindOf = (sys, url) => (url.includes('/azure/') ? (url.includes('/voices/list') ? 'azure-list' : 'azure') : url.includes('/audio/speech') ? 'tts' : url.includes('/realtime/calls') ? 'live' : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
 const api = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, { ...cors(req), 'access-control-max-age': '600' }); res.end(); return; }
@@ -100,6 +101,7 @@ const api = http.createServer((req, res) => {
     const user = JSON.stringify(j.messages || '');
     const kind = kindOf(sys, req.url);
     apiLog.push({ path: req.url, kind, model: j.model, user, sys, key: req.headers['x-api-key'] || req.headers.authorization || req.headers['ocp-apim-subscription-key'], ssml: kind === 'azure' ? body : undefined, format: req.headers['x-microsoft-outputformat'], stream: j.stream, cache: sys.includes('ephemeral'), effort: j.output_config && j.output_config.effort, fallbacks: j.fallbacks, voice: j.voice, input: j.input, at: Date.now() });
+    if (kind === 'tts' && failNextTts > 0) { failNextTts--; apiLog[apiLog.length - 1].failed = true; res.writeHead(400, { 'content-type': 'application/json', ...cors(req) }); res.end('{"error":{"message":"test hiccup","type":"invalid_request_error"}}'); return; }
     if (kind === 'tts' || kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg', ...cors(req) }); res.end(ttsWav); return; }
     if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json', ...cors(req) }); res.end(JSON.stringify([{ ShortName: 'en-US-AvaMultilingualNeural' }])); return; }
     if (kind === 'live') {
@@ -268,6 +270,11 @@ const api = http.createServer((req, res) => {
   await patch('drExtras', { stageSizePx: 34 });
   const replayed = await until(async () => (await seeksTo(7.85)) >= 1 ? await vstate() : null, 6000, 60);
   ok('the part plays again from its start (the audio, the page stays on)', !!replayed && (await dbg()).stage.shown, JSON.stringify(replayed));
+  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="40"]').click());
+  const more = await until(async () => { const d = await dbg(); return d && d.stage.visibleLines === 8 && d.layout && d.layout.fits ? d : null; }, 4000, 80);
+  ok('40 s on the page: at once the last 40 s (8 complete sentences), all on the screen', !!more, JSON.stringify((await dbg()).stage));
+  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="20"]').click());
+  await until(async () => (await dbg()).stage.visibleLines === 6, 4000, 80);
   const passage = await until(() => apiLog.slice(nBefore).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 20000);
   ok('after the replay: the teacher breaks the part down (your rules, the whole part)', passage && /sentence number eight/.test(passage.user) && /very easy English/.test(passage.user), passage && passage.user.slice(0, 160));
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
@@ -373,9 +380,14 @@ const api = http.createServer((req, res) => {
   const nTts = apiLog.filter((r) => r.kind === 'tts').length;
   await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 20.5; return v.play(); });
   await until(async () => (await vstate()).t > 22.5, 8000);
+  failNextTts = 1; // the first sentence of the voice fails once (like a short internet hiccup)
+  const macBefore = (await speak()).length;
   await yt.keyboard.press('ArrowLeft');
-  const tts = await until(() => { const t = apiLog.filter((r) => r.kind === 'tts'); return t.length > nTts ? t[t.length - 1] : null; }, 15000);
+  const tts = await until(() => { const t = apiLog.filter((r) => r.kind === 'tts' && !r.failed); return t.length > nTts ? t[t.length - 1] : null; }, 15000);
   ok('the explanation is spoken by the OpenAI voice (gpt-4o-mini-tts, marin), through the background', tts && tts.model === 'gpt-4o-mini-tts' && tts.voice === 'marin' && /Bearer sk-openai-test/.test(tts.key), JSON.stringify(tts && { m: tts.model, v: tts.voice, i: tts.input }));
+  await sleep(1500);
+  const failedTts = apiLog.filter((r) => r.kind === 'tts' && r.failed);
+  ok('a voice hiccup (one failed request) is tried again: the OpenAI voice keeps speaking, no switch to the Mac voice', failedTts.length === 1 && apiLog.filter((r) => r.kind === 'tts' && !r.failed && r.input === failedTts[0].input).length >= 1 && (await speak()).length === macBefore && (await dbg()).voice === 'openai', JSON.stringify({ failed: failedTts.map((r) => r.input), mac: (await speak()).slice(macBefore) }));
   const live = await until(() => liveLog[0], 20000);
   ok('the live call connects to OpenAI realtime with the key (from the background), the part, your rules, the tools', live && /Bearer sk-openai-test/.test(live.auth) && live.session.model === 'gpt-realtime-2.1' && live.session.audio.output.voice === 'marin' && /RULE ONE/.test(live.session.instructions) && /number six/.test(live.session.instructions) && live.session.tools.some((t) => t.name === 'continue_video'), JSON.stringify(live && { m: live.session.model, v: live.session.audio.output.voice }));
   ok('the microphone is most sensitive by default (lowest speech threshold, laptop-microphone noise setting)', live && live.session.audio.input.turn_detection.type === 'server_vad' && live.session.audio.input.turn_detection.threshold === 0.25 && live.session.audio.input.noise_reduction.type === 'far_field');
@@ -408,6 +420,7 @@ const api = http.createServer((req, res) => {
   await yt.keyboard.press('Shift+KeyT');
   const greeted = await until(async () => { const d = await dbg(); return d && d.talk && d.talk.chat && d.talk.log.some((l) => /^tutor: (Hi|Hello)/.test(l)) ? d : null; }, 8000);
   ok('📞 with Claude: the call opens and the tutor greets you (no OpenAI)', !!greeted && !greeted.talk.live, JSON.stringify(greeted && greeted.talk));
+  ok('the call asks for the microphone (voice commands are off in this test)', (await dbg()).callOpen === true);
   await until(async () => (await dbg()).talk?.chat === 'listening', 8000);
   await sleep(6000);
   ok('the call waits for you (it does not hang up after 3 quiet seconds)', !!(await dbg()).talk, JSON.stringify((await dbg()).talk));

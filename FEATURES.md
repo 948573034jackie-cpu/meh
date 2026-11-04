@@ -8,8 +8,8 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.2) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
-| **YT Safari** (v3.2) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari), plus **My tutor** (section 7) |
+| **Chrome extension** (v3.4) | Mac / computer | YouTube in Google Chrome, plus **My tutor** (section 7) |
+| **YT Safari** (v3.4) | iPad / iPhone | YouTube in Safari (a small app that adds the extension to Safari), plus **My tutor** (section 7) |
 | **YT Learn** (v1.0) | iPad / iPhone | Its own app, with YouTube and Claude / ChatGPT inside, plus **My tutor** (section 7) |
 
 ---
@@ -145,7 +145,7 @@ The tutor stops at **50% of the sentences or fewer**, only the hardest, and neve
 
 **Reading mode:** the extension's window → "Read a PDF or text" (Chrome): open a PDF or text file, or paste a text. The same Level Check, database and 50% rule: it reads to the end of a sentence, shows and reads the explanation, shows the sentence again. The text is never changed, cut or reordered.
 
-## 7. My tutor (Chrome, YT Safari and YT Learn, v3.2): your own AI teacher on YouTube
+## 7. My tutor (Chrome, YT Safari and YT Learn, v3.4): your own AI teacher on YouTube
 
 On the iPhone / iPad there is no keyboard: a bar at the bottom of the page (YT Safari) or of the app (YT Learn) has the
 buttons instead: My tutor on / off, Stop / play, Explain 30 s, Last sentence, Talk, Voice, Page, Listening, Words,
@@ -182,9 +182,13 @@ Your commands:
 - **Shift+L**: listening mode (all subtitles over the screen, the playing line near the middle) / normal video.
 - **[ ]**: smaller / bigger text; **Shift+C**: Chinese under every line (live AI translation). All keys can be changed.
 
-Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (OpenAI marin /
-cedar…, ElevenLabs, or any Mac voice; it tells you when a key is missing), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
+Everything can be changed right on the YouTube page (⚙): text sizes (any size), part length, voice (Microsoft: free about 9 hours a month; OpenAI marin /
+cedar…; ElevenLabs; or any Mac voice; it tells you when a key is missing, and a new voice says a test sentence), speed, microphone sensitivity, live call on/off, your level, the AI model, your teacher's
 instructions (write anything), how many repeats, the API keys and the shortcuts.
+
+New in 3.4:
+- **The good voice does not disconnect:** a failed sentence (a short internet problem, a busy server, no sound after 12 seconds) is tried again. If that fails too, only that sentence is said by the Mac / iPhone voice, and the good voice is used again for the next one. Only after 3 failures in a row does the plain voice speak for 1 minute, then the good voice comes back. The 🩺 Check shows why it failed. Chrome's online "Google" voices are said in short pieces (Chrome stops them after about 15 seconds) and are listed last.
+- **The voice call:** Claude by default; it listens even with voice commands off, and says so when the microphone is blocked. "📞 Test the call" is in ⚙. The OpenAI live call reconnects once by itself when the connection drops, tries older live models when the newest is not on your key, and falls back to Claude if it still does not work.
 
 New in 3.2:
 - **Two volume sliders** (⚙ → Voice): the teacher's explanation and the word / sentence being taught. They follow the

@@ -347,13 +347,22 @@ export function azureTurn(): Promise<void> {
 async function azureSpeak(key: string, base: string, ssml: string): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     await azureTurn();
-    const res = await fetch(`${base}/cognitiveservices/v1`, {
-      method: 'POST',
-      headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-48khz-192kbitrate-mono-mp3' },
-      body: ssml,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${base}/cognitiveservices/v1`, {
+        method: 'POST',
+        headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-48khz-192kbitrate-mono-mp3' },
+        body: ssml,
+      });
+    } catch {
+      // no internet for a moment: try again
+      if (attempt < 2) { await new Promise((r) => setTimeout(r, 500 * (attempt + 1))); continue; }
+      throw new Error('Microsoft voice: no internet connection');
+    }
     // too many requests (or the voice is busy for a moment): wait and try again
     if (res.status === 429 && attempt < 4) { const s = Number(res.headers.get('retry-after')) || 2; await new Promise((r) => setTimeout(r, Math.min(10, s) * 1000)); continue; }
+    // a busy server: try again
+    if (res.status >= 500 && attempt < 2) { await new Promise((r) => setTimeout(r, 500 * (attempt + 1))); continue; }
     return res;
   }
 }
@@ -417,7 +426,8 @@ async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
   }
   if (a.engine === 'openai') {
     if (!keys.openai) throw new Error('Add your OpenAI API key (Dream Tutor settings) to use the OpenAI voice.');
-    const client = new OpenAI({ apiKey: keys.openai, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...(urls.openai ? { baseURL: urls.openai } : {}) });
+    // short sentences: a quick timeout and two retries (a slow or failed request is tried again at once)
+    const client = new OpenAI({ apiKey: keys.openai, maxRetries: 2, timeout: 20_000, dangerouslyAllowBrowser: true, ...(urls.openai ? { baseURL: urls.openai } : {}) });
     try {
       const res = await client.audio.speech.create({ model: 'gpt-4o-mini-tts', voice: (a.voice || 'marin') as never, input: text, instructions: VOICE_STYLE[a.lang ?? 'en'], response_format: 'mp3' });
       const audio = await res.arrayBuffer();
@@ -466,32 +476,42 @@ export function liveSessionLadder(session: Record<string, unknown>): Record<stri
   return [session, noExtras, minimal];
 }
 
-export async function liveConnect(a: LiveAsk): Promise<{ sdp: string; level: number }> {
+/** live models tried in this order when the chosen one is not available for the key */
+export function liveModels(chosen: string): string[] {
+  return [...new Set([chosen, 'gpt-realtime-2.1', 'gpt-realtime-2.1-mini', 'gpt-realtime-2', 'gpt-realtime'])];
+}
+
+export async function liveConnect(a: LiveAsk): Promise<{ sdp: string; level: number; model: string }> {
   const keys = await getKeys();
   if (!keys.openai) throw Object.assign(new Error('The live voice call needs an OpenAI API key (Dream Tutor settings).'), { status: 401 });
   const s = await getSettings();
   const monthly = usdSince(await getUsage(), periodStarts().month);
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw new Error(`Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in the Dream Tutor settings to talk again.`);
   const base = (await baseUrls()).openai ?? 'https://api.openai.com/v1';
-  const ladder = liveSessionLadder(a.session);
   let last = '';
-  for (let level = 0; level < ladder.length; level++) {
-    const form = new FormData();
-    form.set('sdp', a.sdp);
-    form.set('session', JSON.stringify(ladder[level]));
-    const res = await fetch(`${base}/realtime/calls`, { method: 'POST', headers: { Authorization: `Bearer ${keys.openai}` }, body: form });
-    if (res.ok) return { sdp: await res.text(), level };
-    last = (await res.text()).slice(0, 300);
-    // a setting this model does not take: try the simpler session; anything else is final
-    if (res.status !== 400 && res.status !== 422) {
-      const msg = res.status === 401 ? 'OpenAI rejected the API key. Check it in the Dream Tutor settings.'
-        : res.status === 429 ? (/quota|billing|credit/i.test(last) ? 'Your OpenAI account has no credit left or reached its limit.' : 'Too many requests to OpenAI right now; try again in a moment.')
-        : res.status === 404 ? `The live voice model "${String(a.session.model)}" is not available for your key. Pick the other live model in the quick settings.`
-        : `The live voice did not connect (HTTP ${res.status}): ${last}`;
-      throw Object.assign(new Error(msg), { status: res.status });
+  for (const model of liveModels(String(a.session.model))) {
+    const ladder = liveSessionLadder({ ...a.session, model });
+    let modelMissing = false;
+    for (let level = 0; level < ladder.length; level++) {
+      const form = new FormData();
+      form.set('sdp', a.sdp);
+      form.set('session', JSON.stringify(ladder[level]));
+      const res = await fetch(`${base}/realtime/calls`, { method: 'POST', headers: { Authorization: `Bearer ${keys.openai}` }, body: form });
+      if (res.ok) return { sdp: await res.text(), level, model };
+      last = (await res.text()).slice(0, 300);
+      // this model is not there for the key: the next model
+      if (res.status === 404 || ((res.status === 400 || res.status === 403) && /model/i.test(last) && /not (found|exist|available|have access)|does not exist|access/i.test(last))) { modelMissing = true; break; }
+      // a setting this model does not take: try the simpler session; anything else is final
+      if (res.status !== 400 && res.status !== 422) {
+        const msg = res.status === 401 ? 'OpenAI rejected the API key. Check it in the Dream Tutor settings.'
+          : res.status === 429 ? (/quota|billing|credit/i.test(last) ? 'Your OpenAI account has no credit left or reached its limit.' : 'Too many requests to OpenAI right now; try again in a moment.')
+          : `The live voice did not connect (HTTP ${res.status}): ${last}`;
+        throw Object.assign(new Error(msg), { status: res.status });
+      }
     }
+    if (!modelMissing) break;
   }
-  throw Object.assign(new Error(`The live voice did not accept the call settings: ${last}`), { status: 400 });
+  throw Object.assign(new Error(`The live voice did not connect: ${last || 'no live model is available for this key'}. You can talk with Claude instead (⚙ → Talk to my tutor).`), { status: 400 });
 }
 
 async function recordLive(a: { model: string; usage: RealtimeUsage }): Promise<{ usd: number; monthlyUsd: number }> {

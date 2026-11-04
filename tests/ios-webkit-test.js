@@ -72,6 +72,7 @@ const sse = (res, text) => {
   };
   tick();
 };
+let failNextAzure = 0;
 const kindOf = (sys, url) => (url.includes('/azure/') ? (url.includes('/voices/list') ? 'azure-list' : 'azure') : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
 const api = http.createServer((req, res) => {
   const chunks = [];
@@ -84,6 +85,7 @@ const api = http.createServer((req, res) => {
     const user = JSON.stringify(j.messages || '');
     const kind = kindOf(sys, req.url);
     apiLog.push({ path: req.url, kind, model: j.model, user, sys, ssml: kind === 'azure' ? body : undefined, at: Date.now() });
+    if (kind === 'azure' && failNextAzure > 0) { failNextAzure--; apiLog[apiLog.length - 1].failed = true; res.writeHead(503, { 'content-type': 'text/plain' }); res.end('busy'); return; }
     if (kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg' }); res.end(ttsWav); return; }
     if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify([{ ShortName: 'en-GB-AdaMultilingualNeural' }])); return; }
     if (/These rules are absolute/.test(sys) && /@@<its number>/.test(user)) return sse(res, [...user.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\nThis part is the hard one. It means something simple here, and it shows how the person feels.`).join('\n'));
@@ -290,6 +292,23 @@ const fakeWebkit = () => {
   const back = await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused ? v : null; }, 10000);
   ok('"let\'s go": the call ends and the video plays on', !!back, JSON.stringify({ talk: (await dbg()).talk, v: await vstate() }));
 
+  // ---- 4b. voice commands off in the app: a call still turns the microphone on ----
+  const talkBar = () => yt.evaluate(() => { const b = document.getElementById('dr-panel-host').shadowRoot.querySelector('.talk .tstate'); return b ? b.textContent : ''; });
+  await yt.evaluate(() => chrome.storage.local.set({ voiceOn: false }));
+  await until(() => yt.evaluate(() => !window.__ytcActiveSR), 5000, 100);
+  const micOff = nativeLog.filter((l) => l.kind === 'speech' && l.op === 'start').length;
+  await act('talk');
+  const callMic = await until(async () => (await dbg()).callOpen === true && nativeLog.filter((l) => l.kind === 'speech' && l.op === 'start').length > micOff, 8000);
+  ok('voice commands off: the call still turns the iOS microphone on', !!callMic, JSON.stringify(nativeLog.filter((l) => l.kind === 'speech').slice(-3)));
+  const yourTurn = await until(async () => /Your turn: just talk/.test(await talkBar()), 12000);
+  ok('...and the talk bar says "just talk" (not "turn on voice commands")', !!yourTurn, await talkBar());
+  await sleep(1200);
+  await hear('ok let\'s go');
+  await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused; }, 10000);
+  const micShut = await until(() => yt.evaluate(() => !window.__ytcActiveSR), 5000, 100);
+  ok('the call is over: the microphone is off again', !!micShut);
+  await yt.evaluate(() => chrome.storage.local.set({ voiceOn: true }));
+
   // ---- 5. the keys: only in the Keychain; a new key saved in ⚙ goes there too ----
   await yt.evaluate(() => chrome.storage.local.get('drKeys').then((o) => chrome.storage.local.set({ drKeys: { ...o.drKeys, azure: 'azure-test-key-1234' } })));
   const kc = JSON.parse(keychain.drKeys || '{}');
@@ -304,11 +323,27 @@ const fakeWebkit = () => {
     az && /<voice name="en-GB-AdaMultilingualNeural">/.test(az.ssml) && azf && azf.headers['ocp-apim-subscription-key'] === 'azure-test-key-1234' && /mp3/.test(azf.headers['x-microsoft-outputformat'] || '') && tts && tts.b64 && Buffer.from(tts.b64, 'base64').length === ttsWav.length,
     JSON.stringify({ url: azf && azf.url, headers: azf && azf.headers, got: tts && (tts.error || (tts.b64 || '').length) }));
 
+  // a busy Microsoft server: tried again by itself, the good voice goes on
+  failNextAzure = 1;
+  const nB = apiLog.length;
+  const busy = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-tts', engine: 'azure', text: 'Another sentence for the voice.', voice: 'en-GB-AdaMultilingualNeural', lang: 'en' }));
+  const tries = apiLog.slice(nB).filter((r) => r.kind === 'azure');
+  ok('a busy Microsoft server (one failed answer) is tried again: the sound comes back', tries.length === 2 && tries[0].failed && busy && busy.b64 && !busy.error, JSON.stringify({ tries: tries.length, got: busy && (busy.error || (busy.b64 || '').length) }));
+
   // ---- 7. the app's other buttons: My Vocabulary opens in the app's sheet; ⚙ quick settings ----
   await act('vocab');
   ok('📒 opens My Vocabulary in the app (ytlearn://app/dream/vocab.html)', !!(await until(() => nativeLog.find((l) => l.kind === 'openPage' && /ytlearn:\/\/app\/dream\/vocab\.html/.test(l.url)), 3000)));
   ok('⚙ opens the quick settings', await act('quick') === true && await yt.evaluate(() => { const q = document.getElementById('dr-panel-host').shadowRoot.querySelector('.panel > .quick'); return !!q && !q.hidden; }));
   await act('quick');
+
+  // iOS refuses the microphone: the talk bar says so and where to allow it (this page is not used after this)
+  await act('talk');
+  await until(() => yt.evaluate(() => !!window.__ytcActiveSR), 8000, 100);
+  await yt.evaluate(() => { window.__ytcSpeech({ type: 'error', error: 'not-allowed' }); window.__ytcSpeech({ type: 'end' }); });
+  const refused = await until(async () => /microphone is blocked/i.test(await talkBar()), 5000);
+  ok('iOS refuses the microphone: the talk bar says so (you can type)', !!refused, await talkBar());
+  await act('goOn');
+  await sleep(300);
 
   // ---- 8. the iOS voice (no fake voice): AVSpeechSynthesizer says the explanation, its events drive the tutor ----
   stores.local.drExtras = { ...stores.local.drExtras, fakeVoice: false };

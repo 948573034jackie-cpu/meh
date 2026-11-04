@@ -40,7 +40,7 @@ import { VideoEngine } from './video-engine';
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
-import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
+import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, ShortPieces, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
@@ -64,6 +64,8 @@ interface YtcApi {
   settings(): { sendOn: boolean; target: string; voiceOn: boolean };
   buildSentences(cues: unknown[]): TimedSentence[];
   setBarStatus(text: string, bad?: boolean): void;
+  /** the browser refused the microphone */
+  micBlocked?(): boolean;
   /** the microphone closes what it is hearing now (it comes as final) and listens again */
   finishSpeech?(): void;
 }
@@ -72,6 +74,8 @@ interface DreamHook {
   owns(): boolean;
   /** the tutor wants the microphone now (it waits for an answer or a talk is open) */
   wantsMic?(): boolean;
+  /** a voice call is open: youtube.js keeps the microphone on, even with voice commands off */
+  callOpen?(): boolean;
   /** something the microphone heard; true = handled here */
   heard(text: string, final: boolean, key?: string): boolean;
   /** youtube.js built its bar: add the Tutor button */
@@ -180,7 +184,14 @@ interface Talk {
   error?: string;
   /** a real call: you opened it (📞, Space) or you started talking in it; it does not end after a few quiet seconds */
   call?: boolean;
+  /** the OpenAI live call was reconnected once already */
+  reconnected?: boolean;
 }
+
+/** the microphone is refused: where to allow it */
+const micBlockedText = (): string => (navigator.maxTouchPoints > 1
+  ? 'The microphone is blocked. iPhone Settings → this app → turn on Microphone and Speech Recognition (in Safari: aA → Website Settings → Microphone). You can type instead.'
+  : 'The microphone is blocked for youtube.com: click the lock icon left of the address bar → Microphone → Allow. You can type instead.');
 
 class Session {
   readonly videoId: string;
@@ -199,6 +210,7 @@ class Session {
   private prefetched = new Map<string, { full: string; done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void; sink: ((full: string) => void) | null; at: number }>();
   private engine: VideoEngine;
   private mac: TtsEngine | null = null;
+  private macRaw: TtsEngine | null = null;
   private macVoice = '';
   /** the Mac's English voices (picked in the quick settings) */
   private macVoices: { id: string; name: string; lang: string }[] = [];
@@ -211,6 +223,8 @@ class Session {
   private teachOut: WithVolume | null = null;
   private zhOut: WithVolume | null = null;
   private voiceKind: 'mac' | 'openai' | 'elevenlabs' | 'azure' = 'mac';
+  /** why the good voice failed last (for the 🩺 check) */
+  private lastVoiceError: string | null = null;
   private voiceId = '';
   private zhVoice: string | null = null;
   private keys: store.Keys = {};
@@ -339,6 +353,9 @@ class Session {
     return !!this.cmdWin || this.windowOpen || !!this.callStop || !!(this.talk && !this.talk.live);
   }
 
+  /** a real voice call with Claude is open: it listens even with voice commands off */
+  callOpen(): boolean { return !this.disposed && !this.pttActive && !!this.talk?.call && !this.talk.live; }
+
   async start(): Promise<void> {
     pageStyle();
     this.openGate();
@@ -450,15 +467,20 @@ class Session {
   // ---- voices ---------------------------------------------------------------------------------------------------
   private async prepareVoices(): Promise<void> {
     if (E2E()) useFakeEngine(2);
-    this.mac = getEngine('webspeech');
+    // Chrome's free online voices ("Google UK English …") stop after about 15 s: they get short pieces
+    this.macRaw = getEngine('webspeech');
+    this.mac = new ShortPieces(this.macRaw, (id) => /^Google /i.test(id));
     this.macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.zhMac = await chineseVoiceId().catch(() => null);
     // (the Mac's joke voices are left out, unless one is already yours)
+    const good = (n: string) => (/premium|enhanced|siri/i.test(n) ? 0 : 1);
+    const online = (n: string) => (/^Google /i.test(n) ? 1 : 0);
     const novelty = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Deranged|Hysterical|Pipe Organ)$/;
     this.macVoices = (await this.mac.listVoices().catch(() => []))
       .filter((v) => /^en\b|^en[-_]/i.test(v.lang) && (!novelty.test(v.name) || v.id === this.macVoice))
-      .map((v) => ({ id: v.id, name: v.name, lang: v.lang }))
-      .sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+      // the better ones (Enhanced / Premium / Siri) first, Chrome's online voices last
+      .sort((a, b) => online(a.name) - online(b.name) || good(a.name) - good(b.name) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name))
+      .map((v) => ({ id: v.id, name: online(v.name) ? `${v.name} · online` : v.name, lang: v.lang }));
     await this.loadAzureAvail();
     this.applyVoice();
   }
@@ -479,12 +501,19 @@ class Session {
     const kind = resolveVoice(extras.voice, this.keys);
     this.tts?.cancelAll();
     this.voiceKind = kind;
+    this.lastVoiceError = null;
     if (kind === 'mac') {
       this.tts = this.mac; this.zhTts = this.mac; this.voiceId = this.macVoice; this.zhVoice = this.zhMac;
     } else {
       const name = kind === 'openai' ? 'OpenAI' : kind === 'azure' ? 'Microsoft' : 'ElevenLabs';
-      this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, (e) => this.toast(`The ${name} voice failed (${e.message}) · the Mac voice speaks now.`, 9000));
-      this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', () => undefined);
+      const plain = navigator.maxTouchPoints > 1 ? 'built-in' : 'Mac';
+      const trouble = (e: Error, cooling: boolean) => {
+        this.lastVoiceError = `${name} voice: ${e.message}`;
+        // one failed sentence is said by the plain voice quietly; only a longer problem is shown
+        if (cooling) this.toast(`The ${name} voice has a problem (${e.message}). The ${plain} voice speaks for 1 minute, then the ${name} voice again.`, 9000);
+      };
+      this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, trouble);
+      this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', trouble);
       this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
       this.zhVoice = kind === 'azure' ? azureZhVoice(this.voiceId) : this.voiceId;
     }
@@ -1227,6 +1256,16 @@ class Session {
     const call: LiveCall = new LiveCall({ model: extras.liveModel, voice: this.liveVoice(), instructions: this.liveContext(word, explanation), transcribe: true, mic: extras.micLevel ?? 2, volume: this.volumeOf('teacher') }, {
       state: (s, detail) => {
         const t = this.talk;
+        // the connection dropped during a talk: one automatic reconnect with the same context
+        if (s === 'error' && t?.live === call && !t.reconnected && /lost|did not open|connection/i.test(detail ?? '')) {
+          t.reconnected = true;
+          this.toast('The live voice dropped. Reconnecting…', 4000);
+          const again = this.newCall(t.word, t.explanation);
+          t.live = again;
+          again.setMic(true);
+          this.renderTalk();
+          return;
+        }
         if (s === 'error' && detail) {
           if (t?.live === call) {
             t.live = null; t.error = detail;
@@ -1322,9 +1361,15 @@ class Session {
   /** the explanation (or the next one) is talking: the live call does not listen meanwhile (no echo) */
   private muteTalk(): void { const t = this.talk; if (t?.live) { t.live.setMic(false); if (t.live.speaking) t.live.interrupt(); } t?.chat?.interrupt(); }
 
+  /** the microphone was refused when the talk bar was drawn last */
+  private micWasBlocked = false;
+
   private talkTick(): void {
     const t = this.talk;
     if (!t) return;
+    // the microphone was refused just now: the talk bar says so
+    const blocked = !!window.__ytcApi?.micBlocked?.();
+    if (blocked !== this.micWasBlocked) { this.micWasBlocked = blocked; this.renderTalk(); }
     // keep the stop's window open while we talk (Dream Read's window would end after a few seconds)
     if (this.cmdWin && this.cmdWin.phase === 'after') this.controller?.keepWaiting(20_000);
     // the short moment after an explanation ends after a few quiet seconds; a real call waits a minute for you
@@ -1352,9 +1397,11 @@ class Session {
       const live = t.live;
       const noLive = !live && !t.error && extras.liveOn && !this.keys.openai ? 'No live call: it needs your OpenAI key (⚙ → API keys). ' : '';
       const chat = t.chat;
-      const voiceOn = !!window.__ytcApi?.settings().voiceOn;
-      const state = chat ? (chat.lastError && !chat.busy ? `Claude did not answer: ${chat.lastError} · try again or type` : chat.thinking && !chat.speaking ? 'Asking Claude… (one moment)' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : 'Type your question (voice: turn on Voice commands in the extension window)')
-        : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : noLive + (window.__ytcApi?.settings().voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
+      const blocked = !live && !!window.__ytcApi?.micBlocked?.();
+      // (a real call opens the microphone even with voice commands off)
+      const voiceOn = !blocked && (!!window.__ytcApi?.settings().voiceOn || this.callOpen());
+      const state = chat ? (chat.lastError && !chat.busy ? `Claude did not answer: ${chat.lastError} · try again or type` : chat.thinking && !chat.speaking ? 'Asking Claude… (one moment)' : chat.speaking ? 'Your tutor is talking (say “stop” or press Space to interrupt)' : voiceOn ? 'Your turn: just talk, I am listening · or type · “go on” = back to the video' : blocked ? micBlockedText() : 'Type your question (voice: turn on Voice commands in the extension window)')
+        : live ? (live.state === 'connecting' ? 'Connecting the live voice…' : live.speaking ? 'Your tutor is talking (just talk to interrupt)' : t.hearing ? 'Listening to you…' : 'Live call · talk to me') : t.error ? `Live voice off: ${t.error}` : blocked ? micBlockedText() : noLive + (voiceOn ? 'Talk to me (I am listening) · or type' : 'Type your question');
       const lines = t.log.slice(-6).map((l) => `<div class="tl ${l.who}${l.final ? '' : ' partial'}"><b>${l.who === 'you' ? 'You' : 'Tutor'}</b> ${esc(l.text)}</div>`).join('');
       // you are being heard (the words still change): Send gives them to the tutor now
       const lastLine = t.log[t.log.length - 1];
@@ -1965,7 +2012,8 @@ class Session {
     root.appendChild(el);
     this.stage = { host, root, el };
     // you clicked the video to pause it and the page appeared under the mouse: that same click must not tap a word
-    for (const type of ['click', 'dblclick']) el.addEventListener(type, (e) => { if (Date.now() - this.stageShownAt < 600) { e.stopPropagation(); e.preventDefault(); } }, true);
+    // (only the text: the buttons of the page work at once)
+    for (const type of ['click', 'dblclick']) el.addEventListener(type, (e) => { if (Date.now() - this.stageShownAt < 600 && (e.target as HTMLElement).closest?.('.page')) { e.stopPropagation(); e.preventDefault(); } }, true);
     this.placeStage();
     const page = el.querySelector<HTMLElement>('.page')!;
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
@@ -2082,6 +2130,7 @@ class Session {
     if (!this.stage || !this.vb) return;
     if (normalView() && !extras.stageOn && part) return;
     this.partKeys = part && part.length ? new Set(part.map((p) => sentenceKey(p))) : null;
+    this.partEnd = part && part.length ? part[part.length - 1] : null;
     this.stageShown = true;
     if (this.stage.host.hidden) this.stageShownAt = Date.now();
     this.placeStage();
@@ -2095,10 +2144,14 @@ class Session {
     if (part?.length) { this.ensureZh(part); this.scrollToCur(true); }
   }
 
+  /** the last sentence of the part on the page (20 / 30 / 40 / 60 changes the part from there, at once) */
+  private partEnd: Position | null = null;
+
   private hideStage(): void {
     if (!this.stage || extras.view === 'listening') return;
     this.stageShown = false;
     this.partKeys = null;
+    this.partEnd = null;
     this.stage.host.hidden = true;
     document.documentElement.classList.remove('dr-stage');
     if (this.quickRoot === this.stage.el) this.closeQuick();
@@ -2180,7 +2233,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
+    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), testCall: () => void this.callTutor(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -2695,12 +2748,21 @@ class Session {
 
   settingsChanged(prev: Settings): void {
     this.applyLook();
+    // 20 / 30 / 40 / 60 changed while a part is on the page: the page shows the new part at once
+    if (prev.listen.lastSecondsWindow !== settings.listen.lastSecondsWindow && this.partKeys && this.partEnd && this.vb && this.stageVisible()) {
+      const t = this.vb.timingOf(this.partEnd);
+      if (t) this.showStage(this.partAt(t.end - 0.01, settings.listen.lastSecondsWindow));
+    }
     if (prev.learnerLevel !== settings.learnerLevel) this.countKnown();
     if (prev.learnerLevel !== settings.learnerLevel || prev.appearance.showHints !== settings.appearance.showHints) {
       this.render();
       if (prev.learnerLevel !== settings.learnerLevel) void this.runHintsJob();
     }
-    if (prev.voice.voiceId !== settings.voice.voiceId && settings.voice.voiceId) { this.macVoice = settings.voice.voiceId; if (this.voiceKind === 'mac') this.voiceId = this.macVoice; }
+    if (prev.voice.voiceId !== settings.voice.voiceId && settings.voice.voiceId) {
+      this.macVoice = settings.voice.voiceId;
+      // a new voice says a test sentence
+      if (this.voiceKind === 'mac') { this.voiceId = this.macVoice; setTimeout(() => this.testVoice(), 50); }
+    }
     if (prev.voice.rate !== settings.voice.rate) (this.tts as { setRate?: (r: number) => void } | null)?.setRate?.(settings.voice.rate);
     this.renderHead();
     this.renderStageTop();
@@ -2710,7 +2772,13 @@ class Session {
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
     if (prev.teacherVolume !== extras.teacherVolume || prev.followVideoVolume !== extras.followVideoVolume) { const v = this.volumeOf('teacher'); this.talk?.live?.setVolume(v); this.pre?.setVolume(v); }
-    if (prev.voice !== extras.voice || prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion) this.applyVoice();
+    const voiceChanged = prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion;
+    if (prev.voice !== extras.voice || voiceChanged) {
+      this.applyVoice();
+      // the voice you hear changed: it says a test sentence (not when only the live call's voice changed)
+      const k = this.voiceKind;
+      if (k === 'openai' ? prev.openaiVoice !== extras.openaiVoice : k === 'elevenlabs' ? prev.elevenVoice !== extras.elevenVoice : k === 'azure' && (prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion)) this.testVoice();
+    }
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
     if (prev.zhLines !== extras.zhLines && extras.zhLines && this.stageVisible() && this.vb) {
@@ -2821,7 +2889,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind,
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, voiceProblem: this.lastVoiceError,
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -2847,7 +2915,7 @@ class Session {
 
   /** diagnostics for the 🩺 check and the developer (no keys): the voices and the call */
   voiceState(): Record<string, unknown> {
-    const mac = this.mac as unknown as { state?: () => unknown } | null;
+    const mac = this.macRaw as unknown as { state?: () => unknown } | null;
     return { kind: this.voiceKind, voiceId: this.voiceId, mac: mac?.state?.() ?? null, teacherVol: this.volumeOf('teacher'), wordVol: this.volumeOf('word'), talk: this.talk ? { chat: this.talk.chat ? { thinking: this.talk.chat.thinking, speaking: this.talk.chat.speaking, busy: this.talk.chat.busy, error: this.talk.chat.lastError, events: this.talk.chat.events.slice(-25) } : null, live: this.talk.live?.state ?? null, call: !!this.talk.call } : null, mic: this.wantsMic(), trail: this.trailLog.slice(-25), split: splitReport.slice(-30) };
   }
 
@@ -2857,8 +2925,9 @@ class Session {
       layout: this.partLayout(),
       mode: this.mode, sentences: this.vb?.order.length ?? 0, state: this.playback?.state ?? null, cur: this.cur, window: this.cmdWin, card: this.card,
       transcript: this.transcript.map((e) => ({ kind: e.kind, target: e.target, status: e.status, text: e.text.slice(0, 80) })),
-      spoken: (this.mac as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
-      spokenVol: (this.mac as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
+      spoken: (this.macRaw as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
+      spokenVol: (this.macRaw as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
+      callOpen: this.callOpen(),
       cloud: cloudSpoken.slice(-30),
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text), callStop: this.callStop ? this.callStop.target : null,
       split: this.source, voice: this.voiceKind, view: extras.view,
@@ -3007,6 +3076,7 @@ async function boot(): Promise<void> {
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
     wantsMic: () => !!session && session.wantsMic(),
+    callOpen: () => !!session && session.callOpen(),
     heard: (text, final, key) => (session ? session.heard(text, final, key) : false),
     decorateBar: (bar) => {
       if (bar.querySelector('#yt2c-b-tutor')) return;

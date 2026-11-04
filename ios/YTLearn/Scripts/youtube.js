@@ -321,6 +321,7 @@
     setBarStatus: (text, bad) => setBarStatus(text, bad),
     // what the microphone hears now is closed (Chrome gives it as final), then it listens again
     finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
+    micBlocked: () => recWanted === 'blocked',
   };
 
   window.__ytcDebug = {
@@ -852,12 +853,14 @@
   // My tutor: the microphone only while the tutor waits for you (a question, a talk) unless you want it always:
   // on a Mac a microphone in use with echo cancelling makes all other sound quieter and muffled, with small breaks
   function dreamWantsMic() { try { const d = window.__ytcDream; return !d || !d.wantsMic || !!d.wantsMic(); } catch (e) { return true; } }
+  // a voice call with the tutor listens even with voice commands off
+  function dreamCallOpen() { try { const d = window.__ytcDream; return !!(d && d.callOpen && d.callOpen()); } catch (e) { return false; } }
   if (ALWAYS_LISTEN) {
     setInterval(() => {
       // (iPhone / iPad: voice commands are off to keep the mic for the website's voice call; My tutor has no such call,
       // so its questions and talks may use it)
       const micOk = settings.voiceOn || (TOUCH && dreamOwns());
-      const want = micOk && (settings.sendOn || (dreamOwns() && dreamWantsMic())) && location.pathname === '/watch' && !!video; // off (red) = no microphone
+      const want = ((micOk && (settings.sendOn || (dreamOwns() && dreamWantsMic()))) || dreamCallOpen()) && location.pathname === '/watch' && !!video; // off (red) = no microphone
       if (want && !rec && recWanted !== 'blocked') startListening();
       if (!want && rec) stopListening();
     }, 500);

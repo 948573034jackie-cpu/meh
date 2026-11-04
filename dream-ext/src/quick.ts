@@ -29,6 +29,8 @@ export interface QuickCtx {
   /** say a test sentence with the chosen voice (teacher volume) / a test word (word volume) */
   testVoice(): void;
   testWord(): void;
+  /** start a test call */
+  testCall(): void;
   close(): void;
   toast(text: string, ms?: number): void;
 }
@@ -121,11 +123,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${voiceRows}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
-      <p class="muted">Auto = the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice.</p>
+      <p class="muted">Auto = the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice. One hour of the tutor speaking costs about: Microsoft $0 (free about 9 hours a month, then about $0.90), OpenAI $0.90, ElevenLabs $3 or more, Mac free.</p>
     </section>
     <section><h4>Talk to my tutor</h4>
       <label>After each explanation ${onOff('talkAfter', x.talkAfterExplain)}</label>
-      <label>Voice call ${onOff('liveOn', x.liveOn)}</label>
+      <label>Voice call ${onOff('liveOn', x.liveOn)} <button type="button" data-act="test-call">📞 Test the call</button></label>
       <label>Talk with ${seg('callEngine', x.callEngine ?? 'claude', [['claude', 'Claude + my tutor’s voice (no OpenAI)'], ['openai', 'OpenAI realtime']])}${(x.callEngine ?? 'claude') === 'openai' && !keys.openai ? ' <span class="warn">needs an OpenAI key with credit</span>' : ''}</label>
       ${(x.callEngine ?? 'claude') === 'openai' ? `<label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>` : '<p class="muted">You talk, Chrome writes down your words, Claude answers, and your tutor’s voice speaks. Say “stop” (or press Space) to interrupt, “go on” to go back to the video.</p>'}
       <label>Voice mode ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">(say “hello” = explain the last part, “stop”, “play”, ask anything, “bye bye” = off)</span></label>
@@ -223,6 +225,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (act === 'close') ctx.close();
     else if (act === 'test') ctx.testVoice();
     else if (act === 'test-word') ctx.testWord();
+    else if (act === 'test-call') { ctx.close(); ctx.testCall(); }
     else if (act === 'test-azure') void (chrome.runtime.sendMessage({ type: 'dream-test-azure' }) as Promise<{ ok: boolean; message: string }>).then((r) => ctx.toast(r?.message ?? 'No answer.', 9000), () => ctx.toast('No answer.'));
     else if (act === 'way-edit') { editingWay = editingWay === active.id ? null : active.id; renderQuick(el, ctx); }
     else if (act === 'way-reset') {

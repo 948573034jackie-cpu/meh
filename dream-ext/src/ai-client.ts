@@ -1,4 +1,5 @@
 /** Content-script side of the Dream Tutor AI: requests go to the background worker over a port (the key stays there). */
+import { gunzipSync } from 'fflate';
 import type { ExplainRequest } from '@shared/api';
 import type { PromptBundle } from '@core/ai/prompts';
 import type { DictData } from '@shared/api';
@@ -97,15 +98,34 @@ export function complete(prompt: PromptBundle): Promise<string> {
 let dictData: Promise<DictData> | null = null;
 let dictionary: Promise<Dictionary> | null = null;
 
+/** how the last gzip file was unpacked (for the 🩺 check): the browser's own DecompressionStream, or JavaScript */
+export let gunzipVia = '';
+/**
+ * A gzip file as text. Safari on the iPhone refuses the browser's own DecompressionStream for these files
+ * ("Invalid type should be ArrayBuffer"); then a small JavaScript gunzip (fflate) unpacks it. Plain text passes through.
+ */
+export async function gunzipText(data: ArrayBuffer | Uint8Array): Promise<string> {
+  const buf: ArrayBuffer = data instanceof Uint8Array ? (data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer) : data;
+  const bytes = new Uint8Array(buf);
+  if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) { gunzipVia = 'plain'; return new TextDecoder().decode(bytes); }
+  try {
+    if (typeof DecompressionStream === 'function') {
+      const text = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+      gunzipVia = 'browser';
+      return text;
+    }
+  } catch (e) { console.warn('My tutor: the browser could not unpack the file, JavaScript does it', e); }
+  const text = new TextDecoder().decode(gunzipSync(bytes));
+  gunzipVia = 'javascript';
+  return text;
+}
+
 /** The offline dictionary (ECDICT + British IPA + CEFR levels, 2.3 MB) that ships with the extension. */
 export function getDictData(): Promise<DictData> {
   dictData ??= (async () => {
     const res = await fetch(chrome.runtime.getURL('dream/dict.json.gz'));
     if (!res.ok) throw new Error(`The dictionary could not be loaded (HTTP ${res.status}).`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf[0] !== 0x1f || buf[1] !== 0x8b) return JSON.parse(new TextDecoder().decode(buf)) as DictData;
-    const text = await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
-    return JSON.parse(text) as DictData;
+    return JSON.parse(await gunzipText(await res.arrayBuffer())) as DictData;
   })();
   dictData.catch(() => { dictData = null; });
   return dictData;
@@ -116,8 +136,7 @@ export function getZipf(): Promise<(word: string) => number | null> {
   zipf ??= (async () => {
     const res = await fetch(chrome.runtime.getURL('dream/zipf.json.gz'));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = await res.arrayBuffer();
-    const text = new Uint8Array(buf)[0] === 0x1f ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text() : new TextDecoder().decode(buf);
+    const text = await gunzipText(await res.arrayBuffer());
     const table = new Map<string, number>();
     for (const [z, words] of Object.entries(JSON.parse(text) as Record<string, string>)) for (const w of words.split(' ')) table.set(w, Number(z) / 10);
     return (word: string) => table.get(word.toLowerCase()) ?? null;

@@ -1,9 +1,9 @@
 /**
  * The tutor's voice on YouTube. The OpenAI voice (gpt-4o-mini-tts: marin, cedar, …) or ElevenLabs is synthesized
  * by the background worker with the learner's key, one clause at a time, and played here through Dream Read's
- * AudioTtsEngine (cached, read ahead, speed changed live). A failing cloud voice falls back to the Mac voice for
- * the rest of the video, so the tutor never goes silent. When the teacher repeats the sentence being taught, the
- * real sentence is played from the video instead of a synthetic voice.
+ * AudioTtsEngine (cached, read ahead, speed changed live). A failed sentence is tried again, then said by the Mac
+ * voice, and the good voice comes back (VoiceWithBackup), so the tutor never goes silent. When the teacher repeats
+ * the sentence being taught, the real sentence is played from the video instead of a synthetic voice.
  */
 import { AudioTtsEngine } from '@core/tts/audio';
 import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from '@core/tts/engine';
@@ -101,8 +101,10 @@ export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; eleve
 }
 
 /**
- * A cloud voice with the Mac voice behind it: when the cloud voice fails (no credit, no internet), the sentence
- * is said by the Mac voice and the Mac voice is used from then on; `onFail` tells the learner once.
+ * A cloud voice with the Mac voice behind it. A failed sentence (no internet for a moment, a busy server, no sound
+ * after `startTimeoutMs`) is tried once more; if that fails too, only that sentence is said by the Mac voice and the
+ * good voice is used again for the next one. Three failed sentences in a row = the Mac voice for one minute, then the
+ * good voice again (it never stays on the Mac voice for the rest of the video). `onTrouble` tells the learner.
  */
 export class VoiceWithBackup implements TtsEngine {
   readonly id: TtsEngine['id'];
@@ -110,10 +112,18 @@ export class VoiceWithBackup implements TtsEngine {
   readonly label: string;
   readonly costNote: string;
   readonly wordBoundaries: boolean;
-  failed = false;
-  constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onFail: (e: Error) => void) {
+  /** sentences failed in a row */
+  private fails = 0;
+  /** the Mac voice only, until then (ms) */
+  private coolUntil = 0;
+  /** counts cancelAll(): a try waiting from before it does not start any more */
+  private stops = 0;
+  /** the last reason the good voice failed (for the 🩺 check) */
+  lastError: string | null = null;
+  constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onTrouble: (e: Error, cooling: boolean) => void, private startTimeoutMs = 12_000, private now: () => number = () => Date.now()) {
     this.id = primary.id; this.kind = primary.kind; this.label = primary.label; this.costNote = primary.costNote; this.wordBoundaries = primary.wordBoundaries;
   }
+  get failed(): boolean { return this.now() < this.coolUntil; }
   get paused(): boolean { return (this.failed ? this.backup : this.primary).paused; }
   listVoices(): Promise<TtsVoice[]> { return this.primary.listVoices(); }
   /** the backup voice for this text; '' (no fitting Mac voice, e.g. for Chinese) = say nothing */
@@ -124,18 +134,43 @@ export class VoiceWithBackup implements TtsEngine {
   }
   speak(text: string, opts: SpeakOptions): SpeakHandle {
     if (this.failed) return this.viaBackup(text, opts);
-    let inner = this.primary.speak(text, opts);
     let cancelled = false;
-    const first = inner;
-    const handle: SpeakHandle = {
-      done: first.done.then((o): SpeakOutcome | Promise<SpeakOutcome> => {
-        if (o !== 'error' || cancelled) return o;
-        if (!this.failed) { this.failed = true; this.onFail(first.error ?? new Error('The voice failed.')); }
-        inner = this.viaBackup(text, opts);
-        return inner.done.then((o2) => { if (inner.error) handle.error = inner.error; return o2; });
-      }),
-      cancel: () => { cancelled = true; inner.cancel(); },
+    let inner: SpeakHandle | null = null;
+    const stopsAtStart = this.stops;
+    const gone = () => cancelled || this.stops !== stopsAtStart;
+    const handle: SpeakHandle = { done: Promise.resolve('ended' as SpeakOutcome), cancel: () => { cancelled = true; inner?.cancel(); } };
+    const attempt = (n: number): Promise<SpeakOutcome> => {
+      let started = false, timedOut = false;
+      const h = this.primary.speak(text, { ...opts, onStart: () => { started = true; opts.onStart?.(); } });
+      inner = h;
+      // (while the learner has paused the teacher no sound is expected: the clock waits)
+      const watch = (): ReturnType<typeof setTimeout> => setTimeout(() => {
+        if (started || gone()) return;
+        if (this.primary.paused) { timer = watch(); return; }
+        timedOut = true;
+        h.cancel();
+      }, this.startTimeoutMs);
+      let timer = watch();
+      return h.done.then(async (o): Promise<SpeakOutcome> => {
+        clearTimeout(timer);
+        if (gone()) return 'cancelled';
+        if (o === 'ended') { this.fails = 0; return o; }
+        if (o === 'cancelled' && !timedOut) return o;
+        this.lastError = timedOut ? 'no sound came in time' : h.error?.message ?? 'the voice failed';
+        // once more (most failures are a short hiccup)
+        if (n === 0) { await new Promise((r) => setTimeout(r, 400)); if (gone()) return 'cancelled'; return attempt(1); }
+        this.fails++;
+        const cooling = this.fails >= 3;
+        if (cooling) { this.coolUntil = this.now() + 60_000; this.fails = 0; }
+        this.onTrouble(new Error(this.lastError), cooling);
+        const b = this.viaBackup(text, opts);
+        inner = b;
+        const o2 = await b.done;
+        if (b.error) handle.error = b.error;
+        return o2;
+      });
     };
+    handle.done = attempt(0);
     return handle;
   }
   prefetch(text: string, voiceId: string, rate: number): void { if (!this.failed) this.primary.prefetch?.(text, voiceId, rate); }
@@ -143,7 +178,7 @@ export class VoiceWithBackup implements TtsEngine {
   stopReadAhead(): void { this.primary.stopReadAhead?.(); }
   pause(): void { this.primary.pause(); this.backup.pause(); }
   resume(): void { this.primary.resume(); this.backup.resume(); }
-  cancelAll(): void { this.primary.cancelAll(); this.backup.cancelAll(); }
+  cancelAll(): void { this.stops++; this.primary.cancelAll(); this.backup.cancelAll(); }
   setRate(rate: number): void { (this.primary as { setRate?: (r: number) => void }).setRate?.(rate); }
 }
 
@@ -177,6 +212,63 @@ export class WithVolume implements TtsEngine {
 export function sliderGain(slider: number): number {
   const s = Math.max(0, Math.min(100, Number.isFinite(slider) ? slider : 100)) / 100;
   return s * s;
+}
+
+/**
+ * Chrome's free online voices ("Google UK English Female", …) stop by themselves after about 15 seconds of speech:
+ * long text is said in short pieces (at commas and spaces), one after the other. Every other voice gets the text as it is.
+ */
+export class ShortPieces implements TtsEngine {
+  readonly id: TtsEngine['id'];
+  readonly kind: TtsEngine['kind'];
+  readonly label: string;
+  readonly costNote: string;
+  readonly wordBoundaries: boolean;
+  constructor(private inner: TtsEngine, private isOnline: (voiceId: string) => boolean, private max = 140) {
+    this.id = inner.id; this.kind = inner.kind; this.label = inner.label; this.costNote = inner.costNote; this.wordBoundaries = inner.wordBoundaries;
+  }
+  get paused(): boolean { return this.inner.paused; }
+  listVoices(): Promise<TtsVoice[]> { return this.inner.listVoices(); }
+  speak(text: string, opts: SpeakOptions): SpeakHandle {
+    if (!this.isOnline(opts.voiceId) || text.length <= this.max) return this.inner.speak(text, opts);
+    const pieces = splitPieces(text, this.max);
+    let cancelled = false;
+    let cur: SpeakHandle | null = null;
+    const handle: SpeakHandle = { done: Promise.resolve('ended' as SpeakOutcome), cancel: () => { cancelled = true; cur?.cancel(); } };
+    handle.done = (async (): Promise<SpeakOutcome> => {
+      for (let i = 0; i < pieces.length; i++) {
+        if (cancelled) return 'cancelled';
+        cur = this.inner.speak(pieces[i], { ...opts, onStart: i === 0 ? opts.onStart : undefined, onWord: undefined });
+        const o = await cur.done;
+        if (o !== 'ended') { if (cur.error) handle.error = cur.error; return o; }
+      }
+      return 'ended';
+    })();
+    return handle;
+  }
+  prefetch(text: string, voiceId: string, rate: number): void { this.inner.prefetch?.(text, voiceId, rate); }
+  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner.readAhead?.(texts, voiceId, rate); }
+  stopReadAhead(): void { this.inner.stopReadAhead?.(); }
+  pause(): void { this.inner.pause(); }
+  resume(): void { this.inner.resume(); }
+  cancelAll(): void { this.inner.cancelAll(); }
+  setRate(rate: number): void { (this.inner as { setRate?: (r: number) => void }).setRate?.(rate); }
+}
+
+/** text in pieces of at most `max` characters, cut after a comma / semicolon / dash, else at a space */
+export function splitPieces(text: string, max: number): string[] {
+  const out: string[] = [];
+  let rest = text.replace(/\s+/g, ' ').trim();
+  while (rest.length > max) {
+    const window = rest.slice(0, max);
+    let cut = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '), window.lastIndexOf(' – '), window.lastIndexOf(' - '));
+    if (cut < max * 0.4) cut = window.lastIndexOf(' ');
+    if (cut <= 0) cut = max;
+    out.push(rest.slice(0, cut + 1).trim());
+    rest = rest.slice(cut + 1).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
 }
 
 /**
