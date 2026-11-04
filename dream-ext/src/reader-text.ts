@@ -75,8 +75,9 @@ export function pagesToText(pages: readonly (readonly PdfTextItem[])[]): string 
 }
 
 export async function pdfToText(bytes: ArrayBuffer): Promise<string> {
+  // (pdf.js does its work in this page, not in a worker of its own: a worker file may not load inside the iPhone apps)
+  await import('pdfjs-dist/build/pdf.worker.mjs');
   const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('dream/pdf.worker.min.mjs');
   const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
   const pages: PdfTextItem[][] = [];
   for (let i = 1; i <= doc.numPages; i++) {

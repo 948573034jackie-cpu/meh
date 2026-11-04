@@ -16,7 +16,7 @@ cat browser-shim.js "$SRC/background.js" > "$OUT/background.js"
 # (one sed with no -i: the same on macOS and Linux)
 sed -e 's#<script src="lib.js">#<script src="browser-shim.js"></script><script src="lib.js">#' "$SRC/popup.html" > "$OUT/popup.html"
 grep -q "browser-shim.js" "$OUT/popup.html" || { echo "popup.html: could not add browser-shim.js"; exit 1; }
-for f in options.html vocab.html; do
+for f in options.html vocab.html reader.html; do
   sed -e 's#<script#<script src="../browser-shim.js"></script><script#' "$SRC/dream/$f" > "$OUT/dream/$f"
   grep -q "browser-shim.js" "$OUT/dream/$f" || { echo "dream/$f: could not add browser-shim.js"; exit 1; }
 done

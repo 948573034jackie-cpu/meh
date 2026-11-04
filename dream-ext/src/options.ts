@@ -3,6 +3,7 @@ import { resolveStyles, resolveStyle, DEFAULT_CONTEXT_RULES, DEFAULT_STYLES, KNO
 import type { Settings, AiProviderId } from '@shared/settings';
 import { WebSpeechEngine } from '@core/tts/webspeech';
 import * as store from './store';
+import { copyLevel } from './level-copy';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 let S: Settings;
@@ -44,7 +45,7 @@ async function init(): Promise<void> {
   bindCheck('levelMode', () => X.levelMode !== false, (b) => saveX({ levelMode: b }));
   $('copy-level').addEventListener('click', async () => {
     const msg = $('copy-msg');
-    try { const r = await chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as { text: string }; await navigator.clipboard.writeText(r.text); msg.textContent = 'Copied. Paste it to Claude.'; msg.className = 'msg ok'; }
+    try { if ((await copyLevel()) === 'copied') { msg.textContent = 'Copied. Paste it to Claude.'; msg.className = 'msg ok'; } }
     catch { msg.textContent = 'It could not be copied.'; msg.className = 'msg bad'; }
   });
   $('open-reader').addEventListener('click', () => void chrome.runtime.sendMessage({ type: 'dream-open', page: 'reader' }));

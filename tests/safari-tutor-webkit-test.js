@@ -457,6 +457,27 @@ async function hub(page, o) {
   ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(lvCount) && +/\((\d+)%/.exec(lvCount)[1] <= 50, lvCount);
   await lv.close();
 
+  // ---- 11. the reading mode in WebKit: a real PDF through pdf.js ----
+  const esc = (t) => t.replace(/([()\\])/g, '\\$1');
+  const SENT = ['My friend was very meticulous about her work.', 'She walked to the shop and bought some bread.', 'It was a lugubrious moment of joy.', 'The children played in the garden after school.', 'We will talk about it again very soon.', 'My uncle is an obsequious man.'];
+  const content = `BT /F1 12 Tf 72 720 Td 14 TL ${SENT.map((l) => `(${esc(l)}) Tj T*`).join(' ')} ET`;
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 4 0 R >> >> >>', '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>', `<< /Length ${content.length} >>\nstream\n${content}\nendstream`];
+  let pdf = '%PDF-1.4\n'; const at = [];
+  objs.forEach((o, i) => { at.push(pdf.length); pdf += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${at.map((a) => `${String(a).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  const rd = await ctx.newPage();
+  extPages.add(rd);
+  rd.on('pageerror', (e) => console.log('PAGE ERROR (reader)', String(e.message || e).slice(0, 300)));
+  await rd.goto(BASE + 'dream/reader.html');
+  await rd.setInputFiles('#file', { name: 'Story.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdf, 'latin1') });
+  const rOpen = await until(() => rd.evaluate(() => document.body.dataset.sentences), 25000);
+  ok('reading mode in WebKit: a PDF opens, all its sentences, exactly the original text', rOpen === String(SENT.length) && (await rd.evaluate(() => document.getElementById('text').textContent.replace(/\s+/g, ' ').trim())) === SENT.join(' '), `${rOpen} · ${await rd.evaluate(() => document.getElementById('open-msg').textContent)}`);
+  await until(() => rd.evaluate(() => { const h = document.getElementById('dr-level-host'); const b = h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=skip]'); if (b) b.click(); return !!b; }), 8000);
+  const rEnd = await until(() => rd.evaluate(() => { const d = JSON.parse(document.documentElement.dataset.drDebug || 'null'); return d && d.heard >= d.total && !d.playing ? d : null; }), 60000, 200);
+  ok('...it reads to the end by itself, stops at 50% or under', rEnd && rEnd.stops >= 1 && rEnd.stops <= rEnd.total / 2, JSON.stringify(rEnd && { stops: rEnd.stops, total: rEnd.total }));
+  await rd.close();
+
   await browser.close();
   api.close();
   console.log(fails ? `\n${fails} FAILED` : '\nSAFARI MY TUTOR: ALL PASSED');

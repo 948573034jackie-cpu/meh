@@ -3,6 +3,7 @@
  * changes while watching, saved at once: listening / normal, text sizes, the voice, the talk, the teacher's
  * instructions, the keys and the shortcuts. The full settings page stays for the rarely used rest.
  */
+import { copyLevel } from './level-copy';
 import type { Settings } from '@shared/settings';
 import { CEFR_LEVELS } from '@core/model';
 import * as store from './store';
@@ -157,7 +158,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Ask Level Check before every video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
       <button type="button" data-act="copy-level">Copy my level for Claude</button>
     </section>
-    <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button>${chrome.runtime.getManifest().update_url === 'ios' ? '' : '<button type="button" data-act="reader">📖 Read a PDF or text</button>'}</section>
+    <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button><button type="button" data-act="reader">📖 Read a PDF or text</button></section>
   </div>`;
 
   // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)
@@ -259,7 +260,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (act === 'all') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'options' });
     else if (act === 'vocab') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' });
     else if (act === 'reader') void chrome.runtime.sendMessage({ type: 'dream-open', page: 'reader' });
-    else if (act === 'copy-level') void (chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as Promise<{ text: string }>).then((r) => navigator.clipboard.writeText(r.text)).then(() => ctx.toast('Your level is copied. Paste it to Claude.'), () => ctx.toast('It could not be copied.'));
+    else if (act === 'copy-level') void copyLevel().then((how) => { if (how === 'copied') ctx.toast('Your level is copied. Paste it to Claude.'); }, () => ctx.toast('It could not be copied.'));
     else if (b.dataset.sc) {
       const id = b.dataset.sc;
       b.textContent = 'press keys…';

@@ -1,4 +1,5 @@
 /** My Vocabulary page (dream/vocab.html): every word the tutor explained, CSV download, progress per CEFR level. */
+import { copyLevel } from './level-copy';
 import type { CefrLevel } from '@core/model';
 import type { VocabEntry } from '@shared/api';
 import * as store from './store';
@@ -88,7 +89,7 @@ $('rows').addEventListener('click', async (ev) => {
 });
 $('copy-level').addEventListener('click', async () => {
   const b = $('copy-level');
-  try { const r = await chrome.runtime.sendMessage({ type: 'dream-level-copy' }) as { text: string }; await navigator.clipboard.writeText(r.text); b.textContent = 'Copied ✓'; }
+  try { if ((await copyLevel()) === 'copied') b.textContent = 'Copied ✓'; }
   catch { b.textContent = 'Could not copy'; }
   setTimeout(() => { b.textContent = 'Copy my level for Claude'; }, 2500);
 });

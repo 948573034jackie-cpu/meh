@@ -64,7 +64,7 @@ jobs:
           ls "$APP" | head -30
           for f in shim-common shim-youtube shim-chat shim-dream lib background youtube chat mic-mix dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
-          for f in dict.json.gz options.html options.js vocab.html vocab-page.js pages.css; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
       - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube + ChatGPT pages
@@ -139,7 +139,7 @@ jobs:
           echo "extension: $APPEX"; ls "$APPEX"
           plutil -p "$APPEX/Info.plist" | grep -E "NSExtensionPointIdentifier|CFBundleIdentifier"
           for f in manifest.json browser-shim.js lib.js youtube.js chat.js background.js popup.html popup.js tutor-bar.js \
-                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/zipf.json.gz dream/options.html dream/options.js dream/vocab.html dream/reader.html dream/reader.js dream/pdf.worker.min.mjs; do
+                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/zipf.json.gz dream/options.html dream/options.js dream/vocab.html dream/reader.html dream/reader.js; do
             test -f "$APPEX/$f" || test -f "$APPEX/Resources/$f" || { echo "MISSING $f"; exit 1; }; done
       - name: Start the app in an iPad Simulator (screenshot)
         shell: bash
@@ -264,7 +264,7 @@ jobs:
 
   release:
     needs: [mac-app, ios, safari-ios]
-    if: github.ref_name == 'claude/new-session-pxh22u'
+    if: github.ref_name == 'claude/new-session-pxh22u' || github.ref_name == 'claude/level-check-iphone'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -277,8 +277,10 @@ jobs:
         run: |
           (cd chrome-extension && zip -qr ../ClaudeSnap-Chrome.zip .)
           (cd youtube-to-claude && zip -qr ../YouTube-to-Claude.zip .)
-          gh release delete claudesnap-latest --yes --cleanup-tag || true
-          gh release create claudesnap-latest \
+          # (the Level Check branch has a release of its own: the main downloads stay as they are)
+          TAG=claudesnap-latest; [ "${{ github.ref_name }}" = "claude/level-check-iphone" ] && TAG=level-check-latest
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" \
             dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
             dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip dl/safari-ios/YTSafari-unsigned.ipa \
             --title "ClaudeSnap downloads" \

@@ -341,7 +341,57 @@ const fakeWebkit = () => {
   await sheet.click('[data-save="anthropic"]');
   const saved = await until(() => JSON.parse(keychain.drKeys || '{}').anthropic === 'sk-ant-new-key-5678', 5000);
   ok('a key saved on the settings page goes to the Keychain', !!saved && !JSON.stringify(stores).includes('sk-ant-new-key'), keychain.drKeys && JSON.stringify(Object.keys(JSON.parse(keychain.drKeys))));
+
+  // ---- 10. the reading mode in the app's sheet: paste a text, Level Check, it reads, stops at 50 % or under ----
+  stores.local.drExtras = { ...stores.local.drExtras, fakeVoice: true, levelAsk: true, levelMode: true };
+  const READ = ['My friend was very meticulous about her work.', 'She walked to the shop and bought some bread.', 'It was a lugubrious moment of joy.', 'The children played in the garden after school.', 'We will talk about it again very soon.', 'My uncle is an obsequious man.'];
+  const reader = await ctx.newPage();
+  reader.on('pageerror', (e) => console.log('PAGE ERROR (reader)', String(e.message || e).slice(0, 300)));
+  await reader.addInitScript({ content: source(sheetScripts) });
+  await reader.goto('http://localhost:8792/reader.html');
+  await reader.fill('#paste', READ.join(' '));
+  await reader.click('#paste-go');
+  const rOpen = await until(() => reader.evaluate(() => document.body.dataset.sentences), 15000);
+  ok('the reading mode opens in the app\'s sheet: a pasted text, all its sentences, exactly as it was', rOpen === String(READ.length) && (await reader.evaluate(() => document.getElementById('text').textContent)) === READ.join(' '), `${rOpen} · ${await reader.evaluate(() => document.getElementById('open-msg').textContent)}`);
+  const rSkip = await until(() => reader.evaluate(() => { const h = document.getElementById('dr-level-host'); const b = h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=skip]'); if (b) b.click(); return !!b; }), 8000);
+  ok('...Level Check first ("Skip, just play" here)', !!rSkip);
+  const rEnd = await until(() => reader.evaluate(() => { const d = JSON.parse(document.documentElement.dataset.drDebug || 'null'); return d && d.heard >= d.total && !d.playing ? d : null; }), 60000, 200);
+  ok('...it reads to the end by itself with the iOS bridge, stops at 50% or under', rEnd && rEnd.stops >= 1 && rEnd.stops <= rEnd.total / 2, JSON.stringify(rEnd && { stops: rEnd.stops, total: rEnd.total }));
+  await reader.close();
   pages.close();
+
+  // ---- 11. Level Check in the app: the screen, the test, a stop in the new order, the counter, the copy for Claude ----
+  const lv = await ctx.newPage();
+  lv.on('pageerror', (e) => console.log('PAGE ERROR (level)', String(e.message || e).slice(0, 300)));
+  await lv.goto('https://m.youtube.com/watch?v=ios00000002');
+  await lv.addScriptTag({ content: source(ytScripts) });
+  const inG = (fn) => lv.evaluate(`(${fn})(document.getElementById('dr-level-host').shadowRoot)`);
+  const gate = await until(() => lv.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=check]')); }), 15000);
+  ok('Level Check: the screen comes before the video, in the app', !!gate);
+  await lv.evaluate(() => document.querySelector('video').play().catch(() => {}));
+  await sleep(600);
+  ok('...the video waits', await lv.evaluate(() => document.querySelector('video').paused));
+  await inG((r) => r.querySelector('[data-a=check]').click());
+  const chips = await until(() => inG((r) => { const n = r.querySelectorAll('.chip').length; return n ? [...r.querySelectorAll('.chip')].map((b) => b.textContent) : /no new words/.test(r.textContent) ? [] : null; }), 20000);
+  ok('...the test comes from this video', Array.isArray(chips) && chips.every((c) => LINES.join(' ').toLowerCase().includes(c.toLowerCase())), JSON.stringify(chips));
+  const fit = await inG((r) => { const d = r.querySelector('.done') || r.querySelector('button'); return { bottom: d.getBoundingClientRect().bottom, screen: innerHeight }; });
+  ok('...it fits the phone screen', fit.bottom <= fit.screen, JSON.stringify(fit));
+  await inG((r) => (r.querySelector('.done') || r.querySelector('[data-a=skip]')).click());
+  const plays = await until(() => lv.evaluate(() => !document.getElementById('dr-level-host') && !document.querySelector('video').paused), 10000);
+  ok('...after it the video plays by itself', !!plays);
+  const lvDbg = () => lv.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const nRule = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
+  const stop = await until(async () => { const d = await lvDbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 150);
+  ok('a stop comes, counted', !!stop, JSON.stringify(await lvDbg()).slice(0, 300));
+  ok('...its explanation is asked for with the hard rule', !!(await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000)));
+  const goesOn = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 30000, 150);
+  ok('...and the video goes on by itself', !!goesOn, JSON.stringify(await lvDbg()).slice(0, 200));
+  const count = await lv.evaluate(() => document.getElementById('dr-stop-counter')?.textContent || '');
+  ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(count) && +/\((\d+)%/.exec(count)[1] <= 50, count);
+  const copy = await lv.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-level-copy' }));
+  ok('"Copy my level for Claude" has my level and words', copy && /My English level/.test(copy.text) && /Still learning/.test(copy.text), copy && copy.text.slice(0, 200));
+  ok('the keys stay out of it', copy && !copy.text.includes('sk-ant'));
+  await lv.close();
 
   await browser.close();
   api.close();
