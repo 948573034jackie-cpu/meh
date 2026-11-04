@@ -217,7 +217,7 @@ const api = http.createServer((req, res) => {
   ok('as the sentence plays again after the explanation, the dictionary card is closed', cardGone && !!cardNull, JSON.stringify((await dbg()).card));
   const talk1 = await until(async () => { const d = await dbg(); return d && d.talk ? d : null; }, 10000);
   const talkUi = talk1 && await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const t = r.querySelector('.talk'); const cmd = r.querySelector('.cmd'); return { talk: t && !t.hidden ? t.innerText : null, cmd: cmd && !cmd.hidden ? cmd.innerText : null }; });
-  ok('a moment to ask: the talk opens (no I know / I don\'t know at the end)', talkUi && /Type your question|Talk to me/.test(talkUi.talk) && !talkUi.cmd, JSON.stringify(talkUi));
+  ok('a moment to ask: the talk opens (no I know / I don\'t know at the end)', talkUi && /Type your question|Talk to me|just talk/.test(talkUi.talk) && !talkUi.cmd, JSON.stringify(talkUi));
   const on1 = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && v.t > 8.0 && !d.talk ? { v, d } : null; }, 12000, 100);
   ok('nobody asked: after 3 quiet seconds the video goes on after the sentence (heard just now), the page goes away', on1 && !on1.d.stage.shown && (await seeksTo(3.85)) === 1, JSON.stringify(on1 && on1.v));
   const entries = await until(async () => { const e = await store('drEntries'); return e && e.meticulous ? e : null; }, 8000);

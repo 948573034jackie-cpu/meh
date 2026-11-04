@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { realDictionary } from './helpers';
-import { SEED, seedWords, itemKey, phraseSig, estimateLevel, unknownChance, buildDoc, levelSummary, EMPTY_META, type LevelMeta } from '../src/level-db';
+import { SEED, seedWords, itemKey, phraseSig, estimateLevel, unknownChance, buildDoc, levelSummary, mergeDocs, sameDoc, isDoc, EMPTY_META, type LevelMeta, type VocabularyDoc } from '../src/level-db';
 import { collectItems, parseItems, pickForScreen, scoreTest, chipsHeight, MIN_PER_GROUP, MAX_PER_GROUP, type TestGroups, type TestItem } from '../src/level-check';
 import { scoreSentences, selectStops, mayStop, counterText, itemsToHits, MAX_STOP_RATIO } from '../src/level-stops';
 import { checkExplanation, cleanRuleSentence, RuleGuard, buildRulePrompt, type RuleRequest } from '../src/level-rule';
@@ -333,5 +333,39 @@ describe('analyze once', () => {
     expect(p.user).toContain('2. Line 1.');
     expect(p.user).toContain('*3. Line 2.');
     expect(p.system).toContain('These rules are absolute');
+  });
+});
+
+describe('one database for the Mac and the phone (mergeDocs)', () => {
+  const doc = (p: Partial<VocabularyDoc>): VocabularyDoc => ({ version: 1, updatedAt: '2026-11-04T00:00:00.000Z', currentLevel: '', tests: [], known: [], stillLearning: [], ...p });
+  const mac = doc({ currentLevel: 'about lower B2', tests: [{ date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }],
+    known: [{ item: 'familiar', date: '2026-11-04' }, { item: 'shelter', date: '2026-11-01' }], stillLearning: [{ item: 'invade', date: '2026-11-04', sentence: 'They invade.' }, { item: 'odour', date: '2026-11-02', sentence: 'A bad odour.' }] });
+  const phone = doc({ currentLevel: 'about B2', tests: [{ date: '2026-11-05', source: 'A phone video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }, { date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }],
+    known: [{ item: 'serendipity', date: '2026-11-05' }, { item: 'odour', date: '2026-11-05' }], stillLearning: [{ item: 'shelter', date: '2026-11-05', sentence: 'No shelter.' }, { item: 'invade', date: '2026-11-04', sentence: 'They invade us.' }] });
+  it('nothing is lost: both devices\' words, every test once, the level of the newest test', () => {
+    const m = mergeDocs(mac, [phone]);
+    expect(m.known.map((k) => k.item)).toEqual(['familiar', 'odour', 'serendipity']);
+    expect(m.stillLearning.map((l) => l.item)).toEqual(['invade', 'shelter']);
+    expect(m.tests.map((t) => t.source)).toEqual(['Eveline', 'A phone video']);
+    expect(m.currentLevel).toBe('about B2');
+  });
+  it('the newest status of a word wins: learned later = known, met again later = still learning', () => {
+    const m = mergeDocs(mac, [phone]);
+    expect(m.known.find((k) => k.item === 'odour')?.date).toBe('2026-11-05');   // the phone learned it after the Mac met it
+    expect(m.stillLearning.find((l) => l.item === 'shelter')?.sentence).toBe('No shelter.'); // the phone met it again after the Mac knew it
+  });
+  it('the same day: known wins; this device keeps its own record on a tie', () => {
+    const m = mergeDocs(mac, [phone]);
+    expect(m.stillLearning.find((l) => l.item === 'invade')?.sentence).toBe('They invade.');
+    const m2 = mergeDocs(doc({ stillLearning: [{ item: 'quay', date: '2026-11-04', sentence: 'The quay.' }] }), [doc({ known: [{ item: 'quay', date: '2026-11-04' }] })]);
+    expect(m2.known.map((k) => k.item)).toEqual(['quay']);
+    expect(m2.stillLearning).toEqual([]);
+  });
+  it('sameDoc and isDoc', () => {
+    expect(sameDoc(mac, mergeDocs(mac, []))).toBe(true);
+    expect(sameDoc(mac, mergeDocs(mac, [phone]))).toBe(false);
+    expect(isDoc(mac)).toBe(true);
+    expect(isDoc({ echo: 1 })).toBe(false);
+    expect(isDoc(null)).toBe(false);
   });
 });

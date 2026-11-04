@@ -4,6 +4,7 @@
 import * as esbuild from 'esbuild';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -17,8 +18,20 @@ const entries = [
   ['src/reader.ts', 'reader.js'],
 ].filter(([src]) => fs.existsSync(path.join(root, src)));
 
-// every build gets its own stamp: the YouTube script carries it, and the folder has it in build-stamp.txt
-const stamp = Date.now().toString(36);
+// The build's stamp comes from the sources themselves: the same sources give exactly the same files (the build server
+// checks that the committed files match), and any change gives a new stamp, which an unpacked extension notices and
+// reloads itself on (see devReload in src/bg.ts). The YouTube script carries it, and the folder has it in build-stamp.txt.
+function hashInto(h, dir) {
+  for (const f of fs.readdirSync(dir).sort()) {
+    const p = path.join(dir, f);
+    if (fs.statSync(p).isDirectory()) hashInto(h, p);
+    else { h.update(path.relative(root, p)); h.update(fs.readFileSync(p)); }
+  }
+}
+const hash = crypto.createHash('sha1');
+for (const d of ['src', 'vendor', 'static']) hashInto(hash, path.join(root, d));
+for (const f of ['build.mjs', 'package-lock.json']) hash.update(fs.readFileSync(path.join(root, f)));
+const stamp = hash.digest('hex').slice(0, 10);
 const common = {
   bundle: true, format: 'iife', platform: 'browser', target: ['chrome116', 'safari16.4'], alias, logLevel: 'info', legalComments: 'none',
   define: { 'process.env.NODE_ENV': '"production"', __DREAM_BUILD__: JSON.stringify(stamp) }, sourcemap: false, minify: true, loader: { '.css': 'text' },

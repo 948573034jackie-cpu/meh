@@ -10,7 +10,7 @@ import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
 import type { StyleOverride } from '@shared/styles';
 import type { Dictionary } from '@core/dict/types';
-import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta } from './level-db';
+import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta, itemKey, type VocabularyDoc } from './level-db';
 import type { AiItem, TestGroups } from './level-check';
 
 /** YouTube-only choices (not in the Mac app). */
@@ -353,7 +353,16 @@ export const STORAGE_KEYS = K;
 // ---- the vocabulary database (level-db.ts): the tests, the level, when each word got its status --------------------
 export const LEVEL_KEY = 'drLevel';
 export const DB_STATUS_KEY = 'drDbStatus';
-export interface DbStatus { ok: boolean; at: string; path?: string; drive?: string | null; driveOk?: boolean; driveError?: string; error?: string; notInstalled?: boolean; noDevice?: boolean }
+export interface DbStatus {
+  ok: boolean; at: string; path?: string; error?: string;
+  /** the Mac: the Google Drive and iCloud Drive copies */
+  drive?: string | null; driveOk?: boolean; driveError?: string; icloud?: string | null; icloudOk?: boolean; icloudError?: string;
+  /** the phone (YT Learn): the folder you chose in the Files app, shared with the Mac */
+  phone?: boolean; shared?: boolean; sharedOk?: boolean; sharedError?: string; folder?: string;
+  /** how many words came in from the other device's copy this time */
+  merged?: number;
+  notInstalled?: boolean; noDevice?: boolean; safari?: boolean;
+}
 
 export async function getLevel(): Promise<LevelMeta> {
   const o = await area().get(LEVEL_KEY);
@@ -385,6 +394,29 @@ export async function ensureSeeded(dict: Pick<Dictionary, 'lemmaOf'>): Promise<b
   await updateLevel((m) => ({ ...m, tests: [...SEED.tests, ...m.tests], currentLevel: m.currentLevel || SEED.currentLevel, log: { ...seed.log, ...m.log }, seeded: SEED_VERSION }));
   await patchSettings({ learnerLevel: 'B2' });
   return true;
+}
+
+/**
+ * The merged document (this device's words + the other device's) goes into this device's vocabulary: every item gets
+ * the document's status (the merge decided), the tests and the level are the document's. Returns how many statuses changed.
+ */
+export async function applyDoc(doc: VocabularyDoc, dict: Pick<Dictionary, 'lemmaOf'>): Promise<number> {
+  const v = await getVocab();
+  let changed = 0;
+  const log: LevelMeta['log'] = {};
+  for (const k of doc.known) {
+    const key = itemKey(dict, k.item);
+    if (v.words[key] !== 'known') { v.words[key] = 'known'; changed++; }
+    log[key] = { word: k.item, date: k.date };
+  }
+  for (const l of doc.stillLearning) {
+    const key = itemKey(dict, l.item);
+    if (v.words[key] !== 'learning') { v.words[key] = 'learning'; changed++; }
+    log[key] = { word: l.item, date: l.date, ...(l.sentence ? { sentence: l.sentence } : {}), ...(l.group ? { group: l.group } : {}) };
+  }
+  if (changed) await area().set({ [K.vocab]: v });
+  await updateLevel((m) => ({ ...m, tests: doc.tests, currentLevel: doc.currentLevel || m.currentLevel, log: { ...m.log, ...log } }));
+  return changed;
 }
 
 /** The tap test is done: tapped = known, the others = still learning (with their sentence); the test and the level saved. */

@@ -1,8 +1,10 @@
 /**
  * The learner's vocabulary database: known words, still-learning words, every Level Check and the current level.
  * The words themselves stay in My Vocabulary (drVocab, drEntries); this adds the dates, the sentence where a word was
- * met and the tests (drLevel). The background turns it all into one JSON document, written to
- * ~/Documents/MEH English/vocabulary.json and the Google Drive copy by the small helper on the Mac (level-db-bg.ts).
+ * met and the tests (drLevel). The background turns it all into one JSON document (level-db-bg.ts): on the Mac the
+ * small helper writes ~/Documents/MEH English/vocabulary.json and its iCloud Drive / Google Drive copies; on the
+ * iPhone the app writes it to the folder you chose (VocabFile.swift). Before every write the other devices' copy is
+ * read and merged in (mergeDocs), so the Mac and the phone share one database and nothing is lost.
  */
 import type { Dictionary } from '@core/dict/types';
 import type { VocabEntry } from '@shared/api';
@@ -130,4 +132,51 @@ export function levelSummary(doc: VocabularyDoc, lastCopyAt?: string): string {
     `Known words and phrases: ${doc.known.length} in all.${fresh.length ? ` New${since ? ` since ${since}` : ''}: ${fresh.join(', ')}.` : ''}`,
     `Still learning (${doc.stillLearning.length}): ${doc.stillLearning.map((w) => w.item).join(', ') || 'none'}.`,
   ].filter(Boolean).join('\n');
+}
+
+/**
+ * Every device's copy of the database as one. A word's newest status wins (the same day: known, the deliberate choice);
+ * this device's record wins a tie. Every test once (date + source). The level of the device with the newest test.
+ */
+export function mergeDocs(mine: VocabularyDoc, others: VocabularyDoc[]): VocabularyDoc {
+  type Known = VocabularyDoc['known'][number];
+  type Learning = VocabularyDoc['stillLearning'][number];
+  const docs = [mine, ...others];
+  const id = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+  const best = new Map<string, { status: 'known' | 'learning'; rec: Known | Learning }>();
+  const take = (status: 'known' | 'learning', rec: Known | Learning) => {
+    if (!rec || typeof rec.item !== 'string' || !rec.item.trim()) return;
+    const k = id(rec.item);
+    const cur = best.get(k);
+    const date = String(rec.date ?? '');
+    if (!cur || date > String(cur.rec.date ?? '') || (date === String(cur.rec.date ?? '') && status === 'known' && cur.status !== 'known')) best.set(k, { status, rec });
+  };
+  for (const d of docs) { for (const k of d.known ?? []) take('known', k); for (const l of d.stillLearning ?? []) take('learning', l); }
+  const known: Known[] = [], stillLearning: Learning[] = [];
+  for (const { status, rec } of best.values()) {
+    if (status === 'known') known.push({ item: rec.item, date: rec.date });
+    else { const l = rec as Learning; stillLearning.push({ item: l.item, date: l.date, sentence: l.sentence ?? '', ...(l.group ? { group: l.group } : {}) }); }
+  }
+  const tests = new Map<string, LevelTest>();
+  for (const d of docs) for (const t of d.tests ?? []) { const k = `${t.date}|${t.source}`; if (!tests.has(k)) tests.set(k, t); }
+  const testList = [...tests.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const newestTest = (d: VocabularyDoc) => (d.tests ?? []).reduce((m, t) => (t.date > m ? t.date : m), '');
+  const level = docs.filter((d) => d.currentLevel).sort((a, b) => newestTest(b).localeCompare(newestTest(a)))[0]?.currentLevel ?? mine.currentLevel;
+  const order = (a: { item: string }, b: { item: string }) => a.item.localeCompare(b.item);
+  return { version: 1, updatedAt: new Date().toISOString(), currentLevel: level, tests: testList, known: known.sort(order), stillLearning: stillLearning.sort(order) };
+}
+
+/** the same words with the same statuses, the same tests and level? (dates and sentences apart) */
+export function sameDoc(a: VocabularyDoc, b: VocabularyDoc): boolean {
+  const sig = (d: VocabularyDoc) => JSON.stringify([
+    d.known.map((k) => k.item.toLowerCase()).sort(), d.stillLearning.map((l) => l.item.toLowerCase()).sort(),
+    d.tests.map((t) => `${t.date}|${t.source}`).sort(), d.currentLevel,
+  ]);
+  return sig(a) === sig(b);
+}
+
+/** something read from a file: is it one of these documents? */
+export function isDoc(x: unknown): x is VocabularyDoc {
+  const d = x as Partial<VocabularyDoc> | null;
+  return !!d && typeof d === 'object' && Array.isArray(d.known) && Array.isArray(d.stillLearning) && Array.isArray(d.tests);
 }

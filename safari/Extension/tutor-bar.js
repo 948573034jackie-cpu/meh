@@ -16,7 +16,7 @@
     ['vocab', '📒', 'Words'],
     ['quick', '⚙', 'Settings'],
   ];
-  let tutorOn = false;
+  let tutorOn = true;
   let bar = null;
 
   // iOS Safari speaks only after a speech that started from a tap: the first tap on the bar says nothing, silently,
@@ -75,7 +75,8 @@
   style.textContent = 'html.yt2c-tutor-bar body{padding-bottom:calc(64px + env(safe-area-inset-bottom)) !important}';
   (document.head || document.documentElement).appendChild(style);
 
-  const read = (x) => { tutorOn = !!(x && x.tutorOn); paint(); };
+  // (on unless you turned it off: the same default as the tutor itself)
+  const read = (x) => { tutorOn = !x || x.tutorOn !== false; paint(); };
   chrome.storage.local.get('drExtras').then((o) => read(o && o.drExtras), () => paint());
   chrome.storage.onChanged.addListener((ch, area) => { if (area === 'local' && ch.drExtras) read(ch.drExtras.newValue); });
   // YouTube is a single-page app: the bar comes and goes with the video page

@@ -113,6 +113,10 @@ const FAKE = 'http://localhost:8791';
 const stores = { local: {}, sync: {} };
 const keychain = {};
 const nativeLog = [];
+// the shared vocabulary file (iCloud Drive ▸ MEH English, written by the Mac): the app must merge it in and write it back
+let vocabShared = { version: 1, updatedAt: '2026-11-03T10:00:00.000Z', currentLevel: 'about B2 for reading', tests: [{ date: '2026-11-03', source: 'A Mac video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }],
+  known: [{ item: 'serendipity', date: '2026-11-03' }], stillLearning: [{ item: 'flabbergasted', date: '2026-11-03', sentence: 'I was flabbergasted by the news.' }] };
+const vocabWrites = [];
 const fetchLog = [];
 const aborts = {};
 const MIME = { '.gz': 'application/gzip', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.txt': 'text/plain' };
@@ -131,6 +135,13 @@ async function native(page, b) {
     case 'storageSet': Object.assign(stores[area], JSON.parse(b.json)); return null;
     case 'storageRemove': for (const k of b.keys || []) delete stores[area][k]; return null;
     case 'keychainGet': return keychain[b.name] ?? null;
+    case 'vocabFile': {
+      const m = b.msg || {};
+      const base = { ok: true, path: '/app/Documents/vocabulary.json', phone: true, shared: true, folder: 'MEH English' };
+      if (m.type === 'read') return { ...base, docs: [vocabShared] };
+      if (m.type === 'write') { vocabWrites.push(m.doc); vocabShared = m.doc; return { ...base, sharedOk: true }; }
+      return base;
+    }
     case 'keychainSet': if (b.value == null) delete keychain[b.name]; else keychain[b.name] = b.value; return null;
     case 'resource': {
       const f = path.join(IOS, 'Web', path.normalize(b.path).replace(/^(\.\.[/\\])+/, ''));
@@ -252,6 +263,14 @@ const fakeWebkit = () => {
   await until(async () => (await dbg()).window, 15000); // the next stop ("ephemeral")
   await act('know');
   await until(async () => !(await vstate()).paused, 6000);
+
+  // ---- 2b. one vocabulary database with the Mac: the shared file's words came in, the app's words go out ----
+  const sharedIn = await until(() => { const w = stores.local.drVocab && stores.local.drVocab.words; return w && w.serendipity === 'known' && w.flabbergast === 'learning' ? w : null; }, 8000);
+  ok('the Mac\'s words from the shared file are in the app: known and still learning (merged, nothing lost)', !!sharedIn, JSON.stringify(stores.local.drVocab && { s: stores.local.drVocab.words.serendipity, f: stores.local.drVocab.words.flabbergast }));
+  const written = await until(() => vocabWrites.find((d) => d && d.known.some((k) => k.item === 'serendipity') && d.stillLearning.some((l) => l.item === 'meticulous')), 8000, 200);
+  ok('the app writes the merged file back to the shared folder: the Mac\'s words and "meticulous" from this video, both tests', !!written && written.tests.length === 1 && written.stillLearning.some((l) => l.item === 'flabbergasted' && /flabbergasted/.test(l.sentence)), JSON.stringify(written && { k: written.known.length, l: written.stillLearning.length, t: written.tests.length }));
+  const dbSt = await until(() => { const s = stores.local.drDbStatus; return s && s.ok && s.phone && s.shared ? s : null; }, 5000);
+  ok('the file status says: saved in the shared folder "MEH English"', !!dbSt && dbSt.folder === 'MEH English' && dbSt.sharedOk === true, JSON.stringify(dbSt));
 
   // ---- 3. you pause: the part plays again, then it is explained (the whole part), back to its start ----
   await until(async () => (await vstate()).t > 17, 20000, 100);

@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 """The small helper on the Mac: Chrome hands it the vocabulary database (Chrome's "native messaging"), it writes
-~/Documents/MEH English/vocabulary.json and the copy in Google Drive. A Chrome extension cannot write these files
-itself. It only ever writes those two files. The helper reads one message and answers it; Chrome starts it each time."""
+~/Documents/MEH English/vocabulary.json and the copies in iCloud Drive and Google Drive (the iPhone app shares the
+file through one of those folders). A Chrome extension cannot write these files itself; the helper only ever writes
+these files, and reads them back ("read") so the extension can merge the iPhone's words in. It reads one message and
+answers it; Chrome starts it each time."""
 import glob
 import json
 import os
@@ -28,6 +30,21 @@ def drive_folder():
     return old if os.path.isdir(old) else None
 
 
+def icloud_folder():
+    """iCloud Drive on this Mac (System Settings > Apple ID > iCloud Drive), or None."""
+    p = os.path.join(home(), 'Library/Mobile Documents/com~apple~CloudDocs')
+    return p if os.path.isdir(p) else None
+
+
+def read_doc(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
 def write_atomic(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.vocabulary-')
@@ -45,22 +62,29 @@ def handle(msg):
     kind = msg.get('type')
     main = os.path.join(home(), 'Documents', FOLDER, NAME)
     drive = drive_folder()
+    icloud = icloud_folder()
     copy = os.path.join(drive, FOLDER, NAME) if drive else None
+    icopy = os.path.join(icloud, FOLDER, NAME) if icloud else None
     if kind == 'ping':
-        return {'ok': True, 'path': main, 'drive': copy}
+        return {'ok': True, 'path': main, 'drive': copy, 'icloud': icopy}
+    if kind == 'read':
+        # every copy that exists (the iPhone writes the iCloud / Google Drive one): the extension merges them
+        docs = [d for d in (read_doc(p) for p in (main, icopy, copy) if p) if d]
+        return {'ok': True, 'path': main, 'drive': copy, 'icloud': icopy, 'docs': docs}
     if kind != 'write' or not isinstance(msg.get('doc'), dict):
         return {'ok': False, 'error': 'unknown message'}
     text = json.dumps(msg['doc'], ensure_ascii=False, indent=2) + '\n'
     write_atomic(main, text)
-    out = {'ok': True, 'path': main, 'drive': copy, 'driveOk': False}
-    if copy:
+    out = {'ok': True, 'path': main, 'drive': copy, 'driveOk': False, 'icloud': icopy, 'icloudOk': False}
+    for key, path, missing in (('drive', copy, 'Google Drive for desktop was not found on this Mac'), ('icloud', icopy, 'iCloud Drive was not found on this Mac')):
+        if not path:
+            out[key + 'Error'] = missing
+            continue
         try:
-            write_atomic(copy, text)
-            out['driveOk'] = True
+            write_atomic(path, text)
+            out[key + 'Ok'] = True
         except OSError as e:
-            out['driveError'] = str(e)
-    else:
-        out['driveError'] = 'Google Drive for desktop was not found on this Mac'
+            out[key + 'Error'] = str(e)
     return out
 
 

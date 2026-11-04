@@ -126,6 +126,12 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const profile = path.join(tmp, 'profile');
   const driveDir = path.join(home, 'Library/CloudStorage/GoogleDrive-test@example.com/My Drive');
   fs.mkdirSync(driveDir, { recursive: true });
+  // the iPhone's copy, in iCloud Drive (the app wrote it): its words must come in, merged, and go back out everywhere
+  const icloudDir = path.join(home, 'Library/Mobile Documents/com~apple~CloudDocs');
+  const icloudFile = path.join(icloudDir, 'MEH English/vocabulary.json');
+  fs.mkdirSync(path.dirname(icloudFile), { recursive: true });
+  fs.writeFileSync(icloudFile, JSON.stringify({ version: 1, updatedAt: '2026-11-03T10:00:00.000Z', currentLevel: 'about B2 for reading', tests: [{ date: '2026-11-03', source: 'A phone video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }],
+    known: [{ item: 'serendipity', date: '2026-11-03' }], stillLearning: [{ item: 'flabbergasted', date: '2026-11-03', sentence: 'I was flabbergasted by the news.' }] }, null, 2));
   const mainFile = path.join(home, 'Documents/MEH English/vocabulary.json');
   const driveFile = path.join(driveDir, 'MEH English/vocabulary.json');
   const readDoc = (f = mainFile) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { return null; } };
@@ -162,10 +168,17 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
 
   // ---- the starting data ----
   const seeded = await until(async () => { const m = await store('drLevel'); return m && m.seeded >= 1 ? m : null; }, 20000);
-  ok('the starting data is in: the two tests, the level', seeded && seeded.tests.length === 2 && seeded.tests[0].source === 'Eveline' && /lower B2/.test(seeded.currentLevel), JSON.stringify(seeded && { t: seeded.tests.length, l: seeded.currentLevel }));
+  ok('the starting data is in: the two tests, the level', seeded && seeded.tests.length >= 2 && seeded.tests.some((t) => t.source === 'Eveline') && /B2/.test(seeded.currentLevel), JSON.stringify(seeded && { t: seeded.tests.length, l: seeded.currentLevel }));
   const first = await until(async () => { await sw.evaluate(() => chrome.storage.local.set({ drNudge: Date.now() })); const r = await sw.evaluate(() => chrome.storage.local.get('drDbStatus').then((o) => o.drDbStatus)); const d = readDoc(); return d && d.known.length >= 17 ? d : (r && r.ok === false ? null : null); }, 25000, 500);
-  ok('the JSON file exists on the Mac, filled: known, still learning, tests', first && first.known.length === 17 && first.stillLearning.length === 77 && first.tests.length === 2 && first.known.some((k) => k.item === 'fallen on his feet') && first.stillLearning.some((w) => w.item === 'bully (great)' && w.group === 'c2'), JSON.stringify(first && { known: first.known.length, learning: first.stillLearning.length }) + ' ' + JSON.stringify(await store('drDbStatus')));
+  ok('the JSON file exists on the Mac, filled: known, still learning, tests (the starting data + the phone\'s words)', first && first.known.length === 18 && first.stillLearning.length === 78 && first.tests.length === 3 && first.known.some((k) => k.item === 'fallen on his feet') && first.stillLearning.some((w) => w.item === 'bully (great)' && w.group === 'c2'), JSON.stringify(first && { known: first.known.length, learning: first.stillLearning.length }) + ' ' + JSON.stringify(await store('drDbStatus')));
   ok('the internet copy (the Google Drive folder) has the same', JSON.stringify(readDoc(driveFile)) === JSON.stringify(readDoc()), (await store('drDbStatus') || {}).drive);
+  // ---- one database with the phone: its words (the iCloud Drive copy) came in, merged, and went back out everywhere ----
+  const vocab0 = await store('drVocab');
+  ok('the phone\'s words from the shared file are in: known and still learning', !!vocab0 && vocab0.words.serendipity === 'known' && vocab0.words.flabbergast === 'learning', JSON.stringify(vocab0 && { s: vocab0.words.serendipity, f: vocab0.words.flabbergast }));
+  const mergedDoc = readDoc(icloudFile);
+  ok('the iCloud Drive copy now has both devices\' words (the starting data too), the sentence, and all 3 tests', !!mergedDoc && mergedDoc.known.some((k) => k.item === 'serendipity') && mergedDoc.known.some((k) => k.item === 'familiar') && mergedDoc.stillLearning.some((l) => l.item === 'flabbergasted' && /flabbergasted/.test(l.sentence)) && mergedDoc.tests.length === 3, JSON.stringify(mergedDoc && { k: mergedDoc.known.length, l: mergedDoc.stillLearning.length, t: mergedDoc.tests.length }));
+  ok('the Mac file, the iCloud copy and the Google Drive copy are the same merged document', JSON.stringify(readDoc()) === JSON.stringify(mergedDoc) && JSON.stringify(readDoc(driveFile)) === JSON.stringify(mergedDoc));
+  ok('the file status knows the iCloud copy', !!(await store('drDbStatus') || {}).icloudOk, JSON.stringify(await store('drDbStatus')));
 
   // ---- 1. a video: the Level Check screen before it plays ----
   const yt = await ctx.newPage();

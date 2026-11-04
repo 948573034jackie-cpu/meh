@@ -358,6 +358,8 @@ class Session {
     pageStyle();
     this.openGate();
     this.mountPanel();
+    // the vocabulary file: the other device's new words come in before this video (the Mac helper / the app merges them)
+    void chrome.runtime.sendMessage({ type: 'dream-db-write' }).catch(() => undefined);
     this.setStatus('Reading the subtitles…');
     let info: YtcInfo;
     try {

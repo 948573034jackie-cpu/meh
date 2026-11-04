@@ -239,5 +239,4 @@ install Node.js (LTS, nodejs.org), install the **Claude in Chrome** extension, t
 
 ## 15. Downloads
 
-- Latest Chrome extension: `downloads/YouTube-to-Claude.zip` in the repo, or
-  https://github.com/948573034jackie-cpu/meh/releases/tag/claudesnap-latest (YouTube-to-Claude.zip)
+- Latest Chrome extension: https://github.com/948573034jackie-cpu/meh/releases/tag/level-check-latest (YouTube-to-Claude.zip)
