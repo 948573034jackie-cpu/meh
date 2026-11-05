@@ -68,8 +68,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p ../shots
+          xcodebuild -version | tr "\n" " "; echo; xcrun simctl list runtimes | grep -i ios || true
           for KIND in "iPhone 1" "iPad"; do   # (any iPhone 15, 16, 17 … the builder has)
-            UDID=$(xcrun simctl list devices available | grep -F "$KIND" | head -1 | grep -oE "[0-9A-F-]{36}")
+            # (the last one in the list: the newest iOS the builder has, the one its Xcode builds for)
+            UDID=$(xcrun simctl list devices available | grep -F "$KIND" | tail -1 | grep -oE "[0-9A-F-]{36}")
             echo "=================== simulator for '$KIND': $UDID"
             if [ -z "$UDID" ]; then echo "NO SIMULATOR FOUND for $KIND"; xcrun simctl list devices available; exit 1; fi
             xcrun simctl list devices available | grep "$UDID"

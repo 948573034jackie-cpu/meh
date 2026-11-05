@@ -28,6 +28,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: local.ytlearn.app
         PRODUCT_NAME: YTLearn
         SWIFT_VERSION: "5.0"
+        # (Xcode 16.3 and later link a WebKit helper that iOS only has from 18.4: without this the app closes at
+        # launch on an older iOS. Linked weakly, it is simply not used there.)
+        OTHER_LDFLAGS: "$(inherited) -Wl,-weak-lswiftWebKit"
         MARKETING_VERSION: "1.2"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
