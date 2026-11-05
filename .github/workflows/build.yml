@@ -33,14 +33,8 @@ jobs:
     runs-on: macos-15   # (GitHub no longer runs macos-14)
     steps:
       - uses: actions/checkout@v4
-      - name: Use Xcode 16.2 when the builder has it
-        # (Xcode 16.3 and later link a WebKit helper that iOS only has from 18.4: their app closes at launch on an older iOS)
-        run: |
-          ls /Applications | grep -i xcode || true
-          for V in 16.2 16.1 16.0 16; do
-            if [ -d "/Applications/Xcode_$V.app" ]; then sudo xcode-select -s "/Applications/Xcode_$V.app"; break; fi
-          done
-          xcodebuild -version
+      # (The builder's Xcode, 16.3 or later, links a WebKit helper that iOS only has from 18.4: this app needs iOS 18.4
+      # or later. Its Xcode 16.2 would not: but the builder has no simulator for it, and the build needs one.)
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate the Xcode project
