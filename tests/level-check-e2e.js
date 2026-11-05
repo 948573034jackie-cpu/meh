@@ -211,10 +211,10 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await inGate((r) => r.querySelector('.done').click());
   const result = await until(async () => { const t = await gateText(); return t && /Estimated level/.test(t) ? t : null; }, 5000);
   ok('after Done: % per group and my level', result && /%/.test(result) && /Estimated level: /.test(result), result);
-  const afterTest = await until(() => { const d = readDoc(); return d && d.tests.length === 3 ? d : null; }, 5000);
-  ok('the test is in the file: date, source, scores, level', afterTest && afterTest.tests[2].source.startsWith('Level Lesson') && typeof afterTest.tests[2].scores.b2 === 'number' && !!afterTest.tests[2].level, JSON.stringify(afterTest && afterTest.tests[2]));
+  const afterTest = await until(() => { const d = readDoc(); return d && d.tests.length === 4 ? d : null; }, 8000); // (the phone's test, the two starting ones, this one)
+  ok('the test is in the file: date, source, scores, level', afterTest && afterTest.tests[3].source.startsWith('Level Lesson') && typeof afterTest.tests[3].scores.b2 === 'number' && !!afterTest.tests[3].level, JSON.stringify(afterTest && afterTest.tests[3]));
   ok('tapped = known in the file; not tapped = still learning, with its sentence', afterTest && afterTest.known.some((k) => k.item === tappedWord) && afterTest.stillLearning.some((w) => texts.includes(w.item) && w.item !== tappedWord && LINES.includes(w.sentence)), JSON.stringify(afterTest && afterTest.stillLearning.filter((w) => texts.includes(w.item)).slice(0, 2)));
-  ok('...and the internet copy follows', (readDoc(driveFile) || { tests: [] }).tests.length === 3);
+  ok('...and the internet copies follow', (readDoc(driveFile) || { tests: [] }).tests.length === 4 && (readDoc(icloudFile) || { tests: [] }).tests.length === 4);
   ok('the level is saved', /about /.test((await store('drLevel')).currentLevel), (await store('drLevel')).currentLevel);
 
   // ---- 2. it plays by itself; the stops ----
@@ -363,7 +363,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const opt = await ctx.newPage();
   await opt.goto(`chrome-extension://${extId}/dream/options.html`);
   const optState = await until(() => opt.evaluate(() => { const s = document.getElementById('db-status').textContent; return /Saved/.test(s) ? { s, ask: document.getElementById('levelAsk').checked, mode: document.getElementById('levelMode').checked, drive: document.getElementById('db-drive').textContent, install: document.getElementById('db-install').hidden } : null; }), 8000);
-  ok('the settings page: the setting, the file and the internet copy', optState && optState.ask === false && optState.mode === true && /vocabulary\.json/.test(optState.s) && /Internet copy: .*vocabulary\.json/.test(optState.drive) && optState.install === true, JSON.stringify(optState));
+  ok('the settings page: the setting, the file, the iCloud Drive and Google Drive copies', optState && optState.ask === false && optState.mode === true && /vocabulary\.json/.test(optState.s) && /iCloud Drive copy: .*vocabulary\.json/.test(optState.drive) && /Google Drive copy: .*vocabulary\.json/.test(optState.drive) && optState.install === true, JSON.stringify(optState));
   const copy = await opt.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-level-copy' }));
   ok('"Copy my level for Claude": level, new known words, still learning', copy && /My English level: about /.test(copy.text) && /quixotic/.test(copy.text) && /Still learning \(\d+\): .*squander/.test(copy.text), copy && copy.text.slice(0, 300));
   ok('the button is there', await opt.evaluate(() => !!document.getElementById('copy-level')));
