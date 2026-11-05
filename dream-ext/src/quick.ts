@@ -100,14 +100,17 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 5, 0, 20)} explanations</label>
       <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
       <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
+      <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
+      <label>The word's volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
       <label>Word test before each video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
       <label>Just talk ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">“hello” = the tutor comes · “I know” · “bye bye” = the tutor goes, the video plays</span></label>
     </section>
     <section><h4>What you see</h4>
       <label>Play line ${slider('playLine', x.playLine ?? 40, 0, 100, 1, '')} <span class="muted">0 = bottom, 100 = top: the sentence being played or explained stays there</span></label>
-      ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>
-      <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Mode ${seg('view', x.view, [['normal', '🎬 Normal video'], ['listening', '📖 Listening (all subtitles)']])}</label>
-      <label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
+      <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['normal', '🎬 Video']])}</label>
+      <p class="muted">Listening: all the subtitles, the text moves with the sound. Reading: pages like a book, the text stays, a thin line follows the word and the pages turn by themselves (‹ › or a swipe turns them). Video: the video. Each mode has its own text size.</p>
+      ${x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : x.view === 'normal' ? `<label>Text size (Video: the subtitles on the video) ${slider('bandSize', s.appearance.subtitleSizePx || 26, 16, 96, 1, 'px')}</label>` : ctx.phone ? `<label>Text size (Listening) ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>` : `<label>Text size (Listening) ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>`}
+      ${ctx.phone ? `<label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
       <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[20, '20 s'], [30, '30 s'], [40, '40 s'], [60, '60 s']])}</label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
@@ -132,8 +135,6 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Hide YouTube's own captions ${onOff('hideCc', x.hideYtCaptions)}</label>
     </section>
     <section><h4>Voice</h4>
-      <label>Teacher voice volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
-      <label>Word voice volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
       <label>Follow the video's volume ${onOff('followVol', x.followVideoVolume !== false)} <span class="muted">(100 % = as loud as the video)</span></label>
       <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
       ${voiceRows}
@@ -314,6 +315,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
     else if (name === 'phoneSize') later(() => void store.patchExtras({ phoneSizePx: n }), 120);
+    else if (name === 'readSize') later(() => void store.patchExtras({ readSizePx: n }), 120);
     else if (name === 'stageSize') later(() => void store.patchExtras({ stageSizePx: n }), 120);
     else if (name === 'panelSize') later(() => patchLook({ fontSizePx: n }), 120);
     else if (name === 'bandSize') later(() => patchLook({ subtitleSizePx: n }), 120);

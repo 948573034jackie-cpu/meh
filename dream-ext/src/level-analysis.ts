@@ -19,7 +19,7 @@ export function analysisId(text: string): string {
 }
 
 /** All the sentences around these stops, numbered; the stops marked with * and what is hard in them. */
-export function buildAnalysisPrompt(o: { title: string; level: string; part: readonly AnalysisStop[]; lineAt: (index: number) => string; total: number }): PromptBundle {
+export function buildAnalysisPrompt(o: { title: string; level: string; way?: string; part: readonly AnalysisStop[]; lineAt: (index: number) => string; total: number }): PromptBundle {
   const stops = new Map(o.part.map((s) => [s.index, s]));
   const from = Math.max(0, o.part[0].index - 2);
   const to = Math.min(o.total - 1, o.part[o.part.length - 1].index + 1);
@@ -29,7 +29,7 @@ export function buildAnalysisPrompt(o: { title: string; level: string; part: rea
     lines.push(s ? `*${i + 1}. ${o.lineAt(i)}${s.items.length ? `  [hard: ${s.items.join(', ')}]` : ''}` : `${i + 1}. ${o.lineAt(i)}`);
   }
   return {
-    system: ruleSystem(o.level),
+    system: ruleSystem(o.level, o.way),
     user: `Source: ${o.title || 'Untitled'}
 
 These are numbered sentences in order. The sentences marked with * are the hard ones, and [hard: ...] says what is hard in them for this learner. Write one explanation for EACH marked sentence, following the rules. Use the other sentences only to understand the story. Write only this, for every marked sentence, in order:
@@ -37,7 +37,7 @@ These are numbered sentences in order. The sentences marked with * are the hard 
 <the explanation>
 
 ${lines.join('\n')}`,
-    maxTokens: Math.min(16000, o.part.length * 160 + 200),
+    maxTokens: Math.min(16000, o.part.length * (o.way ? 200 : 160) + 200),
   };
 }
 
@@ -64,6 +64,8 @@ export interface AnalysisOpts {
   total(): number;
   title(): string;
   level(): string;
+  /** the teaching way chosen (Settings → My teacher), when it is one of the seven */
+  way?(): string | undefined;
   stream(prompt: PromptBundle, onDelta: (full: string) => void): { done: Promise<string>; cancel(): void };
   onChange?(): void;
 }
@@ -145,7 +147,7 @@ export class Analysis {
       if (got) this.o.onChange?.();
     };
     try {
-      const job = this.o.stream(buildAnalysisPrompt({ title: this.o.title(), level: this.o.level(), part, lineAt: (i) => this.o.lineAt(i), total: this.o.total() }), (full) => take(full, false));
+      const job = this.o.stream(buildAnalysisPrompt({ title: this.o.title(), level: this.o.level(), way: this.o.way?.(), part, lineAt: (i) => this.o.lineAt(i), total: this.o.total() }), (full) => take(full, false));
       this.job = job;
       take(await job.done, true);
       await this.o.save(this.texts).catch(() => undefined);

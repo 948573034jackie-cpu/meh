@@ -42,6 +42,7 @@ struct ContentView: View {
                     tutorButton("talk", "phone.fill", "Call")
                     // (after a swipe)
                     tutorButton("voiceMode", "mic", "Voice")
+                    tutorButton("mode", "book", "Mode")
                     tutorButton("sleep", "moon.zzz", "Sleep")
                     tutorButton("vocab", "character.book.closed", "Words")
                     tutorButton("quick", "slider.horizontal.3", "Settings")

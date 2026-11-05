@@ -352,6 +352,13 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
     expect(t.requests[0].sentence).toBe('Then she went home to rest.');
     await until(() => t.tts.spoken.some((x) => x.text.startsWith('She goes')), 10000);
     await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    // after the explanation: the word 3 times again, then the sentence from the video (a jump back to its start)
+    await until(() => t.tts.spoken.filter((x) => x.text === 'rest').length >= 6, 10000);
+    await until(() => t.video.events.filter((e) => e === 'seek@1.45').length >= 1, 10000);
+    const texts = t.tts.spoken.map((x) => x.text);
+    expect(texts.filter((x) => x === 'rest')).toHaveLength(6);
+    expect(texts.lastIndexOf('rest')).toBeGreaterThan(texts.findIndex((x) => x.startsWith('She goes')));
+    expect(t.video.events.filter((e) => e === 'seek@1.45').length).toBeGreaterThanOrEqual(1);
   }, 20000);
 
   it('"I know" the first, then the next one is asked', async () => {

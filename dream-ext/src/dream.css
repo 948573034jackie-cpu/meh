@@ -243,3 +243,15 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 :host([data-phone="1"]) .quick input[type="range"] { width: 46vw; }
 :host([data-phone="1"]) .card { font-size: 16px; }
 :host([data-phone="1"]) .card .row button { padding: 9px 12px; }
+
+/* ---- Reading mode: pages like an e-reader. The text does not move, a thin line follows the word, the pages turn ---- */
+.stage .pager { display: none; }
+.stage[data-view="read"] { --bg: #f6f1e5; --bg-elevated: #ece6d8; --bg-hover: #e3dccb; --bg-sunken: #fffdf7; --fg: #1d1b18; --fg-muted: #6c665b; --fg-faint: #9a9488; --border: rgba(0, 0, 0, 0.12); --border-strong: rgba(0, 0, 0, 0.25); --accent: #9a5b1e; --accent-fg: #fffdf7; --hl-word: #b4530a; --hl-sentence: #000000; color: var(--fg); }
+.stage[data-view="read"] .page { overflow: hidden !important; padding: 20px 0 6px !important; font-size: var(--read-size) !important; line-height: 1.62; touch-action: pan-y; }
+.stage[data-view="read"] .page .doc-inner { height: 100%; max-width: none; margin: 0; column-gap: 0; column-fill: auto; transition: transform 240ms ease; }
+.stage[data-view="read"] .page .para { margin: 0 0 0.85em !important; padding: 0 max(22px, calc(50% - 360px)); }
+.stage[data-view="read"] .page .s, .stage[data-view="read"] .page .s.past, .stage[data-view="read"] .page .s.cur { opacity: 1 !important; background: none !important; }
+.stage[data-view="read"] .page .sx { display: none !important; }
+.stage[data-view="read"] .w.cur-w { background: none !important; font-weight: inherit !important; text-decoration: underline; text-decoration-color: var(--hl-word); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.stage[data-view="read"] .pager { display: flex; flex: none; align-items: center; justify-content: space-between; padding: 0 10px 2px; color: var(--fg-muted); font-size: 12px; }
+.stage[data-view="read"] .pager button { font-size: 22px; line-height: 1; padding: 4px 16px; }

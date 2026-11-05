@@ -40,6 +40,25 @@ const PRELOAD_MAX = 8;
  * a long sentence is requested as clause segments that play back to back; word timings are shifted to the
  * sentence's offsets, so the highlighter sees one sentence.
  */
+/**
+ * The learner's volume for one audio element. An iPhone ignores `audio.volume` (it stays 1), so there the sound goes
+ * through a gain instead; when that cannot sound right now, the element plays as it is (never silent).
+ */
+let gainCtx: AudioContext | null = null;
+function setVolume(audio: HTMLAudioElement, volume: number): void {
+  audio.volume = volume;
+  if (volume >= 0.999 || Math.abs(audio.volume - volume) < 0.01) return;
+  try {
+    const AC = (window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AC) return;
+    gainCtx ??= new AC();
+    if (gainCtx.state !== 'running') { void gainCtx.resume().catch(() => undefined); return; }
+    const gain = gainCtx.createGain();
+    gain.gain.value = volume;
+    gainCtx.createMediaElementSource(audio).connect(gain).connect(gainCtx.destination);
+  } catch { /* the element plays as it is */ }
+}
+
 export class AudioTtsEngine implements TtsEngine {
   readonly kind = 'cloud' as const;
   readonly label: string;
@@ -184,7 +203,7 @@ export class AudioTtsEngine implements TtsEngine {
       if (ready) this.preloaded.delete(k);
       const { audio, url } = ready ?? this.load(res);
       audio.playbackRate = clampRate(this.liveRate);
-      audio.volume = Math.max(0, Math.min(1, opts.volume ?? 1));
+      setVolume(audio, Math.max(0, Math.min(1, opts.volume ?? 1)));
       // provider timings index the text it synthesized (trimmed by the main process); shift them to this text
       const offset = seg.start + (seg.text.length - seg.text.trimStart().length);
       let timings: WordTiming[] | null = res.timings?.length ? res.timings.map((w) => ({ ...w, charIndex: w.charIndex + offset })) : null;

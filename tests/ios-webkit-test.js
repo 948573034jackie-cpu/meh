@@ -211,7 +211,7 @@ const fakeWebkit = () => {
   Object.assign(stores.local, {
     barOn: true,
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
-    drExtras: { phoneSet: true, levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
+    drExtras: { phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
   });
   keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key' });
@@ -475,9 +475,11 @@ const fakeWebkit = () => {
   });
   ok('the phone: the whole screen is the book of subtitles: no toolbar, no "▶ Explain" pills, one normal text size', book.phone === '1' && book.view === 'all' && !book.top && !book.pills && book.size === '21px' && book.fills, JSON.stringify(book));
   ok('...what the tutor says is not shown as text; one line to ask, with a send button', book.say === '0' && !book.sayText && book.ask && book.send === '➤', JSON.stringify(book));
-  ok('...the stop\'s sentence is on the play line (40 of 100 from the bottom)', book.line !== null && book.line > 0.48 && book.line < 0.72, String(book.line));
+  const lineNow = () => lv.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const page = r.querySelector('.page'), cur = r.querySelector('.s.cur'); if (!cur) return null; const pr = page.getBoundingClientRect(), cr = cur.getBoundingClientRect(); return (cr.top + cr.height / 2 - pr.top) / pr.height; });
+  const onLine = await until(async () => { const l = await lineNow(); return l !== null && l > 0.48 && l < 0.72 ? l : null; }, 4000, 80);
+  ok('...the stop\'s sentence is on the play line (40 of 100 from the bottom)', !!onLine, String(await lineNow()));
   const first = stores.local.drExtras;
-  ok('...a phone\'s first settings: just talk is on, no Chinese under every line, "Explain 20 s"', first.phoneSet === true && first.voiceMode === true && first.zhLines === false && stores.local.drSettings.listen.lastSecondsWindow === 20, JSON.stringify({ v: first.voiceMode, zh: first.zhLines, s: stores.local.drSettings.listen.lastSecondsWindow }));
+  ok('...a phone\'s first settings: just talk is on, no Chinese under every line', first.phoneSet === true && first.voiceMode === true && first.zhLines === false, JSON.stringify({ v: first.voiceMode, zh: first.zhLines, s: stores.local.drSettings.listen.lastSecondsWindow }));
   const winL = await until(async () => { const d = await lvDbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 60);
   const cardL = await lv.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return c && !c.hidden ? { word: (c.querySelector('.word') || {}).textContent, zh: !!c.querySelector('.zh') && /[\u4e00-\u9fff]/.test(c.textContent), ipa: !!c.querySelector('.ipa'), en: !!c.querySelector('.en') && getComputedStyle(c.querySelector('.en')).display !== 'none' } : null; });
   ok('a hard word: the window "Do you know …?" waits, the word\'s card shows its Chinese (no IPA, no English text)', winL && winL.window.kind !== 'sentence' && cardL && cardL.word === winL.window.target && cardL.zh && !cardL.ipa && !cardL.en, JSON.stringify({ w: winL && winL.window, cardL }));
@@ -507,7 +509,34 @@ const fakeWebkit = () => {
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
   ok('the Check button shows the report: the app, just talk, the microphone, the two groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words and phrases 45%/.test(rep), String(rep).slice(0, 500));
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
+  // ---- Reading mode: pages like an e-reader ----
+  await lv.evaluate(() => window.__ytcDream.action('mode'));
+  const rd = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'read' && d.stage.pages >= 2 ? d : null; }, 6000);
+  const readLook = async () => lv.evaluate(() => {
+    const r = document.getElementById('dr-stage-host').shadowRoot, page = r.querySelector('.page'), inner = page.querySelector('.doc-inner');
+    const pr = page.getBoundingClientRect();
+    const w = r.querySelector('.page .w.cur-w') || r.querySelector('.page .s.cur');
+    const wr = w ? (w.getClientRects()[0] || w.getBoundingClientRect()) : null;
+    return { scrolls: getComputedStyle(page).overflowY, size: getComputedStyle(page).fontSize, pg: (r.querySelector('.pager .pg') || {}).textContent, pager: getComputedStyle(r.querySelector('.pager')).display,
+      onPage: wr ? wr.left >= pr.left - 1 && wr.right <= pr.right + 1 : null, tx: inner.style.transform, bg: getComputedStyle(r.querySelector('.stage')).backgroundColor, scrollTop: page.scrollTop };
+  });
+  const r1 = await readLook();
+  ok('the Mode button: Reading mode, pages like a book: the text does not scroll, a light page, "page / pages" under it', !!rd && r1.scrolls === 'hidden' && r1.pager !== 'none' && new RegExp('^\\d+ / ' + rd.stage.pages + '$').test(r1.pg) && r1.bg === 'rgb(246, 241, 229)', JSON.stringify({ r1, st: rd && rd.stage }));
+  ok('...the sentence being read is on the page shown', r1.onPage === true, JSON.stringify(r1));
+  await lv.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.pager [data-act="next"]').click());
+  await sleep(400);
+  const r2 = await readLook();
+  ok('...› turns to the next page (‹ back)', r2.tx !== r1.tx && r2.pg !== r1.pg, JSON.stringify({ a: r1.pg, b: r2.pg }));
+  await lv.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.pager [data-act="prev"]').click());
+  // each mode has its own text size
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 30 } })));
+  const r3 = await until(async () => { const x = await readLook(); return x.size === '30px' ? x : null; }, 4000);
+  await lv.evaluate(() => window.__ytcDream.action('mode')); // Video
+  await lv.evaluate(() => window.__ytcDream.action('mode')); // Listening
+  const backL = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'all' && d.stage.shown ? d : null; }, 6000);
+  ok('...the text size of Reading (30) does not change Listening (21)', !!r3 && !!backL && backL.stage.size === '21px' && stores.local.drExtras.view === 'listening', JSON.stringify({ r3: r3 && r3.size, back: backL && backL.stage }));
   // a double tap on a word of the book (two taps: a touch screen sends no double-click of its own) = I know
+  await sleep(800); // (the page that just appeared does not take a tap for a moment)
   const dbl = await lv.evaluate(() => {
     const r = document.getElementById('dr-stage-host').shadowRoot;
     const w = [...r.querySelectorAll('.page .w[data-lemma][data-level]')].find((x) => !/known/.test(x.className)) || r.querySelector('.page .w[data-lemma]');

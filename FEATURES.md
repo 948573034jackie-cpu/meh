@@ -98,7 +98,7 @@ The same word is not asked again within 1,000 words, and a word explained 5 time
 
 - **The screen is a book.** The whole screen is the video's subtitles, in one normal text size that never changes by itself (⚙ → Text size). Every word can be tapped: a card shows its Chinese (the dictionary's; the AI translates what the dictionary does not have).
 - **The play line.** The sentence being played, asked or explained always jumps to the play line: ⚙ → Play line, 0 = the bottom of the page, 100 = the top (40 at first, a little under the middle).
-- **Only the bottom has controls**, five small ones: Tutor on/off · ⏯ play/stop · Explain 20 s · Sentence · Call. Swipe the bar for the rest: Voice, Sleep, Words, Settings, Check (and in the app: Home, Paste link, App settings). Above the bar: the "I know / I don't know" buttons at a stop, and one line to type a question (➤ sends it).
+- **Only the bottom has controls**, five small ones: Tutor on/off · ⏯ play/stop · Explain 30 s (20, 40 or 60 in Settings) · Sentence · Call. Swipe the bar for the rest: Voice, Mode, Sleep, Words, Settings, Check (and in the app: Home, Paste link, App settings). Above the bar: the "I know / I don't know" buttons at a stop, and one line to type a question (➤ sends it).
 - **What the tutor says is heard, not shown** (⚙ → "Show what the tutor says as text" turns the text on).
 - **Just talk** (on from the start): "hello" = the tutor comes (the video stops, the last part is explained; when the video is already stopped, the call opens) · "I know" = marked known, no explanation · "bye bye" = the tutor goes and the video plays (at a stop it also marks the word or sentence known). The microphone stays on after "bye bye". ⚙ → Microphone: Low / Mid / High.
 - **Sleep timer:** the Sleep button (or ⚙) = 30 minutes, again = 60 minutes, again = off. When it runs out the video, the tutor and the microphone stop.
@@ -106,6 +106,10 @@ The same word is not asked again within 1,000 words, and a word explained 5 time
 - **Short explanations:** the hard word and what it means in easy English, then the whole sentence in easy English (about 30 to 60 words; no heading, no intro).
 - **The word test before a video is off at first** (⚙ → "Word test before each video").
 - **The line being explained is always shown:** at "Sentence" and at "Explain 20 s" the page jumps to the line the tutor is talking about.
+- **Three modes** (the Mode button, or ⚙ → Mode), each with its own text size: **Listening** (all the subtitles, the text moves with the sound), **Reading** (pages like an e-reader: a light page, the text does not move, a thin line follows the word being read, the pages turn by themselves; ‹ › or a swipe turns them, a tap on a sentence plays from there), **Video** (the video).
+- **After an explanation** the Chinese card closes, the word is said 3 times again, the sentence plays from the video, and the video goes on to the end.
+- **My teacher** (⚙ → My teacher): your own teacher first, then seven ways from research on language teaching (Picture It, Chinese Bridge, Chunk Catcher, Guess First, Little Story, Ask Why, Echo Me). The one you choose is also used for the explanations at the stops of the next videos.
+- **Volume:** ⚙ → Tutor's volume / The word's volume (they now also work for the cloud voices on an iPhone).
 - **No silent stops.** A stop where nothing is said for 30 seconds plays on by itself; a video that the phone itself paused as the microphone went on plays on again.
 
 ## 7. My tutor (Chrome and YT Learn, v3.6): your own AI teacher on YouTube

@@ -103,6 +103,8 @@ export interface ListenDeps {
   contextZh?: (lemma: string) => string[] | undefined;
   /** a Listening stop starts on this word/phrase (show its dictionary card now) / is finished with it (hide the card) */
   onStopTarget?: (t: { kind: ExplainKind; target: string; lemma?: string } | null) => void;
+  /** (direct stop) the explanation is over: the word is said again now (the app closes its card) */
+  onWordAgain?: () => void;
   /** (YouTube) how long the window after an explanation stays open, ms (default: commandWindowMs) */
   afterWindowMs?: () => number;
   /** (YouTube) the quiet moment after a question the style asks ([PAUSE]), ms */
@@ -136,7 +138,8 @@ export interface ListenDeps {
    * (YouTube, Level Check) the app chooses the stops itself: a stop is only at the end of a sentence it names.
    * With `items` (the sentence's hard words and phrases) each is said wordRepeats times and the commands window
    * waits: "I know" = known, the next item; when all are known the sentence plays again and the reading goes on;
-   * "I don't know" or silence = the explanation of the sentence, the sentence from the video, on.
+   * "I don't know" or silence = the explanation of the sentence, the word wordRepeats times again, the sentence
+   * from the video, on.
    * Without items (a whole hard sentence): the sentence from the video, the commands window ("I know" = known, no
    * explanation, on), else the explanation, the sentence from the video, on.
    * A word explained by hand is only the explanation.
@@ -390,7 +393,7 @@ export class ListenController {
     try {
       if (items.length) {
         // the hard words and phrases one by one: said, then the window; the first one not known is explained
-        let explain = false;
+        let asked: DirectItem | null = null;
         for (const it of items) {
           if (over()) break;
           if (this.dismissed.has(it.lemma) || this.deps.vocab().words[it.lemma] === 'known') continue;
@@ -406,10 +409,18 @@ export class ListenController {
           if (a === 'aborted' || over()) break;
           if (a === 'know') { this.dismissed.add(it.lemma); continue; }
           if (a === 'bye') { this.deps.onMarkLearning(it.lemma); break; } // "go on": no explanation, still one to learn
-          explain = true; // "I don't know", or nothing said
+          asked = it; // "I don't know", or nothing said
           break;
         }
-        if (explain && !over()) await this.runExplanation('sentence', cur.text, pos, cur.text, null, script, lemma);
+        if (asked && !over()) {
+          // the explanation, then the word again (as many times as before it), then the sentence from the video
+          const res = await this.runExplanation('sentence', cur.text, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }], lemma);
+          if (res === 'done' && !over()) {
+            this.deps.onWordAgain?.();
+            const again = await this.sayTarget(asked.target, asked.lemma, Math.max(0, this.deps.settings().listen.wordRepeats));
+            if (again === 'done' && !over()) await this.sayTarget(cur.text, lemma, 1);
+          }
+        }
       } else {
         this.deps.onStopTarget?.({ kind: 'sentence', target: cur.text, lemma });
         this.last = { kind: 'sentence', target: cur.text, pos, dict: null, lemma };

@@ -7,7 +7,7 @@ import WebKit
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar)
-    @Published var explainSeconds = 20   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
+    @Published var explainSeconds = 30   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
     @Published var vocabStatus = ""      // the last save of the vocabulary file, in words
@@ -247,8 +247,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// the tutor's part length in seconds, from its saved settings (drSettings.listen.lastSecondsWindow; 20 when absent)
     static func partSeconds(in settings: Any?) -> Int {
         let listen = (settings as? [String: Any])?["listen"] as? [String: Any]
-        let seconds = (listen?["lastSecondsWindow"] as? NSNumber)?.intValue ?? 20
-        return seconds > 0 ? seconds : 20
+        let seconds = (listen?["lastSecondsWindow"] as? NSNumber)?.intValue ?? 30
+        return seconds > 0 ? seconds : 30
     }
 
     static func jsonString(_ object: Any) -> String {
@@ -289,7 +289,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     func storageRemove(area: String, keys: [String], from web: WKWebView?) {
         Store.shared.remove(area: area, keys: keys)
-        if area == "local", keys.contains("drSettings"), explainSeconds != 20 { explainSeconds = 20 }
+        if area == "local", keys.contains("drSettings"), explainSeconds != 30 { explainSeconds = 30 }
         var gone: [String: Any] = [:]
         for k in keys { gone[k] = NSNull() }
         tellOtherWindows(gone, area: area, except: web)

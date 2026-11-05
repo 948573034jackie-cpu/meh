@@ -179,8 +179,8 @@ const PHONE = ((): boolean => {
     return !!w.__ytcShimYT || !!w.__ytcSafari || !!(self as unknown as { __ytcSafari?: unknown }).__ytcSafari || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 600);
   } catch { return false; }
 })();
-/** all the subtitles over the whole screen (always on a phone) */
-const bookView = (): boolean => PHONE || extras.view === 'listening';
+/** all the subtitles over the whole screen: Listening (the text moves with the sound) or Reading (pages) */
+const bookView = (): boolean => extras.view === 'listening' || extras.view === 'reading';
 /** the text size of the reading page: on a phone its own, and it never changes by itself */
 const stageSize = (): number => (PHONE ? clamp(extras.phoneSizePx || 21, 14, 48) : clamp(extras.stageSizePx || 34, 16, 96));
 
@@ -695,6 +695,7 @@ class Session {
       total: () => this.vb?.order.length ?? 0,
       title: () => this.vb?.book.title ?? '',
       level: () => levelMeta.currentLevel || settings.learnerLevel,
+      way: () => settings.ai.activeStyle,
       stream: (prompt, onDelta) => completeStream(prompt, onDelta, true),
       onChange: () => this.analysisChanged(),
     });
@@ -720,7 +721,8 @@ class Session {
     this.gate = null;
     if (this.disposed) return;
     // every video goes on in Listening mode (🎬 Video on the page goes back to the picture)
-    if (extras.levelListening !== false && extras.view !== 'listening' && this.vb) void store.patchExtras({ view: 'listening' });
+    // (a phone keeps the mode you chose: Listening, Reading or Video)
+    if (!PHONE && extras.levelListening !== false && extras.view === 'normal' && this.vb) void store.patchExtras({ view: 'listening' });
     const v = video();
     if (v && v.paused) void v.play().catch(() => this.toast('Press play on the video.', 5000));
   }
@@ -851,7 +853,7 @@ class Session {
     const sc = req.position ? this.scores.get(sentenceKey(req.position)) : undefined;
     const known = new Set<string>();
     if (req.position && this.vb && this.dict) for (const t of getSentence(this.vb.book, req.position)?.sentence.tokens ?? []) if (t.kind === 'word' && vocab.words[this.dict.lemmaOf(t.text)] === 'known') known.add(t.text.toLowerCase());
-    const levelRule: LevelRule = { items: sc?.items ?? [], known: [...known], level: levelMeta.currentLevel || settings.learnerLevel };
+    const levelRule: LevelRule = { items: sc?.items ?? [], known: [...known], level: levelMeta.currentLevel || settings.learnerLevel, way: settings.ai.activeStyle };
     return { ...req, levelRule } as RuleRequest;
   }
 
@@ -920,6 +922,8 @@ class Session {
       onCommandWindow: (w) => this.onWindow(w),
       onPauseWindow: (open) => { this.windowOpen = open; },
       onStopTarget: (t) => this.onStopTarget(t),
+      // (after the explanation the word is said again: its Chinese card goes away first, the whole page is seen)
+      onWordAgain: () => this.closeCard(),
       // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
       afterWindowMs: () => (talkAfter() ? (settings.listen.commandWindowMs || 5000) : 1500),
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
@@ -2141,7 +2145,7 @@ class Session {
     host.hidden = true;
     const el = document.createElement('div');
     el.className = 'stage';
-    el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div>
+    el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div><div class="pager"><button type="button" class="quiet" data-act="prev" title="The page before">‹</button><span class="pg"></span><button type="button" class="quiet" data-act="next" title="The next page">›</button></div>
       <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="${PHONE ? 'Ask my tutor…' : 'Type or speak a question for your tutor'}" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">${PHONE ? '➤' : 'Ask'}</button></form></div>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
@@ -2154,11 +2158,25 @@ class Session {
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
     page.addEventListener('touchmove', () => { this.userScrollAt = Date.now(); }, { passive: true });
     // the window, the dock (explanation, talk) or the commands window changed size: the part is fitted again
-    const ro = new ResizeObserver(() => { this.fitPart(); this.padPage(); this.scrollToCur(this.playback?.state === 'explaining' || !!this.cmdWin); });
+    const ro = new ResizeObserver(() => { this.fitPart(); this.padPage(); this.layoutRead(); this.scrollToCur(this.playback?.state === 'explaining' || !!this.cmdWin); });
     ro.observe(page);
     this.offs.push(() => ro.disconnect());
     this.wireWords(page);
     this.wireAsk(el);
+    // the reading pages: ‹ › and a swipe to the side turn the page
+    el.querySelector('.pager')!.addEventListener('click', (ev) => {
+      const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
+      if (act === 'prev') this.turnPage(-1); else if (act === 'next') this.turnPage(1);
+    });
+    let swipe: { x: number; y: number } | null = null;
+    page.addEventListener('touchstart', (ev) => { const t = ev.touches[0]; swipe = t && ev.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null; }, { passive: true });
+    page.addEventListener('touchend', (ev) => {
+      const t = ev.changedTouches[0];
+      if (!swipe || !t || !this.readView()) { swipe = null; return; }
+      const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+      swipe = null;
+      if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) this.turnPage(dx < 0 ? 1 : -1);
+    }, { passive: true });
     el.querySelector('.sayrow')!.addEventListener('click', (ev) => {
       const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
       if (act === 'hand') this.interrupt(); else if (act === 'bye') this.byeBye();
@@ -2298,12 +2316,14 @@ class Session {
   private markPart(): void {
     const el = this.stage?.el;
     if (!el) return;
-    el.dataset.view = this.partKeys && normalView() ? 'part' : 'all';
+    // (a phone never shrinks the text to fit a part: at a stop in Video mode the book is shown)
+    el.dataset.view = extras.view === 'reading' ? 'read' : this.partKeys && normalView() && !PHONE ? 'part' : 'all';
     el.querySelectorAll<HTMLElement>('.s').forEach((s) => s.classList.toggle('in-part', !!this.partKeys?.has(s.dataset.key ?? '')));
     // all subtitles: your own text size at once (the playing line is placed right after this)
     if (el.dataset.view !== 'part') el.querySelector<HTMLElement>('.page')?.style.removeProperty('font-size');
     this.fitPart();
     this.padPage();
+    this.layoutRead();
   }
 
   private fitFrame = 0;
@@ -2348,7 +2368,8 @@ class Session {
   stageVisible(): boolean { return !!this.stage && !this.stage.host.hidden; }
 
   private resize(dir: number): void {
-    if (this.stageVisible()) void store.patchExtras(PHONE ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
+    if (this.stageVisible() && extras.view === 'reading') void store.patchExtras({ readSizePx: clamp((extras.readSizePx || 22) + dir, 12, 60) });
+    else if (this.stageVisible()) void store.patchExtras(PHONE ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
     else if (this.bandVisible()) void store.patchSettings({ appearance: { ...settings.appearance, subtitleSizePx: clamp((settings.appearance.subtitleSizePx || 26) + dir * 2, 16, 96) } });
     else void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + dir, 12, 48) } });
   }
@@ -2389,6 +2410,7 @@ class Session {
       h.style.setProperty('--subtitle-size', `${clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${stageSize()}px`);
+      h.style.setProperty('--read-size', `${clamp(extras.readSizePx || 22, 12, 60)}px`);
       h.dataset.phone = PHONE ? '1' : '0';
       // (a phone: what the tutor says is heard, not read, unless you turn the text on)
       h.dataset.say = !PHONE || extras.showSay ? '1' : '0';
@@ -2397,6 +2419,7 @@ class Session {
     applyPageLook();
     this.fitPart();
     this.padPage();
+    this.layoutRead();
   }
 
   renderHead(): void {
@@ -2510,7 +2533,7 @@ class Session {
     const page = this.stage?.el.querySelector<HTMLElement>('.page');
     const inner = page?.querySelector<HTMLElement>('.doc-inner');
     if (!page || !inner) return;
-    if (!page.clientHeight || this.stage!.el.dataset.view === 'part') { for (const e of [page, inner]) { e.style.removeProperty('padding-top'); e.style.removeProperty('padding-bottom'); } return; }
+    if (!page.clientHeight || this.stage!.el.dataset.view !== 'all') { for (const e of [page, inner]) { e.style.removeProperty('padding-top'); e.style.removeProperty('padding-bottom'); } return; }
     // (the room is in the scrolled text, not on the page itself: the page must be able to get shorter when the
     // "I know" window or the keyboard comes)
     const f = this.lineAt(), h = page.clientHeight;
@@ -2521,12 +2544,13 @@ class Session {
   /** the playing sentence stays on the play line (its middle on the line, all of it on the page), unless you scrolled a moment ago */
   private scrollToCur(force = false): void {
     if (!this.cur || (!force && Date.now() - this.userScrollAt < 4000)) return;
+    if (this.readView()) { this.followRead(this.sentenceEl(this.stage!.el, this.cur), force); }
     const f = this.lineAt();
     for (const [root, sel] of [[this.panel?.el, '.lines'], [this.stage?.el, '.page']] as const) {
       if (!root) continue;
       const box = root.querySelector<HTMLElement>(sel);
       const el = this.sentenceEl(root, this.cur);
-      if (!box || !el || !box.clientHeight) continue;
+      if (!box || !el || !box.clientHeight || (root === this.stage?.el && this.readView())) continue;
       const h = box.clientHeight, eh = el.offsetHeight;
       // (a sentence longer than the page: from its first line)
       const y = eh + 16 > h ? eh / 2 + 8 : clamp(h * f, eh / 2 + 8, h - eh / 2 - 8);
@@ -2542,6 +2566,62 @@ class Session {
       root.querySelectorAll('.w.cur-w').forEach((e) => e.classList.remove('cur-w'));
       if (ti >= 0) this.sentenceEl(root, pos)?.querySelector(`.w[data-t="${ti}"]`)?.classList.add('cur-w');
     }
+    // (the reading pages: the page turns when the word being read is on the next one)
+    if (ti >= 0 && this.readView()) this.followRead(this.stage!.el.querySelector<HTMLElement>('.page .w.cur-w'));
+  }
+
+  // ---- Reading mode: pages like an e-reader. The text does not move; a thin line follows the word; the page turns by itself ----
+  private readPage = 0;
+  private readPages = 1;
+  /** you turned a page yourself: the pages do not follow the sound for a moment */
+  private userPageAt = 0;
+  private readView(): boolean { return !!this.stage && this.stage.el.dataset.view === 'read' && this.stageVisible(); }
+  /** the pages are laid out again (the screen, the text size or the text changed); the page with the sound is shown */
+  private layoutRead(): void {
+    const page = this.stage?.el.querySelector<HTMLElement>('.page');
+    const inner = page?.querySelector<HTMLElement>('.doc-inner');
+    if (!page || !inner) return;
+    if (this.stage!.el.dataset.view !== 'read') { inner.style.removeProperty('transform'); inner.style.removeProperty('column-width'); return; }
+    const w = page.clientWidth;
+    if (!w) return;
+    if (inner.style.columnWidth !== `${w}px`) inner.style.columnWidth = `${w}px`;
+    this.readPages = Math.max(1, Math.round(inner.scrollWidth / w));
+    const at = this.stage!.el.querySelector<HTMLElement>('.page .w.cur-w') ?? (this.cur ? this.sentenceEl(this.stage!.el, this.cur) : null);
+    this.gotoPage(at ? this.pageOf(at) : Math.min(this.readPage, this.readPages - 1));
+  }
+  private pageOf(el: Element): number {
+    const page = this.stage!.el.querySelector<HTMLElement>('.page')!;
+    const inner = page.querySelector<HTMLElement>('.doc-inner')!;
+    const r = el.getClientRects()[0] ?? el.getBoundingClientRect();
+    return clamp(Math.floor((r.left - inner.getBoundingClientRect().left + 2) / Math.max(1, page.clientWidth)), 0, this.readPages - 1);
+  }
+  private gotoPage(n: number): void {
+    const page = this.stage?.el.querySelector<HTMLElement>('.page');
+    const inner = page?.querySelector<HTMLElement>('.doc-inner');
+    if (!page || !inner) return;
+    this.readPage = clamp(n, 0, this.readPages - 1);
+    inner.style.transform = `translateX(${-this.readPage * page.clientWidth}px)`;
+    const pg = this.stage!.el.querySelector<HTMLElement>('.pager .pg');
+    if (pg) pg.textContent = `${this.readPage + 1} / ${this.readPages}`;
+    if (this.card) this.closeCard();
+  }
+  /** the page with this word or sentence, unless you turned a page yourself a moment ago */
+  private followRead(el: Element | null | undefined, force = false): void {
+    if (!el || (!force && Date.now() - this.userPageAt < 8000)) return;
+    const p = this.pageOf(el);
+    if (p !== this.readPage) this.gotoPage(p);
+  }
+  /** ‹ › or a swipe: one page back or on (the sound goes on; the pages follow it again after a moment, or tap a sentence to play from there) */
+  turnPage(dir: number): void {
+    if (!this.readView()) return;
+    this.userPageAt = Date.now();
+    this.gotoPage(this.readPage + dir);
+  }
+  /** the three modes in turn: Listening, Reading, Video */
+  nextMode(): void {
+    const next = extras.view === 'listening' ? 'reading' : extras.view === 'reading' ? 'normal' : 'listening';
+    void store.patchExtras({ view: next });
+    this.toast(next === 'listening' ? 'Listening mode: all the subtitles, the text moves with the sound.' : next === 'reading' ? 'Reading mode: pages like a book; a thin line follows the word, the pages turn by themselves.' : 'Video mode: the video, with the page at a stop.', 5000);
   }
 
   /** clicks on the text: a word = explain it (card + voice), double click = I know, a sentence = go there */
@@ -3015,6 +3095,7 @@ class Session {
    */
   action(id: string): boolean {
     if (id === 'voiceMode') { this.toggleVoiceMode(); return true; }
+    if (id === 'mode') { this.nextMode(); return true; }
     if (id === 'pageAuto') { this.togglePageAuto(); return true; }
     if (id === 'vocab') { void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' }); return true; }
     if (id === 'quick') {
@@ -3096,7 +3177,7 @@ class Session {
       cloud: cloudSpoken.slice(-30),
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
-      stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
+      stage: stage ? { page: this.readPage + 1, pages: this.readPages, shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       phone: PHONE, sleep: sleepMinutes(), asleep,
       level: { byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
@@ -3283,8 +3364,6 @@ async function boot(): Promise<void> {
     const first = store.phoneDefaults(extras);
     if (first) {
       extras = await store.patchExtras(first);
-      // ("Explain 20 s": a short part fits a phone's page)
-      if (settings.listen.lastSecondsWindow === 30) settings = await store.patchSettings({ listen: { ...settings.listen, lastSecondsWindow: 20 } });
     }
   }
   window.__ytcDream = {

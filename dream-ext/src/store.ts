@@ -50,7 +50,10 @@ export interface YtExtras {
   /** microphone of the live talk: 1 normal, 2 sensitive, 3 very sensitive */
   micLevel: 1 | 2 | 3;
   /** 'listening' = Dream Read's page with all the subtitles over the whole screen; 'normal' = the video */
-  view: 'normal' | 'listening';
+  /** … 'reading' = pages like an e-reader: the text does not move, a thin line follows the word, the pages turn by themselves */
+  view: 'normal' | 'listening' | 'reading';
+  /** text size of the reading pages, px (each mode has its own size) */
+  readSizePx: number;
   /** (old) where the playing line stayed, % from the top: playLine replaced it */
   followAt: number;
   /** the play line: where the playing sentence stays on the page, 0 = the bottom of the page … 100 = the top */
@@ -126,7 +129,7 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42, playLine: 40, phoneSizePx: 21, showSay: false,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42, playLine: 40, phoneSizePx: 21, readSizePx: 22, showSay: false,
   stopItemsOn: true, capWords: 45, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 5, phoneSet: false,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
   teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '',
