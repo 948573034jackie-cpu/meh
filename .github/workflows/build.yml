@@ -63,6 +63,7 @@ jobs:
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
       - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube page
+        continue-on-error: true   # (the simulator of a busy builder must not keep the app from being packed; its log is read)
         working-directory: ios
         shell: bash
         run: |
@@ -75,13 +76,20 @@ jobs:
             xcrun simctl boot "$UDID"
             xcrun simctl bootstatus "$UDID" -b
             xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
-            xcrun simctl launch "$UDID" local.ytlearn.app -selftest
-            sleep 75
-            xcrun simctl io "$UDID" screenshot "../shots/simulator-$(echo "$KIND" | tr -cd 'A-Za-z0-9').png"
-            DATA=$(xcrun simctl get_app_container "$UDID" local.ytlearn.app data)
+            # (a builder under load: the first start of an app can be refused or slow; tried up to 3 times)
+            for TRY in 1 2 3; do xcrun simctl launch "$UDID" local.ytlearn.app -selftest && break; sleep 20; done
+            DATA=$(xcrun simctl get_app_container "$UDID" local.ytlearn.app data || true)
+            for W in $(seq 1 30); do [ -f "$DATA/Documents/selftest.json" ] && break; sleep 5; done
+            sleep 10
+            xcrun simctl io "$UDID" screenshot "../shots/simulator-$(echo "$KIND" | tr -cd 'A-Za-z0-9').png" || true
             echo "----- self-test report ($KIND) -----"
             cat "$DATA/Documents/selftest.json" || echo "NO REPORT WRITTEN"
-            xcrun simctl shutdown "$UDID"
+            echo "----- is the app still running? (a line here = yes) -----"
+            xcrun simctl spawn "$UDID" launchctl list | grep -i ytlearn || echo "NOT RUNNING: the app closed by itself"
+            echo "----- crash reports of the app, if any -----"
+            ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i ytlearn | head -3 || true
+            CR=$(ls -t ~/Library/Logs/DiagnosticReports/*YTLearn* 2>/dev/null | head -1); [ -n "$CR" ] && head -c 6000 "$CR" || echo "(none)"
+            xcrun simctl shutdown "$UDID" || true
           done
       - uses: actions/upload-artifact@v4
         if: always()

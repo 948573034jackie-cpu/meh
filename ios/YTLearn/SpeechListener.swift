@@ -107,6 +107,7 @@ final class SpeechListener {
             request = req
 
             let input = engine.inputNode
+            opened = true
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0, format.channelCount > 0 else { throw NSError(domain: "SpeechListener", code: 1, userInfo: nil) }
             let gain = self.gain
@@ -251,8 +252,12 @@ final class SpeechListener {
 
     func stop() {
         wanted = false
+        // (never opened, a page that only starts to load: the microphone and the sound are not touched at all)
+        if !opened && !running && task == nil { return }
         cleanup()
     }
+    /// the microphone's input was opened at least once (only then is there a tap to take away)
+    private var opened = false
 
     private func cleanup() {
         running = false
@@ -263,13 +268,15 @@ final class SpeechListener {
         sent = []
         cut = 0
         tail = ""
-        if engine.isRunning { engine.stop() }
-        engine.inputNode.removeTap(onBus: 0)
+        if opened {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+        }
         request?.endAudio()
         task?.cancel()
         request = nil
         task = nil
-        releaseSoon()
+        if opened { releaseSoon() }
     }
 
     /// The sound is NOT set back to "play" here and now: while the page wants the microphone it starts the next task

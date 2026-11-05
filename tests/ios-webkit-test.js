@@ -405,7 +405,7 @@ const fakeWebkit = () => {
   sheet.on('pageerror', (e) => console.log('PAGE ERROR (settings)', String(e.message || e).slice(0, 300)));
   await sheet.addInitScript({ content: source(sheetScripts) });
   await sheet.goto('http://localhost:8792/options.html');
-  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; return /saved|…/i.test(m) && document.getElementById('learnerLevel') && document.getElementById('learnerLevel').value; }), 8000);
+  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('learnerLevel'); return /saved|…/i.test(m) && l && l.value === 'B2' ? l.value : null; }), 12000);
   ok('the settings page works in the sheet: it shows your level and the saved Claude key (only its end)', shown === 'B2' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
   await sheet.fill('#key-anthropic', 'sk-ant-new-key-5678');
   await sheet.click('[data-save="anthropic"]');
