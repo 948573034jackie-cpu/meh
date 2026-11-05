@@ -76,6 +76,9 @@ export function pagesToText(pages: readonly (readonly PdfTextItem[])[]): string 
 
 export async function pdfToText(bytes: ArrayBuffer): Promise<string> {
   // (pdf.js does its work in this page, not in a worker of its own: a worker file may not load inside the iPhone apps)
+  // (pdf.js uses Promise.withResolvers, which Safari has only from iOS 17.4)
+  const P = Promise as unknown as { withResolvers?: () => unknown };
+  if (!P.withResolvers) P.withResolvers = () => { let resolve!: (v: unknown) => void, reject!: (e: unknown) => void; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
   await import('pdfjs-dist/build/pdf.worker.mjs');
   const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
   const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;

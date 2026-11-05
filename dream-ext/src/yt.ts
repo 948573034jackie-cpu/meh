@@ -37,7 +37,7 @@ import { renderChapter, renderSentence, restyleLemma } from '../vendor/renderer/
 import { hintText } from '../vendor/renderer/hints';
 import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book';
 import { VideoEngine } from './video-engine';
-import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf } from './ai-client';
+import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf, gunzipVia } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
 import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, ShortPieces, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
@@ -2815,7 +2815,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, voiceProblem: this.lastVoiceError,
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),

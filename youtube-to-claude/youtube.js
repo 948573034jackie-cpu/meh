@@ -391,6 +391,7 @@
       if (bar.parentElement !== document.documentElement) document.documentElement.appendChild(bar);
       if (!r) { const v = video; r = v ? v.getBoundingClientRect() : null; }
       bar.style.position = 'fixed';
+      bar.style.zIndex = '2147481000'; // (under the tutor's reading page)
       bar.style.left = (r && r.width > 80 ? Math.round(r.left) : 8) + 'px';
       bar.style.top = (r && r.height > 60 ? Math.round(r.bottom + 2) : 8) + 'px';
       bar.style.background = 'rgba(0,0,0,.55)';

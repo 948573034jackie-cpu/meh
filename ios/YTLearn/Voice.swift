@@ -38,6 +38,10 @@ final class TutorVoice: NSObject, AVSpeechSynthesizerDelegate {
         u.pitchMultiplier = Float(min(2, max(0.5, (body["pitch"] as? NSNumber)?.doubleValue ?? 1)))
         u.volume = Float(min(1, max(0, (body["volume"] as? NSNumber)?.doubleValue ?? 1)))
         askers[ObjectIdentifier(u)] = Asker(id: id, web: web, world: world)
+        // (the playback category: heard with the Ring/Silent switch on silent, and with the screen off; an open
+        // microphone session, play-and-record, is left alone)
+        let category = AVAudioSession.sharedInstance().category
+        if category != .playback && category != .playAndRecord { AudioSession.set(mode: "play") }
         synth.speak(u)
     }
 

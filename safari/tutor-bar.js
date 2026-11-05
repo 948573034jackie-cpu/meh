@@ -28,6 +28,11 @@
     try { if (!speechSynthesis.speaking) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) { /* no speech here */ }
   }
 
+  // any first tap wakes it (the Level Check buttons, the page itself), not only this bar: the default way into a video
+  // never touches the bar. (Capture: the Level Check screen stops its clicks before they bubble.)
+  document.addEventListener('click', wakeVoice, true);
+  document.addEventListener('touchend', wakeVoice, true);
+
   function act(id) {
     wakeVoice();
     const d = window.__ytcDream;
@@ -39,7 +44,7 @@
     b.id = 'yt2c-tutor-bar';
     b.setAttribute('role', 'toolbar');
     b.setAttribute('aria-label', 'My tutor');
-    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147482000;display:flex;gap:4px;align-items:center;overflow-x:auto;-webkit-overflow-scrolling:touch;' +
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147482600;display:flex;gap:4px;align-items:center;overflow-x:auto;-webkit-overflow-scrolling:touch;' +
       'padding:6px 8px calc(6px + env(safe-area-inset-bottom));background:rgba(32,33,36,.96);color:#fff;font:12px/1.2 -apple-system,system-ui,sans-serif;box-shadow:0 -2px 10px rgba(0,0,0,.3)';
     const on = document.createElement('button');
     on.id = 'yt2c-tb-tutor';
