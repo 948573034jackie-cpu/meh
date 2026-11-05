@@ -212,7 +212,7 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const monthly = usdSince(await getUsage(), periodStarts().month);
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error(`Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in the Dream Tutor settings to continue.`), { code: 'budget' });
   // (YouTube) "you stopped the video": the part just heard, taught as a whole with the learner's rules
-  const partPrompt = part && style ? { ...style, sentencePrompt: PART_PROMPT.replace('{{part}}', req.target).replace('{{seconds}}', String((req as ExplainRequest & { seconds?: number }).seconds ?? 30)), maxTokens: Math.max(style.maxTokens, 1400) } : null;
+  const partPrompt = part && style ? { ...style, sentencePrompt: PART_PROMPT.replace('{{part}}', req.target).replace('{{seconds}}', String((req as ExplainRequest & { seconds?: number }).seconds ?? 30)), maxTokens: Math.max(style.maxTokens, 900) } : null;
   // (Level Check) the hard rule of the explanations at a stop: it replaces the styles and teacher instructions
   const rule = (req as RuleRequest).levelRule;
   const prompt = rule && styled ? buildRulePrompt(req as RuleRequest) : await withTeacher(style

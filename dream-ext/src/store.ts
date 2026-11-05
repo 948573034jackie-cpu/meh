@@ -51,8 +51,26 @@ export interface YtExtras {
   micLevel: 1 | 2 | 3;
   /** 'listening' = Dream Read's page with all the subtitles over the whole screen; 'normal' = the video */
   view: 'normal' | 'listening';
-  /** where the playing line stays on the page and in the panel, % from the top */
+  /** (old) where the playing line stayed, % from the top: playLine replaced it */
   followAt: number;
+  /** the play line: where the playing sentence stays on the page, 0 = the bottom of the page … 100 = the top */
+  playLine: number;
+  /** text size of the reading page on a phone, px (it never changes by itself) */
+  phoneSizePx: number;
+  /** show what the tutor says as text too (off: you only hear it) */
+  showSay: boolean;
+  /** Level Check stops for hard words and phrases: on / off, and their share of the sentences in % */
+  stopItemsOn: boolean;
+  capWords: number;
+  /** Level Check stops for whole sentences (hard grammar, hidden meaning): on / off, and their share in % */
+  stopHardOn: boolean;
+  capSentences: number;
+  /** a word or phrase asked or explained is not asked again within this many words */
+  repeatWords: number;
+  /** explained this many times, a word is marked known and never stops again (0 = never by itself) */
+  knownAfter: number;
+  /** the phone's own first settings were made (see phoneDefaults) */
+  phoneSet: boolean;
   /** the full-screen reading page at every stop */
   stageOn: boolean;
   /** when you pause: play the part (complete sentences) again on the reading page before the explanation */
@@ -94,7 +112,7 @@ export interface YtExtras {
   levelAuto: boolean;
   /** ask "Level Check" before every video, book, PDF or text */
   levelAsk: boolean;
-  /** stops by the Level Check rules: at most 50 % of the sentences, the hardest; original, explanation, original, on */
+  /** stops by the Level Check rules: the hardest sentences; words and phrases have their share (capWords), whole sentences theirs (capSentences) */
   levelMode: boolean;
   /** with Level Check every video goes into Listening mode after its analysis */
   levelListening: boolean;
@@ -108,7 +126,8 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true,
-  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42,
+  voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42, playLine: 40, phoneSizePx: 21, showSay: false,
+  stopItemsOn: true, capWords: 45, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 5, phoneSet: false,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
   teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '',
 };
@@ -123,6 +142,12 @@ export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };
   if ((x.migrated ?? 0) < 1) p.talkAfterExplain = false;
   return p;
+}
+
+/** The first settings of a phone (once): a book of subtitles only, your voice is enough, "Explain 20 s", no word test. */
+export function phoneDefaults(x: YtExtras): Partial<YtExtras> | null {
+  // (the word test before every video is off: Settings turns it on)
+  return x.phoneSet ? null : { phoneSet: true, zhLines: false, voiceMode: true, view: 'listening', levelAsk: false };
 }
 
 export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }
@@ -209,7 +234,20 @@ export async function getVocab(): Promise<VocabState> {
   const v = o[K.vocab] as VocabState | undefined;
   return { words: { ...(v?.words ?? {}) }, marked: { ...(v?.marked ?? {}) } };
 }
-export async function setWordStatus(lemma: string, status: WordStatus | null, met?: { word?: string; sentence?: string }): Promise<VocabState> {
+/**
+ * The vocabulary is saved as one object: every change reads it, changes it and writes it back. Changes made at the
+ * same moment (a stop marks its words, "I know" marks one known) go one after the other, so none is lost.
+ */
+let vocabWrites: Promise<unknown> = Promise.resolve();
+function oneVocabWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const p = vocabWrites.then(fn, fn);
+  vocabWrites = p.catch(() => undefined);
+  return p;
+}
+export function setWordStatus(lemma: string, status: WordStatus | null, met?: { word?: string; sentence?: string }): Promise<VocabState> {
+  return oneVocabWrite(() => setWordStatusNow(lemma, status, met));
+}
+async function setWordStatusNow(lemma: string, status: WordStatus | null, met?: { word?: string; sentence?: string }): Promise<VocabState> {
   const v = await getVocab();
   const changed = v.words[lemma] !== (status ?? undefined);
   if (status) v.words[lemma] = status; else delete v.words[lemma];
@@ -228,14 +266,17 @@ export async function getEntries(): Promise<Record<string, VocabEntry>> {
   const o = await area().get(K.entries);
   return { ...((o[K.entries] as Record<string, VocabEntry> | undefined) ?? {}) };
 }
-export async function upsertEntry(input: VocabEntryInput): Promise<VocabEntry> {
+export function upsertEntry(input: VocabEntryInput): Promise<VocabEntry> {
+  return oneVocabWrite(() => upsertEntryNow(input));
+}
+async function upsertEntryNow(input: VocabEntryInput): Promise<VocabEntry> {
   const entries = await getEntries();
   const e = mergeEntry(entries[input.lemma] ?? null, input, new Date().toISOString());
   const v = await getVocab();
   if (v.words[input.lemma] === 'known') e.status = 'known';
   entries[input.lemma] = e;
   await area().set({ [K.entries]: entries });
-  if (v.words[input.lemma] !== 'known') await setWordStatus(input.lemma, 'learning');
+  if (v.words[input.lemma] !== 'known') await setWordStatusNow(input.lemma, 'learning');
   return e;
 }
 export async function deleteEntry(lemma: string): Promise<void> {

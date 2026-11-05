@@ -14,7 +14,7 @@ Your own AI English teacher on YouTube, with your own API key (Claude). Version 
 ## What happens
 1. **Level Check** before the video: tap the words you know (made from this video only), or "Skip, just play".
 2. The AI analyzes the video **once** (the cheap model) and writes the explanations of the coming stops. Then
-   **Listening mode**: at the hardest sentences (50 % at most) the video stops, the sentence is heard, explained (spoken
+   **Listening mode**: at the hardest sentences the video stops (a hard word is said 3 times and waits for "I know"), the sentence is heard, explained (spoken
    and shown), heard again, and goes on by itself.
 3. Tap a word on the page: it is explained; double tap: I know it. ⚙ on the page: quick settings (voice, sizes, the part
    length, your level…). 📞: a voice call with Claude about the part. 📖: Listening mode (all subtitles as a page).

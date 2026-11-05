@@ -26,7 +26,7 @@ import { Playback, type PlaybackState } from '@core/listen/playback';
 import { ListenController, type TranscriptEntry, type CommandWindow, type ChapterPhrase } from '@core/listen/controller';
 import { getEngine, useFakeEngine, defaultVoiceFor, chineseVoiceId } from '@core/tts/registry';
 import type { TtsEngine } from '@core/tts/engine';
-import { getSentence, nextPosition, prevPosition, comparePositions, contextAround } from '@core/nav';
+import { getSentence, nextPosition, prevPosition, comparePositions, contextAround, wordOffsets } from '@core/nav';
 import { StreamSentenceSplitter } from '@core/listen/sentences';
 import { cleanSpokenProse } from '@core/ai/prompts';
 import { detectNames } from '@core/dict/names';
@@ -50,7 +50,7 @@ import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } fr
 import { renderQuick } from './quick';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
-import { scoreSentences, selectStops, mayStop, counterText, type SentenceScore } from './level-stops';
+import { scoreSentences, selectStopsByKind, stopKindOf, groupOf, mayStopGroup, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
 import { RuleGuard, type LevelRule, type RuleRequest } from './level-rule';
 import { LevelGate } from './level-gate';
 import { Analysis, analysisId, type AnalysisStop } from './level-analysis';
@@ -67,6 +67,10 @@ interface YtcApi {
   setBarStatus(text: string, bad?: boolean): void;
   /** the browser refused the microphone */
   micBlocked?(): boolean;
+  /** when the microphone last went on or off (ms; a phone may stop the video's sound for a moment then) */
+  micChangedAt?(): number;
+  /** 🩺 Check: shows the report over the page */
+  showReport?(): void;
   /** the microphone closes what it is hearing now (it comes as final) and listens again */
   finishSpeech?(): void;
 }
@@ -75,6 +79,8 @@ interface DreamHook {
   owns(): boolean;
   /** the tutor wants the microphone now (it waits for an answer or a talk is open) */
   wantsMic?(): boolean;
+  /** how easily the microphone hears you: 1 low, 2 mid, 3 high (the iPhone app's listener) */
+  micLevel?(): number;
   /** a voice call is open: youtube.js keeps the microphone on, even with voice commands off */
   callOpen?(): boolean;
   /** something the microphone heard; true = handled here */
@@ -126,6 +132,8 @@ function pageStyle(): void {
     #dr-stage-host { position: fixed; inset: 0; z-index: 2147482000; }
     :fullscreen #dr-stage-host { position: absolute; }
     #dr-stage-host[hidden] { display: none !important; }
+    /* (Safari on a phone: the tutor's own bar is at the bottom of the screen; the page ends above it) */
+    html.yt2c-tutor-bar #dr-stage-host { bottom: var(--yt2c-bar-h, 0px); }
     html.dr-hide-cc-always .ytp-caption-window-container { display: none !important; }
     /* your video size (normal view): the video takes this share of the page width, the panel the rest */
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #primary.ytd-watch-flexy { flex: 0 0 auto !important; width: calc(var(--dr-vsize) - 24px) !important; max-width: none !important; min-width: 320px !important; }
@@ -164,6 +172,17 @@ const shown = (t: string) => t.replace(/\s*\[PAUSE\]\s*/gi, ' … ');
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
+/** a phone (the iPhone app, the Safari extension, a small touch screen): the page is a book of subtitles, always */
+const PHONE = ((): boolean => {
+  try {
+    const w = window as unknown as { __ytcShimYT?: unknown; __ytcSafari?: unknown };
+    return !!w.__ytcShimYT || !!w.__ytcSafari || !!(self as unknown as { __ytcSafari?: unknown }).__ytcSafari || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 600);
+  } catch { return false; }
+})();
+/** all the subtitles over the whole screen (always on a phone) */
+const bookView = (): boolean => PHONE || extras.view === 'listening';
+/** the text size of the reading page: on a phone its own, and it never changes by itself */
+const stageSize = (): number => (PHONE ? clamp(extras.phoneSizePx || 21, 14, 48) : clamp(extras.stageSizePx || 34, 16, 96));
 
 // ---------------------------------------------------------------------------------------------------------------
 // one video
@@ -283,6 +302,9 @@ class Session {
   private zhSave: ReturnType<typeof setTimeout> | null = null;
   private quickRoot: HTMLElement | null = null;
   private lastHeardAt = 0;
+  private lastSelfResume = 0;
+  /** an automatic stop is going on (its word is being asked or explained) */
+  private inStop = false;
   /** about how many words the learner knows (shown on 📒) */
   private knownEstimate = 0;
   private knownTimer: ReturnType<typeof setTimeout> | null = null;
@@ -313,6 +335,11 @@ class Session {
   /** video time of the last automatic stop (stopGapSec counts from it) */
   private lastStopAt: number | null = null;
   private lastTtsEnd = 0;
+  /** the last moment a voice of the tutor started or ended; a stop that stays silent plays on by itself */
+  private lastVoiceAt = 0;
+  private stopWatch: ReturnType<typeof setInterval> | null = null;
+  private saveChain: Promise<unknown> = Promise.resolve();
+  private get asleep(): boolean { return asleep; }
   // ---- Level Check ----
   private gate: LevelGate | null = null;
   private gateHold: (() => void) | null = null;
@@ -324,6 +351,13 @@ class Session {
   private stopSet = new Set<string>();
   /** automatic stops made, and the sentences heard, in this viewing (the small counter) */
   private autoStops = 0;
+  /** … and by what they were for (each kind has its own share of the sentences) */
+  private stopsBy: Record<StopGroup, number> = { item: 0, sentence: 0 };
+  /** the stop being made: its sentence and what it is for */
+  private trigger: { key: string; group: StopGroup } | null = null;
+  /** where a word or phrase was last asked or explained, in words from the start (not again within extras.repeatWords) */
+  private askedAt = new Map<string, number>();
+  private offsets: ((pos: Position) => number) | null = null;
   private heardKeys = new Set<string>();
   private stopped = new Set<string>();
   private counterEl: HTMLElement | null = null;
@@ -348,7 +382,7 @@ class Session {
    * microphone), or you chose "always" (for "hi bro" while the video plays).
    */
   wantsMic(): boolean {
-    if (this.disposed || this.pttActive) return false;
+    if (this.disposed || this.pttActive || asleep) return false;
     if (extras.micAlways || extras.voiceMode) return true;
     return !!this.cmdWin || this.windowOpen || !!(this.talk && !this.talk.live);
   }
@@ -521,10 +555,11 @@ class Session {
     }
     // the sentence plays again from the video (after the explanation): the word card has done its job
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
-    this.wordOut = new WithVolume(() => this.router!, () => this.volumeOf('word'));
+    const spoke = (text?: string) => { this.lastVoiceAt = Date.now(); if (text) this.showLineOf(text); };
+    this.wordOut = new WithVolume(() => this.router!, () => this.volumeOf('word'), spoke);
     // the teacher's words: the AI's own sentences by the voice, the video's sentences it quotes by the video itself
     this.quotes = new QuotesFromVideo(() => this.tts!, this.engine, (t) => this.quotedSentence(t));
-    this.teachOut = new WithVolume(() => this.quotes!, () => this.volumeOf('teacher'));
+    this.teachOut = new WithVolume(() => this.quotes!, () => this.volumeOf('teacher'), spoke);
     this.zhOut = new WithVolume(() => this.zhTts!, () => this.volumeOf('teacher'));
   }
 
@@ -598,7 +633,7 @@ class Session {
     if (!this.levelOn()) { this.gatePassed = true; return; }
     const asked = `drLevelAsked:${this.videoId}`;
     let ask = extras.levelAsk !== false;
-    try { if (sessionStorage.getItem(asked)) ask = false; else sessionStorage.setItem(asked, '1'); } catch { /* no storage here: it asks */ }
+    if (ask) { try { if (sessionStorage.getItem(asked)) ask = false; else sessionStorage.setItem(asked, '1'); } catch { /* no storage here: it asks */ } }
     this.gate = new LevelGate({
       build: () => this.buildTest(),
       save: async (shown, known, scores) => (await store.saveTestResult(shown, known, this.vb?.book.title ?? '', scores)).label,
@@ -727,7 +762,7 @@ class Session {
       chance: unknownChance(levelMeta.tests), zipf: this.zipf,
     });
     this.scores = new Map(list.map((s) => [s.key, s]));
-    this.stopSet = selectStops(list);
+    this.stopSet = selectStopsByKind(list, this.caps());
     this.paintCounter();
   }
   levelChanged(): void { this.recomputeStops(); }
@@ -739,20 +774,53 @@ class Session {
     this.planAnalysis();
   }
 
-  /** this sentence stops now, or not: one of the hardest, not stopped at before, and never over 50 % so far */
-  private levelStopAt(pos: Position): { lemma: string } | null {
+  /** the share of the sentences that may stop for a hard word or phrase, and for the sentence itself (off = 0) */
+  private caps(): StopCaps {
+    const c = (on: boolean | undefined, n: number | undefined, d: number) => (on === false ? 0 : clamp(n ?? d, 0, 100) / 100);
+    return { item: c(extras.stopItemsOn, extras.capWords, 45), sentence: c(extras.stopHardOn, extras.capSentences, 5) };
+  }
+  private wordsBefore(pos: Position): number {
+    if (!this.vb) return 0;
+    this.offsets ??= wordOffsets(this.vb.book);
+    return this.offsets(pos);
+  }
+  /** asked or explained a moment ago (within the last extras.repeatWords words): not again so soon */
+  private askedLately(lemma: string, here: number): boolean {
+    const at = this.askedAt.get(lemma);
+    const win = extras.repeatWords ?? 1000;
+    return at !== undefined && win > 0 && here >= at && here - at < win;
+  }
+
+  /**
+   * This sentence stops now, or not: one of the hardest of its kind, not stopped at before, and never over the share
+   * of its kind so far. With hard words or phrases in it the stop asks them one by one ("Do you know …?").
+   */
+  private levelStopAt(pos: Position): { lemma: string; items: { kind: 'word' | 'phrase'; target: string; lemma: string }[] } | null {
     const key = sentenceKey(pos);
     this.heardKeys.add(key);
     const text = this.vb ? getSentence(this.vb.book, pos)?.text : null;
     if (!text || !this.stopSet.has(key) || this.doneBefore.has(key) || this.stopped.has(key)) return null;
     if (!this.keys.anthropic && !this.keys.openai) return null; // (no API key yet: nothing could be explained, so no stop)
-    if (!mayStop(this.autoStops, this.heardKeys.size)) return null;
-    return { lemma: sentenceLemma(text) };
+    if (this.asleep) return null;
+    const sc = this.scores.get(key);
+    if (!sc) return null;
+    const here = this.wordsBefore(pos);
+    const items = sc.lemmas.map((lemma, i) => ({ kind: sc.kinds[i], target: sc.items[i], lemma }))
+      .filter((it) => vocab.words[it.lemma] !== 'known' && vocab.words[it.lemma] !== 'ignored' && !this.askedLately(it.lemma, here));
+    // (its hard words were all asked a moment ago, or are known by now: nothing to stop for)
+    if (!items.length && sc.kind !== 'sentence') return null;
+    const group = groupOf(stopKindOf(items.map((it) => it.kind)));
+    if (!mayStopGroup(this.stopsBy[group], this.heardKeys.size, this.caps()[group])) return null;
+    this.trigger = { key, group };
+    return { lemma: sentenceLemma(text), items };
   }
 
   private countStop(pos: Position): void {
     const key = sentenceKey(pos);
-    if (!this.stopped.has(key)) { this.stopped.add(key); this.autoStops++; }
+    if (!this.stopped.has(key)) {
+      this.stopped.add(key); this.autoStops++;
+      this.stopsBy[this.trigger?.key === key ? this.trigger.group : 'sentence']++;
+    }
     this.paintCounter();
     // what it explains is to learn now, with this sentence
     const sc = this.scores.get(key);
@@ -767,7 +835,9 @@ class Session {
       const el = document.createElement('div');
       el.id = 'dr-stop-counter';
       el.title = 'Stops made / sentences so far';
-      el.style.cssText = 'position:fixed;top:60px;right:10px;z-index:2147483000;background:rgba(31,35,40,.82);color:#fff;border-radius:10px;padding:2px 8px;font:12px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none';
+      el.style.cssText = PHONE
+        ? 'position:fixed;top:calc(3px + env(safe-area-inset-top));right:6px;z-index:2147483000;background:rgba(31,35,40,.6);color:#fff;border-radius:8px;padding:0 6px;font:10px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none;opacity:.6'
+        : 'position:fixed;top:60px;right:10px;z-index:2147483000;background:rgba(31,35,40,.82);color:#fff;border-radius:10px;padding:2px 8px;font:12px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none';
       document.body.appendChild(el);
       this.counterEl = el;
     }
@@ -827,7 +897,8 @@ class Session {
           let cancelled = false;
           let live: { done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void } | null = null;
           return {
-            done: analysis.wait(analysisId(req.sentence)).then((text) => {
+            // (still being written after a few seconds: this one is asked for alone, so the stop is never silent for long)
+            done: Promise.race([analysis.wait(analysisId(req.sentence)), new Promise<null>((r) => setTimeout(() => r(null), ANALYSIS_WAIT_MS))]).then((text) => {
               if (cancelled) throw Object.assign(new Error('cancelled'), { code: 'cancelled' });
               if (text !== null) { onDelta0(`${text} `); return { text, usage: { usd: 0, dailyUsd: 0, monthlyUsd: 0 } }; }
               // (the analysis did not write this one: only this one is asked for)
@@ -872,7 +943,7 @@ class Session {
       phraseAsSentence: () => true,
     });
     this.controller.enabled = this.mode === 'tutor';
-    this.autoStops = 0; this.heardKeys.clear(); this.stopped.clear();
+    this.autoStops = 0; this.stopsBy = { item: 0, sentence: 0 }; this.trigger = null; this.offsets = null; this.heardKeys.clear(); this.stopped.clear();
     this.recomputeStops();
     const pb = this.playback;
     // the part just explained plays again: no stops in it
@@ -894,12 +965,59 @@ class Session {
 
   private onState(st: PlaybackState): void {
     // a stop at the end of a sentence: Playback waited for the sentence to end, the video plays on unless held here
-    if (st === 'explaining') this.engine.hold();
+    if (st === 'explaining') { this.engine.hold(); this.watchStop(); }
     if (st === 'playing') {
       // the reading goes on: the talk and the stop are over, the video comes back (normal mode)
       if (this.talk) this.closeTalk();
-      if (!this.flow) { this.partKeys = null; if (extras.view !== 'listening') this.hideStage(); else this.markPart(); }
+      if (!this.flow) { this.partKeys = null; if (!bookView()) this.hideStage(); else this.markPart(); }
     }
+  }
+
+  /**
+   * The tutor explains a part (the last 20 s, "hello"): the line it is talking about goes on the play line, so you
+   * always see what is being explained. It says each original sentence before it explains it, and hard words in
+   * quotation marks.
+   */
+  private showLineOf(text: string): void {
+    const vb = this.vb;
+    if (!vb || !this.partKeys || this.partKeys.size < 2 || !this.stageVisible() || !this.controller?.busy) return;
+    let pos = this.quotedSentence(text);
+    if (!pos) {
+      const part = vb.order.filter((p) => this.partKeys!.has(sentenceKey(p)));
+      for (const m of text.matchAll(/["\u201C]([^"\u201D]{2,120})["\u201D]/g)) {
+        const q = norm(m[1]);
+        if (!q) continue;
+        pos = part.find((p) => { const s = getSentence(vb.book, p); return !!s && ` ${norm(s.text)} `.includes(` ${q} `); }) ?? null;
+        if (pos) break;
+      }
+    }
+    if (!pos || (this.cur && sentenceKey(pos) === sentenceKey(this.cur))) return;
+    this.userScrollAt = 0;
+    this.setCurrent(pos);
+    this.scrollToCur(true);
+  }
+
+  /** a stop where nothing is said for a long time (the voice or the AI did not come): the video plays on by itself */
+  private watchStop(): void {
+    if (this.stopWatch) return;
+    this.lastVoiceAt = Date.now();
+    this.stopWatch = setInterval(() => {
+      if (this.disposed || this.playback?.state !== 'explaining') { if (this.stopWatch) clearInterval(this.stopWatch); this.stopWatch = null; return; }
+      if (this.cmdWin || this.windowOpen || this.talk || this.flow || this.heldTalk || this.pttActive) { this.lastVoiceAt = Date.now(); return; }
+      if (Date.now() - this.lastVoiceAt < SILENT_STOP_MS) return;
+      this.lastVoiceAt = Date.now();
+      this.trail('a silent stop: playing on');
+      this.toast('The tutor stayed silent here: the video plays on.', 5000);
+      this.byeBye(false);
+    }, 2000);
+  }
+
+  /** the sleep timer ran out: everything stops, the microphone too */
+  sleepNow(): void {
+    if (this.mode !== 'tutor' || !this.playback) { const v = video(); if (v && !v.paused) v.pause(); return; }
+    this.closeTalk();
+    this.stopAll();
+    this.toast('Sleep timer: the video is paused. Good night.', 8000);
   }
 
   // ---- the AI reads the video first: complete sentences, then the hard words, phrases and sentences --------------
@@ -977,15 +1095,24 @@ class Session {
     const onPause = () => {
       if (this.mode !== 'tutor' || this.engine.isOwn('pause') || v.ended || window.__ytcApi?.isAd()) return;
       const pb = this.playback!;
+      const pausedAt = Date.now();
       setTimeout(() => {
         if (!v.paused || v.seeking || this.disposed || this.mode !== 'tutor') return;
         if (this.flow) { if (this.flow.wake) this.flow.wake(); return; } // paused during the replay: straight to the explanation
         if (pb.state !== 'playing') return; // already stopped (an explanation, a stop)
         // you stopped the video: the part plays again on the page, the teacher breaks it down (or just pause)
         this.trail('you paused the video');
+        // (a phone: the microphone going on or off can stop the video's sound for a moment: that was not you)
+        const micAt = window.__ytcApi?.micChangedAt?.() ?? 0;
+        if (PHONE && !asleep && pausedAt >= micAt && pausedAt - micAt < 1500 && Date.now() - this.lastSelfResume > 6000) {
+          this.lastSelfResume = Date.now();
+          this.trail('the video stopped as the microphone changed: playing on');
+          void v.play().catch(() => undefined);
+          return;
+        }
         // (Level Check: a pause is a pause, no AI; "Explain 30 s" asks for it)
         if (extras.explainOnStop && !this.levelOn()) void this.partFlow(v.currentTime);
-        else pb.pause();
+        else { pb.pause(); if (PHONE && !asleep) this.toast('The video is paused. ⏯ plays on.', 4000); }
       }, 120);
     };
     const onSeeking = () => {
@@ -999,7 +1126,7 @@ class Session {
       if (!v.paused) { this.engine.resumeHere = true; pb.play(pos); } else pb.seek(pos);
     };
     const onFs = () => this.placeStage();
-    const onPlayState = () => this.updateStopButton();
+    const onPlayState = () => { if (!v.paused) asleep = false; this.updateStopButton(); };
     v.addEventListener('play', onPlayState);
     v.addEventListener('pause', onPlayState);
     this.offs.push(() => { v.removeEventListener('play', onPlayState); v.removeEventListener('pause', onPlayState); });
@@ -1131,6 +1258,9 @@ class Session {
     this.playback?.pause();
     if (showPart || !this.stageVisible()) this.showStage(this.partAt(vb.timingOf(pos)!.end - 0.01, settings.listen.lastSecondsWindow));
     this.setCurrent(pos);
+    // the page jumps to this sentence: all of it on the screen, on the play line
+    this.userScrollAt = 0;
+    this.scrollToCur(true);
     this.engine.target = pos;
     const next = nextPosition(vb.book, pos) ?? pos;
     const flow = this.flow = { kind: 'sentence' as const, part: [pos], abort: false, resumeAt: next, quietTo: null };
@@ -1424,7 +1554,10 @@ class Session {
     const c = this.controller; if (!c) return;
     if (c.stopWindow === 'before') this.dropPrefetch();
     const l = c.lastExplained;
-    if (l?.lemma) { c.markKnown(l.lemma); void this.changeStatus(l.lemma, 'known'); if (this.card?.lemma === l.lemma) this.closeCard(); }
+    let cut = false;
+    if (l?.lemma) { cut = c.markKnown(l.lemma); void this.changeStatus(l.lemma, 'known'); if (this.card?.lemma === l.lemma) this.closeCard(); }
+    // (a stop whose word was still being said or explained: the stop goes on by itself, to its next word or to the video)
+    if (cut && this.inStop && !c.stopWindow) return;
     if (this.talk && !c.stopWindow) { this.goOn(); return; }
     if (!c.answerWindow('know')) this.goOn();
   }
@@ -1441,10 +1574,14 @@ class Session {
     this.goOn();
   }
   /** "bye bye": the AI stops whatever it does, and the video plays again from the start of what was explained */
-  byeBye(): void {
+  byeBye(know = true): void {
     const c = this.controller;
     if (!c || this.mode !== 'tutor') return;
-    if (extras.voiceMode) { void store.patchExtras({ voiceMode: false }); this.toast('Voice mode off. Say “hello” (or click 🎙) to turn it on again.', 6000); }
+    // (Level Check) "bye bye" at a stop is also "I know": its word, phrase or sentence is known from now on
+    if (know && this.inStop && this.levelOn() && (c.busy || c.stopWindow)) {
+      const l = c.lastExplained;
+      if (l?.lemma) { c.markKnown(l.lemma); void this.changeStatus(l.lemma, 'known'); if (this.card?.lemma === l.lemma) this.closeCard(); }
+    }
     this.dropPrefetch();
     if (this.flow) (this.flow as { bye?: boolean }).bye = true;
     if (this.talkWaiter) { const w = this.talkWaiter; this.talkWaiter = null; this.closeTalk(); w(); return; }
@@ -1490,7 +1627,7 @@ class Session {
     if (!extras.voiceMode) {
       extras.voiceMode = true;
       void store.patchExtras({ voiceMode: true });
-      this.toast('Voice mode on: “hello” = explain, “stop”, “play”, ask anything, “bye bye” = off.', 9000);
+      this.toast('Voice on: “hello” = the tutor comes, “I know”, “stop”, “play”, ask anything, “bye bye” = the tutor goes, the video plays.', 9000);
     }
     const v = video();
     if (v && !v.paused && !this.flow) void this.partFlow(v.currentTime, true);
@@ -1502,7 +1639,7 @@ class Session {
     const on = !extras.voiceMode;
     extras.voiceMode = on;
     void store.patchExtras({ voiceMode: on });
-    this.toast(on ? 'Voice mode on: “hello” = explain, “stop”, “play”, ask anything, “bye bye” = off.' : 'Voice mode off.', on ? 9000 : 3000);
+    this.toast(on ? 'Voice on: “hello” = the tutor comes, “I know”, “stop”, “play”, ask anything, “bye bye” = the tutor goes, the video plays.' : 'Voice off: the microphone only listens when the tutor waits for you.', on ? 9000 : 4000);
   }
 
   /** "stop": the video and the tutor stop; you can ask now ("play" goes on) */
@@ -1561,6 +1698,8 @@ class Session {
 
   /** recognition results already acted on (a result grows while you speak; it acts once) */
   private acted = new Set<string>();
+  /** how many words of a heard piece were used when it was acted on */
+  private usedWords = new Map<string, number>();
   /** what the tutor did last (flows, the call, back to the video), for the diagnostics */
   private trailLog: string[] = [];
   private trail(what: string): void {
@@ -1597,22 +1736,37 @@ class Session {
     this.heard(line.text, true, key);
   }
   heard(text: string, final: boolean, key?: string): boolean {
-    const t = text.trim();
-    if (!t) return false;
-    if (key && this.acted.has(key)) return true;
-    this.watchStill(t, final, key);
-    const act = (fn: () => void) => { if (key) { this.acted.add(key); if (this.acted.size > 300) this.acted.clear(); } fn(); };
+    const full = text.trim();
+    if (!full) return false;
+    const allWords = full.split(/\s+/);
+    // a piece that was acted on already (the phone gives one piece until you pause): only the words after that count,
+    // and only as a command ("I know" … "I know" for two words of one stop)
+    const used = key ? this.usedWords.get(key) ?? 0 : 0;
+    if (key && (used ? allWords.length <= used : this.acted.has(key))) return true;
+    const tail = used > 0;
+    const t = tail ? allWords.slice(used).join(' ') : full;
+    this.watchStill(full, final, key);
+    const act = (fn: () => void) => {
+      if (key) { this.acted.add(key); this.usedWords.set(key, allWords.length); if (this.acted.size > 300) { this.acted.clear(); this.usedWords.clear(); } }
+      fn();
+    };
     const lower = t.toLowerCase();
     // voice mode: hello / stop / play (said alone, not the video's or the tutor's own words)
     const cmd = this.mode === 'tutor' ? this.voiceCommand(lower, final) : null;
     if (cmd) { act(cmd); return true; }
+    // while the video plays its own sound reaches the microphone too, so what is heard never ends: "hello" counts as
+    // soon as it is the newest word (not when the video or the tutor says it)
+    if (!final && this.mode === 'tutor' && (extras.voiceMode || extras.micAlways) && !this.talk && !this.flow && !this.controller?.busy && /\b(hello|hallo)[.!?,]*$/.test(lower)) {
+      const v = video();
+      if (v && !v.paused && !this.videoSaying(/\b(hello|hallo)\b/i) && !this.tutorSaying(/\b(hello|hallo)\b/i)) { act(() => this.voiceHello()); return true; }
+    }
     // the live call hears you itself (with echo cancelling); the page's recognition could hear the tutor
     if (this.talk?.live && this.talk.live.state !== 'error') return true;
     // the call with Claude: while the tutor talks only "stop" / "bye bye" count (its own voice must not be taken for yours)
     const chat = this.talk?.chat;
     if (chat && !chat.closed && this.talk) {
       const talk = this.talk;
-      if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && final) { act(() => this.byeBye()); return true; }
+      if (saysBye(lower) && final) { act(() => this.byeBye()); return true; }
       const nWords = t.split(/\s+/).filter(Boolean).length;
       // the tutor is talking: only a clear "stop" interrupts (its own voice from the speaker must not count as you)
       if (chat.speaking || (chat.busy && !chat.thinking)) {
@@ -1642,15 +1796,25 @@ class Session {
       this.putLine(talk, { id: `u${key ?? 'h'}`, who: 'you', text: t, final });
       if (!final) return true;
       if (/\b(let'?s go|go on|continue|back to the video|play the video)\b/.test(lower) && t.split(/\s+/).length <= 6) { act(() => this.goOn()); return true; }
+      if (tail) return true;
       chat.note(`heard: ${t}`);
       act(() => chat.ask(t));
       return true;
     }
     const inWindow = this.windowOpen || !!this.cmdWin;
     // "bye bye" stops the AI whatever it does (it is never in an explanation, so it is safe while the tutor talks)
-    if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower) && (final || /bye[\s-]*bye/.test(lower))) { act(() => this.byeBye()); return true; }
-    // the tutor's own voice must not be taken for the learner's
-    if (this.controller?.busy || Date.now() - this.lastTtsEnd < 700) { if (/\bshut\s*up\b/.test(lower)) act(() => this.shutUp()); return true; }
+    // ("bye" said alone is the same as "bye bye"; at a stop both are also "I know")
+    if (saysBye(lower) && (final || /bye[\s-]*bye/.test(lower))) { act(() => this.byeBye()); return true; }
+    // the tutor's own voice must not be taken for the learner's: only a clear "I know", said alone, counts while it talks
+    if (this.controller?.busy || Date.now() - this.lastTtsEnd < 700) {
+      if (/\bshut\s*up\b/.test(lower)) act(() => this.shutUp());
+      else if (this.inStop && this.controller?.busy && !this.tutorSaying(/\bi know\b/i)) {
+        // (a stop: its own word or sentence can be answered while the tutor still says or explains it)
+        const d = commandIn(t);
+        if (d.intent === 'know' && (final || d.score >= 0.92)) act(() => this.answerKnow());
+      }
+      return true;
+    }
     if (final) this.lastHeardAt = Date.now();
     if (/\bshut\s*up\b/.test(lower)) { act(() => this.shutUp()); return true; }
     if (/\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/.test(lower)) { act(() => this.explainLast()); return true; }
@@ -1661,11 +1825,12 @@ class Session {
       if (d.intent === 'bye' || /\b(let'?s go|go on|continue)\b/.test(lower)) act(() => this.goOn());
       else if (d.intent === 'know' && t.split(/\s+/).length <= 4) act(() => this.answerKnow());
       else if (d.intent === 'dont_know' && t.split(/\s+/).length <= 5) act(() => this.answerDontKnow());
-      else act(() => this.ask(t, true));
+      else if (!tail) act(() => this.ask(t, true));
       return true;
     }
     if (inWindow) {
-      const d = detectCommand(t);
+      // (the microphone also heard the tutor say the word just before: the answer is at the end)
+      const d = commandIn(t);
       if (d.intent === 'know' || d.intent === 'dont_know' || d.intent === 'bye') {
         if (final || d.score >= 0.92) act(() => { if (d.intent === 'know') this.answerKnow(); else if (d.intent === 'dont_know') this.answerDontKnow(); else this.answerGoOn(); });
         return true;
@@ -1674,7 +1839,7 @@ class Session {
       return true;
     }
     // talking to the tutor (🎙 on), only while the video is stopped and nobody is talking
-    if (this.mode === 'tutor' && this.talkOn && final && this.controller && !this.controller.busy && this.playback?.state !== 'playing') {
+    if (this.mode === 'tutor' && this.talkOn && final && !tail && this.controller && !this.controller.busy && this.playback?.state !== 'playing') {
       const d = detectCommand(t);
       act(() => { if (d.intent === 'bye') this.answerGoOn(); else this.ask(t, true); });
       return true;
@@ -1703,6 +1868,8 @@ class Session {
   private onTranscript(e: TranscriptEntry): void {
     const i = this.transcript.findIndex((x) => x.id === e.id);
     if (i >= 0) this.transcript[i] = e; else this.transcript = [...this.transcript.slice(-30), e];
+    // a new explanation: the page jumps to its sentence on the play line, whatever was scrolled to
+    if (i < 0 && e.position && this.stageVisible() && (this.inStop || (e.kind !== 'word' && e.kind !== 'phrase'))) { this.userScrollAt = 0; this.setCurrent(e.position); this.scrollToCur(true); }
     this.renderTranscript();
     if (this.card && this.card.entryId === null && (e.kind === 'word' || e.kind === 'phrase') && e.status === 'thinking') this.card.entryId = e.id;
     if (this.card && this.card.entryId === e.id) this.updateCardExplain(e);
@@ -1719,18 +1886,52 @@ class Session {
     if (e.lemma && (e.kind === 'word' || e.kind === 'phrase' || e.kind === 'sentence') && (e.status === 'done' || (e.status === 'skipped' && e.text.length > 40)) && e.text && !this.saved.has(e.id) && this.vb) {
       this.saved.add(e.id);
       const t = e.position ? this.vb.timingOf(e.position) : null;
-      void store.upsertEntry({ lemma: e.lemma, word: e.target, sentence: e.sentence, explanation: shown(e.text), chinese: e.chinese ?? (this.hints[e.lemma]?.join('，') ?? ''), bookId: this.vb.book.id, bookTitle: this.vb.book.title, chapter: t ? clock(t.start) : '', position: e.position, level: e.level as CefrLevel | undefined, again: e.again }).catch(() => undefined);
+      const input = { lemma: e.lemma, word: e.target, sentence: e.sentence, explanation: shown(e.text), chinese: e.chinese ?? (this.hints[e.lemma]?.join('，') ?? ''), bookId: this.vb.book.id, bookTitle: this.vb.book.title, chapter: t ? clock(t.start) : '', position: e.position, level: e.level as CefrLevel | undefined, again: e.again };
+      this.saveChain = this.saveChain.then(() => store.upsertEntry(input)).catch(() => undefined);
+      if (this.levelOn() && e.kind === 'sentence' && e.position && e.status === 'done') this.countExplained(e.position, e);
     }
     this.renderBandSay();
   }
 
+  /**
+   * (Level Check) a sentence was explained: its hard words and phrases were explained once more. They are not asked
+   * again for a while (extras.repeatWords), and one explained extras.knownAfter times is known from now on.
+   */
+  private countExplained(pos: Position, e: TranscriptEntry): void {
+    const sc = this.scores.get(sentenceKey(pos));
+    const vb = this.vb;
+    if (!sc || !vb) return;
+    const here = this.wordsBefore(pos);
+    const t = vb.timingOf(pos);
+    const n = extras.knownAfter ?? 5;
+    sc.lemmas.forEach((lemma, i) => {
+      if (vocab.words[lemma] === 'known' || vocab.words[lemma] === 'ignored') return;
+      this.askedAt.set(lemma, here);
+      this.saveChain = this.saveChain
+        .then(() => store.upsertEntry({ lemma, word: sc.items[i], sentence: e.sentence, explanation: shown(e.text), chinese: this.hints[lemma]?.join('，') ?? '', bookId: vb.book.id, bookTitle: vb.book.title, chapter: t ? clock(t.start) : '', position: pos }))
+        .then((entry) => {
+          if (n > 0 && entry.timesExplained >= n && vocab.words[lemma] !== 'known' && !this.disposed) {
+            this.controller?.markKnown(lemma);
+            void this.changeStatus(lemma, 'known');
+            this.toast(`“${sc.items[i]}” was explained ${n} times: it counts as known now.`, 5000);
+          }
+        })
+        .catch(() => undefined);
+    });
+  }
+
   /** a stop starts on a word, phrase or sentence (the page shows the last part; the card opens) / is over */
   private onStopTarget(t: { kind: string; target: string; lemma?: string } | null): void {
-    if (!t) { this.closeCardSoon(); return; }
+    // (Level Check: a stop always ends with its sentence from the video; "I know" = no explanation, so it is played now)
+    if (!t) { this.inStop = false; if (this.levelOn()) this.engine.replayUnlessHeard(); this.closeCardSoon(); return; }
+    this.inStop = true;
     const pos = this.playback?.position ?? this.cur;
     if (pos && this.levelOn()) this.countStop(pos);
     // remembered: next time this video is watched, this hard phrase / sentence is not stopped at again
-    if (pos && (t.kind === 'phrase' || t.kind === 'sentence')) void store.addDone(this.videoId, sentenceKey(pos)).catch(() => undefined);
+    if (pos && (t.kind === 'phrase' || t.kind === 'sentence' || this.levelOn())) void store.addDone(this.videoId, sentenceKey(pos)).catch(() => undefined);
+    if (pos && t.lemma && t.kind !== 'sentence') this.askedAt.set(t.lemma, this.wordsBefore(pos));
+    // the page jumps to the stop's sentence, whatever was scrolled to
+    this.userScrollAt = 0;
     this.lastStopAt = pos && this.vb ? this.vb.timingOf(pos)?.start ?? null : null;
     if (pos && this.vb && extras.stageOn) {
       const tm = this.vb.timingOf(pos);
@@ -1738,8 +1939,9 @@ class Session {
     }
     if (pos) this.engine.target = pos;
     if (pos && t.lemma && !this.levelOn()) this.prefetchExplain(t.kind as 'word' | 'phrase' | 'sentence', t.target, pos, t.lemma);
+    if (pos) { this.setCurrent(pos); this.markStopSentence(pos); this.scrollToCur(true); }
     if (t.lemma && t.kind !== 'sentence') this.anchorStopCard(t.kind, t.target, t.lemma);
-    else if (pos) { this.closeCard(); this.setCurrent(pos); this.markStopSentence(pos); }
+    else this.closeCard();
   }
 
   // ---- no waiting: the explanation is asked for when the video stops, its first sentences are voiced ahead ----------
@@ -1940,7 +2142,7 @@ class Session {
     const el = document.createElement('div');
     el.className = 'stage';
     el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div>
-      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit">Ask</button></form></div>
+      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div><form class="ask"><input type="text" placeholder="${PHONE ? 'Ask my tutor…' : 'Type or speak a question for your tutor'}" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">${PHONE ? '➤' : 'Ask'}</button></form></div>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     this.stage = { host, root, el };
@@ -1952,7 +2154,7 @@ class Session {
     page.addEventListener('wheel', () => { this.userScrollAt = Date.now(); }, { passive: true });
     page.addEventListener('touchmove', () => { this.userScrollAt = Date.now(); }, { passive: true });
     // the window, the dock (explanation, talk) or the commands window changed size: the part is fitted again
-    const ro = new ResizeObserver(() => this.fitPart());
+    const ro = new ResizeObserver(() => { this.fitPart(); this.padPage(); this.scrollToCur(this.playback?.state === 'explaining' || !!this.cmdWin); });
     ro.observe(page);
     this.offs.push(() => ro.disconnect());
     this.wireWords(page);
@@ -1976,7 +2178,7 @@ class Session {
   private renderStageTop(): void {
     const top = this.stage?.el.querySelector<HTMLElement>('.top');
     if (!top) return;
-    const listening = extras.view === 'listening';
+    const listening = bookView();
     const range = this.partKeys && this.vb ? (() => { const ps = this.vb.order.filter((p) => this.partKeys!.has(sentenceKey(p))); return ps.length ? `${clock(this.vb.timingOf(ps[0])!.start)} – ${clock(this.vb.timingOf(ps[ps.length - 1])!.end)}` : ''; })() : '';
     const sc = shortcutMap(extras.shortcuts);
     const playing = !!video() && !video()!.paused;
@@ -2042,6 +2244,7 @@ class Session {
   }
 
   private playOn(): void {
+    asleep = false; // (you pressed play: awake again)
     const pos = this.stoppedAt ?? this.playback?.position ?? null;
     this.stoppedAt = null;
     this.trail('play (▶)');
@@ -2081,7 +2284,7 @@ class Session {
   private partEnd: Position | null = null;
 
   private hideStage(): void {
-    if (!this.stage || extras.view === 'listening') return;
+    if (!this.stage || bookView()) return;
     this.stageShown = false;
     this.partKeys = null;
     this.partEnd = null;
@@ -2100,6 +2303,7 @@ class Session {
     // all subtitles: your own text size at once (the playing line is placed right after this)
     if (el.dataset.view !== 'part') el.querySelector<HTMLElement>('.page')?.style.removeProperty('font-size');
     this.fitPart();
+    this.padPage();
   }
 
   private fitFrame = 0;
@@ -2117,7 +2321,7 @@ class Session {
     const page = el?.querySelector<HTMLElement>('.page');
     if (!el || !page || !this.stageVisible()) return;
     if (el.dataset.view !== 'part') { page.style.removeProperty('font-size'); return; }
-    const max = clamp(extras.stageSizePx || 34, 16, 96);
+    const max = stageSize();
     const fits = (px: number): boolean => { page.style.fontSize = `${px}px`; return page.scrollHeight <= page.clientHeight + 1; };
     if (!page.clientHeight || fits(max)) { page.scrollTop = 0; return; }
     let lo = 9, hi = max;
@@ -2133,7 +2337,7 @@ class Session {
   /** listening mode (all subtitles over the screen) or the normal video */
   applyView(): void {
     if (!this.stage) return;
-    if (extras.view === 'listening') this.showStage();
+    if (bookView()) this.showStage();
     else if (!this.talk && !this.flow && !this.cmdWin && !(this.playback?.state === 'explaining')) this.hideStage();
     else this.markPart();
     this.renderStageTop();
@@ -2144,7 +2348,7 @@ class Session {
   stageVisible(): boolean { return !!this.stage && !this.stage.host.hidden; }
 
   private resize(dir: number): void {
-    if (this.stageVisible()) void store.patchExtras({ stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
+    if (this.stageVisible()) void store.patchExtras(PHONE ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
     else if (this.bandVisible()) void store.patchSettings({ appearance: { ...settings.appearance, subtitleSizePx: clamp((settings.appearance.subtitleSizePx || 26) + dir * 2, 16, 96) } });
     else void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + dir, 12, 48) } });
   }
@@ -2166,7 +2370,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), testCall: () => void this.callTutor(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
+    renderQuick(q, { phone: PHONE, sleepMin: sleepMinutes(), setSleep: (m) => setSleep(m), settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), testCall: () => void this.callTutor(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -2184,11 +2388,15 @@ class Session {
       h.style.setProperty('--reader-size', `${clamp(settings.appearance.fontSizePx || 19, 12, 48)}px`);
       h.style.setProperty('--subtitle-size', `${clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
-      h.style.setProperty('--stage-size', `${clamp(extras.stageSizePx || 34, 16, 96)}px`);
+      h.style.setProperty('--stage-size', `${stageSize()}px`);
+      h.dataset.phone = PHONE ? '1' : '0';
+      // (a phone: what the tutor says is heard, not read, unless you turn the text on)
+      h.dataset.say = !PHONE || extras.showSay ? '1' : '0';
       h.style.setProperty('--band-bottom', `${clamp(extras.bandBottom ?? 7, 0, 60)}%`);
     }
     applyPageLook();
     this.fitPart();
+    this.padPage();
   }
 
   renderHead(): void {
@@ -2295,16 +2503,34 @@ class Session {
     }
   }
 
-  /** the playing line stays at about `followAt` % from the top (Dream Read), unless you scrolled a moment ago */
+  /** the play line as a part of the page's height from its top (the setting: 0 = the bottom, 100 = the top) */
+  private lineAt(): number { return 1 - clamp(extras.playLine ?? 40, 0, 100) / 100; }
+  /** room above the first and under the last sentence, so that every sentence can reach the play line */
+  private padPage(): void {
+    const page = this.stage?.el.querySelector<HTMLElement>('.page');
+    const inner = page?.querySelector<HTMLElement>('.doc-inner');
+    if (!page || !inner) return;
+    if (!page.clientHeight || this.stage!.el.dataset.view === 'part') { for (const e of [page, inner]) { e.style.removeProperty('padding-top'); e.style.removeProperty('padding-bottom'); } return; }
+    // (the room is in the scrolled text, not on the page itself: the page must be able to get shorter when the
+    // "I know" window or the keyboard comes)
+    const f = this.lineAt(), h = page.clientHeight;
+    const set = (e: HTMLElement, k: 'paddingTop' | 'paddingBottom', v: string) => { if (e.style[k] !== v) e.style[k] = v; };
+    set(page, 'paddingTop', '0px'); set(page, 'paddingBottom', '0px');
+    set(inner, 'paddingTop', `${Math.round(h * f)}px`); set(inner, 'paddingBottom', `${Math.round(h * (1 - f))}px`);
+  }
+  /** the playing sentence stays on the play line (its middle on the line, all of it on the page), unless you scrolled a moment ago */
   private scrollToCur(force = false): void {
     if (!this.cur || (!force && Date.now() - this.userScrollAt < 4000)) return;
-    const f = clamp(extras.followAt ?? 42, 10, 85) / 100;
+    const f = this.lineAt();
     for (const [root, sel] of [[this.panel?.el, '.lines'], [this.stage?.el, '.page']] as const) {
       if (!root) continue;
       const box = root.querySelector<HTMLElement>(sel);
       const el = this.sentenceEl(root, this.cur);
       if (!box || !el || !box.clientHeight) continue;
-      const top = box.scrollTop + (el.getBoundingClientRect().top - box.getBoundingClientRect().top) - box.clientHeight * f + el.offsetHeight / 2;
+      const h = box.clientHeight, eh = el.offsetHeight;
+      // (a sentence longer than the page: from its first line)
+      const y = eh + 16 > h ? eh / 2 + 8 : clamp(h * f, eh / 2 + 8, h - eh / 2 - 8);
+      const top = box.scrollTop + (el.getBoundingClientRect().top - box.getBoundingClientRect().top) - y + eh / 2;
       box.scrollTo({ top: Math.max(0, top), behavior: force ? 'auto' : 'smooth' });
     }
   }
@@ -2340,18 +2566,25 @@ class Session {
       const pos = keyToPos(s.dataset.key ?? '');
       if (!pos) return;
       if (!w) { this.seekTo(pos); return; }
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
-      clickTimer = setTimeout(() => { clickTimer = null; this.tapWord(w, pos); }, 260);
+      // a second tap in time = a double tap = "I know" (a touch screen does not always send its own double-click)
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; if (PHONE) know(w); return; }
+      clickTimer = setTimeout(() => { clickTimer = null; this.tapWord(w, pos); }, PHONE ? 330 : 260);
     });
-    container.addEventListener('dblclick', (ev) => {
-      const w = (ev.target as HTMLElement).closest<HTMLElement>('.w[data-lemma]');
-      if (!w) return;
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+    let knownAt = 0, knownLemma = '';
+    const know = (w: HTMLElement): void => {
       const lemma = w.dataset.lemma!;
+      if (lemma === knownLemma && Date.now() - knownAt < 700) return; // (the double-click of the same two taps)
+      knownAt = Date.now(); knownLemma = lemma;
       this.controller?.markKnown(lemma);
       void this.changeStatus(lemma, 'known');
       this.toast(`“${lemma}” marked known`);
       if (this.card?.lemma === lemma) this.closeCard();
+    };
+    container.addEventListener('dblclick', (ev) => {
+      const w = (ev.target as HTMLElement).closest<HTMLElement>('.w[data-lemma]');
+      if (!w) return;
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
+      know(w);
     });
   }
 
@@ -2496,16 +2729,19 @@ class Session {
     const level = entry?.level ?? (this.phrases[sentenceKey(pos)]?.find((p) => p.lemma === lemma)?.level as string | undefined) ?? '';
     const status = vocab.words[lemma];
     // (Level Check: the explanation has no Chinese and no IPA, so neither has its card)
-    const plain = this.levelOn();
-    cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !plain ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word">▶</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
+    // (Level Check: the explanation has no Chinese and no IPA; a phone's card is the Chinese dictionary: the word and its Chinese)
+    const plain = this.levelOn() && !PHONE;
+    const noIpa = this.levelOn() || PHONE;
+    cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !noIpa ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word">▶</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
       ${plain ? '' : `<div class="zh here"${here ? '' : ' data-ai="1"'}>${here ? `<span><span class="pos">here</span>${esc(here[0])}${here[1] ? `<span class="pos"> · ${esc(here[1])}</span>` : ''}</span>` : '<span class="muted">AI 中文…</span>'}</div>
       ${glosses.length ? `<div class="zh">${glosses.map((g) => `<span>${g.pos ? `<span class="pos">${esc(g.pos)}</span>` : ''}${esc(g.zh)}</span>`).join('')}</div>` : '<div class="muted">Not in the offline dictionary.</div>'}`}
       <div class="en"></div>
       <div class="row"><button data-act="known" class="${status === 'known' ? 'active' : ''}">I know</button><button data-act="dontknow" class="${status === 'learning' ? 'active' : ''}">I don't know</button><button data-act="ignore">Ignore</button>
-      ${plain ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
+      ${plain || PHONE ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
     cardEl.hidden = false;
     // the AI's meaning in this very sentence, written live (when the video's hints do not have this word)
-    if (!plain && !here && this.vb && (this.keys.anthropic || this.keys.openai)) {
+    // (a phone: the dictionary's Chinese is enough when it has the word; the AI translates only what it does not have)
+    if (!plain && !here && (!PHONE || !glosses.length) && this.vb && (this.keys.anthropic || this.keys.openai)) {
       const sent = getSentence(this.vb.book, pos)?.text ?? '';
       const row = cardEl.querySelector<HTMLElement>('.zh.here');
       const job = completeStream(buildWordPrompt(target, sent), (full) => { if (row && this.card?.lemma === lemma) row.innerHTML = `<span><span class="pos">here</span>${esc(full.trim())}</span>`; });
@@ -2528,9 +2764,11 @@ class Session {
       const rr = root.getBoundingClientRect();
       const wr = el?.getBoundingClientRect();
       const x = wr ? wr.left - rr.left + wr.width / 2 : rr.width / 2;
-      let y = wr ? wr.bottom - rr.top + 8 : 60;
+      // (a phone: under the whole sentence, so the sentence stays readable)
+      const ar = (PHONE ? this.sentenceEl(root, pos)?.getBoundingClientRect() : undefined) ?? wr;
+      let y = ar ? ar.bottom - rr.top + 8 : 60;
       cardEl.style.left = `${Math.max(8, Math.min(rr.width - 308, x - 150))}px`;
-      if (y + 220 > rr.height && wr) y = Math.max(8, wr.top - rr.top - 8 - cardEl.offsetHeight);
+      if (y + 220 > rr.height && ar) y = Math.max(8, ar.top - rr.top - 8 - cardEl.offsetHeight);
       cardEl.style.top = `${y}px`;
     }
     cardEl.onclick = (ev) => {
@@ -2541,7 +2779,7 @@ class Session {
       if (act === 'close') this.closeCard();
       else if (act === 'say') { const h = this.wordOut?.speak(c.word, { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) }); void h; }
       else if (act === 'known') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); if (this.controller?.stopWindow) this.answerKnow(); this.closeCard(); }
-      else if (act === 'dontknow') { if (this.controller?.stopWindow) this.answerDontKnow(); else { void this.changeStatus(c.lemma, 'learning'); this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } }
+      else if (act === 'dontknow') { if (this.controller?.stopWindow) this.answerDontKnow(); else if (this.inStop && this.levelOn()) { this.controller?.answerEarly(); } else { void this.changeStatus(c.lemma, 'learning'); this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } }
       else if (act === 'ignore') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'ignored'); this.closeCard(); if (this.controller?.stopWindow) this.answerGoOn(); }
       else if (act === 'zh') { void store.patchSettings({ ai: { ...settings.ai, speakChinese: !settings.ai.speakChinese } }); }
     };
@@ -2712,7 +2950,8 @@ class Session {
       this.ensureZh(ps);
       if (this.cur) this.setCurrent(this.cur);
     }
-    if (prev.followAt !== extras.followAt) this.scrollToCur(true);
+    if (prev.playLine !== extras.playLine) { this.padPage(); this.scrollToCur(true); }
+    if (prev.capWords !== extras.capWords || prev.capSentences !== extras.capSentences || prev.stopItemsOn !== extras.stopItemsOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
     if (prev.aiSentences !== extras.aiSentences && extras.aiSentences && this.source === 'rule') void this.runAiJobs();
     this.renderHead();
     this.renderStageTop();
@@ -2815,7 +3054,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: PHONE, justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `listening (level ${extras.micLevel ?? 3})` : 'off now', stops: `words and phrases ${extras.stopItemsOn === false ? 'off' : `${extras.capWords ?? 45}%`} · sentences ${extras.stopHardOn === false ? 'off' : `${extras.capSentences ?? 5}%`}`, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -2858,7 +3097,8 @@ class Session {
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
-      level: { stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
+      phone: PHONE, sleep: sleepMinutes(), asleep,
+      level: { byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
@@ -2866,7 +3106,54 @@ class Session {
   }
 }
 
-function normalView(): boolean { return extras.view !== 'listening'; }
+function normalView(): boolean { return !bookView(); }
+
+/**
+ * A command at the end of what was heard: the whole of it, else its last three, two or one words (the microphone
+ * also hears the tutor's own word just before the answer: "ubiquitous ubiquitous I know").
+ */
+function commandIn(text: string): ReturnType<typeof detectCommand> {
+  const whole = detectCommand(text);
+  const isCmd = (i: string) => i === 'know' || i === 'dont_know' || i === 'bye';
+  if (isCmd(whole.intent)) return whole;
+  const w = text.trim().split(/\s+/);
+  for (const n of [3, 2, 1]) {
+    if (w.length <= n) continue;
+    const d = detectCommand(w.slice(-n).join(' '));
+    // (one word alone at the end only counts as "bye"; "what", "again", "next" are too easily part of something else)
+    if (n === 1 ? d.intent === 'bye' && saysBye(w[w.length - 1].toLowerCase()) : d.intent === 'know' || d.intent === 'dont_know' || (d.intent === 'bye' && saysBye(w.slice(-n).join(' ').toLowerCase()))) return d;
+  }
+  return whole;
+}
+
+/** "bye bye", or "bye" (also heard as "by", "buy", "goodbye", "ok bye") said alone: the tutor goes */
+function saysBye(lower: string): boolean {
+  if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower)) return true;
+  const words = lower.replace(/[^a-z' ]/g, ' ').trim().split(/\s+/).filter((w) => w && !/^(ok|okay|oh|um|uh|well|so|and)$/.test(w));
+  return words.length === 1 && /^(bye|by|buy|goodbye|bai)$/.test(words[0]) || (words.length === 2 && words[0] === 'good' && /^(bye|by|buy)$/.test(words[1]));
+}
+
+/** how long a stop waits for its explanation from the one analysis before it asks for this one alone */
+const ANALYSIS_WAIT_MS = 6000;
+/** a stop with no voice and no window for this long plays on by itself */
+const SILENT_STOP_MS = 30_000;
+
+// ---- the sleep timer: after 30 or 60 minutes everything stops (the video, the tutor, the microphone) ----
+let asleep = false;
+let sleepUntil = 0;
+let sleepTimer: ReturnType<typeof setTimeout> | null = null;
+/** the minutes left on the sleep timer (0 = off) */
+function sleepMinutes(): number { return sleepUntil ? Math.max(1, Math.ceil((sleepUntil - Date.now()) / 60_000)) : 0; }
+function setSleep(minutes: number): void {
+  if (sleepTimer) clearTimeout(sleepTimer);
+  sleepTimer = null; sleepUntil = 0; asleep = false;
+  if (minutes > 0) {
+    sleepUntil = Date.now() + minutes * 60_000;
+    sleepTimer = setTimeout(() => { sleepTimer = null; sleepUntil = 0; asleep = true; if (session) session.sleepNow(); else { const v = video(); if (v && !v.paused) v.pause(); } }, minutes * 60_000);
+  }
+  session?.toast(minutes > 0 ? `Sleep timer: everything stops in ${minutes} minutes.` : 'Sleep timer off.', 5000);
+  session?.renderQuickIfOpen();
+}
 
 /** after an explanation a moment to talk: your setting, or always in voice mode */
 function talkAfter(): boolean { return extras.talkAfterExplain || extras.voiceMode; }
@@ -2992,9 +3279,18 @@ async function boot(): Promise<void> {
   [settings, extras, vocab, levelMeta] = await Promise.all([store.getSettings(), store.getExtras(), store.getVocab(), store.getLevel()]);
   const mig = store.migrateExtras(extras);
   if (mig) extras = await store.patchExtras(mig);
+  if (PHONE) {
+    const first = store.phoneDefaults(extras);
+    if (first) {
+      extras = await store.patchExtras(first);
+      // ("Explain 20 s": a short part fits a phone's page)
+      if (settings.listen.lastSecondsWindow === 30) settings = await store.patchSettings({ listen: { ...settings.listen, lastSecondsWindow: 20 } });
+    }
+  }
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
     wantsMic: () => !!session && session.wantsMic(),
+    micLevel: () => extras.micLevel ?? 3,
     callOpen: () => !!session && session.callOpen(),
     heard: (text, final, key) => (session ? session.heard(text, final, key) : false),
     decorateBar: (bar) => {
@@ -3011,6 +3307,8 @@ async function boot(): Promise<void> {
     reload: () => { session?.dispose(); session = null; refresh(); },
     action: (id) => {
       if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
+      if (id === 'check') { window.__ytcApi?.showReport?.(); return !!window.__ytcApi?.showReport; }
+      if (id === 'sleep') { if (!session) return false; const m = sleepMinutes() > 30 ? 0 : sleepMinutes() > 0 ? 60 : 30; setSleep(m); return true; }
       return session ? session.action(id) : false;
     },
   };

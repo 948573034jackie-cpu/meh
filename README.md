@@ -6,14 +6,14 @@ Everything is on the release page: https://github.com/948573034jackie-cpu/meh/re
 |---|---|---|
 | **My tutor** (Chrome extension) | `YouTube-to-Claude.zip` | Chrome on a Mac / computer |
 | **YT Learn** (iPhone + iPad app: YouTube inside it, with My tutor) | `YTLearn-unsigned.ipa` or `YTLearn-Xcode-project.zip` | iPhone, iPad |
-| **YT Safari** (the extension for Safari on iPhone / iPad) | `YTSafari-unsigned.ipa` | iPhone, iPad |
+| ~~YT Safari~~ (the Safari extension app) | no longer built: the app, YT Learn, is the iPhone version | — |
 | ClaudeSnap Voice / ClaudeSnap (a screenshot when you speak; a separate tool) | `ClaudeSnap-Chrome.zip`, `ClaudeSnap.zip` | Chrome / macOS 12+ |
 
 ## The idea
 1. Open a YouTube video. My tutor reads the subtitles.
 2. **Level Check**: a 2-minute tap test made only from this video's words (B2, C1, C2 + idioms + slang). Or skip it.
 3. The video is analyzed **once** (Claude Haiku by default, cheap). Then it plays in Listening mode: at the hardest
-   sentences (50 % at most) it stops, plays the sentence, explains it (spoken and shown), plays it again, and goes on
+   sentences it stops (a hard word: said 3 times, "I know" skips it; each kind of stop has its own share), plays the sentence, explains it (spoken and shown), plays it again, and goes on
    by itself. Tap a word = explain it; double tap = I know it.
 4. Your words, tests and level go into **one vocabulary file** (`vocabulary.json`), shared by the Mac and the iPhone
    (iCloud Drive or Google Drive). **Copy my level for Claude** gives Claude your level in one paste.

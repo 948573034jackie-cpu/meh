@@ -230,6 +230,11 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const counter = () => yt.evaluate(() => (document.getElementById('dr-stop-counter') || {}).textContent || '');
   const firstStop = await until(async () => { const d = await dbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 100);
   ok('the first stop comes', !!firstStop, JSON.stringify(await dbg()).slice(0, 300));
+  // a stop for a hard word: the word 3 times, then the window waits ("Do you know …?")
+  const win1 = await until(async () => { const d = await dbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 50);
+  ok('a hard word stops the video: "ephemeral" is said 3 times, then the window waits for "I know"', win1 && win1.window.target === 'ephemeral' && win1.window.kind === 'word' && win1.spoken.filter((s) => s === 'ephemeral').length === 3 && win1.level.byKind.item === 1, JSON.stringify(win1 && { w: win1.window, spoken: win1.spoken.slice(-4), by: win1.level.byKind }));
+  const cardZh = await yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const c = r?.querySelector('.card'); return c && !c.hidden ? c.querySelector('.word')?.textContent : null; });
+  ok('the page jumped to the stop\'s sentence and the word\'s card is open', cardZh === 'ephemeral' && win1 && win1.cur && String(await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent)).includes(LINES[5]), JSON.stringify({ cardZh, cur: await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent) }));
   const onPage = () => yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const say = r?.querySelector('.dock .say'); return say ? { text: say.textContent, head: !!say.querySelector('b') } : null; });
   const sayShown = await until(async () => { const p = await onPage(); return p && /something very careful/.test(p.text) ? p : null; }, 15000, 60);
   ok('the page shows the explanation as text: only the explanation, no heading, nothing the rule forbids', sayShown && !sayShown.head && !/OK so|Teacher's note|Let's look|细致|məˈ/.test(sayShown.text), JSON.stringify(sayShown));
@@ -239,7 +244,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const ev = await log();
   const jumps = ev.filter((e) => e[0] === 'seeked');
   const stopSpoke = (await dbg()).spoken;
-  ok('at a stop: the sentence plays from the video, then again after the explanation (two jumps back to its start)', jumps.length >= 2, JSON.stringify(ev.slice(0, 12)));
+  ok('nothing said in the window: the explanation, then the sentence again from the video (a jump back to its start), then on', jumps.length >= 1 && Math.abs(jumps[0][1] - (5 * 2.5 - 0.15)) < 0.2 && ev[ev.length - 1][0] === 'play', JSON.stringify(ev.slice(0, 12)));
   const rules = apiLog.filter((r) => r.kind === 'analysis');
   ok('the analysis was asked for with the hard rule, the hard words named', rules.length >= 1 && /no Chinese/.test(rules[0].sys) && /\[hard: /.test(rules[0].user), rules[0] && rules[0].user.slice(-300));
   ok('NO AI call at the stop: it reads what the analysis wrote', callsAt('rule') === 0 && callsAt('analysis') === 1, JSON.stringify({ rule: callsAt('rule'), analysis: callsAt('analysis') }));
@@ -251,6 +256,25 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   ok('the explanation is also shown as text, cleaned', /something very careful/.test(panelText) && !/OK so|Teacher's note|细致的/.test(panelText));
   const c1 = await counter();
   ok('the small counter: stops / sentences so far (%)', /^\d+\/\d+ \(\d+%\)$/.test(c1), c1);
+
+  // the next hard word ("gregarious"): "I know", said aloud = known, no explanation, the sentence again, on
+  const say = (text, key) => sw.evaluate(async ([t, k]) => { const [tab] = await chrome.tabs.query({ url: 'https://www.youtube.com/*' }); await chrome.tabs.sendMessage(tab.id, { type: 'heard', text: t, final: true, key: k }); }, [text, key]);
+  const win2 = await until(async () => { const d = await dbg(); return d && d.window && d.window.phase === 'before' && d.window.target === 'gregarious' ? d : null; }, 60000, 60);
+  ok('the next hard word stops too', !!win2, JSON.stringify((await dbg()).level));
+  const nSpoken = win2 ? win2.spoken.length : 0, nEv = (await log()).length;
+  await say('I know', 'lc:know');
+  const after2 = await until(async () => { const d = await dbg(); const v = await yt.evaluate(() => !document.querySelector('video').paused); return v && d.state === 'playing' && !d.window ? d : null; }, 15000, 80);
+  const ev2 = (await log()).slice(nEv);
+  ok('"I know": no explanation, the word is known, the sentence plays again from its start and the video goes on',
+    !!after2 && after2.spoken.length === nSpoken && ev2.some((e) => e[0] === 'seeked' && Math.abs(e[1] - (7 * 2.5 - 0.15)) < 0.2) && ((await store('drVocab')).words.gregarious === 'known') && callsAt('rule') === 0,
+    JSON.stringify({ spokenMore: after2 && after2.spoken.slice(nSpoken), ev2, st: (await store('drVocab')).words.gregarious }));
+
+  // the next one ("squander"): "bye" (the same as "bye bye") = the tutor goes, the word is known too, the video plays
+  const win3 = await until(async () => { const d = await dbg(); return d && d.window && d.window.phase === 'before' && d.window.target === 'squander' ? d : null; }, 60000, 60);
+  const nSpoken3 = win3 ? win3.spoken.length : 0;
+  await say('Bye.', 'lc:bye');
+  const after3 = await until(async () => { const d = await dbg(); const v = await yt.evaluate(() => !document.querySelector('video').paused); return v && d.state === 'playing' && !d.window ? d : null; }, 15000, 80);
+  ok('"bye" (or "bye bye") at a stop: no explanation, the word is marked known, the video plays', !!win3 && !!after3 && after3.spoken.length === nSpoken3 && (await store('drVocab')).words.squander === 'known', JSON.stringify({ win3: !!win3, more: after3 && after3.spoken.slice(nSpoken3), st: (await store('drVocab')).words.squander }));
 
   // ---- 3. tap and double tap ----
   const words = (lemma) => yt.evaluate((l) => { const r = document.getElementById('dr-panel-host').shadowRoot; return r.querySelectorAll(`.w[data-lemma="${l}"]`).length; }, lemma);
@@ -278,6 +302,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const final = await dbg();
   const pct = Math.round(100 * final.level.stops / final.level.total);
   ok('at most 50% of the sentences stopped', final.level.stops <= final.level.total / 2 && final.level.stops >= 2, `${final.level.stops} of ${final.level.total} sentences = ${pct}%`);
+  ok('each group of stops keeps to its own share: words and phrases 45%, whole sentences 5%', final.level.byKind.item <= final.level.total * 0.45 && final.level.byKind.sentence <= Math.max(1, final.level.total * 0.05) && final.level.byKind.item + final.level.byKind.sentence === final.level.stops, JSON.stringify(final.level.byKind));
   ok('the counter never went over 50%', worst <= 0.5, `worst ${Math.round(worst * 100)}% · last ${await counter()}`);
   const askedAbout = (s) => final.level.stoppedAt.includes(s);
   ok('known words never cause a stop: only known words ("threaten", "violence") = no stop', !askedAbout(LINES[3]) && !askedAbout(LINES[12]), final.level.stoppedAt.join(' | '));
@@ -365,7 +390,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const optState = await until(() => opt.evaluate(() => { const s = document.getElementById('db-status').textContent; return /Saved/.test(s) ? { s, ask: document.getElementById('levelAsk').checked, mode: document.getElementById('levelMode').checked, drive: document.getElementById('db-drive').textContent, install: document.getElementById('db-install').hidden } : null; }), 8000);
   ok('the settings page: the setting, the file, the iCloud Drive and Google Drive copies', optState && optState.ask === false && optState.mode === true && /vocabulary\.json/.test(optState.s) && /iCloud Drive copy: .*vocabulary\.json/.test(optState.drive) && /Google Drive copy: .*vocabulary\.json/.test(optState.drive) && optState.install === true, JSON.stringify(optState));
   const copy = await opt.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-level-copy' }));
-  ok('"Copy my level for Claude": level, new known words, still learning', copy && /My English level: about /.test(copy.text) && /quixotic/.test(copy.text) && /Still learning \(\d+\): .*squander/.test(copy.text), copy && copy.text.slice(0, 300));
+  ok('"Copy my level for Claude": level, new known words, still learning', copy && /My English level: about /.test(copy.text) && /quixotic/.test(copy.text) && /squander/.test(copy.text) && /Still learning \(\d+\): .*(ephemeral|ubiquitous|garrulous)/.test(copy.text), copy && copy.text.slice(0, 300));
   ok('the button is there', await opt.evaluate(() => !!document.getElementById('copy-level')));
   await opt.close();
   await sw.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, levelAsk: true } })));

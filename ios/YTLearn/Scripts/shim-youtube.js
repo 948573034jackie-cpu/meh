@@ -47,7 +47,12 @@
   // ---- speech: iOS does the listening (SFSpeechRecognizer), we look like webkitSpeechRecognition ----
   class NativeSpeechRecognition {
     constructor() { this.continuous = false; this.interimResults = false; this.lang = 'en-US'; this.onresult = null; this.onerror = null; this.onend = null; }
-    start() { window.__ytcActiveSR = this; post({ kind: 'speech', op: 'start' }).catch(() => {}); }
+    start() {
+      window.__ytcActiveSR = this;
+      let level = 3; // the microphone's sensitivity (1 low, 2 mid, 3 high), from My tutor's settings
+      try { if (window.__ytcDream && window.__ytcDream.micLevel) level = Number(window.__ytcDream.micLevel()) || 3; } catch (e) { /* the default */ }
+      post({ kind: 'speech', op: 'start', level }).catch(() => {});
+    }
     // (only the listener that has the microphone can close it: the 🎤 Speak button's own listener takes it over)
     abort() { if (window.__ytcActiveSR !== this) return; window.__ytcActiveSR = null; post({ kind: 'speech', op: 'stop' }).catch(() => {}); }
     // like Chrome: what is being heard now comes as final, then "end" (the listener starts again by itself)
@@ -56,7 +61,17 @@
   window.__ytcSpeech = (ev) => {
     const r = window.__ytcActiveSR;
     if (!r) return;
-    if (ev.type === 'result' && r.onresult) { const res = [{ transcript: ev.text }]; res.isFinal = !!ev.final; r.onresult({ resultIndex: 0, results: [res] }); }
+    if (ev.type === 'result' && r.onresult) {
+      // Swift cuts what it hears into pieces at the pauses and numbers them (ev.index): each piece has its own place
+      // in the results, as in Chrome's continuous listening, so the page acts once per piece (not once per session)
+      const i = ev.index || 0;
+      const res = [{ transcript: ev.text }];
+      res.isFinal = !!ev.final;
+      const results = [];
+      results[i] = res;
+      results.length = i + 1;
+      r.onresult({ resultIndex: i, results });
+    }
     if (ev.type === 'error' && r.onerror) r.onerror({ error: ev.error });
     if (ev.type === 'end') { window.__ytcActiveSR = null; if (r.onend) r.onend(); }
   };

@@ -215,3 +215,31 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 .selx[hidden] { display: none; }
 /* 🎤 Speak next to Ask */
 .ask .speak { white-space: nowrap; }
+
+/* ---- a phone: the page is a book of subtitles (every word can be tapped); only the bottom has controls ---- */
+:host([data-phone="1"]) { --fg: #ece8df; --fg-muted: #a39f97; }
+:host([data-phone="1"]) .stage .top, :host([data-phone="1"]) .stage .flowstate, :host([data-phone="1"]) .stage .page .sx, :host([data-phone="1"]) kbd { display: none !important; }
+:host([data-phone="1"]) .stage .page { padding-left: 20px; padding-right: 20px; line-height: 1.6; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+:host([data-phone="1"]) .stage .page .para { margin: 0 0 0.9em; }
+:host([data-phone="1"]) .stage .page .s { opacity: 0.86; transition: opacity 240ms, background-color 200ms; }
+:host([data-phone="1"]) .stage .page .s.past { opacity: 0.55; }
+:host([data-phone="1"]) .stage .page .s.cur { opacity: 1; background: color-mix(in srgb, var(--accent) 20%, transparent); -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+:host([data-phone="1"]) .w { -webkit-tap-highlight-color: transparent; }
+:host([data-phone="1"]) .w:hover:not(.punct) { outline: none; }
+/* what the tutor says is heard, not read (an error is still shown) */
+:host([data-phone="1"][data-say="0"]) .stage .dock .say:not(:has(.bad)), :host([data-phone="1"][data-say="0"]) .card .en { display: none; }
+:host([data-phone="1"]) .stage .dock { padding-bottom: env(safe-area-inset-bottom); max-height: 46vh; }
+:host([data-phone="1"]) .stage .dock .sayrow { justify-content: flex-end; padding: 0 12px; }
+:host([data-phone="1"]) .stage .dock .hand { font-size: 15px; padding: 8px 12px; margin-top: 6px; }
+:host([data-phone="1"]) .stage .ask { padding: 6px 12px 8px; }
+:host([data-phone="1"]) .stage .ask input { font-size: 16px; border-radius: 18px; padding: 8px 14px; }
+:host([data-phone="1"]) .stage .ask button { border-radius: 18px; padding: 8px 14px; }
+:host([data-phone="1"]) .stage .ask .speak { display: none; }
+:host([data-phone="1"]) .stage .cmd { margin: 6px auto; }
+:host([data-phone="1"]) .cmd .label { font-size: 17px; }
+:host([data-phone="1"]) .cmd .c { font-size: 17px; padding: 14px 18px; min-width: 132px; }
+:host([data-phone="1"]) .toast { top: calc(10px + env(safe-area-inset-top)); white-space: normal; text-align: center; width: max-content; max-width: calc(100% - 24px); }
+:host([data-phone="1"]) .quick { top: 8px; right: 8px; left: 8px; width: auto; max-height: calc(100% - 16px); }
+:host([data-phone="1"]) .quick input[type="range"] { width: 46vw; }
+:host([data-phone="1"]) .card { font-size: 16px; }
+:host([data-phone="1"]) .card .row button { padding: 9px 12px; }

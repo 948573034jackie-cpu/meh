@@ -16,10 +16,10 @@ export function ruleSystem(level: string): string {
 These rules are absolute.
 Give only the explanation. No heading, no label, no title, no intro and no filler. Never write things like "Teacher's note", "Let's look at", "The whole sentence", "Let's read it again", "Great", "OK so" or anything similar, and never say what you are going to do.
 Your very first words are the hard word or phrase itself, in quotation marks, copied exactly from the original words, so the learner knows which part you mean.
-Break the sentence down and explain every hard part from the context: what is happening, who is speaking and why.
-Explain each hard word fully: its meaning, its feeling, and how it is used in this sentence.
-Use very easy English in plain, flowing sentences. Be longer and clear, about 100 to 200 words. Write only English: no Chinese and no pronunciation symbols. No lists, no numbers, no markdown.
-The app plays the sentence from the video before and after you, so do not read the whole sentence out at the end.`;
+Right after it, say what it means here in very easy English: easy words that could stand in its place. One short sentence for each hard part.
+Then say the whole sentence once in very easy English, as the speaker means it here. That is all.
+Be short and simple: about 30 to 60 words, in plain, flowing sentences a beginner understands. Write only English: no Chinese and no pronunciation symbols. No lists, no numbers, no markdown.
+The app plays the sentence from the video before and after you, so do not read the original sentence out.`;
 }
 
 export function buildRulePrompt(req: RuleRequest): PromptBundle {
@@ -38,7 +38,7 @@ export function buildRulePrompt(req: RuleRequest): PromptBundle {
     : items.length ? `The hard parts for this learner, in order: ${items.map((i) => `"${i}"`).join(', ')}. Start with the first one.` : 'Find the hardest part of its grammar or meaning, and start with those exact words.';
   const known = r.known?.length ? `\nThe learner already knows these, so do not explain them: ${r.known.join(', ')}.` : '';
   const again = req.again ? '\nThe learner heard a first explanation and still does not understand: explain it from another angle, more slowly.' : '';
-  return { system, user: `${ctx}\n\n${hard}${known}${again}`, maxTokens: 700 };
+  return { system, user: `${ctx}\n\n${hard}${known}${again}`, maxTokens: 350 };
 }
 
 const CJK = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;

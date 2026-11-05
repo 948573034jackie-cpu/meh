@@ -7,6 +7,7 @@ import WebKit
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar)
+    @Published var explainSeconds = 20   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
     @Published var vocabStatus = ""      // the last save of the vocabulary file, in words
@@ -42,6 +43,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         bridge.model = self
         pageBridge.model = self
         tutorOn = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["tutorOn"] as? Bool) ?? true
+        explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
         vocabFolder = VocabFile.shared.folderName
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in Store.shared.flush() }
         // back in the app: the vocabulary file may have new words from the Mac
@@ -49,8 +51,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         youtube.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
 
-        speech.onText = { [weak self] text, final in
-            self?.sendSpeech(["type": "result", "text": text, "final": final])
+        // (index: the number of the piece that was heard; the page acts once per piece)
+        speech.onText = { [weak self] text, final, index in
+            self?.sendSpeech(["type": "result", "text": text, "final": final, "index": index])
         }
         speech.onEnd = { [weak self] reason in
             guard let self = self else { return }
@@ -145,7 +148,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if let url = URL(string: "https://m.youtube.com/") { youtube.load(URLRequest(url: url)) }
     }
 
-    // ---- toolbar actions ----
+    // ---- the bar's own buttons (Home, Paste link) ----
     func pasteLink() {
         let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if let url = URL(string: text), let host = url.host, host.contains("youtube.com") || host.contains("youtu.be") {
@@ -194,7 +197,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         switch kind {
         case "speech":
             switch body["op"] as? String {
-            case "start": speech.start()
+            case "start": speech.start(level: (body["level"] as? NSNumber)?.intValue ?? 3)   // the microphone's sensitivity, 1–3
             case "finish": speech.finish()
             default: speech.stop()
             }
@@ -227,13 +230,27 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let who = webView === youtube ? "youtube" : "sheet"
         jsLogs.append("nav \(event) \(who) \(webView.url?.absoluteString ?? "-")" + (error.map { " error: \($0.localizedDescription)" } ?? ""))
     }
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { navLog("start", webView) }
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navLog("start", webView)
+        // (a whole new page: the old page's listener is gone without closing the microphone; the new page asks again)
+        if webView === youtube { speech.stop() }
+    }
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if webView === youtube { speech.stop() }
+    }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { navLog("commit", webView) }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { navLog("finish", webView) }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navLog("fail", webView, error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navLog("failProvisional", webView, error) }
 
     // ---- helpers ----
+    /// the tutor's part length in seconds, from its saved settings (drSettings.listen.lastSecondsWindow; 20 when absent)
+    static func partSeconds(in settings: Any?) -> Int {
+        let listen = (settings as? [String: Any])?["listen"] as? [String: Any]
+        let seconds = (listen?["lastSecondsWindow"] as? NSNumber)?.intValue ?? 20
+        return seconds > 0 ? seconds : 20
+    }
+
     static func jsonString(_ object: Any) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.fragmentsAllowed]),
               let text = String(data: data, encoding: .utf8) else { return "null" }
@@ -263,11 +280,16 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             let on = extras["tutorOn"] as? Bool ?? true
             if on != tutorOn { tutorOn = on }
         }
+        if area == "local", let settings = obj["drSettings"] {
+            let seconds = AppModel.partSeconds(in: settings)
+            if seconds != explainSeconds { explainSeconds = seconds }
+        }
         tellOtherWindows(obj, area: area, except: web)
     }
 
     func storageRemove(area: String, keys: [String], from web: WKWebView?) {
         Store.shared.remove(area: area, keys: keys)
+        if area == "local", keys.contains("drSettings"), explainSeconds != 20 { explainSeconds = 20 }
         var gone: [String: Any] = [:]
         for k in keys { gone[k] = NSNull() }
         tellOtherWindows(gone, area: area, except: web)
@@ -304,6 +326,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             DispatchQueue.main.async {
                 // (no answer at all: the tutor is not on this page)
                 if case .success(let value) = result, value is NSNull { self?.show("Open a YouTube video first.") }
+                // (the page answered "nothing to do" and it is not a video page: the buttons need a video)
+                if case .success(let value) = result, (value as? Bool) == false, self?.youtube.url?.path != "/watch" { self?.show("Open a YouTube video first.") }
                 if case .failure = result { self?.show("Open a YouTube video first.") }
             }
         }

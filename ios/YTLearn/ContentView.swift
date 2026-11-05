@@ -7,8 +7,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            toolbar
-            // YouTube itself (search, your account, any video), with My tutor inside the page
+            // YouTube itself (search, your account, any video), with My tutor inside the page. No bar at the top:
+            // Home, Paste link and App settings are the last buttons of the bottom bar.
             WebHost(webView: model.youtube)
             tutorBar
         }
@@ -17,30 +17,39 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) { SettingsView(model: model) }
     }
 
-    /// My tutor's buttons (there is no keyboard on the phone): the same actions as its keyboard shortcuts
+    /// The one bar of the app (there is no keyboard on the phone: the same actions as My tutor's keyboard shortcuts).
+    /// The first five are in view on an iPhone (375 pt wide): the tutor's switch, play / stop, explain the last N
+    /// seconds, explain the last sentence, call the tutor. Swipe the bar sideways for the rest; the app's own three
+    /// (Home, Paste link, App settings) are its last buttons. With the tutor off: its switch, then those three.
     private var tutorBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 Button { model.dream("tutor") } label: {
-                    Text(model.tutorOn ? "My tutor ● on" : "My tutor ○ off")
-                        .font(.footnote.weight(.semibold))
+                    Text(model.tutorOn ? "Tutor ● on" : "Tutor ○ off")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .fixedSize()
                         .foregroundColor(.white)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 9)
                         .padding(.vertical, 6)
                         .background(Capsule().fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15)))
                 }
                 .buttonStyle(.plain)
                 if model.tutorOn {
-                    tutorButton("stop", "playpause.fill", "Stop / play")
-                    tutorButton("explainLast", "text.bubble", "Explain 30 s")
-                    tutorButton("explainSentence", "arrow.uturn.backward", "Last sentence")
-                    tutorButton("talk", "phone.fill", "Talk")
+                    tutorButton("stop", "playpause.fill", "Play / stop")
+                    tutorButton("explainLast", "text.bubble", "Explain \(model.explainSeconds) s")
+                    tutorButton("explainSentence", "arrow.uturn.backward", "Sentence")
+                    tutorButton("talk", "phone.fill", "Call")
+                    // (after a swipe)
                     tutorButton("voiceMode", "mic", "Voice")
-                    tutorButton("pageAuto", "doc.text", "Page")
-                    tutorButton("listening", "book", "Listening")
+                    tutorButton("sleep", "moon.zzz", "Sleep")
                     tutorButton("vocab", "character.book.closed", "Words")
                     tutorButton("quick", "slider.horizontal.3", "Settings")
+                    tutorButton("check", "stethoscope", "Check")
                 }
+                appButton("house", "Home") { model.goHome() }
+                appButton("link", "Paste link") { model.pasteLink() }
+                appButton("gearshape", "App settings") { showSettings = true }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -50,29 +59,25 @@ struct ContentView: View {
         .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
     }
 
-    private func tutorButton(_ action: String, _ symbol: String, _ title: String) -> some View {
-        Button { model.dream(action) } label: {
-            VStack(spacing: 2) {
-                Image(systemName: symbol).font(.system(size: 17))
-                Text(title).font(.system(size: 10))
-            }
-            .frame(minWidth: 52)
+    /// a small button of the bar: a symbol with a word under it (fixed sizes: five must fit side by side)
+    private func barLabel(_ symbol: String, _ title: String) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 17))
+            Text(title).font(.system(size: 10)).lineLimit(1).fixedSize()
         }
-        .accessibilityLabel(title)
+        .frame(minWidth: 50)
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 14) {
-            Text("YT Learn").font(.subheadline.weight(.semibold))
-            Spacer(minLength: 0)
-            Button { model.goHome() } label: { Label("YouTube home", systemImage: "house") }
-            Button { model.pasteLink() } label: { Label("Open copied YouTube link", systemImage: "link") }
-            Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
-        }
-        .labelStyle(.iconOnly)
-        .font(.title3)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+    /// one of My tutor's actions (window.__ytcDream.action in the page)
+    private func tutorButton(_ action: String, _ symbol: String, _ title: String) -> some View {
+        Button { model.dream(action) } label: { barLabel(symbol, title) }
+            .accessibilityLabel(title)
+    }
+
+    /// one of the app's own buttons (they were the bar at the top)
+    private func appButton(_ symbol: String, _ title: String, _ run: @escaping () -> Void) -> some View {
+        Button(action: run) { barLabel(symbol, title) }
+            .accessibilityLabel(title)
     }
 
     @ViewBuilder

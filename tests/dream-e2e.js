@@ -307,7 +307,7 @@ const api = http.createServer((req, res) => {
   ok('Shift+L: listening mode shows all 10 subtitles over the whole screen', lis && lis.stage.visibleLines === 10, JSON.stringify(lis && lis.stage));
   await sleep(1200);
   const pos = await sroot(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const p = r.querySelector('.page'); const c = r.querySelector('.s.cur'); if (!p || !c) return null; const pr = p.getBoundingClientRect(), cr = c.getBoundingClientRect(); return (cr.top + cr.height / 2 - pr.top) / pr.height; });
-  ok('the playing line sits near the middle (about 42% from the top), not at the top', pos !== null && pos > 0.25 && pos < 0.6, pos);
+  ok('the playing sentence sits on the play line (40 = a little under the middle), not at the top', pos !== null && pos > 0.5 && pos < 0.7, pos);
   const zh = await until(async () => { const d = await dbg(); return d && d.stage.zhLines >= 3 ? d.stage.zhLines : null; }, 10000);
   ok('live Chinese translation appears under the lines', !!zh && await sroot(() => /中文第/.test(document.getElementById('dr-stage-host').shadowRoot.querySelector('.zh-line').textContent)), zh);
   const size0 = (await store('drExtras')).stageSizePx || 34;
@@ -524,8 +524,8 @@ const api = http.createServer((req, res) => {
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
   ok('voice mode: "hello" stops the video, plays the last part again and explains it (what is happening first)', !!helloPart && !!helloReq && /tell the learner what is happening in this part/.test(helloReq.user), JSON.stringify({ flow: helloPart && helloPart.flow, req: !!helloReq }));
   await say('bye bye', 'vm:4');
-  const vmOff = await until(async () => (await store('drExtras')).voiceMode === false, 5000);
-  ok('voice mode: "bye bye" turns voice mode off', !!vmOff);
+  const byePlays = await until(async () => { const d = await dbg(); return d && !d.flow && d.state === 'playing' && await yt.evaluate(() => !document.querySelector('video').paused); }, 8000);
+  ok('voice: "bye bye" = the tutor goes and the video plays; the microphone stays on for the next "hello"', !!byePlays && (await store('drExtras')).voiceMode === true, JSON.stringify({ byePlays, vm: (await store('drExtras')).voiceMode }));
   await patch('drExtras', { voiceMode: false });
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 15000);
 

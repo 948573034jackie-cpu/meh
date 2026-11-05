@@ -29,6 +29,11 @@ export interface QuickCtx {
   /** say a test sentence with the chosen voice (teacher volume) / a test word (word volume) */
   testVoice(): void;
   testWord(): void;
+  /** a phone: the page is always the book of subtitles */
+  phone?: boolean;
+  /** the minutes left on the sleep timer (0 = off), and how to set it */
+  sleepMin?: number;
+  setSleep?(minutes: number): void;
   /** start a test call */
   testCall(): void;
   close(): void;
@@ -88,12 +93,23 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   ].filter(Boolean).join('\n      ');
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
+    <section><h4>My tutor stops for</h4>
+      <label>Words and phrases ${onOff('stopItemsOn', x.stopItemsOn !== false)} ${slider('capWords', x.capWords ?? 45, 0, 100, 5, '%')}</label>
+      <label>Whole sentences ${onOff('stopHardOn', x.stopHardOn !== false)} ${slider('capSentences', x.capSentences ?? 5, 0, 50, 1, '%')}</label>
+      <p class="muted">Of every 100 sentences, at most this many stop: for a hard word or phrase, and for a whole hard sentence (5% = about 1 in 20). The tutor says the word ${s.listen.wordRepeats} times (a sentence is played once more) and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. Say “I know”: it is marked known, no explanation, the video goes on. Say nothing: it explains.</p>
+      <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 5, 0, 20)} explanations</label>
+      <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
+      <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
+      <label>Word test before each video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
+      <label>Just talk ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">“hello” = the tutor comes · “I know” · “bye bye” = the tutor goes, the video plays</span></label>
+    </section>
     <section><h4>What you see</h4>
-      <label>Mode ${seg('view', x.view, [['normal', '🎬 Normal video'], ['listening', '📖 Listening (all subtitles)']])}</label>
-      <label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>
+      <label>Play line ${slider('playLine', x.playLine ?? 40, 0, 100, 1, '')} <span class="muted">0 = bottom, 100 = top: the sentence being played or explained stays there</span></label>
+      ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>
+      <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Mode ${seg('view', x.view, [['normal', '🎬 Normal video'], ['listening', '📖 Listening (all subtitles)']])}</label>
+      <label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
       <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[20, '20 s'], [30, '30 s'], [40, '40 s'], [60, '60 s']])}</label>
-      <label>Playing line at ${slider('followAt', x.followAt, 15, 75, 1, '%')} <span class="muted">from the top</span></label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
       <label>Stops by itself ${seg('stopGap', x.stopGapSec ?? 45, [[-1, 'Off'], [90, 'Rarely'], [45, 'Sometimes'], [20, 'Often'], [0, 'Every hard word']])}</label>
       <p class="muted">Every phrase and sentence above your level is highlighted and explained. Single hard words: Rarely / Sometimes / Often = at most one every 90 / 45 / 20 seconds. Off = it only stops when you pause.</p>
@@ -108,7 +124,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Size ${seg('vsizeOn', x.videoSize > 0 ? 'mine' : 'yt', [['yt', 'YouTube decides'], ['mine', 'My size']])}${x.videoSize > 0 ? ` ${slider('videoSize', x.videoSize, 40, 85, 1, '%')} <span class="muted">of the page width</span>` : ''}</label>
     </section>
     <section><h4>Text size</h4>
-      <label>Reading page ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>
+      ${ctx.phone ? '' : `<label>Reading page ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>`}
       <label>Side panel ${slider('panelSize', s.appearance.fontSizePx || 19, 12, 48, 1, 'px')}</label>
       <label>Subtitles over the video ${slider('bandSize', s.appearance.subtitleSizePx || 26, 16, 96, 1, 'px')}</label>
       <label>Chinese under each line (AI, live) ${onOff('zhLines', x.zhLines)}</label>
@@ -130,10 +146,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Voice call ${onOff('liveOn', x.liveOn)} <button type="button" data-act="test-call">📞 Test the call</button></label>
       <label>Talk with ${seg('callEngine', x.callEngine ?? 'claude', [['claude', 'Claude + my tutor’s voice (no OpenAI)'], ['openai', 'OpenAI realtime']])}${(x.callEngine ?? 'claude') === 'openai' && !keys.openai ? ' <span class="warn">needs an OpenAI key with credit</span>' : ''}</label>
       ${(x.callEngine ?? 'claude') === 'openai' ? `<label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>` : '<p class="muted">You talk, Chrome writes down your words, Claude answers, and your tutor’s voice speaks. Say “stop” (or press Space) to interrupt, “go on” to go back to the video.</p>'}
-      <label>Voice mode ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">(say “hello” = explain the last part, “stop”, “play”, ask anything, “bye bye” = off)</span></label>
       <label>Microphone on ${seg('micAlways', x.micAlways ? 'always' : 'needed', [['needed', 'Only when the tutor waits for me'], ['always', 'Always (for “hi bro”)']])}</label>
       <p class="muted">“Always” keeps the Mac’s microphone on, which makes the sound quieter and a little broken. “Only when…” is clean.</p>
-      <label>Microphone ${seg('mic', x.micLevel ?? 2, [[1, 'Normal'], [2, 'Sensitive'], [3, 'Very sensitive']])}</label>
       <label>Go on ${seg('silence', x.talkSilenceSec > 0 ? 'auto' : 'wait', [['wait', 'Wait for me'], ['auto', 'After quiet seconds']])}${x.talkSilenceSec > 0 ? ` <input type="number" data-name="silenceSec" min="3" max="120" value="${x.talkSilenceSec}" style="width:64px"> s` : ''}</label>
       <p class="muted">After an explanation you have a moment to ask; then the video goes on by itself. Say “bye bye” (or press Esc) to stop the AI at any time; Space pauses the teacher so you can ask.</p>
     </section>
@@ -157,7 +171,6 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <span><button type="button" data-act="sc-reset">Default shortcuts</button></span>
     </section>
     <section><h4>Level Check</h4>
-      <label>Ask Level Check before every video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
       <button type="button" data-act="copy-level">Copy my level for Claude</button>
     </section>
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button><button type="button" data-act="reader">📖 Read a PDF or text</button></section>
@@ -191,6 +204,10 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       const v = b.dataset.v!;
       if (segName === 'view') void store.patchExtras({ view: v as store.YtExtras['view'] });
       else if (segName === 'stageOn') void store.patchExtras({ stageOn: v === 'on' });
+      else if (segName === 'showSay') void store.patchExtras({ showSay: v === 'on' });
+      else if (segName === 'stopItemsOn') void store.patchExtras({ stopItemsOn: v === 'on' });
+      else if (segName === 'stopHardOn') void store.patchExtras({ stopHardOn: v === 'on' });
+      else if (segName === 'sleep') ctx.setSleep?.(Number(v));
       else if (segName === 'replayPart') void store.patchExtras({ replayPart: v === 'on' });
       else if (segName === 'aiSentences') void store.patchExtras({ aiSentences: v === 'on' });
       else if (segName === 'stopWords') patchListen({ autoExplainWords: v === 'on' });
@@ -291,7 +308,12 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     const out = t.parentElement?.querySelector('output');
     if (out && t instanceof HTMLInputElement && t.type === 'range') out.textContent = `${t.value}${out.textContent?.replace(/^[\d.]+/, '') ?? ''}`;
     const n = Number(t.value);
-    if (name === 'followAt') later(() => void store.patchExtras({ followAt: n }));
+    if (name === 'playLine') later(() => void store.patchExtras({ playLine: n }));
+    else if (name === 'capWords') later(() => void store.patchExtras({ capWords: n }), 300);
+    else if (name === 'capSentences') later(() => void store.patchExtras({ capSentences: n }), 300);
+    else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
+    else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
+    else if (name === 'phoneSize') later(() => void store.patchExtras({ phoneSizePx: n }), 120);
     else if (name === 'stageSize') later(() => void store.patchExtras({ stageSizePx: n }), 120);
     else if (name === 'panelSize') later(() => patchLook({ fontSizePx: n }), 120);
     else if (name === 'bandSize') later(() => patchLook({ subtitleSizePx: n }), 120);

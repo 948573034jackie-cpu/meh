@@ -109,64 +109,7 @@ jobs:
             ios/YTLearn-unsigned.ipa
             ios/YTLearn-Xcode-project.zip
 
-  safari-ios:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Make the Safari extension and turn it into an iPhone/iPad app (Apple's converter)
-        shell: bash
-        run: |
-          ./safari/build-app.sh --ci 2>&1 | tee converter.log
-          PROJ=$(find safari/build -name '*.xcodeproj' -maxdepth 3 | head -1)
-          echo "PROJ=$PROJ" >> $GITHUB_ENV
-          xcodebuild -list -project "$PROJ"
-          SCHEME=$(xcodebuild -list -project "$PROJ" -json | python3 -c 'import json,sys; print([s for s in json.load(sys.stdin)["project"]["schemes"] if "Extension" not in s][0])')
-          echo "SCHEME=$SCHEME" >> $GITHUB_ENV
-      - name: Compile for the iPhone/iPad Simulator and check the extension is inside
-        shell: bash
-        run: |
-          xcodebuild -project "$PROJ" -scheme "$SCHEME" -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -configuration Debug -derivedDataPath build-sim CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -25
-          APP=$(find build-sim/Build/Products/Debug-iphonesimulator -name '*.app' -maxdepth 1 | head -1)
-          echo "APP=$APP" >> $GITHUB_ENV
-          APPEX=$(find "$APP/PlugIns" -name '*.appex' -maxdepth 1 | head -1)
-          echo "extension: $APPEX"; ls "$APPEX"
-          plutil -p "$APPEX/Info.plist" | grep -E "NSExtensionPointIdentifier|CFBundleIdentifier"
-          for f in manifest.json browser-shim.js lib.js youtube.js background.js popup.html popup.js tutor-bar.js \
-                   dream/dream-yt.js dream/dream-bg.js dream/dict.json.gz dream/zipf.json.gz dream/options.html dream/options.js dream/vocab.html dream/reader.html dream/reader.js; do
-            test -f "$APPEX/$f" || test -f "$APPEX/Resources/$f" || { echo "MISSING $f"; exit 1; }; done
-      - name: Start the app in an iPad Simulator (screenshot)
-        shell: bash
-        run: |
-          mkdir -p shots
-          UDID=$(xcrun simctl list devices available | grep -F "iPad" | head -1 | grep -oE "[0-9A-F-]{36}")
-          xcrun simctl boot "$UDID"; xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" "$APP"
-          BID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"); echo "app id: $BID"
-          xcrun simctl launch "$UDID" "$BID"
-          sleep 15
-          xcrun simctl io "$UDID" screenshot shots/safari-app-ipad.png
-          xcrun simctl shutdown "$UDID"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: safari-screenshot
-          path: shots/*.png
-          if-no-files-found: ignore
-      - name: Build for real iPhones/iPads (not signed) and pack it as an .ipa
-        shell: bash
-        run: |
-          xcodebuild -project "$PROJ" -scheme "$SCHEME" -sdk iphoneos -destination 'generic/platform=iOS' -configuration Release \
-            -derivedDataPath build-dev CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -15
-          mkdir -p Payload
-          cp -R "$(find build-dev/Build/Products/Release-iphoneos -name '*.app' -maxdepth 1 | head -1)" Payload/
-          ls Payload/*.app/PlugIns
-          zip -qr YTSafari-unsigned.ipa Payload
-          ls -la YTSafari-unsigned.ipa
-      - uses: actions/upload-artifact@v4
-        with:
-          name: safari-ios
-          path: YTSafari-unsigned.ipa
+  # (the Safari extension app, YT Safari, is no longer built: only the app itself, YT Learn, is wanted)
 
   js-webkit:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
@@ -183,9 +126,6 @@ jobs:
           npx playwright install --with-deps webkit >/dev/null
       - name: Unit tests (sentences, subtitle-list formats)
         run: node tests/lib-unit.js
-      - name: My tutor in the Safari extension (iPhone), in WebKit
-        if: always()
-        run: ./safari/make-extension.sh && node tests/safari-tutor-webkit-test.js
       - name: My tutor in the iPhone/iPad app, in WebKit (the app's scripts + a stand-in for its Swift side)
         if: always()
         run: ./ios/sync-scripts.sh && node tests/ios-webkit-test.js
@@ -240,7 +180,7 @@ jobs:
           path: /tmp/*.png
 
   release:
-    needs: [mac-app, ios, safari-ios]
+    needs: [mac-app, ios]
     if: github.ref_name == 'claude/new-session-pxh22u' || github.ref_name == 'claude/level-check-iphone'
     runs-on: ubuntu-latest
     steps:
@@ -259,7 +199,7 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" \
             dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
-            dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip dl/safari-ios/YTSafari-unsigned.ipa \
+            dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
             --title "ClaudeSnap downloads" \
-            --notes "Mac app, Chrome extensions, the iPhone/iPad app (YT Learn), and the Safari extension app for iPhone/iPad (YT Safari)." \
+            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (YT Learn)." \
             --target "${{ github.sha }}"

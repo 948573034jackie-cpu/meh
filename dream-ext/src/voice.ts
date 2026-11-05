@@ -192,13 +192,18 @@ export class WithVolume implements TtsEngine {
   readonly label: string;
   readonly costNote: string;
   readonly wordBoundaries: boolean;
-  constructor(private inner: () => TtsEngine, private volume: () => number) {
+  /** `onSpeak`: something is said now / was said (a stop that stays silent can be noticed) */
+  constructor(private inner: () => TtsEngine, private volume: () => number, private onSpeak?: (text?: string) => void) {
     const v = inner();
     this.id = v.id; this.kind = v.kind; this.label = v.label; this.costNote = v.costNote; this.wordBoundaries = v.wordBoundaries;
   }
   get paused(): boolean { return this.inner().paused; }
   listVoices(): Promise<TtsVoice[]> { return this.inner().listVoices(); }
-  speak(text: string, opts: SpeakOptions): SpeakHandle { return this.inner().speak(text, { ...opts, volume: this.volume() }); }
+  speak(text: string, opts: SpeakOptions): SpeakHandle {
+    const h = this.inner().speak(text, { ...opts, volume: this.volume() });
+    if (this.onSpeak) { const end = () => this.onSpeak?.(); this.onSpeak(text); void h.done.then(end, end); }
+    return h;
+  }
   prefetch(text: string, voiceId: string, rate: number): void { this.inner().prefetch?.(text, voiceId, rate); }
   readAhead(texts: string[], voiceId: string, rate: number): void { this.inner().readAhead?.(texts, voiceId, rate); }
   stopReadAhead(): void { this.inner().stopReadAhead?.(); }

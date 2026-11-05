@@ -278,3 +278,94 @@ describe('a hard sentence stops like a word (YouTube)', () => {
     await until(() => vocab.words['sentence: then she went home to rest'] === 'learning');
   }, 20000);
 });
+
+describe('Level Check: a stop for a hard word (YouTube)', () => {
+  let cleanup: (() => void) | null = null;
+  afterEach(() => { cleanup?.(); cleanup = null; });
+
+  const setup = (items: { kind: 'word' | 'phrase'; target: string; lemma: string }[]) => {
+    const s1 = 'Hello and welcome back.';
+    const s2 = 'Then she went home to rest.';
+    const vb = buildVideoBook({ id: 'vid00000003', title: 'Test' }, [
+      { start: 0, end: 1.6, text: s1, words: W(s1.toLowerCase(), 0) },
+      { start: 1.6, end: 4.0, text: s2, words: W(s2.toLowerCase(), 1.6) },
+    ]);
+    const video = new FakeVideo(30);
+    const clock = setInterval(() => video.tick(0.05), 10);
+    const engine = new VideoEngine(() => video, () => vb);
+    const tts = new FakeTtsEngine(1);
+    const router = new SentenceFromVideo(() => tts, engine, (text) => { const p = engine.target; return !!p && getSentence(vb.book, p)?.text === text; });
+    const settings: Settings = structuredClone(DEFAULT_SETTINGS);
+    settings.listen.commandWindowMs = 400;
+    settings.ai.speakChinese = false;
+    const vocab: VocabState = { words: {}, marked: {} };
+    const requests: ExplainRequest[] = [];
+    const windows: CommandWindow[] = [];
+    const targets: string[] = [];
+    const playback = new Playback(vb.book, { engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1 }), pauseMs: () => 0 }, vb.order[0]);
+    playback.on('sentence', (pos) => { engine.target = pos; });
+    playback.on('state', (st) => { if (st === 'explaining') engine.hold(); });
+    const at = vb.order[1];
+    let stopped = false;
+    const controller = new ListenController(playback, {
+      book: vb.book, dict: realDictionary(), names: new Set(),
+      settings: () => settings, vocab: () => vocab, marked: () => [],
+      engine: () => router, explainEngine: () => tts, zhEngine: () => tts,
+      voice: () => ({ voiceId: 'v', rate: 1 }), explainVoice: () => ({ voiceId: 'v', rate: 1 }), zhVoiceId: () => null,
+      explain: (req, onDelta) => { requests.push(req); onDelta('She goes to her house. '); return { done: Promise.resolve({ text: 'She goes to her house.', usage: { usd: 0, dailyUsd: 0, monthlyUsd: 0 } }), cancel: () => undefined }; },
+      onTranscript: () => undefined,
+      onMarkLearning: (l) => { vocab.words[l] = 'learning'; },
+      onCommandWindow: (w) => { if (w) windows.push(w); },
+      onStopTarget: (t) => { if (t) { targets.push(t.target); stopped = true; } else engine.replayUnlessHeard(); },
+      directStop: () => true,
+      directTrigger: (pos) => (!stopped && pos.sentence === at.sentence && pos.paragraph === at.paragraph ? { lemma: 'sentence: then she went home to rest', items } : null),
+      streamProse: () => true,
+    });
+    controller.enabled = true;
+    cleanup = () => { clearInterval(clock); controller.dispose(); playback.stop(); };
+    return { video, tts, vocab, requests, windows, targets, playback, controller };
+  };
+
+  it('the word 3 times, the window; "I know" = no explanation, the sentence plays again and the video goes on', async () => {
+    const t = setup([{ kind: 'word', target: 'rest', lemma: 'rest' }]);
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    expect(t.windows[0]).toMatchObject({ phase: 'before', target: 'rest', kind: 'word' });
+    expect(t.tts.spoken.filter((x) => x.text === 'rest')).toHaveLength(3);
+    expect(t.controller.lastExplained?.lemma).toBe('rest');
+    t.controller.markKnown('rest');
+    expect(t.controller.answerWindow('know')).toBe(true);
+    // the sentence again from its start, then on to the end
+    await until(() => t.video.events.filter((e) => e === 'seek@1.45').length >= 1, 10000);
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    expect(t.requests).toHaveLength(0);
+  }, 20000);
+
+  it('nothing said: the explanation of the sentence (the saved one), then the sentence again', async () => {
+    const t = setup([{ kind: 'word', target: 'rest', lemma: 'rest' }, { kind: 'phrase', target: 'went home', lemma: 'go home' }]);
+    t.playback.play();
+    await until(() => t.requests.length === 1, 10000);
+    // only the first one was asked: its explanation covers the sentence
+    expect(t.windows).toHaveLength(1);
+    expect(t.targets).toEqual(['rest']);
+    expect(t.requests[0].kind).toBe('sentence');
+    expect(t.requests[0].sentence).toBe('Then she went home to rest.');
+    await until(() => t.tts.spoken.some((x) => x.text.startsWith('She goes')), 10000);
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+  }, 20000);
+
+  it('"I know" the first, then the next one is asked', async () => {
+    const t = setup([{ kind: 'word', target: 'rest', lemma: 'rest' }, { kind: 'phrase', target: 'went home', lemma: 'go home' }]);
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.controller.markKnown('rest');
+    t.controller.answerWindow('know');
+    await until(() => t.windows.length === 2, 10000);
+    expect(t.windows[1]).toMatchObject({ target: 'went home', kind: 'phrase' });
+    expect(t.targets).toEqual(['rest', 'went home']);
+    t.controller.markKnown('go home');
+    t.controller.answerWindow('know');
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    expect(t.requests).toHaveLength(0);
+  }, 20000);
+});

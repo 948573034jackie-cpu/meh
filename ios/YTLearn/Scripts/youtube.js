@@ -310,6 +310,9 @@
     // what the microphone hears now is closed (Chrome gives it as final), then it listens again
     finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
     micBlocked: () => recWanted === 'blocked',
+    micChangedAt: () => micAt,
+    // 🩺 Check: the report over the page, with a Copy button (the app's bar has a button for it)
+    showReport: () => showReport(),
   };
 
   window.__ytcDebug = {
@@ -450,6 +453,8 @@
   let rec = null;
   let recWanted = false;
   let recSession = 0;
+  // when the microphone last went on or off (a phone may stop the video's sound for a moment then)
+  let micAt = 0;
   function dreamOwns() { try { return !!(window.__ytcDream && window.__ytcDream.owns()); } catch (e) { return false; } }
   function dreamWantsMic() { try { const d = window.__ytcDream; return !!(d && (!d.wantsMic || d.wantsMic())); } catch (e) { return false; } }
   // a voice call with the tutor listens whatever else is going on
@@ -493,8 +498,10 @@
       r.onend = () => { // Chrome stops after silence: listen again (a late "end" of an OLD listener changes nothing)
         if (rec !== r) return;
         rec = null;
+        micAt = Date.now();
         if (recWanted === true) setTimeout(startListening, 300);
       };
+      micAt = Date.now();
       r.start();
     } catch (e) { rec = null; }
   }
@@ -504,7 +511,7 @@
 
   function stopListening() {
     if (recWanted !== 'blocked') recWanted = false;
-    if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
+    if (rec) { micAt = Date.now(); try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
   }
 
   // What the video itself is saying right now: if its own subtitles say "bro", that "hi bro" was not you.

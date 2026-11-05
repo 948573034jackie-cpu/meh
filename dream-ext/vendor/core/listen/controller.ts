@@ -133,13 +133,20 @@ export interface ListenDeps {
    */
   sentenceTrigger?: (pos: Position) => { lemma: string } | null;
   /**
-   * (YouTube, Level Check) the app chooses the stops itself: a stop is only at the end of a sentence it names, and it
-   * goes the sentence from the video, the explanation, the sentence from the video, on (no windows, no word repeats).
+   * (YouTube, Level Check) the app chooses the stops itself: a stop is only at the end of a sentence it names.
+   * With `items` (the sentence's hard words and phrases) each is said wordRepeats times and the commands window
+   * waits: "I know" = known, the next item; when all are known the sentence plays again and the reading goes on;
+   * "I don't know" or silence = the explanation of the sentence, the sentence from the video, on.
+   * Without items (a whole hard sentence): the sentence from the video, the commands window ("I know" = known, no
+   * explanation, on), else the explanation, the sentence from the video, on.
    * A word explained by hand is only the explanation.
    */
   directStop?: () => boolean;
-  directTrigger?: (pos: Position) => { lemma: string } | null;
+  directTrigger?: (pos: Position) => DirectTrigger | null;
 }
+
+export interface DirectItem { kind: 'word' | 'phrase'; target: string; lemma: string }
+export interface DirectTrigger { lemma: string; items?: DirectItem[] }
 
 /** The last word/phrase/sentence explanation (what "I know" and "I don't know" refer to). */
 export interface LastExplained { kind: ExplainKind; target: string; pos: Position; lemma?: string }
@@ -277,7 +284,7 @@ export class ListenController {
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
     if (this.deps.directStop?.()) {
       const d = this.deps.directTrigger?.(pos);
-      return d ? this.directStopFlow(pos, d.lemma) : 'next';
+      return d ? this.directStopFlow(pos, d) : 'next';
     }
     const triggers = this.pick(this.triggersFor(pos), pos);
     if (!triggers.length) return 'next';
@@ -370,19 +377,49 @@ export class ListenController {
   }
 
   /** (Level Check) the sentence from the video, the explanation, the sentence from the video, then the reading goes on. */
-  private async directStopFlow(pos: Position, lemma: string): Promise<'next' | 'stop'> {
+  private async directStopFlow(pos: Position, d: DirectTrigger): Promise<'next' | 'stop'> {
     const cur = getSentence(this.deps.book, pos)!;
+    const lemma = d.lemma;
+    const items = d.items ?? [];
     this.skipRequested = false;
     this.rereadGuard = pos;
     let aborted = false;
-    const off = this.playback.on('state', (st) => { if (st !== 'explaining') aborted = true; });
+    const off = this.playback.on('state', (st) => { if (st !== 'explaining') { aborted = true; this.flowWin?.resolve('aborted'); } });
     const over = () => aborted || this.disposed || this.skipRequested;
-    this.deps.onStopTarget?.({ kind: 'sentence', target: cur.text, lemma });
+    const script: ScriptStep[] = [{ type: 'ai' }, { type: 'pause', ms: 250 }, { type: 'say', text: cur.text, lang: 'en', role: 'sentence' }];
     try {
-      this.last = { kind: 'sentence', target: cur.text, pos, dict: null, lemma };
-      const said = await this.sayTarget(cur.text, lemma, 1);
-      if (said !== 'skipped' && !over()) {
-        await this.runExplanation('sentence', cur.text, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }, { type: 'say', text: cur.text, lang: 'en', role: 'sentence' }], lemma);
+      if (items.length) {
+        // the hard words and phrases one by one: said, then the window; the first one not known is explained
+        let explain = false;
+        for (const it of items) {
+          if (over()) break;
+          if (this.dismissed.has(it.lemma) || this.deps.vocab().words[it.lemma] === 'known') continue;
+          this.deps.onStopTarget?.({ kind: it.kind, target: it.target, lemma: it.lemma });
+          this.last = { kind: it.kind, target: it.target, pos, dict: null, lemma: it.lemma };
+          this.earlyAnswer = false;
+          const said = await this.sayTarget(it.target, it.lemma, Math.max(0, this.deps.settings().listen.wordRepeats));
+          const early = this.earlyAnswer;
+          this.earlyAnswer = false;
+          if (over()) break;
+          if (said === 'skipped' && !early) continue; // tapped away (known) while it was said
+          const a = early ? 'dont_know' : await this.commandWindow('before', { kind: it.kind, token: -1, end: -1, target: it.target, lemma: it.lemma });
+          if (a === 'aborted' || over()) break;
+          if (a === 'know') { this.dismissed.add(it.lemma); continue; }
+          if (a === 'bye') { this.deps.onMarkLearning(it.lemma); break; } // "go on": no explanation, still one to learn
+          explain = true; // "I don't know", or nothing said
+          break;
+        }
+        if (explain && !over()) await this.runExplanation('sentence', cur.text, pos, cur.text, null, script, lemma);
+      } else {
+        this.deps.onStopTarget?.({ kind: 'sentence', target: cur.text, lemma });
+        this.last = { kind: 'sentence', target: cur.text, pos, dict: null, lemma };
+        const said = await this.sayTarget(cur.text, lemma, 1);
+        if (said !== 'skipped' && !over()) {
+          const a = await this.commandWindow('before', { kind: 'sentence', token: -1, end: -1, target: cur.text, lemma });
+          if (a === 'know') this.dismissed.add(lemma);
+          else if (a === 'bye') this.deps.onMarkLearning(lemma);
+          else if (a !== 'aborted' && !over()) await this.runExplanation('sentence', cur.text, pos, cur.text, null, script, lemma);
+        }
       }
     } finally { this.deps.onStopTarget?.(null); off(); }
     if (aborted || this.disposed) return 'stop';
@@ -399,6 +436,7 @@ export class ListenController {
     let wake: (() => void) | null = null;
     const mine = { cancel: () => { if (cancelled) return; cancelled = true; handle?.cancel(); wake?.(); this.deps.engine().cancelAll(); }, lemma };
     this.current = mine;
+    this.saying = true;
     try {
       for (let i = 0; i < times && !cancelled; i++) {
         if (i > 0) await new Promise<void>((r) => { const tm = setTimeout(r, 350); wake = () => { clearTimeout(tm); r(); }; });
@@ -410,7 +448,7 @@ export class ListenController {
         await h.done;
         handle = null;
       }
-    } finally { if (this.current === mine) this.current = null; }
+    } finally { this.saying = false; if (this.current === mine) this.current = null; }
     return cancelled ? 'skipped' : 'done';
   }
 
@@ -639,7 +677,8 @@ export class ListenController {
   }
 
   /** "I know": known now, never explained or highlighted again. */
-  markKnown(lemma: string): void { this.dismiss(lemma); }
+  /** true when this stopped what was being said or explained for that very word */
+  markKnown(lemma: string): boolean { return this.dismiss(lemma); }
 
   /** Interrupts the current explanation (or the commands window of a stop); Listening re-reads the interrupted sentence and goes on. */
   skip(): void { this.skipRequested = true; this.current?.cancel(); this.flowWin?.resolve('bye'); }
@@ -648,10 +687,20 @@ export class ListenController {
   get busy(): boolean { return this.current !== null; }
 
   /** The learner tapped a highlighted word while listening: it is known now, and never stops again. */
-  dismiss(lemma: string): void {
+  dismiss(lemma: string): boolean {
     this.dismissed.add(lemma);
-    if (this.current && this.current.lemma === lemma) this.current.cancel();
+    if (this.current && this.current.lemma === lemma) { this.current.cancel(); return true; }
+    return false;
   }
+  /** (direct stop) "I don't know" while the word is still being said: no window, its explanation comes at once */
+  answerEarly(): boolean {
+    if (!this.saying || this.flowWin || !this.current) return false;
+    this.earlyAnswer = true;
+    this.current.cancel();
+    return true;
+  }
+  private saying = false;
+  private earlyAnswer = false;
 
   /**
    * Fetches and speaks one explanation. 'skipped' = the learner interrupted it (skip, dismiss, a newer

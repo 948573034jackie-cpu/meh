@@ -23,7 +23,24 @@ export interface SentenceScore {
   items: string[];
   /** the sentence's unknown words and phrases, as vocabulary keys */
   lemmas: string[];
+  /** what each item is: a single word, or a phrase (idiom, slang, phrasal verb) */
+  kinds: ItemKind[];
+  /** the AI found the whole sentence hard (grammar, hidden meaning) */
+  hard: boolean;
+  /** what a stop here is for: a hard word, else a phrase, else the sentence itself */
+  kind: StopKind;
 }
+
+export type ItemKind = 'word' | 'phrase';
+export type StopKind = 'word' | 'phrase' | 'sentence';
+/** The two groups of stops: for a hard word or phrase ('item'), and for a whole sentence. */
+export type StopGroup = 'item' | 'sentence';
+export const groupOf = (kind: StopKind): StopGroup => (kind === 'sentence' ? 'sentence' : 'item');
+/** The share of the sentences that may stop, for each group (0..1; 0 = never). */
+export interface StopCaps { item: number; sentence: number }
+export const DEFAULT_CAPS: StopCaps = { item: 0.45, sentence: 0.05 };
+/** What a stop is for, from what is (still) hard in the sentence. */
+export const stopKindOf = (kinds: readonly ItemKind[]): StopKind => (kinds.includes('word') ? 'word' : kinds.includes('phrase') ? 'phrase' : 'sentence');
 
 export interface ScoreOpts {
   book: Pick<Book, 'chapters'>;
@@ -63,7 +80,7 @@ export function scoreSentences(o: ScoreOpts): SentenceScore[] {
     // (above A2: B1 words count a little; A-level words only when the learner marked them)
     const ann = annotateSentence(para, s, o.dict, o.names, 'A2', hits);
     let score = 0;
-    const found: { at: number; text: string; lemma: string }[] = [];
+    const found: { at: number; text: string; lemma: string; kind: ItemKind }[] = [];
     const usedTokens = new Set<number>();
     const phrase = (start: number, endExcl: number, lemma: string, level: CefrLevel, ai: boolean) => {
       const text = s.tokens.slice(start, endExcl).map((t) => t.text).join(' ');
@@ -72,7 +89,7 @@ export function scoreSentences(o: ScoreOpts): SentenceScore[] {
       if (st === 'known' || st === 'ignored' || o.phraseDone(phraseSig(o.dict, lemma)) || o.phraseDone(phraseSig(o.dict, text))) return;
       // idioms and slang are the hard part of listening, whatever their level
       score += st === 'learning' ? 2.5 : ai ? 2 : (LEVEL_WEIGHT[level] ?? 0) * chanceOf(o.chance, level) * 1.5;
-      if (st === 'learning' || ai || chanceOf(o.chance, level) >= 0.3) found.push({ at: start, text, lemma });
+      if (st === 'learning' || ai || chanceOf(o.chance, level) >= 0.3) found.push({ at: start, text, lemma, kind: 'phrase' });
     };
     for (const p of ann.phrases) if (p.above) phrase(p.start, p.end, p.result.lemma, p.level, p.confirmed);
     for (const h of ann.aiPhrases) phrase(h.start, h.end + 1, h.lemma, h.level, true);
@@ -83,16 +100,20 @@ export function scoreSentences(o: ScoreOpts): SentenceScore[] {
       const c = info.level ? chanceOf(o.chance, info.level) : 0;
       const weight = info.level ? (LEVEL_WEIGHT[info.level] ?? 0) * c * (1 + rarity(o.zipf(info.lemma))) : 0;
       // (a word the learner is still learning is surely unknown)
-      if (st === 'learning') { score += Math.max(2.5, weight + 1); found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma }); return; }
+      if (st === 'learning') { score += Math.max(2.5, weight + 1); found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma, kind: 'word' }); return; }
       if (!info.level || !ann.hardTokens.includes(i) || looksEasy(s.tokens[i].text, o.zipf)) return;
       score += weight;
-      if (c >= 0.3 && (LEVEL_WEIGHT[info.level] ?? 0) >= 1) found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma });
+      if (c >= 0.3 && (LEVEL_WEIGHT[info.level] ?? 0) >= 1) found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma, kind: 'word' });
     });
     if (o.hard.has(key)) score += 1.5;
     const words = s.tokens.filter((t) => t.kind === 'word').length;
     if (score > 0 && words > 22) score += Math.min(0.6, (words - 22) * 0.04);
     found.sort((a, b) => a.at - b.at);
-    return { key, index, score, items: found.map((f) => f.text), lemmas: found.map((f) => f.lemma) };
+    // (a hard word twice in one sentence is one thing to ask and to count)
+    const first = new Set<string>();
+    for (let i = 0; i < found.length; i++) { if (first.has(found[i].lemma)) found.splice(i--, 1); else first.add(found[i].lemma); }
+    const kinds = found.map((f) => f.kind);
+    return { key, index, score, items: found.map((f) => f.text), lemmas: found.map((f) => f.lemma), kinds, hard: o.hard.has(key), kind: stopKindOf(kinds) };
   });
 }
 
@@ -103,9 +124,28 @@ export function selectStops(scores: readonly SentenceScore[], ratio = MAX_STOP_R
   return new Set(list.slice(0, max).map((s) => s.key));
 }
 
+/**
+ * The stops by group: of all the sentences, at most `caps.item` stop for a hard word or phrase and `caps.sentence`
+ * for the sentence itself; in each group the hardest ones.
+ */
+export function selectStopsByKind(scores: readonly SentenceScore[], caps: StopCaps = DEFAULT_CAPS): Set<string> {
+  const out = new Set<string>();
+  for (const group of ['item', 'sentence'] as const) {
+    const max = Math.floor(scores.length * Math.max(0, Math.min(1, caps[group])));
+    const list = scores.filter((s) => groupOf(s.kind) === group && s.score >= MIN_SCORE).sort((a, b) => b.score - a.score || a.index - b.index);
+    for (const s of list.slice(0, max)) out.add(s.key);
+  }
+  return out;
+}
+
 /** One more stop keeps the stops so far at half of the sentences so far, or fewer. */
 export function mayStop(stops: number, sentencesSoFar: number, ratio = MAX_STOP_RATIO): boolean {
   return stops + 1 <= sentencesSoFar * ratio;
+}
+
+/** The same for one group of stops; the very first stop of a group never has to wait. */
+export function mayStopGroup(stops: number, sentencesSoFar: number, ratio: number): boolean {
+  return ratio > 0 && stops + 1 <= Math.max(1, sentencesSoFar * ratio);
 }
 
 /** "12/30 (40%)" */

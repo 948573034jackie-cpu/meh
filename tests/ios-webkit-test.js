@@ -211,7 +211,7 @@ const fakeWebkit = () => {
   Object.assign(stores.local, {
     barOn: true,
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
-    drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
+    drExtras: { phoneSet: true, levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
   });
   keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key' });
@@ -286,7 +286,7 @@ const fakeWebkit = () => {
   const nP = apiLog.length;
   await yt.evaluate(() => document.querySelector('video').pause());
   const part = await until(async () => { const d = await dbg(); return d && d.flow === 'part' && d.stage.shown ? d : null; }, 8000);
-  ok('pausing: the page shows the last 20 s in complete sentences', part && part.stage.view === 'part' && part.stage.visibleLines >= 4, JSON.stringify(part && part.stage));
+  ok('pausing: the book stays (all the subtitles, one text size), the last 20 s marked as the part', part && part.stage.view === 'all' && part.stage.part >= 4 && part.stage.visibleLines === 10 && part.stage.size === '21px', JSON.stringify(part && part.stage));
   const passage = await until(() => apiLog.slice(nP).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 25000);
   ok('after the replay the teacher explains the part (your rules)', !!passage);
   const spokePart = await until(async () => (await spoken()).some((x) => /counts the sentences/.test(x)), 12000);
@@ -359,7 +359,15 @@ const fakeWebkit = () => {
   // ---- 7. the app's other buttons: My Vocabulary opens in the app's sheet; ⚙ quick settings ----
   await act('vocab');
   ok('📒 opens My Vocabulary in the app (ytlearn://app/dream/vocab.html)', !!(await until(() => nativeLog.find((l) => l.kind === 'openPage' && /ytlearn:\/\/app\/dream\/vocab\.html/.test(l.url)), 3000)));
-  ok('⚙ opens the quick settings', await act('quick') === true && await yt.evaluate(() => { const q = document.getElementById('dr-panel-host').shadowRoot.querySelector('.panel > .quick'); return !!q && !q.hidden; }));
+  const quickText = await act('quick') === true && await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); return !!q && !q.hidden ? q.textContent : ''; });
+  ok('⚙ opens the settings over the book: the two groups of stops (on/off and %), the play line, the sleep timer, the microphone Low / Mid / High, the text size',
+    /Words and phrases/.test(quickText) && /Whole sentences/.test(quickText) && /Play line/.test(quickText) && /Sleep timer/.test(quickText) && /Low/.test(quickText) && /High/.test(quickText) && /Text size/.test(quickText) && /Show what the tutor says as text/.test(quickText) && /Word test before each video/.test(quickText), String(quickText).slice(0, 300));
+  // sentences off: saved at once
+  await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="off"]').click(); });
+  ok('...whole sentences can be turned off', !!(await until(() => stores.local.drExtras && stores.local.drExtras.stopHardOn === false, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.stopHardOn));
+  await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="on"]').click(); });
+  await until(() => stores.local.drExtras.stopHardOn === true, 4000);
+  await act('quick');
   await act('quick');
 
   // iOS refuses the microphone: the talk bar says so and where to allow it (this page is not used after this)
@@ -405,7 +413,7 @@ const fakeWebkit = () => {
   ok('a key saved on the settings page goes to the Keychain', !!saved && !JSON.stringify(stores).includes('sk-ant-new-key'), keychain.drKeys && JSON.stringify(Object.keys(JSON.parse(keychain.drKeys))));
 
   // ---- 10. the reading mode in the app's sheet: paste a text, Level Check, it reads, stops at 50 % or under ----
-  stores.local.drExtras = { ...stores.local.drExtras, fakeVoice: true, levelAsk: true, levelMode: true };
+  stores.local.drExtras = { ...stores.local.drExtras, fakeVoice: true, levelAsk: true, levelMode: true, phoneSet: false }; // (from here: a phone seen for the first time)
   const READ = ['My friend was very meticulous about her work.', 'She walked to the shop and bought some bread.', 'It was a lugubrious moment of joy.', 'The children played in the garden after school.', 'We will talk about it again very soon.', 'My uncle is an obsequious man.'];
   const reader = await ctx.newPage();
   reader.on('pageerror', (e) => console.log('PAGE ERROR (reader)', String(e.message || e).slice(0, 300)));
@@ -423,6 +431,17 @@ const fakeWebkit = () => {
   pages.close();
 
   // ---- 11. Level Check in the app: the screen, the test, a stop in the new order, the counter, the copy for Claude ----
+  // a phone seen for the first time: no word test before the video (Settings turns it on); the video starts by itself
+  const fp = await ctx.newPage();
+  await fp.goto('https://m.youtube.com/watch?v=ios00000003');
+  await fp.addScriptTag({ content: source(ytScripts) });
+  const firstSet = await until(() => stores.local.drExtras.phoneSet === true, 10000);
+  ok('a phone\'s first settings: the word test before a video is off', !!firstSet && stores.local.drExtras.levelAsk === false, JSON.stringify({ set: stores.local.drExtras.phoneSet, ask: stores.local.drExtras.levelAsk }));
+  const noTest = await until(() => fp.evaluate(() => !document.querySelector('video').paused), 30000);
+  ok('...the video starts by itself after the one analysis, no test screen', !!noTest && !(await fp.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=check]')); })));
+  await fp.close();
+  // the switch in Settings is turned on: the test comes before the video
+  stores.local.drExtras = { ...stores.local.drExtras, levelAsk: true };
   const lv = await ctx.newPage();
   lv.on('pageerror', (e) => console.log('PAGE ERROR (level)', String(e.message || e).slice(0, 300)));
   await lv.goto('https://m.youtube.com/watch?v=ios00000002');
@@ -445,6 +464,25 @@ const fakeWebkit = () => {
   const lvDbg = () => lv.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
   const stop = await until(async () => { const d = await lvDbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 150);
   ok('a stop comes, counted', !!stop, JSON.stringify(await lvDbg()).slice(0, 300));
+  // ---- the phone's screen: a book of subtitles, the play line, only what is needed at the bottom ----
+  const book = await lv.evaluate(() => {
+    const host = document.getElementById('dr-stage-host'), r = host.shadowRoot;
+    const shown = (sel) => { const e = r.querySelector(sel); return !!e && e.offsetParent !== null && getComputedStyle(e).display !== 'none'; };
+    const page = r.querySelector('.page'), cur = r.querySelector('.s.cur');
+    const pr = page.getBoundingClientRect(), cr = cur ? cur.getBoundingClientRect() : null;
+    return { phone: host.dataset.phone, say: host.dataset.say, view: r.querySelector('.stage').dataset.view, top: shown('.top'), pills: shown('.page .sx'), sayText: shown('.dock .say'), ask: shown('form.ask input'), send: (r.querySelector('form.ask button[type=submit]') || {}).textContent,
+      size: getComputedStyle(page).fontSize, line: cr ? (cr.top + cr.height / 2 - pr.top) / pr.height : null, fills: host.getBoundingClientRect().height >= innerHeight - 1 };
+  });
+  ok('the phone: the whole screen is the book of subtitles: no toolbar, no "▶ Explain" pills, one normal text size', book.phone === '1' && book.view === 'all' && !book.top && !book.pills && book.size === '21px' && book.fills, JSON.stringify(book));
+  ok('...what the tutor says is not shown as text; one line to ask, with a send button', book.say === '0' && !book.sayText && book.ask && book.send === '➤', JSON.stringify(book));
+  ok('...the stop\'s sentence is on the play line (40 of 100 from the bottom)', book.line !== null && book.line > 0.48 && book.line < 0.72, String(book.line));
+  const first = stores.local.drExtras;
+  ok('...a phone\'s first settings: just talk is on, no Chinese under every line, "Explain 20 s"', first.phoneSet === true && first.voiceMode === true && first.zhLines === false && stores.local.drSettings.listen.lastSecondsWindow === 20, JSON.stringify({ v: first.voiceMode, zh: first.zhLines, s: stores.local.drSettings.listen.lastSecondsWindow }));
+  const winL = await until(async () => { const d = await lvDbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 60);
+  const cardL = await lv.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return c && !c.hidden ? { word: (c.querySelector('.word') || {}).textContent, zh: !!c.querySelector('.zh') && /[\u4e00-\u9fff]/.test(c.textContent), ipa: !!c.querySelector('.ipa'), en: !!c.querySelector('.en') && getComputedStyle(c.querySelector('.en')).display !== 'none' } : null; });
+  ok('a hard word: the window "Do you know …?" waits, the word\'s card shows its Chinese (no IPA, no English text)', winL && winL.window.kind !== 'sentence' && cardL && cardL.word === winL.window.target && cardL.zh && !cardL.ipa && !cardL.en, JSON.stringify({ w: winL && winL.window, cardL }));
+  const micOn = await lv.evaluate(() => ({ wants: window.__ytcDream.wantsMic(), level: window.__ytcDream.micLevel() }));
+  ok('the microphone listens (just talk), at the highest of its 3 levels at first', micOn.wants === true && micOn.level === 3, JSON.stringify(micOn));
   ok('...its explanation is asked for with the hard rule', !!(await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000)));
   const goesOn = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 30000, 150);
   const lvEnd = await lvDbg();
@@ -452,6 +490,33 @@ const fakeWebkit = () => {
   ok('...and the video goes on by itself', !!goesOn, JSON.stringify(await lvDbg()).slice(0, 200));
   const count = await lv.evaluate(() => document.getElementById('dr-stop-counter')?.textContent || '');
   ok('the small counter shows, at 50% or under', /^\d+\/\d+ \((\d+)%\)$/.test(count) && +/\((\d+)%/.exec(count)[1] <= 50, count);
+  // the next stop: "bye bye" = the tutor goes, the word is known, the video plays
+  const win2L = await until(async () => { const d = await lvDbg(); return d && d.window && d.window.phase === 'before' && d.level.stops >= 2 ? d : null; }, 40000, 80);
+  if (win2L) {
+    const lemma = win2L.card ? win2L.card.lemma : null;
+    await lv.evaluate(() => window.__ytcDream.heard('bye bye', true, 't:bye'));
+    const on2 = await until(async () => { const d = await lvDbg(); return d && d.state === 'playing' && !d.window && !(await lv.evaluate(() => document.querySelector('video').paused)); }, 15000, 100);
+    ok('"bye bye" at a stop: marked known, the video plays, the microphone stays on', !!on2 && !!lemma && stores.local.drVocab.words[lemma] === 'known' && stores.local.drExtras.voiceMode === true, JSON.stringify({ lemma, st: lemma && stores.local.drVocab.words[lemma] }));
+  } else ok('a second stop comes', false, JSON.stringify((await lvDbg()).level));
+  // the sleep timer: 30 minutes, 60 minutes, off
+  const sl = [];
+  for (let i = 0; i < 3; i++) { const before = (await lvDbg()).sleep; await lv.evaluate(() => window.__ytcDream.action('sleep')); await until(async () => (await lvDbg()).sleep !== before, 3000, 60); sl.push((await lvDbg()).sleep); }
+  ok('the Sleep button: 30 minutes, then 60, then off', sl[0] === 30 && sl[1] === 60 && sl[2] === 0, JSON.stringify(sl));
+  // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
+  await lv.evaluate(() => window.__ytcDream.action('check'));
+  const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
+  ok('the Check button shows the report: the app, just talk, the microphone, the two groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words and phrases 45%/.test(rep), String(rep).slice(0, 500));
+  await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
+  // a double tap on a word of the book (two taps: a touch screen sends no double-click of its own) = I know
+  const dbl = await lv.evaluate(() => {
+    const r = document.getElementById('dr-stage-host').shadowRoot;
+    const w = [...r.querySelectorAll('.page .w[data-lemma][data-level]')].find((x) => !/known/.test(x.className)) || r.querySelector('.page .w[data-lemma]');
+    if (!w) return null;
+    for (let i = 0; i < 2; i++) w.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    return w.dataset.lemma;
+  });
+  const dblKnown = await until(() => dbl && stores.local.drVocab.words[dbl] === 'known', 4000);
+  ok('a double tap on a word = I know (marked known at once)', !!dblKnown, JSON.stringify({ dbl, st: dbl && stores.local.drVocab.words[dbl] }));
   const copy = await lv.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-level-copy' }));
   ok('"Copy my level for Claude" has my level and words', copy && /My English level/.test(copy.text) && /Still learning/.test(copy.text), copy && copy.text.slice(0, 200));
   ok('the keys stay out of it', copy && !copy.text.includes('sk-ant'));

@@ -9,8 +9,9 @@ async function diagnose() {
   const out = [], problems = [];
   const add = (k, v) => out.push(k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
   const man = chrome.runtime.getManifest();
-  const phone = !!self.__ytcSafari;
-  add('Extension', man.version + (phone ? ' (Safari)' : ' (Chrome)') + ' · ' + new Date().toLocaleString());
+  const app = !!self.__ytcShimYT; // (the iPhone app YT Learn)
+  const phone = !!self.__ytcSafari || app;
+  add('Extension', man.version + (app ? ' (YT Learn app)' : phone ? ' (Safari)' : ' (Chrome)') + ' · ' + new Date().toLocaleString());
   try { add('Device', (self.navigator && navigator.userAgent || '').slice(0, 140)); } catch (e) { /* ignore */ }
   const st = await chrome.storage.local.get(null).catch(() => ({}));
   const ex = st.drExtras || {}, ds = st.drSettings || {}, ks = st.drKeys || {};

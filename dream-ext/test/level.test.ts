@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { realDictionary } from './helpers';
 import { SEED, seedWords, itemKey, phraseSig, estimateLevel, unknownChance, buildDoc, levelSummary, mergeDocs, sameDoc, isDoc, EMPTY_META, type LevelMeta, type VocabularyDoc } from '../src/level-db';
 import { collectItems, parseItems, pickForScreen, scoreTest, chipsHeight, MIN_PER_GROUP, MAX_PER_GROUP, type TestGroups, type TestItem } from '../src/level-check';
-import { scoreSentences, selectStops, mayStop, counterText, itemsToHits, MAX_STOP_RATIO } from '../src/level-stops';
+import { scoreSentences, selectStops, selectStopsByKind, stopKindOf, groupOf, mayStopGroup, mayStop, counterText, itemsToHits, MAX_STOP_RATIO, DEFAULT_CAPS } from '../src/level-stops';
 import { checkExplanation, cleanRuleSentence, RuleGuard, buildRulePrompt, type RuleRequest } from '../src/level-rule';
 import { textBook, orderOf, paragraphsOf, pagesToText } from '../src/reader-text';
 import { Analysis, analysisId, buildAnalysisPrompt, parseAnalysis, STOPS_PER_PART, LOOK_AHEAD, type AnalysisStop } from '../src/level-analysis';
@@ -165,7 +165,53 @@ describe('the stops', () => {
     const sig = phraseSig(dict, "fall on one's feet");
     expect(score(() => undefined, { phrases: hits, phraseDone: (s) => s === sig }).find((s) => s.key === key)!.items).not.toContain('fallen on his feet');
   });
+  it('every hard item says what it is: a word or a phrase; the stop is for a word first, else a phrase, else the sentence', () => {
+    const hits = itemsToHits(book, order, [{ text: 'fallen on his feet', level: 'C1' }], dict);
+    const list = score(() => undefined, { phrases: hits });
+    const word = list.find((s) => s.key === sentenceKey(order[1]))!;
+    expect(word.kinds[word.items.indexOf('meticulous')]).toBe('word');
+    expect(word.kind).toBe('word');
+    const idiom = list.find((s) => s.key === sentenceKey(order[9]))!;
+    expect(idiom.kinds[idiom.items.indexOf('fallen on his feet')]).toBe('phrase');
+    for (const s of list) { expect(s.kinds).toHaveLength(s.items.length); expect(s.kind).toBe(stopKindOf(s.kinds)); }
+    expect(stopKindOf(['phrase', 'word'])).toBe('word');
+    expect(stopKindOf(['phrase'])).toBe('phrase');
+    expect(stopKindOf([])).toBe('sentence');
+    // a sentence only the AI found hard: a stop for the sentence
+    const hard = new Set(order.map((p) => sentenceKey(p)));
+    expect(score(() => undefined, { hard }).filter((s) => !s.items.length).every((s) => s.kind === 'sentence' && s.hard)).toBe(true);
+  });
+  it('each kind of stop has its own share of the sentences; 0 = never', () => {
+    const hard = new Set(order.map((p) => sentenceKey(p)));
+    const list = score(() => undefined, { hard });
+    const n = order.length;
+    const count = (set: Set<string>, kind: string) => list.filter((s) => set.has(s.key) && s.kind === kind).length;
+    const def = selectStopsByKind(list);
+    expect(count(def, 'word') + count(def, 'phrase')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.item));
+    expect(count(def, 'sentence')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.sentence));
+    expect(def.size).toBeLessThanOrEqual(n / 2);
+    // sentences off: only words and phrases stop; both off: nothing stops
+    const noSentences = selectStopsByKind(list, { item: 1, sentence: 0 });
+    expect(count(noSentences, 'sentence')).toBe(0);
+    expect(noSentences.size).toBe(list.filter((s) => groupOf(s.kind) === 'item').length);
+    const onlySentences = selectStopsByKind(list, { item: 0, sentence: 1 });
+    expect(count(onlySentences, 'word') + count(onlySentences, 'phrase')).toBe(0);
+    expect(selectStopsByKind(list, { item: 0, sentence: 0 }).size).toBe(0);
+    // in a group, the hardest first
+    const one = selectStopsByKind(list, { item: 1 / n, sentence: 0 });
+    expect(one.size).toBe(1);
+    const best = list.filter((s) => groupOf(s.kind) === 'item').sort((a, b) => b.score - a.score)[0];
+    expect(one.has(best.key)).toBe(true);
+  });
   it('as the video plays the count stays at half or under', () => {
+    // a group's first stop never waits; after it the group keeps to its share; off (0) never stops
+    expect(mayStopGroup(0, 1, 0.45)).toBe(true);
+    expect(mayStopGroup(1, 3, 0.45)).toBe(false);
+    expect(mayStopGroup(1, 5, 0.45)).toBe(true);
+    expect(mayStopGroup(0, 1, 0.05)).toBe(true);
+    expect(mayStopGroup(1, 39, 0.05)).toBe(false);
+    expect(mayStopGroup(1, 40, 0.05)).toBe(true);
+    expect(mayStopGroup(0, 100, 0)).toBe(false);
     expect(mayStop(0, 1)).toBe(false);
     expect(mayStop(0, 2)).toBe(true);
     expect(mayStop(1, 2)).toBe(false);

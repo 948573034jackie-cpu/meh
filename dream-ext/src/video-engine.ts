@@ -40,6 +40,8 @@ export class VideoEngine implements TtsEngine {
   forceStart = false;
   /** the teacher just played this sentence to its end: when the reading resumes on it, it goes on after it */
   private teacherPlayed: string | null = null;
+  /** a stop ended without the sentence being played again (the learner knew the word): its next play starts at its beginning */
+  replayUnlessHeard(): void { if (!this.teacherPlayed) this.forceStart = true; }
   /** called when the teacher's play of the target sentence ended */
   markTeacherPlayed(): void { const p = this.target; this.teacherPlayed = p ? `${p.chapter}.${p.paragraph}.${p.sentence}` : null; }
   private current: { finish: (o: SpeakOutcome) => void } | null = null;

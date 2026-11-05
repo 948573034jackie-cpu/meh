@@ -37,7 +37,7 @@ These are numbered sentences in order. The sentences marked with * are the hard 
 <the explanation>
 
 ${lines.join('\n')}`,
-    maxTokens: Math.min(16000, o.part.length * 320 + 200),
+    maxTokens: Math.min(16000, o.part.length * 160 + 200),
   };
 }
 

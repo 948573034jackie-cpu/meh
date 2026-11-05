@@ -9,9 +9,9 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.5) | Mac / computer | YouTube in Google Chrome |
-| **YT Learn** (v1.1) | iPhone / iPad | Its own app: YouTube inside it (search, your account, any video), with My tutor |
-| **YT Safari** (v3.5) | iPhone / iPad | YouTube in Safari (a small app that adds the extension to Safari) |
+| **Chrome extension** (v3.6) | Mac / computer | YouTube in Google Chrome |
+| **YT Learn** (v1.2, tutor 3.6) | iPhone / iPad | Its own app: YouTube inside it (search, your account, any video), with My tutor |
+| ~~YT Safari~~ | — | no longer built: YT Learn is the iPhone version |
 
 ---
 
@@ -79,16 +79,39 @@ Before a video, book, PDF or text: **Check my words** (a tap test built only fro
 
 **Each video is analyzed once.** After Level Check the AI writes the explanations of the coming stops in one go (the cheap model, Claude Haiku; a better one can be chosen in All settings), a part at a time ahead of where you are. They are saved with the video, so the stops make no AI call and watching again costs nothing. Then it goes into Listening mode by itself. A tap on a word asks the AI once for that word; pausing is just a pause; "Explain 30 s" uses the cheap model too.
 
-The tutor stops at **50% of the sentences or fewer**, only the hardest, and never because of a word you know. At a stop: the sentence from the video, the explanation (spoken and shown, starting with the hard words, no labels, no filler, no Chinese, no IPA), the sentence again, then on by itself. Tap a word: don't know (explained, then on). Double tap: known. The small counter shows stops / sentences so far. The older stops (I know / I don't know, the word repeated) are one setting away: "Stop by Level Check" in All settings.
+The tutor stops only at the hardest sentences, and never because of a word you know. There are two groups of stops, each with its own **on / off** and its own **share of the sentences in %** (⚙ on the video → "My tutor stops for"):
+
+| Group | At first | What happens |
+|---|---|---|
+| **Words and phrases** (a hard word, an idiom, slang, a phrasal verb) | on, 45% | the tutor says it 3 times and waits 5 seconds |
+| **Whole sentences** (hard grammar, hidden meaning) | on, 5% (about 1 in 20) | the sentence is played once more from the video, then the tutor waits 5 seconds |
+
+In both groups: **"I know"** (say it, or tap the button) = marked known, no explanation, the sentence plays again and the video goes on. **"bye bye"** = the same: the tutor goes, it is marked known, the video plays. Say nothing (or "I don't know") = the explanation, the sentence again, then on.
+
+The same word is not asked again within 1,000 words, and a word explained 5 times counts as known and never stops again (both numbers can be changed). The explanation at a stop is the one written by the one analysis: a stop makes no AI call.
 
 **My vocabulary file:** `~/Documents/MEH English/vocabulary.json`, with a copy in `My Drive/MEH English/` when Google Drive for desktop is installed. A Chrome extension cannot write files itself, so a small helper does it: All settings → Level Check shows the one command to run once. On iPhone / iPad the words stay in the app or extension. **Copy my level for Claude** is in ⚙, All settings and My Vocabulary.
 
 **Reading mode:** the extension's window → "Read a PDF or text" (Chrome): open a PDF or text file, or paste a text. The same Level Check, database and 50% rule: it reads to the end of a sentence, shows and reads the explanation, shows the sentence again. The text is never changed, cut or reordered.
 
-## 7. My tutor (Chrome, YT Safari and YT Learn, v3.5): your own AI teacher on YouTube
+## 7b. On the iPhone: a book of subtitles, your voice is enough
+
+- **The screen is a book.** The whole screen is the video's subtitles, in one normal text size that never changes by itself (⚙ → Text size). Every word can be tapped: a card shows its Chinese (the dictionary's; the AI translates what the dictionary does not have).
+- **The play line.** The sentence being played, asked or explained always jumps to the play line: ⚙ → Play line, 0 = the bottom of the page, 100 = the top (40 at first, a little under the middle).
+- **Only the bottom has controls**, five small ones: Tutor on/off · ⏯ play/stop · Explain 20 s · Sentence · Call. Swipe the bar for the rest: Voice, Sleep, Words, Settings, Check (and in the app: Home, Paste link, App settings). Above the bar: the "I know / I don't know" buttons at a stop, and one line to type a question (➤ sends it).
+- **What the tutor says is heard, not shown** (⚙ → "Show what the tutor says as text" turns the text on).
+- **Just talk** (on from the start): "hello" = the tutor comes (the video stops, the last part is explained; when the video is already stopped, the call opens) · "I know" = marked known, no explanation · "bye bye" = the tutor goes and the video plays (at a stop it also marks the word or sentence known). The microphone stays on after "bye bye". ⚙ → Microphone: Low / Mid / High.
+- **Sleep timer:** the Sleep button (or ⚙) = 30 minutes, again = 60 minutes, again = off. When it runs out the video, the tutor and the microphone stop.
+- **Taps:** one tap on a word = its card and the explanation; a double tap = I know.
+- **Short explanations:** the hard word and what it means in easy English, then the whole sentence in easy English (about 30 to 60 words; no heading, no intro).
+- **The word test before a video is off at first** (⚙ → "Word test before each video").
+- **The line being explained is always shown:** at "Sentence" and at "Explain 20 s" the page jumps to the line the tutor is talking about.
+- **No silent stops.** A stop where nothing is said for 30 seconds plays on by itself; a video that the phone itself paused as the microphone went on plays on again.
+
+## 7. My tutor (Chrome and YT Learn, v3.6): your own AI teacher on YouTube
 
 On the iPhone / iPad there is no keyboard: a bar at the bottom of the page (YT Safari) or of the app (YT Learn) has the
-buttons instead: My tutor on / off, Stop / play, Explain 30 s, Last sentence, Talk, Voice, Page, Listening, Words,
+buttons instead: My tutor on / off, Stop / play, Explain 20 s, Sentence, Call, Voice, Sleep, Words,
 Settings. In YT Safari the API keys are kept in the extension's own storage (⚙ → All settings); in YT Learn, in the
 iPhone's Keychain. Needs iOS 16.4 or newer.
 

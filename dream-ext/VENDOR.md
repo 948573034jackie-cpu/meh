@@ -16,6 +16,6 @@ Local changes to the vendored code (both are off unless the YouTube side asks fo
   ends a phrase stop like a sentence (the sentence again instead of the word repeats).
 - `ListenDeps.sentenceTrigger` adds whole sentences that are too hard (found by the AI) as stops at the sentence end with
   a vocabulary key: played once, then the commands window, then the explanation and the sentence again.
-- `ListenDeps.directStop` / `directTrigger` (Level Check): the app chooses the stops; a stop plays the sentence, the explanation and the sentence again, then the reading goes on. Off unless the YouTube side asks for it.
+- `ListenDeps.directStop` / `directTrigger` (Level Check): the app chooses the stops; a stop plays the sentence, the explanation and the sentence again, then the reading goes on. With `items` (the sentence's hard words and phrases) each is said `wordRepeats` times and the commands window waits: "I know" goes to the next item (all known: the sentence again, on), anything else is the explanation. Off unless the YouTube side asks for it.
 
 `youtube-to-claude/dream/zipf.json.gz` is made once by `scripts/make-zipf.py` from [wordfreq](https://github.com/rspeer/wordfreq) (its data is CC BY-SA 4.0).
