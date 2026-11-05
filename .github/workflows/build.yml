@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   mac-app:
-    runs-on: macos-14
+    runs-on: macos-15   # (GitHub no longer runs macos-14)
     steps:
       - uses: actions/checkout@v4
       - name: Compile ClaudeSnap for macOS 12+ (Intel + Apple Silicon)
@@ -30,7 +30,7 @@ jobs:
           path: ClaudeSnap/ClaudeSnap.zip
 
   ios:
-    runs-on: macos-14
+    runs-on: macos-15   # (GitHub no longer runs macos-14)
     steps:
       - uses: actions/checkout@v4
       - name: Install XcodeGen
@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ../shots
-          for KIND in "iPhone 15 (" "iPad"; do
+          for KIND in "iPhone 1" "iPad"; do   # (any iPhone 15, 16, 17 … the builder has)
             UDID=$(xcrun simctl list devices available | grep -F "$KIND" | head -1 | grep -oE "[0-9A-F-]{36}")
             echo "=================== simulator for '$KIND': $UDID"
             if [ -z "$UDID" ]; then echo "NO SIMULATOR FOUND for $KIND"; xcrun simctl list devices available; exit 1; fi
