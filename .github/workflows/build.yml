@@ -169,7 +169,7 @@ jobs:
           path: YTSafari-unsigned.ipa
 
   js-webkit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -191,7 +191,7 @@ jobs:
         run: ./ios/sync-scripts.sh && node tests/ios-webkit-test.js
 
   dream-tutor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -218,7 +218,7 @@ jobs:
         run: CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())") node tests/level-check-e2e.js
 
   real-sites:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
     timeout-minutes: 10
     continue-on-error: true
     steps:
