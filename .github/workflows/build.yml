@@ -91,8 +91,9 @@ jobs:
             echo "----- is the app still running? (a line here = yes) -----"
             xcrun simctl spawn "$UDID" launchctl list | grep -i ytlearn || echo "NOT RUNNING: the app closed by itself"
             echo "----- crash reports of the app, if any -----"
-            ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i ytlearn | head -3 || true
-            CR=$(ls -t ~/Library/Logs/DiagnosticReports/*YTLearn* 2>/dev/null | head -1); [ -n "$CR" ] && head -c 6000 "$CR" || echo "(none)"
+            (ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | grep -i ytlearn | head -3) || true
+            CR=$(ls -t ~/Library/Logs/DiagnosticReports/*YTLearn* 2>/dev/null | head -1 || true)
+            if [ -n "$CR" ]; then head -c 6000 "$CR"; else echo "(none)"; fi
             xcrun simctl shutdown "$UDID" || true
           done
       - uses: actions/upload-artifact@v4
