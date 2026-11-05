@@ -92,6 +92,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @Environment(\.presentationMode) private var presentation
     @State private var pickFolder = false
+    @State private var pickFile = false
 
     var body: some View {
         NavigationView {
@@ -101,12 +102,13 @@ struct SettingsView: View {
                     Button("My Vocabulary") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/vocab.html") }
                 }
                 Section(header: Text("My vocabulary file (one for the Mac and this phone)"),
-                        footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). Choose that MEH English folder here (iCloud Drive or Google Drive): the Mac and this phone then share one database, each adds its words, nothing is lost. Without a folder the words stay in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json).")) {
-                    Text(model.vocabFolder.map { "Shared folder: \($0)" } ?? "No shared folder yet: the words stay in the app")
+                        footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). iCloud Drive: choose that MEH English folder. Google Drive (the Files app does not let its folders be chosen): choose the file vocabulary.json inside it. The Mac and this phone then share one database: each adds its words, nothing is lost. Without that the words stay in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json).")) {
+                    Text(model.vocabFolder.map { "Shared: \($0)" } ?? "Nothing shared yet: the words stay in the app")
                     if !model.vocabStatus.isEmpty {
                         Text(model.vocabStatus).font(.footnote).foregroundColor(.secondary)
                     }
-                    Button("Choose the folder (iCloud Drive or Google Drive)…") { pickFolder = true }
+                    Button("Choose the folder (iCloud Drive ▸ MEH English)…") { pickFolder = true }
+                    Button("Or choose the file vocabulary.json (Google Drive)…") { pickFile = true }
                     if model.vocabFolder != nil {
                         Button("Stop sharing (keep the words in the app)", role: .destructive) { model.forgetVocabFolder() }
                     }
@@ -119,18 +121,20 @@ struct SettingsView: View {
             .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
         }
         .navigationViewStyle(.stack)
-        .sheet(isPresented: $pickFolder) { FolderPicker { url in model.chooseVocabFolder(url) } }
+        .sheet(isPresented: $pickFolder) { FolderPicker(types: [UTType.folder]) { url in model.chooseVocabFolder(url) } }
+        .background(EmptyView().sheet(isPresented: $pickFile) { FolderPicker(types: [UTType.json]) { url in model.chooseVocabFolder(url, isFile: true) } })
     }
 }
 
-/// the Files app: pick a folder (iCloud Drive, Google Drive, On My iPhone, …)
+/// the Files app: pick a folder (iCloud Drive, On My iPhone, …) or one file, opened in place
 struct FolderPicker: UIViewControllerRepresentable {
+    let types: [UTType]
     let picked: (URL) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(picked: picked) }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder], asCopy: false)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.allowsMultipleSelection = false
         picker.delegate = context.coordinator
         return picker

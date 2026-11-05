@@ -69,7 +69,12 @@ def handle(msg):
         return {'ok': True, 'path': main, 'drive': copy, 'icloud': icopy}
     if kind == 'read':
         # every copy that exists (the iPhone writes the iCloud / Google Drive one): the extension merges them
-        docs = [d for d in (read_doc(p) for p in (main, icopy, copy) if p) if d]
+        docs, seen = [], set()
+        for d in (read_doc(p) for p in (icopy, copy, main) if p):
+            text = json.dumps(d, sort_keys=True) if d else None
+            if text and text not in seen:  # (the same copy only once: Chrome takes at most 1 MB from the helper)
+                seen.add(text)
+                docs.append(d)
         return {'ok': True, 'path': main, 'drive': copy, 'icloud': icopy, 'docs': docs}
     if kind != 'write' or not isinstance(msg.get('doc'), dict):
         return {'ok': False, 'error': 'unknown message'}

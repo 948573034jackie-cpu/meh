@@ -10,7 +10,7 @@ import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
 import type { StyleOverride } from '@shared/styles';
 import type { Dictionary } from '@core/dict/types';
-import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta, itemKey, type VocabularyDoc } from './level-db';
+import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta, itemKey, type VocabularyDoc, itemId, type MergeResult } from './level-db';
 import type { AiItem, TestGroups } from './level-check';
 
 /** YouTube-only choices (not in the Mac app). */
@@ -362,6 +362,8 @@ export interface DbStatus {
   /** how many words came in from the other device's copy this time */
   merged?: number;
   notInstalled?: boolean; noDevice?: boolean; safari?: boolean;
+  /** the helper on the Mac is an older one: it writes the file but cannot read the iPhone's words back */
+  oldHelper?: boolean;
 }
 
 export async function getLevel(): Promise<LevelMeta> {
@@ -396,26 +398,57 @@ export async function ensureSeeded(dict: Pick<Dictionary, 'lemmaOf'>): Promise<b
   return true;
 }
 
-/**
- * The merged document (this device's words + the other device's) goes into this device's vocabulary: every item gets
- * the document's status (the merge decided), the tests and the level are the document's. Returns how many statuses changed.
- */
-export async function applyDoc(doc: VocabularyDoc, dict: Pick<Dictionary, 'lemmaOf'>): Promise<number> {
-  const v = await getVocab();
-  let changed = 0;
-  const log: LevelMeta['log'] = {};
-  for (const k of doc.known) {
-    const key = itemKey(dict, k.item);
-    if (v.words[key] !== 'known') { v.words[key] = 'known'; changed++; }
-    log[key] = { word: k.item, date: k.date };
+/** every word of this device by the way it is written in the document (buildDoc's `item`): its vocabulary key */
+export function itemKeys(words: Record<string, WordStatus>, meta: LevelMeta, entries: Record<string, VocabEntry>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const lemma of Object.keys(words)) {
+    if (lemma.startsWith('sentence: ')) continue;
+    const id = itemId(meta.log[lemma]?.word || entries[lemma]?.word || lemma);
+    if (!out.has(id)) out.set(id, lemma);
   }
-  for (const l of doc.stillLearning) {
-    const key = itemKey(dict, l.item);
-    if (v.words[key] !== 'learning') { v.words[key] = 'learning'; changed++; }
-    log[key] = { word: l.item, date: l.date, ...(l.sentence ? { sentence: l.sentence } : {}), ...(l.group ? { group: l.group } : {}) };
+  return out;
+}
+
+/**
+ * What the merge with the other device's copy changes here (mergeDocs): a status for a word, or the word taken out;
+ * the tests and the level of the merged document. A word ignored on this device stays ignored. Nothing else is
+ * touched, and nothing is written when nothing changes. Returns how many words changed.
+ */
+export async function applyDoc(merged: MergeResult, dict: Pick<Dictionary, 'lemmaOf'>): Promise<number> {
+  const { doc, changes } = merged;
+  const [v, meta, entries] = await Promise.all([getVocab(), getLevel(), getEntries()]);
+  const keys = itemKeys(v.words, meta, entries);
+  let changed = 0, entriesChanged = false;
+  const log: LevelMeta['log'] = {};
+  const gone: string[] = [];
+  for (const c of changes) {
+    const key = keys.get(itemId(c.item)) ?? itemKey(dict, c.item);
+    const cur = v.words[key];
+    if (!key || cur === 'ignored') continue;
+    if (c.status === null) {
+      if (cur !== 'known' && cur !== 'learning') continue;
+      delete v.words[key];
+      gone.push(key);
+      if (entries[key]) { delete entries[key]; entriesChanged = true; }
+      changed++;
+      continue;
+    }
+    if (cur === c.status) continue;
+    v.words[key] = c.status;
+    changed++;
+    log[key] = { word: c.item, date: c.date || new Date().toISOString().slice(0, 10), ...(c.sentence ? { sentence: c.sentence } : {}), ...(c.group ? { group: c.group } : {}) };
+    if (entries[key] && entries[key].status !== c.status) { entries[key] = { ...entries[key], status: c.status }; entriesChanged = true; }
   }
   if (changed) await area().set({ [K.vocab]: v });
-  await updateLevel((m) => ({ ...m, tests: doc.tests, currentLevel: doc.currentLevel || m.currentLevel, log: { ...m.log, ...log } }));
+  if (entriesChanged) await area().set({ [K.entries]: entries });
+  const testsDiffer = JSON.stringify(meta.tests) !== JSON.stringify(doc.tests) || (!!doc.currentLevel && doc.currentLevel !== meta.currentLevel);
+  if (changed || testsDiffer) {
+    await updateLevel((m) => {
+      const all = { ...m.log, ...log };
+      for (const k of gone) delete all[k];
+      return { ...m, tests: doc.tests, currentLevel: doc.currentLevel || m.currentLevel, log: all };
+    });
+  }
   return changed;
 }
 

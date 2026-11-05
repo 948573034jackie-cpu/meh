@@ -84,6 +84,8 @@ interface DreamHook {
   /** ChatGPT or Claude was turned on in youtube.js: the tutor goes off */
   /** for the 🩺 check */
   diag(): Record<string, unknown> | null;
+  /** the video's subtitles changed (a subtitle file was loaded): the tutor reads the video again */
+  reload?(): void;
   /** a button of the iPhone app's bar: a shortcut id (`stop`, `explainLast`, …) or `voiceMode`, `pageAuto`, `vocab`, `quick` */
   action?(id: string): boolean;
 }
@@ -565,8 +567,16 @@ class Session {
   }
 
   testVoice(): void {
+    this.lastVoiceError = null;
     const h = this.teachOut?.speak('Hello! I am your English teacher. Let us learn with this video.', { voiceId: this.voiceId, rate: settings.voice.rate });
-    void h?.done.then(() => { if (h.error) this.toast(h.error.message, 6000); });
+    // (a good voice that failed is said by the plain voice: the reason is shown all the same)
+    void h?.done.then(() => { const why = h.error?.message ?? this.lastVoiceError; if (why) this.toast(why, 8000); });
+  }
+
+  /** a voice was chosen: it says the test sentence, unless the tutor is in the middle of something (or the page is hidden) */
+  private testVoiceIfFree(): void {
+    if (document.hidden || this.controller?.busy || this.flow || this.talk || this.cmdWin || this.gate?.open) return;
+    this.testVoice();
   }
 
   /** the word voice at its volume (quick settings ▶) */
@@ -735,6 +745,7 @@ class Session {
     this.heardKeys.add(key);
     const text = this.vb ? getSentence(this.vb.book, pos)?.text : null;
     if (!text || !this.stopSet.has(key) || this.doneBefore.has(key) || this.stopped.has(key)) return null;
+    if (!this.keys.anthropic && !this.keys.openai) return null; // (no API key yet: nothing could be explained, so no stop)
     if (!mayStop(this.autoStops, this.heardKeys.size)) return null;
     return { lemma: sentenceLemma(text) };
   }
@@ -2676,7 +2687,7 @@ class Session {
     if (prev.voice.voiceId !== settings.voice.voiceId && settings.voice.voiceId) {
       this.macVoice = settings.voice.voiceId;
       // a new voice says a test sentence
-      if (this.voiceKind === 'mac') { this.voiceId = this.macVoice; setTimeout(() => this.testVoice(), 50); }
+      if (this.voiceKind === 'mac') { this.voiceId = this.macVoice; setTimeout(() => this.testVoiceIfFree(), 50); }
     }
     if (prev.voice.rate !== settings.voice.rate) (this.tts as { setRate?: (r: number) => void } | null)?.setRate?.(settings.voice.rate);
     this.renderHead();
@@ -2692,7 +2703,7 @@ class Session {
       this.applyVoice();
       // the voice you hear changed: it says a test sentence (not when only the live call's voice changed)
       const k = this.voiceKind;
-      if (k === 'openai' ? prev.openaiVoice !== extras.openaiVoice : k === 'elevenlabs' ? prev.elevenVoice !== extras.elevenVoice : k === 'azure' && (prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion)) this.testVoice();
+      if (k === 'openai' ? prev.openaiVoice !== extras.openaiVoice : k === 'elevenlabs' ? prev.elevenVoice !== extras.elevenVoice : k === 'azure' && (prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion)) this.testVoiceIfFree();
     }
     if (prev.view !== extras.view) this.applyView();
     if (prev.stopSentences !== extras.stopSentences) this.render();
@@ -2997,6 +3008,7 @@ async function boot(): Promise<void> {
       paintTutorButton();
     },
     diag: () => (session ? session.diag() : { mode: 'off', on: extras.tutorOn }),
+    reload: () => { session?.dispose(); session = null; refresh(); },
     action: (id) => {
       if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
       return session ? session.action(id) : false;

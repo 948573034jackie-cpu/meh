@@ -11,6 +11,8 @@ final class SpeechListener {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private(set) var running = false
+    /// the page still wants the microphone (a stop that comes while iOS asks for permission must hold)
+    private var wanted = false
 
     /// the words heard so far, and whether that is the closed (final) sentence
     var onText: ((String, Bool) -> Void)?
@@ -18,6 +20,7 @@ final class SpeechListener {
     var onEnd: ((String?) -> Void)?
 
     func start() {
+        wanted = true
         if running { return }
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
@@ -34,7 +37,7 @@ final class SpeechListener {
     }
 
     private func begin() {
-        if running { return }
+        if running || !wanted { return }
         guard let recognizer = recognizer, recognizer.isAvailable else { onEnd?("service-not-allowed"); return }
         do {
             AudioSession.set(mode: "record")
@@ -89,6 +92,7 @@ final class SpeechListener {
     }
 
     func stop() {
+        wanted = false
         cleanup()
     }
 

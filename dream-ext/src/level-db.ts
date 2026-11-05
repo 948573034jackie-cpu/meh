@@ -102,6 +102,8 @@ export interface VocabularyDoc {
   tests: LevelTest[];
   known: { item: string; date: string }[];
   stillLearning: { item: string; date: string; sentence: string; group?: GroupId }[];
+  /** words taken out (removed, or ignored) on a device since the last merge: the other device takes them out too */
+  removed?: { item: string; date: string }[];
 }
 
 const dayOf = (iso: string | undefined): string => (iso ?? '').slice(0, 10);
@@ -134,43 +136,101 @@ export function levelSummary(doc: VocabularyDoc, lastCopyAt?: string): string {
   ].filter(Boolean).join('\n');
 }
 
-/**
- * Every device's copy of the database as one. A word's newest status wins (the same day: known, the deliberate choice);
- * this device's record wins a tie. Every test once (date + source). The level of the device with the newest test.
- */
-export function mergeDocs(mine: VocabularyDoc, others: VocabularyDoc[]): VocabularyDoc {
-  type Known = VocabularyDoc['known'][number];
-  type Learning = VocabularyDoc['stillLearning'][number];
-  const docs = [mine, ...others];
-  const id = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
-  const best = new Map<string, { status: 'known' | 'learning'; rec: Known | Learning }>();
-  const take = (status: 'known' | 'learning', rec: Known | Learning) => {
-    if (!rec || typeof rec.item !== 'string' || !rec.item.trim()) return;
-    const k = id(rec.item);
-    const cur = best.get(k);
-    const date = String(rec.date ?? '');
-    if (!cur || date > String(cur.rec.date ?? '') || (date === String(cur.rec.date ?? '') && status === 'known' && cur.status !== 'known')) best.set(k, { status, rec });
+/** one word or phrase of a document, with its status */
+interface Rec { status: 'known' | 'learning'; item: string; date: string; sentence?: string; group?: GroupId }
+/** what the merge changes on this device: a status for an item, or null = take it out */
+export interface DocChange { item: string; status: 'known' | 'learning' | null; date?: string; sentence?: string; group?: GroupId }
+export interface MergeResult { doc: VocabularyDoc; changes: DocChange[] }
+
+/** the same word or phrase, however it is written */
+export const itemId = (s: string): string => s.trim().toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ');
+const testId = (t: LevelTest): string => `${t.date}|${t.source}|${JSON.stringify(t.scores ?? {})}`;
+
+function indexDoc(d: VocabularyDoc | null | undefined): Map<string, Rec> {
+  const m = new Map<string, Rec>();
+  if (!d) return m;
+  const put = (r: Rec) => {
+    if (typeof r.item !== 'string' || !r.item.trim()) return;
+    const k = itemId(r.item);
+    const cur = m.get(k);
+    if (!cur || r.date > cur.date) m.set(k, r);
   };
-  for (const d of docs) { for (const k of d.known ?? []) take('known', k); for (const l of d.stillLearning ?? []) take('learning', l); }
-  const known: Known[] = [], stillLearning: Learning[] = [];
-  for (const { status, rec } of best.values()) {
-    if (status === 'known') known.push({ item: rec.item, date: rec.date });
-    else { const l = rec as Learning; stillLearning.push({ item: l.item, date: l.date, sentence: l.sentence ?? '', ...(l.group ? { group: l.group } : {}) }); }
+  for (const k of d.known ?? []) put({ status: 'known', item: k.item, date: String(k.date ?? '') });
+  for (const l of d.stillLearning ?? []) put({ status: 'learning', item: l.item, date: String(l.date ?? ''), sentence: l.sentence ?? '', ...(l.group ? { group: l.group } : {}) });
+  return m;
+}
+
+/**
+ * This device's database and the other device's copy (the shared file) as one, knowing what both had at the last
+ * merge (`base`, null the first time). Only what the OTHER device changed since then comes in:
+ * - a word it added or gave another status: taken (both changed it: the newest date wins, a tie = this device);
+ * - a word it did not touch stays as it is here, also when it was removed or ignored here (it does not come back);
+ * - a word it took out (its `removed` list) is taken out here too, unless this device met it again later.
+ * `skip` = the items this device ignores: never taken, and told to the other device as taken out.
+ * Every test once; the level of the copy with the newest test. Returns the merged document (what goes to the file)
+ * and the changes to make on this device.
+ */
+export function mergeDocs(mine: VocabularyDoc, others: VocabularyDoc[], base: VocabularyDoc | null = null, skip: ReadonlySet<string> = new Set(), now: Date = new Date()): MergeResult {
+  const today = dayOf(now.toISOString());
+  const B = indexDoc(base), M0 = indexDoc(mine);
+  const cur = new Map(M0);
+  // taken out here since the last merge (or before, and still out)
+  const gone = new Map<string, { item: string; date: string }>();
+  const oldGone = new Map<string, string>();
+  for (const r of base?.removed ?? []) { if (r && typeof r.item === 'string') { oldGone.set(itemId(r.item), String(r.date ?? '')); if (!M0.has(itemId(r.item))) gone.set(itemId(r.item), { item: r.item, date: String(r.date ?? '') }); } }
+  for (const [k, b] of B) if (!M0.has(k) && !gone.has(k)) gone.set(k, { item: b.item, date: today });
+  for (const T of others) {
+    for (const [k, t] of indexDoc(T)) {
+      const b = B.get(k), m = cur.get(k);
+      if (skip.has(k)) { if (!gone.has(k)) gone.set(k, { item: t.item, date: today }); continue; }
+      if (b && b.status === t.status) continue; // the other device did not change it: this device's word (or its removal) stands
+      if (!m) {
+        const out = gone.get(k);
+        if (out && t.date <= out.date) continue; // taken out here after that
+        cur.set(k, t); gone.delete(k);
+        continue;
+      }
+      if (m.status === t.status) continue;
+      const mineChanged = !b || b.status !== m.status;
+      if (!mineChanged || t.date > m.date) cur.set(k, t);
+    }
+    // what the other device took out since the last merge
+    for (const r of T.removed ?? []) {
+      if (!r || typeof r.item !== 'string') continue;
+      const k = itemId(r.item), date = String(r.date ?? '');
+      if (oldGone.get(k) === date) continue; // old news: handled at an earlier merge
+      const m = cur.get(k);
+      if (m && m.date > date) continue; // met again here after it was taken out there
+      if (m) cur.delete(k);
+      if (!gone.has(k)) gone.set(k, { item: r.item, date });
+    }
   }
+  const known: VocabularyDoc['known'] = [], stillLearning: VocabularyDoc['stillLearning'] = [];
+  for (const r of cur.values()) {
+    if (r.status === 'known') known.push({ item: r.item, date: r.date });
+    else stillLearning.push({ item: r.item, date: r.date, sentence: r.sentence ?? '', ...(r.group ? { group: r.group } : {}) });
+  }
+  const changes: DocChange[] = [];
+  for (const [k, r] of cur) { const m = M0.get(k); if (!m || m.status !== r.status) changes.push({ item: r.item, status: r.status, date: r.date, ...(r.sentence ? { sentence: r.sentence } : {}), ...(r.group ? { group: r.group } : {}) }); }
+  for (const [k, m] of M0) if (!cur.has(k)) changes.push({ item: m.item, status: null });
+  const docs = [mine, ...others];
   const tests = new Map<string, LevelTest>();
-  for (const d of docs) for (const t of d.tests ?? []) { const k = `${t.date}|${t.source}`; if (!tests.has(k)) tests.set(k, t); }
+  for (const d of docs) for (const t of d.tests ?? []) { const k = testId(t); if (!tests.has(k)) tests.set(k, t); }
   const testList = [...tests.values()].sort((a, b) => a.date.localeCompare(b.date));
   const newestTest = (d: VocabularyDoc) => (d.tests ?? []).reduce((m, t) => (t.date > m ? t.date : m), '');
   const level = docs.filter((d) => d.currentLevel).sort((a, b) => newestTest(b).localeCompare(newestTest(a)))[0]?.currentLevel ?? mine.currentLevel;
   const order = (a: { item: string }, b: { item: string }) => a.item.localeCompare(b.item);
-  return { version: 1, updatedAt: new Date().toISOString(), currentLevel: level, tests: testList, known: known.sort(order), stillLearning: stillLearning.sort(order) };
+  // (the taken-out list stays short: the newest 300)
+  const removed = [...gone.entries()].filter(([k]) => !cur.has(k)).map(([, r]) => r).sort((a, b) => b.date.localeCompare(a.date) || a.item.localeCompare(b.item)).slice(0, 300);
+  const doc: VocabularyDoc = { version: 1, updatedAt: now.toISOString(), currentLevel: level, tests: testList, known: known.sort(order), stillLearning: stillLearning.sort(order), ...(removed.length ? { removed } : {}) };
+  return { doc, changes };
 }
 
 /** the same words with the same statuses, the same tests and level? (dates and sentences apart) */
 export function sameDoc(a: VocabularyDoc, b: VocabularyDoc): boolean {
   const sig = (d: VocabularyDoc) => JSON.stringify([
     d.known.map((k) => k.item.toLowerCase()).sort(), d.stillLearning.map((l) => l.item.toLowerCase()).sort(),
-    d.tests.map((t) => `${t.date}|${t.source}`).sort(), d.currentLevel,
+    d.tests.map(testId).sort(), d.currentLevel,
   ]);
   return sig(a) === sig(b);
 }

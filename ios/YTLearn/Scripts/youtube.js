@@ -319,7 +319,7 @@
   // ---- settings ----
   const settings = { barOn: true }; // the small bar under the video (the iPhone app has its own buttons: it sets barOn false)
   function readSettings(s) {
-    if ('barOn' in s) settings.barOn = s.barOn !== false;
+    if ('barOn' in s && window.__ytcShimYT) settings.barOn = s.barOn !== false; // (only the app hides it: it has its own buttons)
   }
   chrome.storage.local.get(['barOn']).then(readSettings);
   chrome.storage.onChanged.addListener((ch) => {
@@ -498,6 +498,9 @@
     } catch (e) { rec = null; }
   }
 
+  // back on the page (perhaps from the Settings, where the microphone was allowed): try the microphone again
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && recWanted === 'blocked') recWanted = false; });
+
   function stopListening() {
     if (recWanted !== 'blocked') recWanted = false;
     if (rec) { try { rec.abort(); } catch (e) { /* ignore */ } rec = null; }
@@ -526,7 +529,10 @@
     if (msg && msg.type === 'reload-subs') { // you loaded a subtitle file: read this video again
       cache = { id: null, promise: null };
       preloadedFor = null;
-      loadTranscript().then((d) => sendResponse({ lines: d.lines, source: d.source, errors: d.errors }));
+      loadTranscript().then((d) => {
+        sendResponse({ lines: d.lines, source: d.source, errors: d.errors });
+        try { if (window.__ytcDream && window.__ytcDream.reload) window.__ytcDream.reload(); } catch (e) { /* ignore */ } // the tutor reads the video again
+      });
       return true;
     }
     if (msg && msg.type === 'yt-diag') { // for the 🩺 check

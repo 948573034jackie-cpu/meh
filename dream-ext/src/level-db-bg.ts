@@ -6,8 +6,11 @@
  */
 import type { VocabEntry } from '@shared/api';
 import type { WordStatus } from '@shared/settings';
-import { buildDoc, mergeDocs, sameDoc, isDoc, EMPTY_META, SEED_VERSION, type LevelMeta } from './level-db';
+import { buildDoc, mergeDocs, isDoc, itemId, EMPTY_META, SEED_VERSION, type LevelMeta, type VocabularyDoc } from './level-db';
 import { LEVEL_KEY, DB_STATUS_KEY, STORAGE_KEYS, ensureSeeded, applyDoc, getLevel, type DbStatus } from './store';
+
+/** what this device and the shared file both had at the last merge (so only the other device's changes come in) */
+const BASE_KEY = 'drDbBase';
 import { getDictionary } from './ai-client';
 import { restoreFromOnline } from './vocab-sync';
 
@@ -35,21 +38,31 @@ export function writeDatabase(): Promise<DbStatus> {
   const job = writing.then(async () => {
     const at = new Date().toISOString();
     let status: DbStatus;
+    let oldHelper = false;
     if (!haveFile()) status = { ok: false, at, noDevice: true, safari: isSafari(), error: 'no file on this device' };
     else {
       try {
-        let doc = await currentDoc();
+        let doc: VocabularyDoc = await currentDoc();
         let merged = 0;
-        // the other devices' copy first (the file in iCloud Drive / Google Drive, or the folder chosen on the phone)
+        // the other device's copy first (the file in iCloud Drive / Google Drive, or the folder chosen on the phone)
         const r0 = await ask({ type: 'read' }).catch(() => undefined);
+        oldHelper = !!r0 && r0.ok === false && /unknown message/i.test(r0.error ?? '');
         const others = (r0?.docs ?? []).filter(isDoc);
         if (others.length) {
-          const all = mergeDocs(doc, others);
-          if (!sameDoc(all, doc)) { merged = await applyDoc(all, await getDictionary()); doc = await currentDoc(); }
+          const o = await chrome.storage.local.get([BASE_KEY, STORAGE_KEYS.vocab, LEVEL_KEY, STORAGE_KEYS.entries]);
+          const base = isDoc(o[BASE_KEY]) ? o[BASE_KEY] : null;
+          // (the words ignored on this device: never taken from the file, and taken out of it)
+          const words = (o[STORAGE_KEYS.vocab] as { words?: Record<string, WordStatus> } | undefined)?.words ?? {};
+          const meta = (o[LEVEL_KEY] as LevelMeta | undefined) ?? EMPTY_META, entries = (o[STORAGE_KEYS.entries] as Record<string, VocabEntry> | undefined) ?? {};
+          const ignored = new Set(Object.keys(words).filter((k) => words[k] === 'ignored').map((k) => itemId(meta.log?.[k]?.word || entries[k]?.word || k)));
+          const all = mergeDocs(doc, others, base, ignored);
+          merged = await applyDoc(all, await getDictionary());
+          doc = { ...(await currentDoc()), ...(all.doc.removed ? { removed: all.doc.removed } : {}) };
         }
         const r = await ask({ type: 'write', doc });
+        if (r?.ok) await chrome.storage.local.set({ [BASE_KEY]: doc });
         status = {
-          ok: !!r?.ok, at, path: r?.path, error: r?.error, merged,
+          ok: !!r?.ok, at, path: r?.path, error: r?.error, merged, ...(oldHelper ? { oldHelper } : {}),
           drive: r?.drive ?? null, driveOk: !!r?.driveOk, driveError: r?.driveError, icloud: r?.icloud ?? null, icloudOk: !!r?.icloudOk, icloudError: r?.icloudError,
           phone: !!r?.phone, shared: !!r?.shared, sharedOk: r?.sharedOk, sharedError: r?.sharedError, folder: r?.folder,
         };

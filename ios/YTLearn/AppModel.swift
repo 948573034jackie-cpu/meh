@@ -163,9 +163,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     // ---- the shared vocabulary file ----
-    /// the Files app folder (iCloud Drive or Google Drive) you chose: the Mac's Chrome and this phone share one file
-    func chooseVocabFolder(_ url: URL) {
-        VocabFile.shared.setFolder(url)
+    /// the Files app folder (iCloud Drive), or the vocabulary.json file itself (Google Drive), you chose: the Mac's Chrome
+    /// and this phone share one file
+    func chooseVocabFolder(_ url: URL, isFile: Bool = false) {
+        VocabFile.shared.setFolder(url, isFile: isFile)
         vocabFolder = VocabFile.shared.folderName
         show("The vocabulary file is shared in “\(vocabFolder ?? url.lastPathComponent)”.")
         syncVocabulary()
@@ -202,10 +203,11 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         case "vocabFile":
             // the vocabulary file, read or written off the main thread (iCloud may have to download it first)
             let msg = body["msg"] as? [String: Any] ?? [:]
-            DispatchQueue.global(qos: .userInitiated).async {
+            VocabFile.shared.queue.async {
                 let r = VocabFile.shared.handle(msg)
+                let text = VocabFile.shared.statusText
                 DispatchQueue.main.async { [weak self] in
-                    self?.vocabStatus = VocabFile.shared.statusText
+                    self?.vocabStatus = text
                     reply(r, nil)
                 }
             }

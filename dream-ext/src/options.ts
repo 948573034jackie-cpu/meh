@@ -30,7 +30,7 @@ async function renderDb(): Promise<void> {
   const st = o[store.DB_STATUS_KEY] as store.DbStatus | undefined;
   const el = $('db-status');
   const noHelper = !st || (!st.ok && st.notInstalled);
-  $('db-install').hidden = !noHelper;
+  $('db-install').hidden = !(noHelper || st?.oldHelper);
   $('db-command').textContent = `bash native-host/install.sh ${chrome.runtime.id}`;
   const when = st ? new Date(st.at).toLocaleString() : '';
   const cameIn = st?.merged ? ` · ${st.merged} words came in from your other device` : '';
@@ -42,7 +42,7 @@ async function renderDb(): Promise<void> {
   else if (st.phone) el.textContent = st.shared
     ? `Saved ${when} in the shared folder “${st.folder ?? ''}”${st.sharedOk ? ' (your Mac sees it too)' : ` (the folder could not be written: ${st.sharedError ?? 'unknown problem'})`}${cameIn}`
     : `Saved ${when} in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json). To share it with your Mac: the app's Settings (⚙ at the top) ▸ Choose the folder (iCloud Drive or Google Drive).`;
-  else el.textContent = `Saved ${when}: ${st.path}${cameIn}`;
+  else el.textContent = `Saved ${when}: ${st.path}${cameIn}${st.oldHelper ? ' · The helper on this Mac is an older one: it cannot bring the iPhone\'s words in. Run the command below once more.' : ''}`;
   $('db-drive').textContent = !st?.ok || st.phone ? '' : [
     st.icloud ? (st.icloudOk ? `iCloud Drive copy: ${st.icloud} (choose that folder in the iPhone app to share the file)` : `iCloud Drive copy not saved: ${st.icloudError ?? 'unknown problem'}`) : 'No iCloud Drive on this Mac (System Settings ▸ Apple ID ▸ iCloud Drive): the iPhone could share the file through it.',
     st.driveOk ? `Google Drive copy: ${st.drive}` : `Google Drive copy: ${st.driveError ?? 'not saved'}`,

@@ -338,32 +338,87 @@ describe('analyze once', () => {
 
 describe('one database for the Mac and the phone (mergeDocs)', () => {
   const doc = (p: Partial<VocabularyDoc>): VocabularyDoc => ({ version: 1, updatedAt: '2026-11-04T00:00:00.000Z', currentLevel: '', tests: [], known: [], stillLearning: [], ...p });
+  const NOW = new Date('2026-11-06T09:00:00.000Z');
   const mac = doc({ currentLevel: 'about lower B2', tests: [{ date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }],
     known: [{ item: 'familiar', date: '2026-11-04' }, { item: 'shelter', date: '2026-11-01' }], stillLearning: [{ item: 'invade', date: '2026-11-04', sentence: 'They invade.' }, { item: 'odour', date: '2026-11-02', sentence: 'A bad odour.' }] });
   const phone = doc({ currentLevel: 'about B2', tests: [{ date: '2026-11-05', source: 'A phone video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }, { date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }],
     known: [{ item: 'serendipity', date: '2026-11-05' }, { item: 'odour', date: '2026-11-05' }], stillLearning: [{ item: 'shelter', date: '2026-11-05', sentence: 'No shelter.' }, { item: 'invade', date: '2026-11-04', sentence: 'They invade us.' }] });
-  it('nothing is lost: both devices\' words, every test once, the level of the newest test', () => {
-    const m = mergeDocs(mac, [phone]);
-    expect(m.known.map((k) => k.item)).toEqual(['familiar', 'odour', 'serendipity']);
-    expect(m.stillLearning.map((l) => l.item)).toEqual(['invade', 'shelter']);
-    expect(m.tests.map((t) => t.source)).toEqual(['Eveline', 'A phone video']);
-    expect(m.currentLevel).toBe('about B2');
+  it('the first merge (nothing shared yet): both devices\' words, every test once, the level of the newest test', () => {
+    const m = mergeDocs(mac, [phone], null, new Set(), NOW);
+    expect(m.doc.known.map((k) => k.item)).toEqual(['familiar', 'odour', 'serendipity']);
+    expect(m.doc.stillLearning.map((l) => l.item)).toEqual(['invade', 'shelter']);
+    expect(m.doc.tests.map((t) => t.source)).toEqual(['Eveline', 'A phone video']);
+    expect(m.doc.currentLevel).toBe('about B2');
+    // what changes on the Mac: the phone's new word, and the two words whose newer status is the phone's
+    expect(m.changes.map((c) => `${c.item}:${c.status}`).sort()).toEqual(['odour:known', 'serendipity:known', 'shelter:learning']);
+    expect(m.doc.stillLearning.find((l) => l.item === 'invade')?.sentence).toBe('They invade.'); // a tie: this device's record
+    expect(m.doc.removed).toBeUndefined();
   });
-  it('the newest status of a word wins: learned later = known, met again later = still learning', () => {
-    const m = mergeDocs(mac, [phone]);
-    expect(m.known.find((k) => k.item === 'odour')?.date).toBe('2026-11-05');   // the phone learned it after the Mac met it
-    expect(m.stillLearning.find((l) => l.item === 'shelter')?.sentence).toBe('No shelter.'); // the phone met it again after the Mac knew it
+  it('merging the device\'s own last copy changes nothing', () => {
+    const m = mergeDocs(mac, [mac], mac, new Set(), NOW);
+    expect(m.changes).toEqual([]);
+    expect(sameDoc(m.doc, mac)).toBe(true);
   });
-  it('the same day: known wins; this device keeps its own record on a tie', () => {
-    const m = mergeDocs(mac, [phone]);
-    expect(m.stillLearning.find((l) => l.item === 'invade')?.sentence).toBe('They invade.');
-    const m2 = mergeDocs(doc({ stillLearning: [{ item: 'quay', date: '2026-11-04', sentence: 'The quay.' }] }), [doc({ known: [{ item: 'quay', date: '2026-11-04' }] })]);
-    expect(m2.known.map((k) => k.item)).toEqual(['quay']);
-    expect(m2.stillLearning).toEqual([]);
+  it('a word removed here does not come back from the file, and the other device is told', () => {
+    const base = mergeDocs(mac, [phone], null, new Set(), NOW).doc;
+    const mine = doc({ ...base, stillLearning: base.stillLearning.filter((l) => l.item !== 'invade') }); // "invade" removed in My Vocabulary
+    const m = mergeDocs(mine, [base], base, new Set(), NOW);
+    expect(m.changes).toEqual([]);
+    expect(m.doc.stillLearning.map((l) => l.item)).toEqual(['shelter']);
+    expect(m.doc.removed).toEqual([{ item: 'invade', date: '2026-11-06' }]);
+    // the other device (still has it, unchanged since the last merge) takes it out
+    const there = mergeDocs(base, [m.doc], base, new Set(), new Date('2026-11-06T10:00:00.000Z'));
+    expect(there.changes).toEqual([{ item: 'invade', status: null }]);
+    expect(there.doc.stillLearning.map((l) => l.item)).toEqual(['shelter']);
+    // ...and that is old news at the next merge: nothing more happens, on either side
+    expect(mergeDocs(there.doc, [m.doc], there.doc, new Set(), NOW).changes).toEqual([]);
+    expect(mergeDocs(m.doc, [there.doc], m.doc, new Set(), NOW).changes).toEqual([]);
+  });
+  it('a word ignored here is never taken from the file, and goes out of it', () => {
+    const base = mergeDocs(mac, [phone], null, new Set(), NOW).doc;
+    const mine = doc({ ...base, known: base.known.filter((k) => k.item !== 'serendipity') }); // ignored here: not in this device's document
+    const m = mergeDocs(mine, [base], base, new Set(['serendipity']), NOW);
+    expect(m.changes).toEqual([]);
+    expect(m.doc.known.map((k) => k.item)).toEqual(['familiar', 'odour']);
+    expect(m.doc.removed?.map((r) => r.item)).toEqual(['serendipity']);
+    // also a word the other device adds later, that this device ignores
+    const m2 = mergeDocs(mine, [doc({ ...base, stillLearning: [...base.stillLearning, { item: 'quay', date: '2026-11-06', sentence: 'The quay.' }] })], base, new Set(['serendipity', 'quay']), NOW);
+    expect(m2.changes).toEqual([]);
+    expect(m2.doc.stillLearning.map((l) => l.item)).not.toContain('quay');
+  });
+  it('met again on the other device after it was removed here: it comes back', () => {
+    const base = mergeDocs(mac, [phone], null, new Set(), NOW).doc;
+    const mine = doc({ ...base, stillLearning: base.stillLearning.filter((l) => l.item !== 'invade') });
+    const sent = mergeDocs(mine, [base], base, new Set(), new Date('2026-11-06T09:00:00.000Z')).doc; // removed on the 6th
+    const theirs = doc({ ...base, stillLearning: base.stillLearning.map((l) => (l.item === 'invade' ? { ...l, date: '2026-11-08' } : l)), known: base.known });
+    const back = mergeDocs(mine, [doc({ ...theirs, known: [...theirs.known, { item: 'invade', date: '2026-11-08' }], stillLearning: theirs.stillLearning.filter((l) => l.item !== 'invade') })], sent, new Set(), new Date('2026-11-09T09:00:00.000Z'));
+    expect(back.changes).toEqual([{ item: 'invade', status: 'known', date: '2026-11-08' }]);
+    expect(back.doc.removed).toBeUndefined();
+  });
+  it('an older or foreign copy of the file never deletes words here', () => {
+    const base = mergeDocs(mac, [phone], null, new Set(), NOW).doc;
+    const m = mergeDocs(base, [doc({ known: [{ item: 'familiar', date: '2026-11-04' }] })], base, new Set(), NOW); // a file with almost nothing in it
+    expect(m.changes).toEqual([]);
+    expect(m.doc.known.length).toBe(base.known.length);
+    expect(m.doc.stillLearning.length).toBe(base.stillLearning.length);
+  });
+  it('changed on both devices since the last merge: the newest wins; changed only there: taken', () => {
+    const base = doc({ stillLearning: [{ item: 'quay', date: '2026-11-01', sentence: 'The quay.' }, { item: 'weary', date: '2026-11-01', sentence: 'Weary.' }] });
+    const mine = doc({ known: [{ item: 'quay', date: '2026-11-03' }], stillLearning: [{ item: 'weary', date: '2026-11-01', sentence: 'Weary.' }] });
+    const theirs = doc({ known: [{ item: 'weary', date: '2026-11-02' }], stillLearning: [{ item: 'quay', date: '2026-11-02', sentence: 'The quay again.' }] });
+    const m = mergeDocs(mine, [theirs], base, new Set(), NOW);
+    expect(m.doc.known.map((k) => k.item)).toEqual(['quay', 'weary']); // quay: mine is newer; weary: only they changed it
+    expect(m.changes).toEqual([{ item: 'weary', status: 'known', date: '2026-11-02' }]);
+  });
+  it('two tests of the same text on one day are both kept', () => {
+    const a = doc({ tests: [{ date: '2026-11-05', source: 'V', scores: { b2: 40, c1: 0, c2: 0 }, level: 'lower B2' }] });
+    const b = doc({ tests: [{ date: '2026-11-05', source: 'V', scores: { b2: 60, c1: 10, c2: 0 }, level: 'B2' }] });
+    expect(mergeDocs(a, [b], null, new Set(), NOW).doc.tests.length).toBe(2);
+    expect(mergeDocs(a, [a], null, new Set(), NOW).doc.tests.length).toBe(1);
   });
   it('sameDoc and isDoc', () => {
-    expect(sameDoc(mac, mergeDocs(mac, []))).toBe(true);
-    expect(sameDoc(mac, mergeDocs(mac, [phone]))).toBe(false);
+    expect(sameDoc(mac, mergeDocs(mac, [], null, new Set(), NOW).doc)).toBe(true);
+    expect(sameDoc(mac, mergeDocs(mac, [phone], null, new Set(), NOW).doc)).toBe(false);
     expect(isDoc(mac)).toBe(true);
     expect(isDoc({ echo: 1 })).toBe(false);
     expect(isDoc(null)).toBe(false);

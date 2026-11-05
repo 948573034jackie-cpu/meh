@@ -272,6 +272,15 @@ const fakeWebkit = () => {
   const dbSt = await until(() => { const s = stores.local.drDbStatus; return s && s.ok && s.phone && s.shared ? s : null; }, 5000);
   ok('the file status says: saved in the shared folder "MEH English"', !!dbSt && dbSt.folder === 'MEH English' && dbSt.sharedOk === true, JSON.stringify(dbSt));
 
+  // a word ignored here stays ignored (the file still has it), and goes out of the shared file
+  await yt.evaluate(() => chrome.storage.local.get('drVocab').then((o) => chrome.storage.local.set({ drVocab: { ...o.drVocab, words: { ...o.drVocab.words, flabbergast: 'ignored' } } })));
+  const ignoredOut = await until(() => (vocabShared.removed || []).some((r) => r.item === 'flabbergasted') && !vocabShared.stillLearning.some((l) => l.item === 'flabbergasted'), 8000, 200);
+  await sleep(600);
+  ok('a word ignored in the app stays ignored after the next merge, and the shared file drops it (the Mac is told)', !!ignoredOut && stores.local.drVocab.words.flabbergast === 'ignored', JSON.stringify({ st: stores.local.drVocab.words.flabbergast, removed: vocabShared.removed }));
+  const writesNow = vocabWrites.length;
+  await sleep(1500);
+  ok('...and the merge settles (no endless writing)', vocabWrites.length === writesNow, `${vocabWrites.length - writesNow} more writes`);
+
   // ---- 3. you pause: the part plays again, then it is explained (the whole part), back to its start ----
   await until(async () => (await vstate()).t > 17, 20000, 100);
   const nP = apiLog.length;
