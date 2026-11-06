@@ -60,7 +60,9 @@ export function writeDatabase(): Promise<DbStatus> {
           doc = { ...(await currentDoc()), ...(all.doc.removed ? { removed: all.doc.removed } : {}) };
         }
         const r = await ask({ type: 'write', doc });
-        if (r?.ok) await chrome.storage.local.set({ [BASE_KEY]: doc });
+        // (the last merged copy moves on only when a shared copy was really read or written: the phone with no folder
+        // chosen writes only its own copy, and its words must still count as its own changes at the first merge)
+        if (r?.ok && (others.length > 0 || !r.phone || r.sharedOk === true)) await chrome.storage.local.set({ [BASE_KEY]: doc });
         status = {
           ok: !!r?.ok, at, path: r?.path, error: r?.error, merged, ...(oldHelper ? { oldHelper } : {}),
           drive: r?.drive ?? null, driveOk: !!r?.driveOk, driveError: r?.driveError, icloud: r?.icloud ?? null, icloudOk: !!r?.icloudOk, icloudError: r?.icloudError,
@@ -85,7 +87,17 @@ export function installLevelDb(): void {
   });
   // (the online copy comes back first: a reinstall keeps its words, and the starting data never overwrites them)
   void (async () => {
-    if ((await getLevel()).seeded < SEED_VERSION) { await restoreFromOnline().catch(() => 0); await ensureSeeded(await getDictionary()); }
+    const before = (await getLevel()).seeded;
+    if (before < SEED_VERSION) {
+      const o = await chrome.storage.local.get(STORAGE_KEYS.vocab);
+      const had = Object.keys(((o[STORAGE_KEYS.vocab] as { words?: object } | undefined)?.words) ?? {}).length;
+      const restored = await restoreFromOnline().catch(() => 0);
+      const seeded = await ensureSeeded(await getDictionary());
+      // (a new, empty install: the starting data is not "this device's change". Without a last merged copy the shared
+      // file's newer statuses would lose to it; with this one they come in as the other device's changes. Not on an
+      // update or after a restore: those words are the learner's own decisions.)
+      if (seeded && before === 0 && !had && !restored && !isDoc((await chrome.storage.local.get(BASE_KEY))[BASE_KEY])) await chrome.storage.local.set({ [BASE_KEY]: await currentDoc() });
+    }
     await writeDatabase();
   })().catch((e) => console.warn('My Vocabulary: the database could not start', e));
 }

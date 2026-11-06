@@ -10,7 +10,7 @@ import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
 import type { StyleOverride } from '@shared/styles';
 import type { Dictionary } from '@core/dict/types';
-import { EMPTY_META, SEED, SEED_VERSION, seedWords, estimateLevel, type GroupScores, type LevelMeta, itemKey, type VocabularyDoc, itemId, type MergeResult } from './level-db';
+import { EMPTY_META, SEED, SEED_VERSION, seedWords, testId, estimateLevel, type GroupScores, type LevelMeta, itemKey, type VocabularyDoc, itemId, type MergeResult } from './level-db';
 import type { AiItem, TestGroups } from './level-check';
 
 /** YouTube-only choices (not in the Mac app). */
@@ -430,16 +430,49 @@ function logWord(lemma: string, status: WordStatus | null, met?: { word?: string
   });
 }
 
-/** The learner's starting data goes in once (nothing that is already known is taken back). */
-export async function ensureSeeded(dict: Pick<Dictionary, 'lemmaOf'>): Promise<boolean> {
-  if ((await getLevel()).seeded >= SEED_VERSION) return false;
-  const seed = seedWords(dict);
-  const v = await getVocab();
-  for (const [k, st] of Object.entries(seed.words)) if (!v.words[k] || (st === 'known' && v.words[k] === 'learning')) v.words[k] = st;
-  await area().set({ [K.vocab]: v });
-  await updateLevel((m) => ({ ...m, tests: [...SEED.tests, ...m.tests], currentLevel: m.currentLevel || SEED.currentLevel, log: { ...seed.log, ...m.log }, seeded: SEED_VERSION }));
-  await patchSettings({ learnerLevel: 'B2' });
-  return true;
+/** the last copy of the vocabulary merged with the shared file (level-db-bg.ts) */
+export const DB_BASE_KEY = 'drDbBase';
+
+/**
+ * The learner's starting data goes in once per version of it (the app's own word list grew: an install that has the
+ * older one gets the new words). Only words the device does not have go in: a word it knows, ignores or is still
+ * learning keeps its status. On an update a word that was taken out (on this device or the other one, since the
+ * shared file began) does not come back.
+ */
+export function ensureSeeded(dict: Pick<Dictionary, 'lemmaOf'>): Promise<boolean> {
+  // (in the line of the other vocabulary writes: a stop that marks a word at the same moment is not lost)
+  return oneVocabWrite(async () => {
+    const before = (await getLevel()).seeded;
+    if (before >= SEED_VERSION) return false;
+    const seed = seedWords(dict);
+    const v = await getVocab();
+    // (an update: the words this device or the other one took out since the shared file began stay out; they are
+    // in the last merged copy, or in its list of words taken out, and no longer here)
+    // (by the way the item is written and by its vocabulary key: "squandered" taken out is "squander" in the list)
+    const out = new Set<string>(), outKeys = new Set<string>();
+    if (before) {
+      const b = (await area().get(DB_BASE_KEY))[DB_BASE_KEY] as VocabularyDoc | undefined;
+      for (const r of [...(b?.removed ?? []), ...(b?.known ?? []), ...(b?.stillLearning ?? [])]) if (r && typeof r.item === 'string') { out.add(itemId(r.item)); outKeys.add(itemKey(dict, r.item)); }
+    }
+    // only words this device does not have: a word it knows, ignores or is still learning keeps its status
+    const added: string[] = [];
+    for (const [k, st] of Object.entries(seed.words)) {
+      if (v.words[k] || outKeys.has(k) || out.has(itemId(seed.log[k]?.word ?? k))) continue;
+      v.words[k] = st;
+      added.push(k);
+    }
+    await area().set({ [K.vocab]: v });
+    const seedLog: LevelMeta['log'] = {};
+    for (const k of added) if (seed.log[k]) seedLog[k] = seed.log[k];
+    await updateLevel((m) => {
+      // (a test the device already has, from an earlier starting data, is not there twice)
+      const have = new Set(m.tests.map(testId));
+      return { ...m, tests: [...SEED.tests.filter((t) => !have.has(testId(t))), ...m.tests], currentLevel: m.currentLevel || SEED.currentLevel, log: { ...seedLog, ...m.log }, seeded: SEED_VERSION };
+    });
+    // (only the very first time: a level the learner chose since is theirs)
+    if (!before) await patchSettings({ learnerLevel: 'B2' });
+    return true;
+  });
 }
 
 /** every word of this device by the way it is written in the document (buildDoc's `item`): its vocabulary key */
@@ -462,7 +495,7 @@ export async function applyDoc(merged: MergeResult, dict: Pick<Dictionary, 'lemm
   const { doc, changes } = merged;
   const [v, meta, entries] = await Promise.all([getVocab(), getLevel(), getEntries()]);
   const keys = itemKeys(v.words, meta, entries);
-  let changed = 0, entriesChanged = false;
+  let changed = 0, filled = 0, entriesChanged = false;
   const log: LevelMeta['log'] = {};
   const gone: string[] = [];
   for (const c of changes) {
@@ -477,7 +510,17 @@ export async function applyDoc(merged: MergeResult, dict: Pick<Dictionary, 'lemm
       changed++;
       continue;
     }
-    if (cur === c.status) continue;
+    // (a sentence for a word with the same status: never a status change, also when the item maps to another word here)
+    if (c.fill && cur !== c.status) continue;
+    if (cur === c.status) {
+      // (the same status: only an example sentence or a level group this device did not have comes in)
+      const l = meta.log[key];
+      if ((c.sentence && !l?.sentence) || (c.group && !l?.group)) {
+        log[key] = { ...(l ?? { word: c.item, date: c.date || new Date().toISOString().slice(0, 10) }), ...(c.sentence && !l?.sentence ? { sentence: c.sentence } : {}), ...(c.group && !l?.group ? { group: c.group } : {}) };
+        filled++;
+      }
+      continue;
+    }
     v.words[key] = c.status;
     changed++;
     log[key] = { word: c.item, date: c.date || new Date().toISOString().slice(0, 10), ...(c.sentence ? { sentence: c.sentence } : {}), ...(c.group ? { group: c.group } : {}) };
@@ -486,7 +529,7 @@ export async function applyDoc(merged: MergeResult, dict: Pick<Dictionary, 'lemm
   if (changed) await area().set({ [K.vocab]: v });
   if (entriesChanged) await area().set({ [K.entries]: entries });
   const testsDiffer = JSON.stringify(meta.tests) !== JSON.stringify(doc.tests) || (!!doc.currentLevel && doc.currentLevel !== meta.currentLevel);
-  if (changed || testsDiffer) {
+  if (changed || filled || testsDiffer) {
     await updateLevel((m) => {
       const all = { ...m.log, ...log };
       for (const k of gone) delete all[k];

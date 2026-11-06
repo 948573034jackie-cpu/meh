@@ -750,7 +750,8 @@ class Session {
       const ask = complete(buildItemsPrompt(lines, book.title)).then((raw) => { const items = parseItems(raw, lines); void store.setLevelItems(this.videoId, items).catch(() => undefined); return items; });
       ai = await Promise.race([ask, new Promise<null>((r) => setTimeout(() => r(null), 15000))]).catch(() => null);
     }
-    const all = collectItems({ book, dict: this.dict, names: this.names, inDatabase: this.inDatabase, ai: ai ?? [], zipf: this.zipf });
+    const sigs = this.databaseSigs();
+    const all = collectItems({ book, dict: this.dict, names: this.names, inDatabase: (k, s) => !!vocab.words[k] || sigs.has(s), ai: ai ?? [], zipf: this.zipf });
     return pickForScreen(all, { width: window.innerWidth, height: window.innerHeight });
   }
 

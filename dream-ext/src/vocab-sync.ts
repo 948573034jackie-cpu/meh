@@ -8,8 +8,13 @@ import type { VocabEntry } from '@shared/api';
 import type { WordStatus } from '@shared/settings';
 import { STORAGE_KEYS } from './store';
 
-const CHUNK = 7000; // characters per sync item (the limit is 8 KB per item)
-const MAX_TOTAL = 90_000; // stay under the 100 KB of chrome.storage.sync
+/** bytes per sync item, as Chrome counts it: the key plus the JSON of the value (the limit is 8,192) */
+const ITEM_BYTES = 7600;
+/** stay under the 102,400 bytes of chrome.storage.sync, counted as Chrome does (the JSON of the value, UTF-8) */
+const MAX_TOTAL = 90_000;
+const enc = new TextEncoder();
+/** the bytes a text takes in chrome.storage.sync: a quote becomes two characters, a Chinese letter three bytes */
+const syncBytes = (s: string): number => enc.encode(JSON.stringify(s)).length;
 const META = 'drSyncMeta';
 const PART = 'drSyncPart';
 
@@ -24,10 +29,10 @@ export function packVocab(words: Record<string, WordStatus>, entries: Record<str
   for (const [lemma, st] of Object.entries(words)) if (CODE[st]) rows[lemma] = [CODE[st]];
   // the words with an explanation: the word as heard, its Chinese and level (newest first, while there is room)
   const list = Object.values(entries).sort((a, b) => String(b.lastSeenAt ?? b.createdAt ?? '').localeCompare(String(a.lastSeenAt ?? a.createdAt ?? '')));
-  let size = JSON.stringify(rows).length;
+  let size = syncBytes(JSON.stringify(rows));
   for (const e of list) {
     const r: Row = [CODE[e.status] ?? CODE[words[e.lemma]] ?? 'l', e.word, String(e.chinese ?? '').split(/[\n，,;；]/)[0].slice(0, 24), e.level ?? ''];
-    const add = JSON.stringify(r).length + e.lemma.length + 4;
+    const add = syncBytes(`${JSON.stringify(e.lemma)}:${JSON.stringify(r)},`) - 2;
     if (size + add > MAX_TOTAL) break;
     rows[e.lemma] = r;
     size += add;
@@ -48,6 +53,26 @@ export function unpackVocab(text: string): { words: Record<string, WordStatus>; 
   return { words, entries };
 }
 
+/** The text in parts that each fit one sync item: a quote in the text takes two bytes there, a Chinese letter three. */
+export function cutParts(text: string, max = ITEM_BYTES): Record<string, string> {
+  const size = (key: string, s: string) => key.length + syncBytes(s);
+  // (never between the two halves of one character, an emoji: each half alone would come back broken)
+  const whole = (p: number, l: number) => (l > 1 && p + l < text.length && /[\uD800-\uDBFF]/.test(text[p + l - 1]) ? l - 1 : l);
+  const parts: Record<string, string> = {};
+  let pos = 0;
+  for (let i = 0; pos < text.length; i++) {
+    const key = `${PART}${i}`;
+    let len = Math.min(text.length - pos, max);
+    while (len > 1 && size(key, text.slice(pos, pos + len)) > max) len = Math.max(1, Math.floor(len * 0.9));
+    // (as long as it still fits: a little more)
+    while (pos + len < text.length && size(key, text.slice(pos, pos + len + 64)) <= max) len += 64;
+    len = whole(pos, len);
+    parts[key] = text.slice(pos, pos + len);
+    pos += len;
+  }
+  return parts;
+}
+
 /** copies the vocabulary to chrome.storage.sync (in parts) */
 export async function saveOnline(): Promise<{ words: number; bytes: number } | null> {
   if (!chrome.storage?.sync) return null;
@@ -55,8 +80,7 @@ export async function saveOnline(): Promise<{ words: number; bytes: number } | n
   const words = ((o[STORAGE_KEYS.vocab] as { words?: Record<string, WordStatus> } | undefined)?.words) ?? {};
   const entries = (o[STORAGE_KEYS.entries] as Record<string, VocabEntry> | undefined) ?? {};
   const text = packVocab(words, entries);
-  const parts: Record<string, string> = {};
-  for (let i = 0; i * CHUNK < text.length; i++) parts[`${PART}${i}`] = text.slice(i * CHUNK, (i + 1) * CHUNK);
+  const parts = cutParts(text);
   const n = Object.keys(parts).length;
   const old = (await chrome.storage.sync.get(META))[META] as { n?: number } | undefined;
   await chrome.storage.sync.set({ ...parts, [META]: { n, at: new Date().toISOString(), words: Object.keys(words).length } });

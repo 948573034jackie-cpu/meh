@@ -54,7 +54,7 @@ const api = http.createServer((req, res) => {
     drExtras: { tutorOn: true, fakeVoice: true, explainOnStop: false, panel: true, migrated: 1, zhLines: false, stageOn: false },
     drSettings: { learnerLevel: 'B2', ai: { hintsModel: 'claude-haiku-5-5' } },
   }));
-  await until(async () => (await sw.evaluate(() => chrome.storage.local.get('drLevel').then((o) => o.drLevel)))?.seeded >= 1, 20000);
+  await until(async () => (await sw.evaluate(() => chrome.storage.local.get('drLevel').then((o) => o.drLevel)))?.seeded >= 2, 20000);
   const page = await ctx.newPage();
   await page.goto(`https://www.youtube.com/watch?v=${VIDEO}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
   const gate = await until(() => page.evaluate(() => { const h = document.getElementById('dr-level-host'); return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-a=check]')); }), 40000);

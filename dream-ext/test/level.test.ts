@@ -29,10 +29,23 @@ const score = (status: (l: string) => 'known' | 'learning' | 'ignored' | undefin
 describe('the database', () => {
   it('the starting data is all there, as vocabulary keys', () => {
     const { words, log } = seedWords(dict);
-    expect(SEED.known).toHaveLength(17);
-    expect(SEED.learning.b2).toHaveLength(18);
-    expect(SEED.learning.c1).toHaveLength(31);
-    expect(SEED.learning.c2).toHaveLength(28);
+    // (the learner's own word list, built in: level-seed.ts)
+    expect(SEED.known.length).toBeGreaterThanOrEqual(210);
+    expect(SEED.learning.b2.length + SEED.learning.c1.length + SEED.learning.c2.length + SEED.learning.other.length).toBeGreaterThanOrEqual(1000);
+    // (very common single words are not in it as still learning)
+    expect(Object.values(SEED.learning).flat().some((w) => /^(would|way|explained)$/i.test(w))).toBe(false);
+    expect(SEED.learning.b2.length).toBeGreaterThanOrEqual(18);
+    expect(SEED.learning.c1.length).toBeGreaterThanOrEqual(30);
+    expect(SEED.learning.c2.length).toBeGreaterThanOrEqual(28);
+    // every item is a word or phrase and nothing else: no sentence, no title, nothing empty, none twice
+    const all = [...SEED.known, ...Object.values(SEED.learning).flat()];
+    expect(all.every((w) => w.trim() === w && w.length > 0 && w.length <= 80 && !/[|\n@]|https?:/.test(w))).toBe(true);
+    expect(new Set(all).size).toBe(all.length);
+    // known wins over still learning, a word without a group has none, its day is kept
+    expect(Object.values(words).filter((s) => s === 'known').length).toBeGreaterThanOrEqual(200);
+    expect(Object.keys(words).length).toBeGreaterThanOrEqual(1200);
+    expect(Object.values(log).every((l) => /^\d{4}-\d{2}-\d{2}$/.test(l.date) && !('sentence' in l))).toBe(true);
+    expect(Object.values(log).some((l) => !l.group) && Object.values(log).some((l) => l.group === 'c1')).toBe(true);
     expect(words[dict.lemmaOf('threaten')]).toBe('known');
     expect(words[dict.lemmaOf('squander')]).toBe('learning');
     expect(words['keep nix']).toBe('learning');
@@ -389,6 +402,21 @@ describe('one database for the Mac and the phone (mergeDocs)', () => {
     known: [{ item: 'familiar', date: '2026-11-04' }, { item: 'shelter', date: '2026-11-01' }], stillLearning: [{ item: 'invade', date: '2026-11-04', sentence: 'They invade.' }, { item: 'odour', date: '2026-11-02', sentence: 'A bad odour.' }] });
   const phone = doc({ currentLevel: 'about B2', tests: [{ date: '2026-11-05', source: 'A phone video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }, { date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }],
     known: [{ item: 'serendipity', date: '2026-11-05' }, { item: 'odour', date: '2026-11-05' }], stillLearning: [{ item: 'shelter', date: '2026-11-05', sentence: 'No shelter.' }, { item: 'invade', date: '2026-11-04', sentence: 'They invade us.' }] });
+  it('the same word still learning on both: the example sentence and the group of the other copy are kept', () => {
+    const seededPhone = doc({ stillLearning: [{ item: 'invade', date: '2026-11-04', sentence: '' }, { item: 'odour', date: '2026-11-02', sentence: '' }] });
+    const file = doc({ stillLearning: [{ item: 'invade', date: '2026-11-04', sentence: 'They invade.', group: 'b2' }, { item: 'odour', date: '2026-11-02', sentence: '' }] });
+    for (const base of [null, seededPhone]) {
+      const m = mergeDocs(seededPhone, [file], base, new Set(), NOW);
+      const inv = m.doc.stillLearning.find((l) => l.item === 'invade')!;
+      expect(inv.sentence).toBe('They invade.');
+      expect(inv.group).toBe('b2');
+      expect(m.changes).toEqual([{ item: 'invade', status: 'learning', date: '2026-11-04', sentence: 'They invade.', group: 'b2', fill: true }]);
+    }
+    // (and a sentence this device has stays)
+    const m2 = mergeDocs(file, [seededPhone], seededPhone, new Set(), NOW);
+    expect(m2.doc.stillLearning.find((l) => l.item === 'invade')!.sentence).toBe('They invade.');
+    expect(m2.changes).toEqual([]);
+  });
   it('the first merge (nothing shared yet): both devices\' words, every test once, the level of the newest test', () => {
     const m = mergeDocs(mac, [phone], null, new Set(), NOW);
     expect(m.doc.known.map((k) => k.item)).toEqual(['familiar', 'odour', 'serendipity']);

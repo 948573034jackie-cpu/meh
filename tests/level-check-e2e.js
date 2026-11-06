@@ -167,10 +167,12 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   }));
 
   // ---- the starting data ----
-  const seeded = await until(async () => { const m = await store('drLevel'); return m && m.seeded >= 1 ? m : null; }, 20000);
+  const seeded = await until(async () => { const m = await store('drLevel'); return m && m.seeded >= 2 ? m : null; }, 20000);
+  const seededWords = Object.keys((await store('drVocab')).words).length;
+  ok('my own word list is built in: a new install starts with more than 1,200 words', seededWords >= 1200, String(seededWords));
   ok('the starting data is in: the two tests, the level', seeded && seeded.tests.length >= 2 && seeded.tests.some((t) => t.source === 'Eveline') && /B2/.test(seeded.currentLevel), JSON.stringify(seeded && { t: seeded.tests.length, l: seeded.currentLevel }));
-  const first = await until(async () => { await sw.evaluate(() => chrome.storage.local.set({ drNudge: Date.now() })); const r = await sw.evaluate(() => chrome.storage.local.get('drDbStatus').then((o) => o.drDbStatus)); const d = readDoc(); return d && d.known.length >= 17 ? d : (r && r.ok === false ? null : null); }, 25000, 500);
-  ok('the JSON file exists on the Mac, filled: known, still learning, tests (the starting data + the phone\'s words)', first && first.known.length === 18 && first.stillLearning.length === 78 && first.tests.length === 3 && first.known.some((k) => k.item === 'fallen on his feet') && first.stillLearning.some((w) => w.item === 'bully (great)' && w.group === 'c2'), JSON.stringify(first && { known: first.known.length, learning: first.stillLearning.length }) + ' ' + JSON.stringify(await store('drDbStatus')));
+  const first = await until(async () => { await sw.evaluate(() => chrome.storage.local.set({ drNudge: Date.now() })); const r = await sw.evaluate(() => chrome.storage.local.get('drDbStatus').then((o) => o.drDbStatus)); const d = readDoc(); return d && d.known.length >= 210 ? d : (r && r.ok === false ? null : null); }, 25000, 500);
+  ok('the JSON file exists on the Mac, filled: known, still learning, tests (the starting data + the phone\'s words)', first && first.known.length >= 210 && first.stillLearning.length >= 1000 && first.tests.length === 3 && first.known.some((k) => k.item === 'fallen on his feet') && first.stillLearning.some((w) => w.item === 'bully (great)' && w.group === 'c2'), JSON.stringify(first && { known: first.known.length, learning: first.stillLearning.length }) + ' ' + JSON.stringify(await store('drDbStatus')));
   ok('the internet copy (the Google Drive folder) has the same', JSON.stringify(readDoc(driveFile)) === JSON.stringify(readDoc()), (await store('drDbStatus') || {}).drive);
   // ---- one database with the phone: its words (the iCloud Drive copy) came in, merged, and went back out everywhere ----
   const vocab0 = await store('drVocab');

@@ -210,7 +210,7 @@ const fakeWebkit = () => {
   // what the app has saved before (the tutor on, test-friendly timings); the Claude key is in the Keychain
   Object.assign(stores.local, {
     barOn: true,
-    drLevel: { tests: [], currentLevel: '', log: {}, seeded: 1 }, // (no starting data: these tests have their own words)
+    drLevel: { tests: [], currentLevel: '', log: {}, seeded: 99 }, // (no starting data: these tests have their own words)
     drExtras: { phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
   });
@@ -284,6 +284,8 @@ const fakeWebkit = () => {
   // ---- 3. you pause: the part plays again, then it is explained (the whole part), back to its start ----
   await until(async () => (await vstate()).t > 17, 20000, 100);
   const nP = apiLog.length;
+  // (a pause right after a stop, or right after the microphone went on or off, is not "you paused": wait for a quiet moment)
+  await until(async () => { const d = await dbg(); if (!d || d.window || d.state !== 'playing') return false; await sleep(2000); const e = await dbg(); return !e.window && e.state === 'playing'; }, 40000, 100);
   await yt.evaluate(() => document.querySelector('video').pause());
   const part = await until(async () => { const d = await dbg(); return d && d.flow === 'part' && d.stage.shown ? d : null; }, 8000);
   ok('pausing: the book stays (all the subtitles, one text size), the last 20 s marked as the part', part && part.stage.view === 'all' && part.stage.part >= 4 && part.stage.visibleLines === 10 && part.stage.size === '21px', JSON.stringify(part && part.stage));
@@ -550,6 +552,35 @@ const fakeWebkit = () => {
   ok('"Copy my level for Claude" has my level and words', copy && /My English level/.test(copy.text) && /Still learning/.test(copy.text), copy && copy.text.slice(0, 200));
   ok('the keys stay out of it', copy && !copy.text.includes('sk-ant'));
   await lv.close();
+
+  // ---- 12. the learner's own word list is built into the app: an install with the older starting data gets it,
+  //          and what the phone already has always wins ----
+  const wordsBefore = Object.keys(stores.local.drVocab.words).length;
+  stores.local.drLevel = { ...stores.local.drLevel, seeded: 1, tests: [{ date: '2026-11-04', source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' }, ...(stores.local.drLevel.tests || [])] };
+  // (the list knows "threaten" and is still learning "squander", "ubiquitous" and "invade"; "invade" was taken out
+  // on this phone since the shared file began: it is in the last merged copy and no longer here)
+  const vw = { ...stores.local.drVocab.words, threaten: 'learning', squander: 'known', ubiquitous: 'ignored' };
+  delete vw.invade;
+  stores.local.drVocab = { ...stores.local.drVocab, words: vw };
+  stores.local.drDbBase = { ...(stores.local.drDbBase || { version: 1, updatedAt: '2026-11-05T00:00:00.000Z', currentLevel: '', tests: [], known: [] }), stillLearning: [...((stores.local.drDbBase || {}).stillLearning || []).filter((l) => l.item !== 'invade'), { item: 'invade', date: '2026-11-04', sentence: '' }] };
+  stores.local.drSettings = { ...stores.local.drSettings, learnerLevel: 'C1' };
+  const sd = await ctx.newPage();
+  sd.on('pageerror', (e) => console.log('PAGE ERROR (seed)', String(e.message || e).slice(0, 300)));
+  await sd.goto('https://m.youtube.com/watch?v=ios00000004');
+  await sd.addScriptTag({ content: source(ytScripts) });
+  const seededNow = await until(() => stores.local.drLevel && stores.local.drLevel.seeded >= 2 ? stores.local.drLevel : null, 20000);
+  const w = stores.local.drVocab.words;
+  const nWords = Object.keys(w).length;
+  ok('my own word list is built into the app: more than 1,200 words are there after the first start', !!seededNow && nWords >= 1200 && nWords > wordsBefore + 1000 && w.familiar === 'known' && w['keep nix'] === 'learning', JSON.stringify({ seeded: seededNow && seededNow.seeded, nWords, wordsBefore }));
+  ok('...what the phone already has wins: known stays known, ignored stays ignored, still learning stays still learning, a word taken out does not come back', w.squander === 'known' && w.ubiquitous === 'ignored' && w.threaten === 'learning' && !w.invade, JSON.stringify({ squander: w.squander, ubiquitous: w.ubiquitous, threaten: w.threaten, invade: w.invade }));
+  ok('...no test twice, the level I chose stays, no example sentence comes with the list', seededNow && seededNow.tests.filter((t) => t.source === 'Eveline').length === 1 && seededNow.tests.some((t) => t.source === 'After Twenty Years') && stores.local.drSettings.learnerLevel === 'C1' && !(seededNow.log['keep nix'] || {}).sentence && (seededNow.log['keep nix'] || {}).group === 'c2', JSON.stringify(seededNow && { tests: seededNow.tests.map((t) => t.source), lvl: stores.local.drSettings.learnerLevel, log: seededNow.log['keep nix'] }));
+  // a second start changes nothing more
+  const snap = JSON.stringify(stores.local.drVocab.words);
+  await sd.goto('https://m.youtube.com/watch?v=ios00000004');
+  await sd.addScriptTag({ content: source(ytScripts) });
+  await sleep(2500);
+  ok('...and it goes in only once', JSON.stringify(stores.local.drVocab.words) === snap && stores.local.drLevel.tests.filter((t) => t.source === 'Eveline').length === 1);
+  await sd.close();
 
   await browser.close();
   api.close();

@@ -9,6 +9,7 @@
 import type { Dictionary } from '@core/dict/types';
 import type { VocabEntry } from '@shared/api';
 import type { WordStatus } from '@shared/settings';
+import { SEED_KNOWN, SEED_LEARNING, SEED_LEVEL } from './level-seed';
 
 export type GroupId = 'b2' | 'c1' | 'c2';
 export const GROUP_LABEL: Record<GroupId, string> = { b2: 'B2', c1: 'C1', c2: 'C2 + idioms + slang' };
@@ -28,21 +29,28 @@ export interface LevelMeta {
 }
 export const EMPTY_META: LevelMeta = { tests: [], currentLevel: '', log: {}, seeded: 0 };
 
-export const SEED_VERSION = 1;
+/** 1 = the two tests of 4 Nov 2026 and their words; 2 = the learner's whole word list (level-seed.ts) */
+export const SEED_VERSION = 2;
 const SEED_DATE = '2026-11-04';
-/** the learner's starting data (their two tests of 4 Nov 2026) */
+const list = (joined: string): string[] => joined.split('|').filter(Boolean);
+/**
+ * The learner's starting data: their first two tests, and their own words as they were when the app was built
+ * (level-seed.ts, made by scripts/make-seed.py). A new install starts with them; what the device already has wins.
+ */
 export const SEED = {
-  currentLevel: 'about lower B2 for reading',
+  currentLevel: SEED_LEVEL || 'about lower B2 for reading',
   tests: [
     { date: SEED_DATE, source: 'Eveline', scores: { b2: 45, c1: 5, c2: 13 }, level: 'lower B2' },
     { date: SEED_DATE, source: 'After Twenty Years', scores: { b2: 42, c1: 0, c2: 0 }, level: 'lower B2' },
   ] as LevelTest[],
-  known: ['familiar', 'shelter', 'threaten', 'violence', 'explore', 'quarrel', 'glimpse', 'respect', 'duty', 'weary', 'look lively', 'fallen on his feet', 'impressive', 'appointment', 'destiny', 'fortune', 'release'],
+  known: SEED_KNOWN.flatMap(([, words]) => list(words)),
+  /** by level group; 'other' = no group */
   learning: {
-    b2: ['invade', 'odour', 'consent', 'distress', 'wages', 'impulse', 'terror', 'passive', 'recognition', 'barrier', 'mist', 'habitual', 'spectator', 'intricate', 'reassure', 'scar', 'drizzle', 'arrest'],
-    c1: ['squabble', 'squander', 'provisions', 'elated', 'courting', 'latterly', 'palpitations', 'mournful', 'nausea', 'fervent', 'anguish', 'frenzy', 'clutch', 'seize', 'melancholy', 'pitiful', 'commonplace', 'lodging', 'sacrifice', 'gust', 'vicinity', 'stalwart', 'swagger', 'thoroughfare', 'correspond', 'plodder', 'egotism', 'submerged', 'glare', 'simultaneously', 'dismally'],
-    c2: ['invariable', 'keep nix', 'had an edge on her', 'laid up', 'strutting', 'mused', 'the very quick of her being', 'quay', 'illumined', 'cretonne', 'harmonium', 'bonnet', 'porthole', 'maze of distress', 'on the beat', 'well nigh', 'kept early hours', 'best chum', 'you bet', 'get my pile', 'in a groove', 'a razor-edge', 'call time on him', 'so long', 'sure as fate', 'bully (great)', 'plain clothes man', 'wires us'],
-  } as Record<GroupId, string[]>,
+    b2: SEED_LEARNING.filter(([, g]) => g === 'b2').flatMap(([, , words]) => list(words)),
+    c1: SEED_LEARNING.filter(([, g]) => g === 'c1').flatMap(([, , words]) => list(words)),
+    c2: SEED_LEARNING.filter(([, g]) => g === 'c2').flatMap(([, , words]) => list(words)),
+    other: SEED_LEARNING.filter(([, g]) => g === '').flatMap(([, , words]) => list(words)),
+  } as Record<GroupId | 'other', string[]>,
 };
 
 /** the vocabulary key of a word or phrase: the dictionary's lemma, a phrase in lower case ("bully (great)" -> "bully") */
@@ -63,12 +71,19 @@ export function phraseSig(dict: Pick<Dictionary, 'lemmaOf'>, text: string): stri
 export function seedWords(dict: Pick<Dictionary, 'lemmaOf'>): { words: Record<string, 'known' | 'learning'>; log: Record<string, WordLog> } {
   const words: Record<string, 'known' | 'learning'> = {};
   const log: Record<string, WordLog> = {};
-  for (const [g, list] of Object.entries(SEED.learning) as [GroupId, string[]][]) for (const word of list) {
+  for (const [date, g, joined] of SEED_LEARNING) for (const word of list(joined)) {
     const k = itemKey(dict, word);
+    if (!k) continue;
     words[k] = 'learning';
-    log[k] = { word, date: SEED_DATE, group: g };
+    log[k] = { word, date: date || SEED_DATE, ...(g ? { group: g } : {}) };
   }
-  for (const word of SEED.known) { const k = itemKey(dict, word); words[k] = 'known'; log[k] = { word, date: SEED_DATE }; }
+  // (known last: a word known in one form and still learning in another is known)
+  for (const [date, joined] of SEED_KNOWN) for (const word of list(joined)) {
+    const k = itemKey(dict, word);
+    if (!k) continue;
+    words[k] = 'known';
+    log[k] = { word, date: date || SEED_DATE };
+  }
   return { words, log };
 }
 
@@ -139,12 +154,13 @@ export function levelSummary(doc: VocabularyDoc, lastCopyAt?: string): string {
 /** one word or phrase of a document, with its status */
 interface Rec { status: 'known' | 'learning'; item: string; date: string; sentence?: string; group?: GroupId }
 /** what the merge changes on this device: a status for an item, or null = take it out */
-export interface DocChange { item: string; status: 'known' | 'learning' | null; date?: string; sentence?: string; group?: GroupId }
+/** `fill`: the status is the same; only an example sentence or a level group comes in (never a status change) */
+export interface DocChange { item: string; status: 'known' | 'learning' | null; date?: string; sentence?: string; group?: GroupId; fill?: boolean }
 export interface MergeResult { doc: VocabularyDoc; changes: DocChange[] }
 
 /** the same word or phrase, however it is written */
 export const itemId = (s: string): string => s.trim().toLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ');
-const testId = (t: LevelTest): string => `${t.date}|${t.source}|${JSON.stringify(t.scores ?? {})}`;
+export const testId = (t: LevelTest): string => `${t.date}|${t.source}|${JSON.stringify(t.scores ?? {})}`;
 
 function indexDoc(d: VocabularyDoc | null | undefined): Map<string, Rec> {
   const m = new Map<string, Rec>();
@@ -183,6 +199,10 @@ export function mergeDocs(mine: VocabularyDoc, others: VocabularyDoc[], base: Vo
     for (const [k, t] of indexDoc(T)) {
       const b = B.get(k), m = cur.get(k);
       if (skip.has(k)) { if (!gone.has(k)) gone.set(k, { item: t.item, date: today }); continue; }
+      // (the same word, still learning on both: its example sentence and level group are kept wherever they are)
+      if (m && m.status === 'learning' && t.status === 'learning' && ((!m.sentence && t.sentence) || (!m.group && t.group))) {
+        cur.set(k, { ...m, sentence: m.sentence || t.sentence || '', ...(m.group || t.group ? { group: m.group || t.group } : {}) });
+      }
       if (b && b.status === t.status) continue; // the other device did not change it: this device's word (or its removal) stands
       if (!m) {
         const out = gone.get(k);
@@ -211,7 +231,11 @@ export function mergeDocs(mine: VocabularyDoc, others: VocabularyDoc[], base: Vo
     else stillLearning.push({ item: r.item, date: r.date, sentence: r.sentence ?? '', ...(r.group ? { group: r.group } : {}) });
   }
   const changes: DocChange[] = [];
-  for (const [k, r] of cur) { const m = M0.get(k); if (!m || m.status !== r.status) changes.push({ item: r.item, status: r.status, date: r.date, ...(r.sentence ? { sentence: r.sentence } : {}), ...(r.group ? { group: r.group } : {}) }); }
+  for (const [k, r] of cur) {
+    const m = M0.get(k);
+    const fill = !!m && m.status === r.status && ((!!r.sentence && !m.sentence) || (!!r.group && !m.group));
+    if (!m || m.status !== r.status || fill) changes.push({ item: r.item, status: r.status, date: r.date, ...(r.sentence ? { sentence: r.sentence } : {}), ...(r.group ? { group: r.group } : {}), ...(fill ? { fill: true } : {}) });
+  }
   for (const [k, m] of M0) if (!cur.has(k)) changes.push({ item: m.item, status: null });
   const docs = [mine, ...others];
   const tests = new Map<string, LevelTest>();
