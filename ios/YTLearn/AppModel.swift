@@ -349,9 +349,16 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         config.mediaTypesRequiringUserActionForPlayback = []
         let controller = config.userContentController
         controller.addScriptMessageHandler(bridge, contentWorld: .page, name: "ytc")
+        controller.addUserScript(WKUserScript(source: deviceScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         let source = sheetScripts.map(script).joined(separator: "\n;\n")
         controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         return config
+    }
+
+    /// the page is told which device it is on (iPhone or iPad): the sizes and the layouts follow it
+    static var deviceScript: String {
+        let device = UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
+        return "window.__ytcDevice='\(device)';"
     }
 
     static func makeConfig(bridge: Bridge) -> WKWebViewConfiguration {
@@ -363,6 +370,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let controller = config.userContentController
         controller.addScriptMessageHandler(bridge, contentWorld: world, name: "ytc")
 
+        controller.addUserScript(WKUserScript(source: deviceScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
         // (the saved settings are read from Store when the page starts: storageAll)
         let source = youtubeScripts.map(script).joined(separator: "\n;\n")
         controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))

@@ -185,8 +185,8 @@ const shown = (t: string) => t.replace(/\s*\[PAUSE\]\s*/gi, ' … ');
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
-/** a phone (the iPhone app, the Safari extension, a small touch screen): the page is a book of subtitles, always */
-const PHONE = ((): boolean => {
+/** a touch app (the iPhone / iPad app, the Safari extension, a small touch screen): the page is a book of subtitles, always */
+const TOUCH = ((): boolean => {
   try {
     const w = window as unknown as { __ytcShimYT?: unknown; __ytcSafari?: unknown };
     return !!w.__ytcShimYT || !!w.__ytcSafari || !!(self as unknown as { __ytcSafari?: unknown }).__ytcSafari || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 600);
@@ -194,8 +194,40 @@ const PHONE = ((): boolean => {
 })();
 /** all the subtitles over the whole screen: Listening (the text moves with the sound) or Reading (pages) */
 const bookView = (): boolean => extras.view === 'listening' || extras.view === 'reading' || extras.view === 'lyrics';
-/** the text size of the reading page: on a phone its own, and it never changes by itself */
-const stageSize = (): number => (PHONE ? clamp(extras.phoneSizePx || 21, 14, 48) : clamp(extras.stageSizePx || 34, 16, 96));
+/** an iPad: the app says so (window.__ytcDevice, set by the app); otherwise a big touch screen */
+const IPAD = ((): boolean => {
+  if (!TOUCH) return false;
+  try {
+    const d = (window as unknown as { __ytcDevice?: string }).__ytcDevice;
+    if (d === 'pad') return true;
+    if (d === 'phone') return false;
+    return navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) >= 600;
+  } catch { return false; }
+})();
+/** an iPhone (a small touch screen) */
+const PHONE = TOUCH && !IPAD;
+/** which device: for the CSS (data-dev) and the debug info */
+const DEVICE = IPAD ? 'pad' : PHONE ? 'phone' : 'desk';
+type Lay = 'desk' | 'p-port' | 'p-land' | 't-narrow' | 't-port' | 't-land';
+/**
+ * The layout now. The window decides, not the device: an iPad in Split View / Slide Over is as small as a phone and
+ * gets the phone layouts. (p = phone, t = tablet; port = upright, land = on its side)
+ */
+const lay = (): Lay => {
+  if (!TOUCH) return 'desk';
+  const w = innerWidth, h = innerHeight;
+  if (Math.min(w, h) < 500) return w > h ? 'p-land' : 'p-port';
+  if (w < 700) return 't-narrow';
+  return w > h ? 't-land' : 't-port';
+};
+/** the page text on each layout, times your size (phoneSizePx is the iPhone upright size): 21 → 21 / 20 / 24 / 28 / 26 */
+const PAGE_F: Record<Lay, number> = { 'p-port': 1, 'p-land': 0.95, 't-narrow': 1.15, 't-port': 1.33, 't-land': 1.25, desk: 1 };
+/** the subtitles on the video, the same way (phoneBandPx): 17 → 17 / 22 / 22 / 26 / 30 */
+const BAND_F: Record<Lay, number> = { 'p-port': 1, 'p-land': 1.3, 't-narrow': 1.3, 't-port': 1.5, 't-land': 1.75, desk: 1 };
+const pagePx = (): number => Math.round(clamp(extras.phoneSizePx || 21, 14, 48) * PAGE_F[lay()]);
+const bandPx = (): number => Math.round(clamp(extras.phoneBandPx || 17, 12, 40) * BAND_F[lay()]);
+/** the text size of the reading page: on a touch screen its own (bigger on an iPad), and it never changes by itself */
+const stageSize = (): number => (TOUCH ? pagePx() : clamp(extras.stageSizePx || 34, 16, 96));
 
 // ---------------------------------------------------------------------------------------------------------------
 // one video
@@ -392,6 +424,20 @@ class Session {
     this.videoId = videoId;
     this.mode = mode;
     this.engine = new VideoEngine(() => (window.__ytcApi?.isAd() ? null : video()), () => this.vb);
+    // the window changed size (the phone turned, an iPad split): the sizes and the layout follow; the mode, the view,
+    // a card, a window or an explanation stay as they are
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        if (this.disposed) return;
+        this.applyLook();
+        if (this.vb) { this.placeBand(); this.scrollToCur(true); }
+      }, 150);
+    };
+    window.addEventListener('resize', onResize);
+    this.offs.push(() => { window.removeEventListener('resize', onResize); if (resizeTimer) clearTimeout(resizeTimer); });
   }
 
   get book(): Book | null { return this.vb?.book ?? null; }
@@ -846,7 +892,7 @@ class Session {
     if (this.disposed) return;
     // every video goes on in Listening mode (🎬 Video on the page goes back to the picture)
     // (a phone keeps the mode you chose: Listening, Reading or Video)
-    if (!PHONE && extras.levelListening !== false && extras.view === 'normal' && this.vb) void store.patchExtras({ view: 'listening' });
+    if (!TOUCH && extras.levelListening !== false && extras.view === 'normal' && this.vb) void store.patchExtras({ view: 'listening' });
     const v = video();
     // (lyrics mode: the song introduction starts the song itself when it is over)
     if (v && v.paused && !this.songIntroOn) void v.play().catch(() => this.toast('Press play on the video.', 5000));
@@ -966,7 +1012,7 @@ class Session {
       const el = document.createElement('div');
       el.id = 'dr-stop-counter';
       el.title = 'Stops made / sentences so far';
-      el.style.cssText = PHONE
+      el.style.cssText = TOUCH
         ? 'position:fixed;top:calc(3px + env(safe-area-inset-top));right:6px;z-index:2147483000;background:rgba(31,35,40,.6);color:#fff;border-radius:8px;padding:0 6px;font:10px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none;opacity:.6'
         : 'position:fixed;top:60px;right:10px;z-index:2147483000;background:rgba(31,35,40,.82);color:#fff;border-radius:10px;padding:2px 8px;font:12px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none';
       document.body.appendChild(el);
@@ -1239,7 +1285,7 @@ class Session {
         this.trail('you paused the video');
         // (a phone: the microphone going on or off can stop the video's sound for a moment: that was not you)
         const micAt = window.__ytcApi?.micChangedAt?.() ?? 0;
-        if (PHONE && !asleep && pausedAt >= micAt && pausedAt - micAt < 1500 && Date.now() - this.lastSelfResume > 6000) {
+        if (TOUCH && !asleep && pausedAt >= micAt && pausedAt - micAt < 1500 && Date.now() - this.lastSelfResume > 6000) {
           this.lastSelfResume = Date.now();
           this.trail('the video stopped as the microphone changed: playing on');
           void v.play().catch(() => undefined);
@@ -1247,7 +1293,7 @@ class Session {
         }
         // (Level Check: a pause is a pause, no AI; "Explain 30 s" asks for it)
         if (extras.explainOnStop && !this.levelOn()) void this.partFlow(v.currentTime, extras.replayPart, true);
-        else { pb.pause(); if (PHONE && !asleep) this.toast('The video is paused. ⏯ plays on.', 4000); }
+        else { pb.pause(); if (TOUCH && !asleep) this.toast('The video is paused. ⏯ plays on.', 4000); }
       }, 120);
     };
     const onSeeking = () => {
@@ -1460,7 +1506,7 @@ class Session {
     const part = this.partAt(v?.currentTime ?? 0, settings.listen.lastSecondsWindow);
     const flow = this.flow = { kind: 'call' as const, part, abort: false, resumeAt: pos, quietTo: null };
     // (a phone: a call shows nothing but its End call button)
-    if (!PHONE) this.showStage(part.length ? part : [pos]);
+    if (!TOUCH) this.showStage(part.length ? part : [pos]);
     this.closeCard();
     await this.talkUntilGoOn(pos, undefined, undefined, true);
     if (flow.abort || this.flow !== flow) return;
@@ -1607,7 +1653,7 @@ class Session {
   /** opens the talk (or turns the mic back on): after an explanation, or 📞 */
   private openTalk(pos: Position, word?: string, explanation?: string, greet = false): void {
     if (this.mode !== 'tutor') return;
-    if (!PHONE && normalView() && extras.stageOn && !this.stageShown) this.showStage(this.partAt((this.vb?.timingOf(pos)?.end ?? 0) - 0.01, settings.listen.lastSecondsWindow));
+    if (!TOUCH && normalView() && extras.stageOn && !this.stageShown) this.showStage(this.partAt((this.vb?.timingOf(pos)?.end ?? 0) - 0.01, settings.listen.lastSecondsWindow));
     let t = this.talk;
     const fresh = !t;
     if (!t) {
@@ -1687,7 +1733,7 @@ class Session {
   private renderTalk(): void {
     const t = this.talk;
     // (a phone: nothing of the talk is shown, only one "End call" button while a call is on)
-    if (PHONE) { this.renderCallButton(); return; }
+    if (TOUCH) { this.renderCallButton(); return; }
     for (const r of [this.stage?.el, this.panel?.el]) {
       const box = r?.querySelector<HTMLElement>('.talk');
       if (!box) continue;
@@ -2373,7 +2419,7 @@ class Session {
     const el = document.createElement('div');
     el.className = 'stage';
     el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div><div class="pager"><button type="button" class="quiet" data-act="prev" title="The page before">‹</button><span class="pg"></span><button type="button" class="quiet" data-act="next" title="The next page">›</button></div>
-      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div>${PHONE ? '' : '<form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">Ask</button></form>'}</div>
+      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div>${TOUCH ? '' : '<form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">Ask</button></form>'}</div>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button><button type="button" class="onebtn" hidden aria-label="Explain the last part"><span></span></button>`;
     root.appendChild(el);
     this.stage = { host, root, el };
@@ -2545,7 +2591,7 @@ class Session {
     const el = this.stage?.el;
     if (!el) return;
     // (a phone never shrinks the text to fit a part: at a stop in Video mode the book is shown)
-    el.dataset.view = extras.view === 'reading' ? 'read' : this.partKeys && normalView() && !PHONE ? 'part' : 'all';
+    el.dataset.view = extras.view === 'reading' ? 'read' : this.partKeys && normalView() && !TOUCH ? 'part' : 'all';
     el.dataset.lyrics = this.lyrics ? '1' : '0';
     el.querySelectorAll<HTMLElement>('.s').forEach((s) => s.classList.toggle('in-part', !!this.partKeys?.has(s.dataset.key ?? '')));
     // all subtitles: your own text size at once (the playing line is placed right after this)
@@ -2598,7 +2644,7 @@ class Session {
 
   private resize(dir: number): void {
     if (this.stageVisible() && extras.view === 'reading') void store.patchExtras({ readSizePx: clamp((extras.readSizePx || 22) + dir, 12, 60) });
-    else if (this.stageVisible()) void store.patchExtras(PHONE ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
+    else if (this.stageVisible()) void store.patchExtras(TOUCH ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
     else if (this.bandVisible()) void store.patchSettings({ appearance: { ...settings.appearance, subtitleSizePx: clamp((settings.appearance.subtitleSizePx || 26) + dir * 2, 16, 96) } });
     else void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + dir, 12, 48) } });
   }
@@ -2620,7 +2666,7 @@ class Session {
     // after a button or a list choice it is drawn again at once, so the change shows
     const focused = (root.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     if (focused?.closest?.('.quick') && /^(INPUT|TEXTAREA)$/.test(focused.tagName)) return;
-    renderQuick(q, { gist: this.gistText, phone: PHONE, sleepMin: sleepMinutes(), setSleep: (m) => setSleep(m), settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), testCall: () => void this.callTutor(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
+    renderQuick(q, { gist: this.gistText, phone: TOUCH, pad: IPAD, sleepMin: sleepMinutes(), setSleep: (m) => setSleep(m), settings, extras, keys: this.keys, voiceNow: this.voiceKind, azureAvail: this.azureAvail, levelText: this.levelText, macVoices: this.macVoices, macVoice: this.macVoice, testVoice: () => this.testVoice(), testWord: () => this.testWord(), testCall: () => void this.callTutor(), close: () => this.closeQuick(), toast: (t, ms) => this.toast(t, ms) });
     const body = q.querySelector('.q-body');
     if (body) body.scrollTop = scroll;
   }
@@ -2637,17 +2683,20 @@ class Session {
       h.dataset.zh = extras.zhLines ? '1' : '0';
       h.style.setProperty('--reader-size', `${clamp(settings.appearance.fontSizePx || 19, 12, 48)}px`);
       // (a phone: the subtitles on the video a little smaller, so they never cover the picture)
-      h.style.setProperty('--subtitle-size', `${PHONE ? clamp(extras.phoneBandPx || 17, 12, 40) : clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
+      h.style.setProperty('--subtitle-size', `${TOUCH ? bandPx() : clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
       h.style.setProperty('--text-weight', String(clamp(extras.textWeight || 400, 200, 800)));
       h.dataset.look = extras.readLook === 'night' ? 'night' : 'day';
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${stageSize()}px`);
       h.style.setProperty('--read-size', `${clamp(extras.readSizePx || 22, 12, 60)}px`);
-      h.dataset.phone = PHONE ? '1' : '0';
+      // ("phone" means touch: the iPad gets the touch page too; dev and lay tell the sizes apart)
+      h.dataset.phone = TOUCH ? '1' : '0';
+      h.dataset.dev = DEVICE;
+      h.dataset.lay = lay();
       // (a phone: what the tutor says is heard, not read, unless you turn the text on)
-      h.dataset.say = !PHONE || extras.showSay ? '1' : '0';
+      h.dataset.say = !TOUCH || extras.showSay ? '1' : '0';
       // (the E button on every sentence: a switch in Settings; on a desktop always)
-      h.dataset.e = !PHONE || extras.sentenceButtons ? '1' : '0';
+      h.dataset.e = !TOUCH || extras.sentenceButtons ? '1' : '0';
       h.style.setProperty('--band-bottom', `${clamp(extras.bandBottom ?? 7, 0, 60)}%`);
     }
     applyPageLook();
@@ -2719,7 +2768,7 @@ class Session {
       // every sentence on the page has its own Explain button (play it, explain it, play it again)
       sdoc.querySelectorAll<HTMLElement>('.s').forEach((s) => {
         const b = document.createElement('button');
-        b.type = 'button'; b.className = 'sx'; b.textContent = PHONE ? 'E' : '▶ Explain'; b.title = 'Explain this sentence';
+        b.type = 'button'; b.className = 'sx'; b.textContent = TOUCH ? 'E' : '▶ Explain'; b.title = 'Explain this sentence';
         b.title = 'Explain this sentence: it plays, the teacher explains it, it plays again';
         s.prepend(b);
       });
@@ -2868,7 +2917,7 @@ class Session {
     let clickTimer: ReturnType<typeof setTimeout> | null = null;
     const selectionOf = (): Selection | null => { const r = container.getRootNode() as ShadowRoot & { getSelection?: () => Selection | null }; return r.getSelection?.() ?? document.getSelection(); };
     container.addEventListener('mouseup', () => setTimeout(() => this.onSelection(container, selectionOf()), 0));
-    if (PHONE) this.wireTouchSelect(container);
+    if (TOUCH) this.wireTouchSelect(container);
     container.addEventListener('click', (ev) => {
       // (the end of a finger selection is not a tap)
       if (Date.now() - this.touchSelectedAt < 700) { ev.preventDefault(); ev.stopPropagation(); return; }
@@ -2891,8 +2940,8 @@ class Session {
       if (!pos) return;
       if (!w) { this.seekTo(pos); return; }
       // a second tap in time = a double tap = "I know" (a touch screen does not always send its own double-click)
-      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; if (PHONE) know(w); return; }
-      clickTimer = setTimeout(() => { clickTimer = null; this.tapWord(w, pos); }, PHONE ? 330 : 260);
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; if (TOUCH) know(w); return; }
+      clickTimer = setTimeout(() => { clickTimer = null; this.tapWord(w, pos); }, TOUCH ? 330 : 260);
     });
     let knownAt = 0, knownLemma = '';
     const know = (w: HTMLElement): void => {
@@ -3121,18 +3170,18 @@ class Session {
     const status = vocab.words[lemma];
     // (Level Check: the explanation has no Chinese and no IPA, so neither has its card)
     // (Level Check: the explanation has no Chinese and no IPA; a phone's card is the Chinese dictionary: the word and its Chinese)
-    const plain = this.levelOn() && !PHONE;
-    const noIpa = this.levelOn() || PHONE;
+    const plain = this.levelOn() && !TOUCH;
+    const noIpa = this.levelOn() || TOUCH;
     cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !noIpa ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word">▶</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
       ${plain ? '' : `<div class="zh here"${here ? '' : ' data-ai="1"'}>${here ? `<span><span class="pos">here</span>${esc(here[0])}${here[1] ? `<span class="pos"> · ${esc(here[1])}</span>` : ''}</span>` : '<span class="muted">AI 中文…</span>'}</div>
       ${glosses.length ? `<div class="zh">${glosses.map((g) => `<span>${g.pos ? `<span class="pos">${esc(g.pos)}</span>` : ''}${esc(g.zh)}</span>`).join('')}</div>` : '<div class="muted">Not in the offline dictionary.</div>'}`}
       <div class="en"></div>
       <div class="row"><button data-act="known" class="${status === 'known' ? 'active' : ''}">I know</button><button data-act="dontknow" class="${status === 'learning' ? 'active' : ''}">I don't know</button><button data-act="ignore">Ignore</button>
-      ${plain || PHONE ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
+      ${plain || TOUCH ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
     cardEl.hidden = false;
     // the AI's meaning in this very sentence, written live (when the video's hints do not have this word)
     // (a phone: the dictionary's Chinese is enough when it has the word; the AI translates only what it does not have)
-    if (!plain && !here && (!PHONE || !glosses.length) && this.vb && (this.keys.anthropic || this.keys.openai)) {
+    if (!plain && !here && (!TOUCH || !glosses.length) && this.vb && (this.keys.anthropic || this.keys.openai)) {
       const sent = getSentence(this.vb.book, pos)?.text ?? '';
       const row = cardEl.querySelector<HTMLElement>('.zh.here');
       const job = completeStream(buildWordPrompt(target, sent), (full) => { if (row && this.card?.lemma === lemma) row.innerHTML = `<span><span class="pos">here</span>${esc(full.trim())}</span>`; });
@@ -3156,13 +3205,13 @@ class Session {
       const wr = el?.getBoundingClientRect();
       const x = wr ? wr.left - rr.left + wr.width / 2 : rr.width / 2;
       // (a phone: under the whole sentence, so the sentence stays readable)
-      const ar = (PHONE ? this.sentenceEl(root, pos)?.getBoundingClientRect() : undefined) ?? wr;
+      const ar = (TOUCH ? this.sentenceEl(root, pos)?.getBoundingClientRect() : undefined) ?? wr;
       let y = ar ? ar.bottom - rr.top + 8 : 60;
       cardEl.style.left = `${Math.max(8, Math.min(rr.width - 308, x - 150))}px`;
       if (y + 220 > rr.height && ar) y = Math.max(8, ar.top - rr.top - 8 - cardEl.offsetHeight);
       cardEl.style.top = `${y}px`;
       cardEl.style.removeProperty('bottom');
-      if (PHONE) {
+      if (TOUCH) {
         // (a phone: the whole width, at the top, or at the bottom when the sentence is in the upper half: the page
         // may move under it, but the sentence on the play line / on this page is never covered)
         cardEl.style.left = '8px';
@@ -3264,7 +3313,7 @@ class Session {
   }
   private placeBand(): void {
     const player = document.querySelector<HTMLElement>('#movie_player');
-    const want = !this.stageVisible() && (PHONE ? extras.view === 'normal' && extras.band !== 'off' : extras.band === 'on' || (extras.band === 'auto' && (!!document.fullscreenElement || !!document.querySelector('ytd-watch-flexy[theater]') || !this.panel)));
+    const want = !this.stageVisible() && (TOUCH ? extras.view === 'normal' && extras.band !== 'off' : extras.band === 'on' || (extras.band === 'auto' && (!!document.fullscreenElement || !!document.querySelector('ytd-watch-flexy[theater]') || !this.panel)));
     if (!player) return;
     if (!this.band) {
       const { host, root } = makeHost('dr-band-host');
@@ -3465,7 +3514,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: PHONE, justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `words ${extras.stopItemsOn === false ? 'off' : `${extras.capWords ?? 35}%`} · phrases ${extras.stopPhrasesOn === false ? 'off' : `${extras.capPhrases ?? 15}%`} · sentences ${extras.stopHardOn === false ? 'off' : `${extras.capSentences ?? 5}%`}`, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `words ${extras.stopItemsOn === false ? 'off' : `${extras.capWords ?? 35}%`} · phrases ${extras.stopPhrasesOn === false ? 'off' : `${extras.capPhrases ?? 15}%`} · sentences ${extras.stopHardOn === false ? 'off' : `${extras.capSentences ?? 5}%`}`, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -3508,7 +3557,7 @@ class Session {
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { page: this.readPage + 1, pages: this.readPages, shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
-      phone: PHONE, sleep: sleepMinutes(), asleep,
+      phone: TOUCH, device: DEVICE, lay: lay(), sleep: sleepMinutes(), asleep,
       level: { byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
@@ -3618,6 +3667,9 @@ function teachLength(): TeachLength { const l = settings.ai.explanationLength as
 /** page-wide choices while the tutor is on: YouTube's own captions always hidden, your video size */
 function applyPageLook(on = !!session): void {
   const html = document.documentElement;
+  // (the device and the layout, for the page CSS: data-ytc-phone / data-ytc-dev / data-ytc-lay)
+  if (on) { html.dataset.ytcPhone = TOUCH ? '1' : '0'; html.dataset.ytcDev = DEVICE; html.dataset.ytcLay = lay(); }
+  else { delete html.dataset.ytcPhone; delete html.dataset.ytcDev; delete html.dataset.ytcLay; }
   html.classList.toggle('dr-hide-cc-always', on && extras.hideYtAlways);
   const size = on ? clamp(extras.videoSize || 0, 0, 90) : 0;
   if (size === appliedVideoSize) return;
@@ -3739,7 +3791,7 @@ async function boot(): Promise<void> {
   if (mig) extras = await store.patchExtras(mig);
   // (once: "Explain N s" is 10, 20 or 30 seconds now, 20 the usual one)
   if (mig && (raw.migrated ?? 0) < 3 && settings.listen.lastSecondsWindow !== 10 && settings.listen.lastSecondsWindow !== 20) settings = await store.patchSettings({ listen: { ...settings.listen, lastSecondsWindow: 20 } });
-  if (PHONE) {
+  if (TOUCH) {
     const first = store.phoneDefaults(extras);
     if (first) {
       extras = await store.patchExtras(first);

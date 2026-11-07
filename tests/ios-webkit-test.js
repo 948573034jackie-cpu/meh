@@ -24,6 +24,7 @@ const api = H.startServer();
   ok('the app has the newest tutor (ios/sync-scripts.sh copied the built files)', ['dream-yt.js'].every((f) => fs.readFileSync(path.join(IOS, 'Scripts', f), 'utf8') === fs.readFileSync(path.join(BUILT, f), 'utf8'))
     && fs.readFileSync(path.join(IOS, 'Scripts', 'dream-bg.js'), 'utf8').includes(fs.readFileSync(path.join(BUILT, 'dream-bg.js'), 'utf8'))
     && fs.existsSync(path.join(IOS, 'Web/dream/dict.json.gz')), JSON.stringify(ytScripts));
+  ok('the app tells the page its device (iPhone or iPad: window.__ytcDevice, at document start)', /window\.__ytcDevice=/.test(H.swift) && /userInterfaceIdiom == \.pad/.test(H.swift));
 
   const ctx = await H.newAppContext(browser, 'iPhone 13', { device: 'phone' });
   const pageHits = ctx.pageHits; // (the page asking the services itself: it must not)

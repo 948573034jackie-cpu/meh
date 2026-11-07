@@ -31,8 +31,10 @@ export interface QuickCtx {
   testWord(): void;
   /** the online copy's last sync, in words */
   gist?: string;
-  /** a phone: the page is always the book of subtitles */
+  /** a touch screen (iPhone, iPad, the Safari extension): the page is always the book of subtitles */
   phone?: boolean;
+  /** an iPad (a touch screen too) */
+  pad?: boolean;
   /** the minutes left on the sleep timer (0 = off), and how to set it */
   sleepMin?: number;
   setSleep?(minutes: number): void;
