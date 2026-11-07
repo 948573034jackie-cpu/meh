@@ -9,184 +9,14 @@
 // from the app's button, the explanation streamed and spoken, the pause flow, a Claude call through the iOS microphone,
 // "let's go", the keys only in the Keychain, the iOS voice, the Microsoft voice request, the settings page in the sheet.
 // Run ios/sync-scripts.sh first (the CI does).
-const pw = require(process.env.PWMOD || 'playwright');
+// The fake video, the fake AI, the stand-in for Swift and the app's window are in tests/ios-harness.js.
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const IOS = path.resolve(__dirname, '../ios/YTLearn');
-const BUILT = path.resolve(__dirname, '../youtube-to-claude/dream');
-let fails = 0;
-const ok = (n, c, x) => { if (!c) fails++; console.log((c ? 'PASS' : 'FAIL') + '  ' + n + (x ? '  ' + String(x).slice(0, c ? 300 : 2000) : '')); };
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(cond, ms = 15000, step = 150) { const end = Date.now() + ms; for (;;) { const v = await cond(); if (v) return v; if (Date.now() > end) return null; await sleep(step); } }
-setTimeout(() => { console.log('FAIL  test took longer than 6 minutes (stuck) - stopping'); process.exit(1); }, 6 * 60 * 1000).unref();
-
-// ---- the scripts of the app's windows, in the app's order ----
-const swift = fs.readFileSync(path.join(IOS, 'AppModel.swift'), 'utf8');
-const listOf = (name) => JSON.parse(new RegExp(`static let ${name} = (\\[[^\\]]*\\])`).exec(swift)[1]);
-const source = (names) => names.map((n) => fs.readFileSync(path.join(IOS, 'Scripts', n + '.js'), 'utf8')).join('\n;\n');
-const ytScripts = listOf('youtubeScripts');
-const sheetScripts = listOf('sheetScripts');
-
-// ---- the video: 10 sentences, 4 s each ----
-const LINES = [
-  'Hello everyone and welcome back to the channel.',
-  'Today my friend was very meticulous about her work.',
-  'She checked every small detail twice.',
-  'It was an ephemeral moment of joy.',
-  'This is complete sentence number five of the lesson.',
-  'This is complete sentence number six of the lesson.',
-  'My uncle is a gregarious man who loves big parties.',
-  'This is complete sentence number eight of the lesson.',
-  'This is complete sentence number nine of the lesson.',
-  'We will talk about it again very soon.',
-];
-const SEC = 4, DUR = 60;
-const json3 = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * SEC * 1000, dDurationMs: SEC * 1000, segs: [{ utf8: t }] })) });
-const pr = JSON.stringify({ videoDetails: { videoId: 'ios00000001', title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://m.youtube.com/api/timedtext?v=ios00000001&lang=en', languageCode: 'en' }] } } });
-const makeWav = (sec, tone) => { const n = Math.round(8000 * sec), b = Buffer.alloc(44 + n, 128); if (tone) for (let i = 0; i < n; i++) b[44 + i] = 128 + Math.round(50 * Math.sin(2 * Math.PI * 330 * i / 8000)); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; };
-const wav = makeWav(DUR, true);
-const ttsWav = makeWav(0.25, false);
-// the phone page: no right column; the player on top, the video's details and related videos under it
-const ytHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Lesson - YouTube</title></head><body style="margin:0;background:#fff">
-<ytm-app><ytm-watch><div id="player-container-id" class="player-container" style="position:relative;width:100%;height:220px;background:#123">
-  <div id="movie_player" class="html5-video-player" style="width:100%;height:100%"><video muted playsinline src="https://m.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div></div>
-<ytm-single-column-watch-next-results-renderer><div id="below"><h2 class="slim-video-metadata-title">Dream Lesson</h2></div><ytm-item-section-renderer>related videos</ytm-item-section-renderer></ytm-single-column-watch-next-results-renderer>
-</ytm-watch></ytm-app><script>var ytInitialPlayerResponse = ${pr};</script></body></html>`;
-
-// ---- the fake Anthropic + Microsoft (the same answers as tests/dream-e2e.js) ----
-const apiLog = [];
-const sse = (res, text) => {
-  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-  const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-  ev('message_start', { message: { id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 120, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
-  ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
-  const parts = text.match(/[\s\S]{1,24}/g) || [''];
-  let i = 0;
-  const tick = () => {
-    if (i < parts.length) { ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: parts[i++] } }); setTimeout(tick, 15); return; }
-    ev('content_block_stop', { index: 0 });
-    ev('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 40 } });
-    ev('message_stop', {});
-    res.end();
-  };
-  tick();
-};
-let failNextAzure = 0;
-const kindOf = (sys, url) => (url.includes('/azure/') ? (url.includes('/voices/list') ? 'azure-list' : 'azure') : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
-const api = http.createServer((req, res) => {
-  const chunks = [];
-  req.on('data', (c) => chunks.push(c));
-  req.on('end', () => {
-    const body = Buffer.concat(chunks).toString('utf8');
-    let j = {};
-    try { j = JSON.parse(body); } catch (e) { /* not json */ }
-    const sys = JSON.stringify(j.system || '');
-    const user = JSON.stringify(j.messages || '');
-    const kind = kindOf(sys, req.url);
-    apiLog.push({ path: req.url, kind, model: j.model, user, sys, ssml: kind === 'azure' ? body : undefined, at: Date.now() });
-    if (kind === 'azure' && failNextAzure > 0) { failNextAzure--; apiLog[apiLog.length - 1].failed = true; res.writeHead(503, { 'content-type': 'text/plain' }); res.end('busy'); return; }
-    if (kind === 'azure') { res.writeHead(200, { 'content-type': 'audio/mpeg' }); res.end(ttsWav); return; }
-    if (kind === 'azure-list') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify([{ ShortName: 'en-GB-AdaMultilingualNeural' }])); return; }
-    if (/These rules are absolute/.test(sys) && /@@<its number>/.test(user)) return sse(res, [...user.matchAll(/\*(\d+)\. /g)].map((m) => `@@${m[1]}\nThis part is the hard one. It means something simple here, and it shows how the person feels.`).join('\n'));
-    if (!j.stream) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } })); return; }
-    if (kind === 'hints') return sse(res, JSON.stringify({ meticulous: ['一丝不苟的', '细致的'], ephemeral: ['短暂的', '转瞬即逝的'], gregarious: ['爱交际的', '合群的'] }));
-    if (kind === 'phrases') return sse(res, '{"phrases":[]}');
-    if (kind === 'split') {
-      const words = [...user.matchAll(/(\d+):(\S+?)(?= \d+:|\\n|"|$)/g)].map((m) => [Number(m[1]), m[2]]);
-      const out = []; let cur = [];
-      for (const [n, w] of words) { cur.push(w); if (/[.?!]$/.test(w)) { let t = cur.join(' '); if (/twice\.$/.test(t)) t = t.replace(' twice.', ', twice.'); out.push(`${n}|${t}`); cur = []; } }
-      return sse(res, out.join('\n'));
-    }
-    if (kind === 'hard') return sse(res, JSON.stringify({ hard: [] }));
-    if (kind === 'zhlines') { const n = [...user.matchAll(/\\n(\d+)\. /g)].map((m) => Number(m[1])); return sse(res, n.map((k) => `${k}. 中文第${k}句`).join('\n')); }
-    if (kind === 'zhword') return sse(res, '细致的；仔细的');
-    if (kind === 'chat') return sse(res, /gregarious/i.test(user) ? 'Gregarious means friendly. A gregarious man loves parties and people.' : 'Hi! Ask me anything about this part.');
-    const cur = (/The sentence being read now:\\n(.*?)(?:\\n|")/.exec(user) || [])[1] || '';
-    if (/The learner just paused the video/.test(user)) return sse(res, 'In this part the speaker counts the sentences of the lesson. That is the main point.');
-    return sse(res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : 'It means something simple.');
-  });
-}).listen(8791);
-const FAKE = 'http://localhost:8791';
-
-// ---- the stand-in for the app's Swift side (Bridge.swift) ----
-const stores = { local: {}, sync: {} };
-const keychain = {};
-const nativeLog = [];
-// the shared vocabulary file (iCloud Drive ▸ MEH English, written by the Mac): the app must merge it in and write it back
-let vocabShared = { version: 1, updatedAt: '2026-11-03T10:00:00.000Z', currentLevel: 'about B2 for reading', tests: [{ date: '2026-11-03', source: 'A Mac video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }],
-  known: [{ item: 'serendipity', date: '2026-11-03' }], stillLearning: [{ item: 'flabbergasted', date: '2026-11-03', sentence: 'I was flabbergasted by the news.' }] };
-const vocabWrites = [];
-const fetchLog = [];
-const aborts = {};
-const MIME = { '.gz': 'application/gzip', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.txt': 'text/plain' };
-function realToFake(url) { // what URLSession would reach: the real services, here the fake server
-  const u = new URL(url);
-  const az = /^([a-z0-9-]+)\.tts\.speech\.microsoft\.com$/.exec(u.hostname);
-  if (az) return `${FAKE}/azure/${az[1]}${u.pathname}${u.search}`;
-  if (u.hostname === 'api.anthropic.com' || u.hostname === 'api.openai.com') return FAKE + u.pathname + u.search;
-  throw new Error('host not allowed: ' + u.hostname);
-}
-async function native(page, b) {
-  const area = b.area || 'local';
-  nativeLog.push({ kind: b.kind, op: b.op, path: b.path, url: b.url, text: b.text, voice: b.voice, at: Date.now() });
-  switch (b.kind) {
-    case 'storageAll': return JSON.stringify(stores[area] || {});
-    case 'storageSet': Object.assign(stores[area], JSON.parse(b.json)); return null;
-    case 'storageRemove': for (const k of b.keys || []) delete stores[area][k]; return null;
-    case 'keychainGet': return keychain[b.name] ?? null;
-    case 'vocabFile': {
-      const m = b.msg || {};
-      const base = { ok: true, path: '/app/Documents/vocabulary.json', phone: true, shared: true, folder: 'MEH English' };
-      if (m.type === 'read') return { ...base, docs: [vocabShared] };
-      if (m.type === 'write') { vocabWrites.push(m.doc); vocabShared = m.doc; return { ...base, sharedOk: true }; }
-      return base;
-    }
-    case 'keychainSet': if (b.value == null) delete keychain[b.name]; else keychain[b.name] = b.value; return null;
-    case 'resource': {
-      const f = path.join(IOS, 'Web', path.normalize(b.path).replace(/^(\.\.[/\\])+/, ''));
-      if (!fs.existsSync(f)) return null;
-      return { b64: fs.readFileSync(f).toString('base64'), mime: MIME[path.extname(f)] || 'application/octet-stream' };
-    }
-    case 'nativeFetch': {
-      const ctrl = new AbortController();
-      aborts[b.id] = ctrl;
-      const res = await fetch(realToFake(b.url), { method: b.method, headers: b.headers, body: b.body ? Buffer.from(b.body, 'base64') : undefined, signal: ctrl.signal });
-      const headers = {};
-      res.headers.forEach((v, k) => { if (!/^(content-encoding|content-length|transfer-encoding|connection)$/.test(k)) headers[k] = v; });
-      const entry = { url: b.url, method: b.method, headers: b.headers, status: res.status, chunks: 0 };
-      fetchLog.push(entry);
-      (async () => { // the body follows in pieces, like URLSession's didReceive data
-        try {
-          for await (const chunk of res.body) { entry.chunks++; await page.evaluate(([id, s]) => window.__ytcFetchChunk(id, s), [b.id, Buffer.from(chunk).toString('base64')]); }
-          await page.evaluate((id) => window.__ytcFetchEnd(id), b.id);
-        } catch (e) { await page.evaluate(([id, m]) => window.__ytcFetchEnd(id, m), [b.id, String(e.message || e)]).catch(() => {}); }
-        delete aborts[b.id];
-      })();
-      return { status: res.status, statusText: res.statusText, headers };
-    }
-    case 'nativeFetchCancel': if (aborts[b.id]) aborts[b.id].abort(); return null;
-    case 'voices': return [{ id: 'com.apple.voice.premium.en-GB.Malcolm', name: 'Malcolm (Premium)', lang: 'en-GB' }, { id: 'com.apple.voice.compact.en-US.Samantha', name: 'Samantha', lang: 'en-US' }, { id: 'com.apple.voice.compact.zh-CN.Tingting', name: 'Tingting', lang: 'zh-CN' }];
-    case 'speak': { // AVSpeechSynthesizer: start, the words, then the end
-      const id = b.id, text = String(b.text || '');
-      setTimeout(async () => {
-        try {
-          await page.evaluate((i) => window.__ytcTts({ id: i, event: 'start' }), id);
-          for (const m of text.matchAll(/\S+/g)) { await page.evaluate(([i, c, l]) => window.__ytcTts({ id: i, event: 'word', charIndex: c, charLength: l }), [id, m.index, m[0].length]); await sleep(4); }
-          await page.evaluate((i) => window.__ytcTts({ id: i, event: 'end' }), id);
-        } catch (e) { /* page gone */ }
-      }, 20);
-      return null;
-    }
-    case 'chatInfo': return { url: '' };
-    default: return null; // speakStop, speakPause, speakResume, speech, openPage, audioSession, log, voice …
-  }
-}
-// what the Swift side is made of, in the page: the message handler (answers as a promise)
-const fakeWebkit = () => {
-  const handler = { postMessage: (o) => window.__ytcNative(JSON.stringify(o)).then((r) => (r === undefined || r === null ? r : JSON.parse(r))) };
-  Object.defineProperty(window, 'webkit', { value: { messageHandlers: { ytc: handler } }, configurable: true });
-};
+const H = require('./ios-harness');
+const { pw, IOS, BUILT, MIME, ok, until, sleep, source, ytScripts, sheetScripts, LINES, ttsWav, apiLog, nativeLog, fetchLog, stores, keychain, vocabWrites } = H;
+H.watchdog(6);
+const api = H.startServer();
 
 (async () => {
   const browser = await pw.webkit.launch();
@@ -195,17 +25,8 @@ const fakeWebkit = () => {
     && fs.readFileSync(path.join(IOS, 'Scripts', 'dream-bg.js'), 'utf8').includes(fs.readFileSync(path.join(BUILT, 'dream-bg.js'), 'utf8'))
     && fs.existsSync(path.join(IOS, 'Web/dream/dict.json.gz')), JSON.stringify(ytScripts));
 
-  const ctx = await browser.newContext({ ...pw.devices['iPhone 13'] });
-  await ctx.exposeBinding('__ytcNative', async ({ page }, json) => { const r = await native(page, JSON.parse(json)); return r === null || r === undefined ? null : JSON.stringify(r); });
-  await ctx.addInitScript(fakeWebkit);
-  const pageHits = []; // the page asking the services itself (it must not: CORS and the page's limits)
-  ctx.on('request', (r) => { if (/api\.anthropic\.com|api\.openai\.com|tts\.speech\.microsoft\.com|localhost:8791/.test(r.url())) pageHits.push(r.url()); });
-  await ctx.route('https://m.youtube.com/**', (route) => {
-    const u = route.request().url();
-    if (u.includes('/v.wav')) { const rg = route.request().headers().range; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; return route.fulfill({ status: 206, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-range': `bytes ${a}-${e}/${wav.length}` }, body: wav.slice(a, e + 1) }); } return route.fulfill({ status: 200, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes' }, body: wav }); }
-    if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
-    return route.fulfill({ status: 200, contentType: 'text/html', body: ytHtml });
-  });
+  const ctx = await H.newAppContext(browser, 'iPhone 13', { device: 'phone' });
+  const pageHits = ctx.pageHits; // (the page asking the services itself: it must not)
 
   // what the app has saved before (the tutor on, test-friendly timings); the Claude key is in the Keychain
   Object.assign(stores.local, {
@@ -274,9 +95,9 @@ const fakeWebkit = () => {
 
   // a word ignored here stays ignored (the file still has it), and goes out of the shared file
   await yt.evaluate(() => chrome.storage.local.get('drVocab').then((o) => chrome.storage.local.set({ drVocab: { ...o.drVocab, words: { ...o.drVocab.words, flabbergast: 'ignored' } } })));
-  const ignoredOut = await until(() => (vocabShared.removed || []).some((r) => r.item === 'flabbergasted') && !vocabShared.stillLearning.some((l) => l.item === 'flabbergasted'), 8000, 200);
+  const ignoredOut = await until(() => (H.vocabShared.removed || []).some((r) => r.item === 'flabbergasted') && !H.vocabShared.stillLearning.some((l) => l.item === 'flabbergasted'), 8000, 200);
   await sleep(600);
-  ok('a word ignored in the app stays ignored after the next merge, and the shared file drops it (the Mac is told)', !!ignoredOut && stores.local.drVocab.words.flabbergast === 'ignored', JSON.stringify({ st: stores.local.drVocab.words.flabbergast, removed: vocabShared.removed }));
+  ok('a word ignored in the app stays ignored after the next merge, and the shared file drops it (the Mac is told)', !!ignoredOut && stores.local.drVocab.words.flabbergast === 'ignored', JSON.stringify({ st: stores.local.drVocab.words.flabbergast, removed: H.vocabShared.removed }));
   const writesNow = vocabWrites.length;
   await sleep(1500);
   ok('...and the merge settles (no endless writing)', vocabWrites.length === writesNow, `${vocabWrites.length - writesNow} more writes`);
@@ -353,7 +174,7 @@ const fakeWebkit = () => {
     JSON.stringify({ url: azf && azf.url, headers: azf && azf.headers, got: tts && (tts.error || (tts.b64 || '').length) }));
 
   // a busy Microsoft server: tried again by itself, the good voice goes on
-  failNextAzure = 1;
+  H.failAzure(1);
   const nB = apiLog.length;
   const busy = await yt.evaluate(() => chrome.runtime.sendMessage({ type: 'dream-tts', engine: 'azure', text: 'Another sentence for the voice.', voice: 'en-GB-AdaMultilingualNeural', lang: 'en' }));
   const tries = apiLog.slice(nB).filter((r) => r.kind === 'azure');
@@ -589,6 +410,6 @@ const fakeWebkit = () => {
 
   await browser.close();
   api.close();
-  console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
-  process.exit(fails ? 1 : 0);
+  console.log(H.fails() ? `\n${H.fails()} FAILED` : '\nALL PASSED');
+  process.exit(H.fails() ? 1 : 0);
 })().catch((e) => { console.log('FAIL  crashed:', e && e.stack || e); process.exit(1); });

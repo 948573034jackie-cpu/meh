@@ -142,6 +142,12 @@ jobs:
       - name: My tutor in the iPhone/iPad app, in WebKit (the app's scripts + a stand-in for its Swift side)
         if: always()
         run: ./ios/sync-scripts.sh && node tests/ios-webkit-test.js
+      - name: The app's page on each device and way round (iPhone / iPad, portrait / landscape), in WebKit
+        if: always()
+        run: node tests/ios-layout-test.js
+      - name: The app with the tutor off (Free mode = no AI call), in WebKit
+        if: always()
+        run: node tests/ios-free-test.js
 
   dream-tutor:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
