@@ -413,8 +413,9 @@ export class ListenController {
           break;
         }
         if (asked && !over()) {
-          // the explanation, then the word again (as many times as before it), then the sentence from the video
-          const res = await this.runExplanation('sentence', cur.text, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }], lemma);
+          // the explanation of ONLY that word or phrase, then the word again (as many times as before it), then the
+          // sentence from the video
+          const res = await this.runExplanation(asked.kind, asked.target, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }], asked.lemma);
           if (res === 'done' && !over()) {
             this.deps.onWordAgain?.();
             const again = await this.sayTarget(asked.target, asked.lemma, Math.max(0, this.deps.settings().listen.wordRepeats));
@@ -629,7 +630,14 @@ export class ListenController {
     const s = this.deps.settings();
     const script = this.deps.directStop?.() && !question ? plainScript() : scriptFor(kind, target, sentence, s);
     if (kind === 'word' || kind === 'phrase' || kind === 'sentence') this.last = { kind, target, pos, dict, lemma };
-    const res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again, spoken);
+    let res = await this.runExplanation(kind, target, pos, sentence, dict, script, lemma, question, again, spoken);
+    // (Level Check, the learner's rules: after a word or phrase is explained it is said again, as many times as at a
+    // stop; the app closes its card first. Then the reading goes on where it was, when it was playing.)
+    if (res === 'done' && this.deps.directStop?.() && !question && (kind === 'word' || kind === 'phrase') && !this.disposed) {
+      this.deps.onWordAgain?.();
+      const again = await this.sayTarget(target, lemma, Math.max(0, s.listen.wordRepeats));
+      if (again === 'skipped') res = 'skipped';
+    }
     // (Level Check: a word tapped anywhere does not move the reading: it goes on where it was)
     const readOn = this.deps.directStop?.() ? resumeAt : kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;
     // Reading mode: stop and wait. Listening mode: the pause, then on with the book.

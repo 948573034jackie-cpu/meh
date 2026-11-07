@@ -36,6 +36,9 @@ let zipf: (w: string) => number | null = () => null;
 let vocab: VocabState = { words: {}, marked: {} };
 let level: LevelMeta;
 let extras: store.YtExtras;
+/** short / mid / long (Settings), read when the page starts */
+let teachLen: 'short' | 'normal' | 'long' = 'normal';
+const readLength = () => teachLen;
 let tts: TtsEngine;
 let voiceId = '';
 let rate = 1;
@@ -255,6 +258,7 @@ async function prepareVoice(): Promise<void> {
   const keys = await store.getKeys();
   const kind = resolveVoice(extras.voice, keys);
   rate = (await store.getSettings()).voice.rate;
+  { const l = (await store.getSettings()).ai.explanationLength as string; teachLen = l === 'short' || l === 'long' ? l : 'normal'; }
   if (kind === 'mac') { tts = mac; voiceId = macVoice; return; }
   tts = new VoiceWithBackup(cloudEngine(kind, 'en'), mac, () => macVoice, () => undefined);
   voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
@@ -315,8 +319,10 @@ async function open(title: string, text: string, kind: 'pdf' | 'text'): Promise<
     : Promise.resolve(null);
   // the explanations are written once, ahead of the stops, and saved with this text
   analysis = keys.anthropic || keys.openai ? new Analysis({
-    load: () => store.getAnalysis(id),
-    save: (texts) => store.setAnalysis(id, texts),
+    // (the learner's own rules, in their length: saved apart from older explanations)
+    load: () => store.getAnalysis(`${id}|v2|${readLength()}`),
+    save: (texts) => store.setAnalysis(`${id}|v2|${readLength()}`, texts),
+    length: () => readLength(),
     stops: readerStops,
     lineAt: (i) => getSentence(book, order[i])?.text ?? '',
     total: () => order.length,

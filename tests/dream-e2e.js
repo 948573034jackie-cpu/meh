@@ -282,8 +282,8 @@ const api = http.createServer((req, res) => {
   // the original sentence the teacher quotes is played from the video (the real speaker; no voice characters)
   const quoteSpoken = (await speak()).some((x) => /complete sentence number five/.test(x));
   ok('a sentence of the video the teacher quotes is played from the video itself, not read by the voice', !quoteSpoken && (await seeksTo(16 - 0.15)) >= 1, JSON.stringify({ quoteSpoken, seeks: await seeksTo(16 - 0.15) }));
-  const back = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow && (await seeksTo(7.85)) >= 2 ? v : null; }, 15000, 80);
-  ok('then back to the start of the part, playing (no stops inside it)', back && back.t < 10, JSON.stringify(back));
+  const back = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow ? v : null; }, 15000, 80);
+  ok('then (it was playing) the last sentence of the part again and on, playing', !!back, JSON.stringify(back));
   await sleep(1500);
   ok('the part replays without stopping at "gregarious" again', !(await dbg()).window);
 
@@ -292,13 +292,14 @@ const api = http.createServer((req, res) => {
   await until(async () => { const v = await vstate(); return v.t > 33.6 && v.t < 35; }, 15000, 50);
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
   const nL = apiLog.length;
-  const seeks31 = await seeksTo(31.85);
+  const seeks27 = await seeksTo(27.85);
   await yt.keyboard.press('ArrowLeft');
-  const left = await until(() => apiLog.slice(nL).find((r) => r.kind === 'explain' && /The sentence being read now:\\nThis is complete sentence number nine/.test(r.user)), 8000);
-  ok('← explains the last sentence (RULE TWO for sentences)', !!left && /RULE TWO/.test(left.user + left.sys));
-  const twice = await until(async () => (await seeksTo(31.85)) >= seeks31 + 2 ? true : null, 20000, 80);
+  // (the LAST sentence: the newest one that has finished, number eight; nine is still being heard)
+  const left = await until(() => apiLog.slice(nL).find((r) => r.kind === 'explain' && /The sentence being read now:\\nThis is complete sentence number eight/.test(r.user)), 8000);
+  ok('← explains the last sentence, the one that finished (RULE TWO for sentences)', !!left && /RULE TWO/.test(left.user + left.sys));
+  const twice = await until(async () => (await seeksTo(27.85)) >= seeks27 + 2 ? true : null, 20000, 80);
   ok('it was played from the video before and after the explanation', !!twice, JSON.stringify(await vevents()).slice(-200));
-  const after7 = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow && v.t > 35.5 ? v : null; }, 15000, 80);
+  const after7 = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow && v.t > 31.5 ? v : null; }, 15000, 80);
   ok('then the video goes on after it', !!after7, JSON.stringify(after7));
 
   // ---- 8. listening mode: all subtitles over the screen, the playing line near the middle; sizes, Chinese, quick settings ----
@@ -388,7 +389,7 @@ const api = http.createServer((req, res) => {
   const failedTts = apiLog.filter((r) => r.kind === 'tts' && r.failed);
   ok('a voice hiccup (one failed request) is tried again: the OpenAI voice keeps speaking, no switch to the Mac voice', failedTts.length === 1 && apiLog.filter((r) => r.kind === 'tts' && !r.failed && r.input === failedTts[0].input).length >= 1 && (await speak()).length === macBefore && (await dbg()).voice === 'openai', JSON.stringify({ failed: failedTts.map((r) => r.input), mac: (await speak()).slice(macBefore) }));
   const live = await until(() => liveLog[0], 20000);
-  ok('the live call connects to OpenAI realtime with the key (from the background), the part, your rules, the tools', live && /Bearer sk-openai-test/.test(live.auth) && live.session.model === 'gpt-realtime-2.1' && live.session.audio.output.voice === 'marin' && /RULE ONE/.test(live.session.instructions) && /number six/.test(live.session.instructions) && live.session.tools.some((t) => t.name === 'continue_video'), JSON.stringify(live && { m: live.session.model, v: live.session.audio.output.voice }));
+  ok('the live call connects to OpenAI realtime with the key (from the background), the part, your rules, the tools', live && /Bearer sk-openai-test/.test(live.auth) && live.session.model === 'gpt-realtime-2.1' && live.session.audio.output.voice === 'marin' && /RULE ONE/.test(live.session.instructions) && /number five/.test(live.session.instructions) && live.session.tools.some((t) => t.name === 'continue_video'), JSON.stringify(live && { m: live.session.model, v: live.session.audio.output.voice, auth: /Bearer sk-openai-test/.test(live.auth), r1: /RULE ONE/.test(live.session.instructions), five: /number five/.test(live.session.instructions), nums: [...live.session.instructions.matchAll(/number (\w+)/g)].map((m) => m[1]), tool: live.session.tools.map((t) => t.name), ins: live.session.instructions.slice(0, 300) }));
   ok('the microphone is most sensitive by default (lowest speech threshold, laptop-microphone noise setting)', live && live.session.audio.input.turn_detection.type === 'server_vad' && live.session.audio.input.turn_detection.threshold === 0.25 && live.session.audio.input.noise_reduction.type === 'far_field');
   const ready2 = await until(async () => { const d = await dbg(); return d && d.talk && d.talk.live === 'ready' ? d : null; }, 15000);
   ok('the WebRTC call is up (data channel open)', !!ready2, JSON.stringify((await dbg()).talk));

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "My tutor: YouTube English",
-  "version": "3.6",
+  "version": "3.7",
   "description": "Your own AI English teacher on YouTube (your own API key): a Level Check, stops at what is hard for you, explanations with a natural voice, a voice call, Chinese, and one vocabulary database for your Mac and iPhone.",
   "permissions": [
     "tabs",
@@ -13,7 +13,8 @@
     "https://www.youtube.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
-    "https://api.elevenlabs.io/*", "https://*.tts.speech.microsoft.com/*"
+    "https://api.elevenlabs.io/*", "https://*.tts.speech.microsoft.com/*",
+    "https://lrclib.net/*", "https://api.github.com/*", "https://gist.githubusercontent.com/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -18,66 +18,86 @@ struct ContentView: View {
     }
 
     /// The one bar of the app (there is no keyboard on the phone: the same actions as My tutor's keyboard shortcuts).
-    /// The first five are in view on an iPhone (375 pt wide): the tutor's switch, play / stop, explain the last N
-    /// seconds, explain the last sentence, call the tutor. Swipe the bar sideways for the rest; the app's own three
-    /// (Home, Paste link, App settings) are its last buttons. With the tutor off: its switch, then those three.
+    /// Left to right, in view on an iPhone: the tutor's switch (a small dot), play / stop, explain the last N seconds,
+    /// explain the LAST sentence, call the tutor, bigger than before (the ask box is gone). Swipe the bar for the
+    /// rest: Find a video, Voice, Mode, One button, Sleep, Words, Settings, Check, then the app's own Home, Paste link
+    /// and App settings. With the tutor off: its switch, Find, and those three. In one-button mode: only the way out.
     private var tutorBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 Button { model.dream("tutor") } label: {
-                    Text(model.tutorOn ? "Tutor ● on" : "Tutor ○ off")
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15)))
+                    Circle()
+                        .fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15))
+                        .frame(width: 16, height: 16)
+                        .frame(width: 30, height: 44)
                 }
                 .buttonStyle(.plain)
-                if model.tutorOn {
-                    tutorButton("stop", "playpause.fill", "Play / stop")
-                    tutorButton("explainLast", "text.bubble", "Explain \(model.explainSeconds) s")
-                    tutorButton("explainSentence", "arrow.uturn.backward", "Sentence")
-                    tutorButton("talk", "phone.fill", "Call")
+                .accessibilityLabel(model.tutorOn ? "My tutor is on: turn it off" : "My tutor is off: turn it on")
+                if model.tutorOn && model.oneButton {
+                    Button { model.dream("oneButton") } label: {
+                        Text("Leave one-button mode").font(.system(size: 13, weight: .semibold))
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Capsule().fill(Color(.tertiarySystemFill)))
+                    }
+                    .buttonStyle(.plain)
+                } else if model.tutorOn {
+                    Group {
+                        tutorButton("stop", "playpause.fill", "Play / stop", big: true)
+                        tutorButton("explainLast", "text.bubble", "Explain \(model.explainSeconds) s", big: true)
+                        tutorButton("explainSentence", "arrow.uturn.backward", "Last sentence", big: true)
+                        tutorButton("talk", "phone.fill", "Call", big: true)
+                    }
                     // (after a swipe)
-                    tutorButton("voiceMode", "mic", "Voice")
-                    tutorButton("mode", "book", "Mode")
-                    tutorButton("sleep", "moon.zzz", "Sleep")
-                    tutorButton("vocab", "character.book.closed", "Words")
-                    tutorButton("quick", "slider.horizontal.3", "Settings")
-                    tutorButton("check", "stethoscope", "Check")
+                    Group {
+                        tutorButton("find", "magnifyingglass", "Find video")
+                        tutorButton("voiceMode", "mic", "Voice")
+                        tutorButton("mode", "book", "Mode")
+                        tutorButton("oneButton", "circle.fill", "One button")
+                    }
+                    Group {
+                        tutorButton("sleep", "moon.zzz", "Sleep")
+                        tutorButton("vocab", "character.book.closed", "Words")
+                        tutorButton("quick", "slider.horizontal.3", "Settings")
+                        tutorButton("check", "stethoscope", "Check")
+                    }
+                } else {
+                    tutorButton("find", "magnifyingglass", "Find video")
                 }
-                appButton("house", "Home") { model.goHome() }
-                appButton("link", "Paste link") { model.pasteLink() }
-                appButton("gearshape", "App settings") { showSettings = true }
+                if !(model.tutorOn && model.oneButton) {
+                    appButton("house", "Home") { model.goHome() }
+                    appButton("link", "Paste link") { model.pasteLink() }
+                    appButton("gearshape", "App settings") { showSettings = true }
+                }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
         }
         .background(Color(.secondarySystemBackground))
         // (its own view: two sheets on one view do not work on every iOS)
         .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
     }
 
-    /// a small button of the bar: a symbol with a word under it (fixed sizes: five must fit side by side)
-    private func barLabel(_ symbol: String, _ title: String) -> some View {
-        VStack(spacing: 2) {
-            Image(systemName: symbol).font(.system(size: 17))
-            Text(title).font(.system(size: 10)).lineLimit(1).fixedSize()
+    /// a button of the bar: a symbol with a word under it. `big`: the four main ones (they fit side by side on 375 pt)
+    private func barLabel(_ symbol: String, _ title: String, big: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: symbol).font(.system(size: big ? 23 : 17))
+            Text(title).font(.system(size: big ? 12 : 10, weight: big ? .medium : .regular)).lineLimit(1).fixedSize()
         }
-        .frame(minWidth: 50)
+        .frame(minWidth: big ? 74 : 50, minHeight: big ? 48 : 40)
+        .contentShape(Rectangle())
     }
 
     /// one of My tutor's actions (window.__ytcDream.action in the page)
-    private func tutorButton(_ action: String, _ symbol: String, _ title: String) -> some View {
-        Button { model.dream(action) } label: { barLabel(symbol, title) }
+    private func tutorButton(_ action: String, _ symbol: String, _ title: String, big: Bool = false) -> some View {
+        Button { model.dream(action) } label: { barLabel(symbol, title, big: big) }
+            .buttonStyle(.plain)
             .accessibilityLabel(title)
     }
 
     /// one of the app's own buttons (they were the bar at the top)
     private func appButton(_ symbol: String, _ title: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) { barLabel(symbol, title) }
+            .buttonStyle(.plain)
             .accessibilityLabel(title)
     }
 

@@ -6,7 +6,7 @@
 import { DEFAULT_SETTINGS, migrateSettings, type Settings, type VocabState, type WordStatus, type UsageRecord } from '@shared/settings';
 import type { VocabEntry, VocabEntryInput } from '@shared/api';
 import { mergeEntry } from './vocab';
-import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
+import { DEFAULT_TEACHER, MY_TEACHER_STYLE, OLD_TEACHER } from './teacher-text';
 import { TEACHING_WAYS, wayPrompts, wayStyle } from './teaching-ways';
 import type { StyleOverride } from '@shared/styles';
 import type { Dictionary } from '@core/dict/types';
@@ -51,7 +51,17 @@ export interface YtExtras {
   micLevel: 1 | 2 | 3;
   /** 'listening' = Dream Read's page with all the subtitles over the whole screen; 'normal' = the video */
   /** … 'reading' = pages like an e-reader: the text does not move, a thin line follows the word, the pages turn by themselves */
-  view: 'normal' | 'listening' | 'reading';
+  view: 'normal' | 'listening' | 'reading' | 'lyrics';
+  /** a phone, Video mode: the subtitle line on the video, px (a little smaller than the pages) */
+  phoneBandPx?: number;
+  /** the letters thinner or bolder: 300 (thin) … 700 (bold), 400 = normal */
+  textWeight?: number;
+  /** one-button mode (Listening): the page is one big dark button that explains the last N seconds */
+  oneButton?: boolean;
+  /** an E button on every sentence (explain this sentence); on a phone a switch, off at first */
+  sentenceButtons?: boolean;
+  /** Reading pages: 'day' (light) or 'night' (dark) */
+  readLook?: 'day' | 'night';
   /** text size of the reading pages, px (each mode has its own size) */
   readSizePx: number;
   /** (old) where the playing line stayed, % from the top: playLine replaced it */
@@ -62,9 +72,12 @@ export interface YtExtras {
   phoneSizePx: number;
   /** show what the tutor says as text too (off: you only hear it) */
   showSay: boolean;
-  /** Level Check stops for hard words and phrases: on / off, and their share of the sentences in % */
+  /** Level Check stops for hard WORDS: on / off, and their share of the sentences in % */
   stopItemsOn: boolean;
   capWords: number;
+  /** Level Check stops for PHRASES (idioms, slang, phrasal verbs): on / off, and their share in % */
+  stopPhrasesOn: boolean;
+  capPhrases: number;
   /** Level Check stops for whole sentences (hard grammar, hidden meaning): on / off, and their share in % */
   stopHardOn: boolean;
   capSentences: number;
@@ -130,7 +143,7 @@ export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true,
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42, playLine: 40, phoneSizePx: 21, readSizePx: 22, showSay: false,
-  stopItemsOn: true, capWords: 45, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 5, phoneSet: false,
+  stopItemsOn: true, capWords: 35, stopPhrasesOn: true, capPhrases: 15, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 7, phoneSet: false,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
   teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '',
 };
@@ -138,12 +151,20 @@ export const DEFAULT_EXTRAS: YtExtras = {
 /**
  * One-time changes to saved settings when the app learns better defaults:
  * 1 = after an explanation the video goes on by itself (no talk, no live call waiting); talk only when you ask (📞).
+ * 2 = three stop groups (words, phrases, sentences: the old "words and phrases" share goes to both), known after 7
+ *     explanations, no "stops by itself: off" left over (that row is gone), the learner's own teacher.
  */
-export const EXTRAS_VERSION = 1;
+export const EXTRAS_VERSION = 2;
 export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   if ((x.migrated ?? 0) >= EXTRAS_VERSION) return null;
   const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };
   if ((x.migrated ?? 0) < 1) p.talkAfterExplain = false;
+  if ((x.migrated ?? 0) < 2) {
+    if (x.stopPhrasesOn === undefined) { p.stopPhrasesOn = x.stopItemsOn !== false; p.capPhrases = Math.min(x.capWords ?? 15, 15); }
+    if (x.knownAfter === undefined || x.knownAfter === 5) p.knownAfter = 7;
+    if ((x.stopGapSec ?? 45) < 0) p.stopGapSec = 45;
+    if (x.teacher === OLD_TEACHER) p.teacher = DEFAULT_TEACHER;
+  }
   return p;
 }
 
@@ -153,7 +174,8 @@ export function phoneDefaults(x: YtExtras): Partial<YtExtras> | null {
   return x.phoneSet ? null : { phoneSet: true, zhLines: false, voiceMode: true, view: 'listening', levelAsk: false };
 }
 
-export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string }
+/** github: a token with only "Gists: read and write" (the online vocabulary); genius: not used yet */
+export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string; github?: string; genius?: string }
 export type KeyName = keyof Keys;
 
 const K = { settings: 'drSettings', extras: 'drExtras', vocab: 'drVocab', entries: 'drEntries', usage: 'drUsage', keys: 'drKeys' } as const;
@@ -210,6 +232,11 @@ export function patchSettings(patch: Partial<Settings>): Promise<Settings> {
     await area().set({ [K.settings]: next });
     return next;
   });
+}
+/** the extras as saved (no defaults mixed in): for the one-time changes, which look at what is missing */
+export async function getRawExtras(): Promise<Partial<YtExtras>> {
+  const o = await area().get(K.extras);
+  return { ...((o[K.extras] as Partial<YtExtras> | undefined) ?? {}) };
 }
 export async function getExtras(): Promise<YtExtras> {
   const o = await area().get(K.extras);
@@ -408,6 +435,8 @@ export interface DbStatus {
   notInstalled?: boolean; noDevice?: boolean; safari?: boolean;
   /** the helper on the Mac is an older one: it writes the file but cannot read the iPhone's words back */
   oldHelper?: boolean;
+  /** the online copy (a private GitHub gist): on, saved, its error, how many words came in from it */
+  gist?: boolean; gistOk?: boolean; gistError?: string; gistMerged?: number; gistAt?: string;
 }
 
 export async function getLevel(): Promise<LevelMeta> {
@@ -533,7 +562,12 @@ export async function applyDoc(merged: MergeResult, dict: Pick<Dictionary, 'lemm
     await updateLevel((m) => {
       const all = { ...m.log, ...log };
       for (const k of gone) delete all[k];
-      return { ...m, tests: doc.tests, currentLevel: doc.currentLevel || m.currentLevel, log: all };
+      // (every test of both, once: a test saved here meanwhile is never lost)
+      const tests = [...m.tests];
+      const have = new Set(tests.map(testId));
+      for (const t of doc.tests) if (!have.has(testId(t))) { tests.push(t); have.add(testId(t)); }
+      tests.sort((a, b) => a.date.localeCompare(b.date));
+      return { ...m, tests, currentLevel: doc.currentLevel || m.currentLevel, log: all };
     });
   }
   return changed;
@@ -576,6 +610,16 @@ export async function setLevelItems(id: string, items: AiItem[]): Promise<void> 
 }
 
 /** Per-video caches (the AI's complete sentences, the Chinese lines); the oldest are removed after 80 videos. */
+/** "Find me a video": a video's level, worked out once from its subtitles (the newest 400 kept) */
+export async function getVideoLevel<T>(videoId: string): Promise<T | null> {
+  const o = await area().get(`drVLevel:${videoId}`);
+  return (o[`drVLevel:${videoId}`] as T | undefined) ?? null;
+}
+export async function setVideoLevel(videoId: string, level: unknown): Promise<void> {
+  await area().set({ [`drVLevel:${videoId}`]: level });
+  await remember('drVLevel', videoId, 400);
+}
+
 async function remember(prefix: string, videoId: string, keep = 80): Promise<void> {
   const idxKey = `${prefix}Index`;
   const o = await area().get(idxKey);
@@ -596,6 +640,13 @@ export async function getSplit(videoId: string, version: number): Promise<VideoS
 export async function setSplit(videoId: string, v: VideoSplit): Promise<void> { await area().set({ [`drSent:${videoId}`]: v }); await remember('drSent', videoId); }
 
 /** Chinese translation of each sentence of a video (by its text, so a new split keeps what still fits). */
+/** lyrics mode: what the tutor said about a song before it played (summary, background, how people read it) */
+export async function getSong(id: string): Promise<string | null> {
+  const k = `drSong:${id}`;
+  return ((await area().get(k))[k] as string | undefined) ?? null;
+}
+export async function setSong(id: string, notes: string): Promise<void> { await area().set({ [`drSong:${id}`]: notes }); await remember('drSong', id, 60); }
+
 export async function getZh(videoId: string): Promise<Record<string, string>> {
   const k = `drZh:${videoId}`;
   return { ...(((await area().get(k))[k] as Record<string, string> | undefined) ?? {}) };

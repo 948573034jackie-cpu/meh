@@ -234,7 +234,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   ok('the first stop comes', !!firstStop, JSON.stringify(await dbg()).slice(0, 300));
   // a stop for a hard word: the word 3 times, then the window waits ("Do you know …?")
   const win1 = await until(async () => { const d = await dbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 50);
-  ok('a hard word stops the video: "ephemeral" is said 3 times, then the window waits for "I know"', win1 && win1.window.target === 'ephemeral' && win1.window.kind === 'word' && win1.spoken.filter((s) => s === 'ephemeral').length === 3 && win1.level.byKind.item === 1, JSON.stringify(win1 && { w: win1.window, spoken: win1.spoken.slice(-4), by: win1.level.byKind }));
+  ok('a hard word stops the video: "ephemeral" is said 3 times, then the window waits for "I know"', win1 && win1.window.target === 'ephemeral' && win1.window.kind === 'word' && win1.spoken.filter((s) => s === 'ephemeral').length === 3 && win1.level.byKind.word === 1, JSON.stringify(win1 && { w: win1.window, spoken: win1.spoken.slice(-4), by: win1.level.byKind }));
   const cardZh = await yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const c = r?.querySelector('.card'); return c && !c.hidden ? c.querySelector('.word')?.textContent : null; });
   ok('the page jumped to the stop\'s sentence and the word\'s card is open', cardZh === 'ephemeral' && win1 && win1.cur && String(await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent)).includes(LINES[5]), JSON.stringify({ cardZh, cur: await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent) }));
   const onPage = () => yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const say = r?.querySelector('.dock .say'); return say ? { text: say.textContent, head: !!say.querySelector('b') } : null; });
@@ -248,7 +248,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const stopSpoke = (await dbg()).spoken;
   ok('nothing said in the window: the explanation, then the sentence again from the video (a jump back to its start), then on', jumps.length >= 1 && Math.abs(jumps[0][1] - (5 * 2.5 - 0.15)) < 0.2 && ev[ev.length - 1][0] === 'play', JSON.stringify(ev.slice(0, 12)));
   const rules = apiLog.filter((r) => r.kind === 'analysis');
-  ok('the analysis was asked for with the hard rule, the hard words named', rules.length >= 1 && /no Chinese/.test(rules[0].sys) && /\[hard: /.test(rules[0].user), rules[0] && rules[0].user.slice(-300));
+  ok('the analysis was asked for with the hard rule, the hard words named', rules.length >= 1 && /no Chinese/.test(rules[0].sys) && /\[explain only: /.test(rules[0].user), rules[0] && rules[0].user.slice(-300));
   ok('NO AI call at the stop: it reads what the analysis wrote', callsAt('rule') === 0 && callsAt('analysis') === 1, JSON.stringify({ rule: callsAt('rule'), analysis: callsAt('analysis') }));
   const ruleBreakers = /OK so|Teacher's note|Let's look|whole sentence|细致|məˈ|Great,/;
   const said = stopSpoke.filter((s) => /something very careful|how the person|cares a lot/i.test(s));
@@ -304,7 +304,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const final = await dbg();
   const pct = Math.round(100 * final.level.stops / final.level.total);
   ok('at most 50% of the sentences stopped', final.level.stops <= final.level.total / 2 && final.level.stops >= 2, `${final.level.stops} of ${final.level.total} sentences = ${pct}%`);
-  ok('each group of stops keeps to its own share: words and phrases 45%, whole sentences 5%', final.level.byKind.item <= final.level.total * 0.45 && final.level.byKind.sentence <= Math.max(1, final.level.total * 0.05) && final.level.byKind.item + final.level.byKind.sentence === final.level.stops, JSON.stringify(final.level.byKind));
+  ok('each group of stops keeps to its own share: words 35%, phrases 15%, whole sentences 5%', final.level.byKind.word <= final.level.total * 0.35 && final.level.byKind.phrase <= Math.max(1, final.level.total * 0.15) && final.level.byKind.sentence <= Math.max(1, final.level.total * 0.05) && final.level.byKind.word + final.level.byKind.phrase + final.level.byKind.sentence === final.level.stops, JSON.stringify(final.level.byKind));
   ok('the counter never went over 50%', worst <= 0.5, `worst ${Math.round(worst * 100)}% · last ${await counter()}`);
   const askedAbout = (s) => final.level.stoppedAt.includes(s);
   ok('known words never cause a stop: only known words ("threaten", "violence") = no stop', !askedAbout(LINES[3]) && !askedAbout(LINES[12]), final.level.stoppedAt.join(' | '));
@@ -333,7 +333,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const card = await until(cardNow, 4000, 40);
   const tapSaved = await until(() => { const d = readDoc(); return d && d.stillLearning.some((k) => k.item === 'park' && k.sentence === LINES[lineOf]) ? d : null; }, 4000);
   ok('single tap = don\'t know: still learning in the file, with its sentence', !!tapSaved, JSON.stringify((readDoc() || { stillLearning: [] }).stillLearning.filter((w) => /park/.test(w.item))));
-  const tapExplained = await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR).find((r) => /tapped ..park/.test(r.user)), 8000);
+  const tapExplained = await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR).find((r) => /does not know \W*park/.test(r.user)), 8000);
   ok('...explained in the same style, by the cheap model', !!tapExplained && tapExplained.model === 'claude-haiku-5-5', JSON.stringify(apiLog.filter((r) => r.kind === 'rule').slice(nR).map((r) => [r.model, r.user.slice(-160)])));
   ok('...its card has no IPA and no Chinese', card && card.word === 'park' && !card.ipa && !card.zh && !card.zhBtn, JSON.stringify(card));
   const goesOn = await until(async () => { const v = await yt.evaluate(() => !document.querySelector('video').paused); return v && (await dbg()).state === 'playing' && (await yt.evaluate(() => document.querySelector('video').currentTime)) > (lineOf + 1) * SEC - 0.5; }, 20000, 150);
@@ -344,7 +344,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await until(async () => (await dbg()).state === 'playing', 8000);
   const nR2 = apiLog.filter((r) => r.kind === 'rule').length;
   await tapWord('dinner', 'single'); // (a sentence long before this one)
-  await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR2).find((r) => /tapped ..dinner/.test(r.user)), 8000);
+  await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR2).find((r) => /does not know \W*dinner/.test(r.user)), 8000);
   await until(async () => (await dbg()).state === 'playing', 20000, 100);
   const tNow = await yt.evaluate(() => document.querySelector('video').currentTime);
   ok('a tap on a word in another sentence does not move the video: it goes on where it was', tNow >= lineNow * SEC - 0.5, `t=${tNow.toFixed(1)}, the sentence starts at ${lineNow * SEC}`);

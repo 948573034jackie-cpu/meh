@@ -71,10 +71,13 @@ final class SpeechListener {
     /// Called when listening stopped by itself. `error` is "not-allowed" when a permission was refused.
     var onEnd: ((String?) -> Void)?
 
-    /// `level`: the microphone's sensitivity, 1 = low (as it is), 2 = mid (× 2), 3 = high (× 4); used from the next task on
+    /// `level`: the microphone's sensitivity, 1 = low (as it is), 2 = mid (up to × 4), 3 = high (up to × 8): a quiet
+    /// voice is raised that much, smoothly; a loud one less, never cut off. Used from the next task on.
     func start(level: Int = 3) {
         wanted = true
-        gain = level <= 1 ? 1 : (level == 2 ? 3 : 6)
+        gain = level <= 1 ? 1 : (level == 2 ? 4 : 8)
+        // (a task that iOS stopped without telling — the sound was taken away — is ended and started again)
+        if running && !engine.isRunning { closePiece(); cleanup() }
         if running { return }
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
@@ -92,7 +95,8 @@ final class SpeechListener {
 
     private func begin() {
         if running || !wanted { return }
-        guard let recognizer = recognizer, recognizer.isAvailable else { onEnd?("service-not-allowed"); return }
+        // (not "blocked": English recognition is only not available now — no internet, Dictation off. The page tries again.)
+        guard let recognizer = recognizer, recognizer.isAvailable else { onEnd?("unavailable"); return }
         releaseToken += 1   // the microphone is open again: the sound stays as it is
         do {
             // (only when it is not so already: every change of the category can stop the video)
@@ -100,9 +104,12 @@ final class SpeechListener {
 
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
-            if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+            // (iOS chooses: its own recognizer when it is good enough, else Apple's servers, which understand an accent
+            // better; a task on the servers ends after a minute and is started again, see longTaskSeconds)
+            req.requiresOnDeviceRecognition = false
+            req.taskHint = .confirmation
             // the words the tutor waits for: the recognizer is told to expect them (they are short and easy to miss)
-            req.contextualStrings = ["I know", "I don't know", "bye bye", "bye", "hello", "stop", "play", "go on", "let's go", "hi bro", "explain", "again"]
+            req.contextualStrings = ["I know", "know", "no", "I know it", "I don't know", "bye bye", "bye-bye", "bye", "okay bye", "got it", "hello", "stop", "play", "go on", "let's go", "hi bro", "explain", "again"]
             req.addsPunctuation = false
             request = req
 
@@ -110,10 +117,11 @@ final class SpeechListener {
             opened = true
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0, format.channelCount > 0 else { throw NSError(domain: "SpeechListener", code: 1, userInfo: nil) }
-            let gain = self.gain
+            // (one gain control per task, used only on the audio thread)
+            let agc = Agc(max: self.gain)
             input.removeTap(onBus: 0)
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                if gain != 1 { SpeechListener.amplify(buffer, by: gain) }
+                agc.apply(buffer)
                 req.append(buffer)
             }
             engine.prepare()
@@ -133,6 +141,7 @@ final class SpeechListener {
             tail = ""
             index = 0
 
+            startWatchdog()
             task = recognizer.recognitionTask(with: req) { [weak self] result, error in
                 DispatchQueue.main.async {
                     // (a late answer of an older task changes nothing)
@@ -147,23 +156,52 @@ final class SpeechListener {
         }
     }
 
-    /// Louder samples for the recognizer (the tutor is spoken to from a distance, over the video's sound). A quiet
-    /// voice gets the whole gain; a loud one only as much as fits, so nothing is cut off (cut-off sound is
-    /// understood worse than quiet sound).
-    private static func amplify(_ buffer: AVAudioPCMBuffer, by gain: Float) {
-        guard let channels = buffer.floatChannelData else { return }   // (not float samples: left as they are)
-        let frames = Int(buffer.frameLength)
-        let count = Int(buffer.format.channelCount)
-        var peak: Float = 0
-        for c in 0..<count {
-            let samples = channels[c]
-            for i in 0..<frames { let v = abs(samples[i]); if v > peak { peak = v } }
+    /// Every 1.5 s while listening: iOS can stop the audio engine without a word (the sound was taken away, a route
+    /// changed). Then the task hears nothing for ever; it is ended, and the page starts a new one.
+    private var watchdog: Timer?
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
+            guard let self = self else { t.invalidate(); return }
+            if !self.running { t.invalidate(); self.watchdog = nil; return }
+            if !self.engine.isRunning && !self.ending {
+                t.invalidate(); self.watchdog = nil
+                self.closePiece()
+                self.cleanup()
+                self.onEnd?(nil)
+            }
         }
-        let use = peak > 0 ? max(1, min(gain, 0.95 / peak)) : gain
-        if use == 1 { return }
-        for c in 0..<count {
-            let samples = channels[c]
-            for i in 0..<frames { samples[i] *= use }
+    }
+
+    /// Louder speech for the recognizer (the tutor is spoken to from a distance, over the video's sound): the level of
+    /// the voice is raised towards a steady loudness, smoothly (no jumps between buffers), never above `max`, never cut
+    /// off, and silence is not raised (so the video's quiet sound stays quiet).
+    final class Agc {
+        private let max: Float
+        private var current: Float = 1
+        init(max: Float) { self.max = max }
+        func apply(_ buffer: AVAudioPCMBuffer) {
+            guard max > 1, let channels = buffer.floatChannelData else { return }   // (level 1, or not float samples: as it is)
+            let frames = Int(buffer.frameLength)
+            let count = Int(buffer.format.channelCount)
+            if frames == 0 || count == 0 { return }
+            var peak: Float = 0, sum: Float = 0
+            for c in 0..<count {
+                let s = channels[c]
+                for i in 0..<frames { let v = s[i]; sum += v * v; if abs(v) > peak { peak = abs(v) } }
+            }
+            let rms = (sum / Float(frames * count)).squareRoot()
+            // aim at about -20 dBFS for speech; below the noise floor the gain stays where it is
+            if rms > 0.004 {
+                let want = Swift.min(max, Swift.max(1, 0.1 / rms))
+                current = want < current ? want : current + (want - current) * 0.15
+            }
+            let use = peak > 0 ? Swift.min(current, 0.95 / peak) : current
+            if use <= 1.001 { return }
+            for c in 0..<count {
+                let s = channels[c]
+                for i in 0..<frames { s[i] *= use }
+            }
         }
     }
 
@@ -181,7 +219,12 @@ final class SpeechListener {
         if error != nil || last {
             closePiece()
             cleanup()
-            onEnd?(nil)
+            // (a recognizer error is passed on: the page counts them and says so when it keeps failing)
+            if let e = error as NSError?, !last {
+                // 1110 = "no speech detected", 216/301 = cancelled: normal ends
+                let quiet = [1110, 216, 301, 203].contains(e.code)
+                onEnd?(quiet ? nil : "recognizer-\(e.code)")
+            } else { onEnd?(nil) }
         }
     }
 

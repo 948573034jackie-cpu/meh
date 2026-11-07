@@ -5,8 +5,9 @@
  */
 import type { PromptBundle } from '@core/ai/prompts';
 import type { ExplainRequest } from '@shared/api';
+import { myTeacherRules, LENGTH_TOKENS, type TeachLength } from './teacher-text';
 
-export interface LevelRule { items: string[]; known?: string[]; level: string; way?: string }
+export interface LevelRule { items: string[]; known?: string[]; level: string; way?: string; length?: TeachLength; song?: string }
 
 /**
  * The seven teaching ways (Settings → My teacher; src/teaching-ways.ts) in one line each, for the short explanation
@@ -24,8 +25,20 @@ export const WAY_LINES: Record<string, string> = {
 /** levelCheap: the rest of what the learner asks for with Level Check on ("Explain 30 s"): the same cheap model */
 export type RuleRequest = ExplainRequest & { levelRule?: LevelRule; levelCheap?: boolean };
 
-export function ruleSystem(level: string, way?: string): string {
+/**
+ * The rule of every Level Check explanation. With the learner's own teacher (the default) it is their own rules
+ * (myTeacherRules: the word steps or the sentence steps, in the chosen length); with one of the seven ways, the short
+ * rule with that way's line. `song`: lyrics mode, what the AI knows about the song (the explanation stays in its context).
+ */
+export function ruleSystem(level: string, way?: string, kind: 'word' | 'phrase' | 'sentence' | 'mixed' = 'mixed', length: TeachLength = 'normal', song?: string): string {
   const line = way ? WAY_LINES[way] : undefined;
+  const songLine = song ? `\nThis is a SONG. Explain it like a music teacher who knows this song well: what the line means in the song, its images, slang, references and feelings, and how listeners understand it. What is known about the song:\n${song}\n` : '';
+  if (!line) {
+    return `You explain one hard moment of a video or book, out loud, to an English learner whose level is about ${level}. You are their own English teacher.
+${songLine}
+These rules are absolute.
+${myTeacherRules(kind, length)}`;
+  }
   return `You explain one hard moment of a video or book, out loud, to an English learner whose level is about ${level}.
 
 These rules are absolute.
@@ -41,19 +54,20 @@ export function buildRulePrompt(req: RuleRequest): PromptBundle {
   const r = req.levelRule!;
   const single = req.kind !== 'sentence';
   const items = single ? [req.target] : r.items;
-  const system = ruleSystem(r.level, r.way);
+  const length = r.length ?? 'normal';
+  const system = ruleSystem(r.level, r.way, req.kind === 'sentence' ? 'sentence' : req.kind === 'phrase' ? 'phrase' : 'word', length, r.song);
   const ctx = [
     `Source: ${req.book.title || 'Untitled'}`,
     req.before ? `Just before this:\n${req.before}` : '',
-    `The sentence:\n${req.sentence}`,
+    req.kind === 'sentence' && req.target && req.target !== req.sentence ? `The sentences to explain (the learner selected them):\n${req.target}` : `The sentence:\n${req.sentence}`,
     req.after ? `Just after this:\n${req.after}` : '',
   ].filter(Boolean).join('\n\n');
   const hard = single
-    ? `The learner tapped "${req.target}" because they do not know it. Start with it and explain it as it is used in this sentence.`
-    : items.length ? `The hard parts for this learner, in order: ${items.map((i) => `"${i}"`).join(', ')}. Start with the first one.` : 'Find the hardest part of its grammar or meaning, and start with those exact words.';
+    ? `The learner does not know "${req.target}" (they tapped it, or the tutor stopped for it). Explain only it, as it is used in this sentence.`
+    : `Explain this sentence.${items.length ? ` The hard parts for this learner: ${items.map((i) => `"${i}"`).join(', ')}.` : ''}`;
   const known = r.known?.length ? `\nThe learner already knows these, so do not explain them: ${r.known.join(', ')}.` : '';
   const again = req.again ? '\nThe learner heard a first explanation and still does not understand: explain it from another angle, more slowly.' : '';
-  return { system, user: `${ctx}\n\n${hard}${known}${again}`, maxTokens: 350 };
+  return { system, user: `${ctx}\n\n${hard}${known}${again}`, maxTokens: LENGTH_TOKENS[length] ?? 420 };
 }
 
 const CJK = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;

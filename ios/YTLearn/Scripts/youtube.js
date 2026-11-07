@@ -300,6 +300,120 @@
     return cache.promise;
   }
 
+  // ---- the video finder (dream-ext/src/finder.ts): YouTube search and any video's subtitles ----
+  // FINDER-PURE-START (no outside names: dream-ext/test/finder.test.ts runs this part on its own)
+  // The search page's data (ytInitialData) from its HTML: "ytInitialData = {...}" (www) or "ytInitialData = '\x7b...'" (m.)
+  function finderInitialData(html) {
+    html = String(html || '');
+    const objectAt = (s, at) => { // a JSON object from s[at] === '{' (string-aware bracket matching)
+      let depth = 0, inStr = false, esc = false;
+      for (let i = at; i < s.length; i++) {
+        const c = s[i];
+        if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; }
+        else if (c === '"') inStr = true;
+        else if (c === '{') depth++;
+        else if (c === '}' && --depth === 0) { try { return JSON.parse(s.slice(at, i + 1)); } catch (e) { return null; } }
+      }
+      return null;
+    };
+    const stringAt = (s, at) => { // a quoted JavaScript string holding JSON, its escapes undone
+      const q = s[at];
+      let i = at + 1;
+      for (; i < s.length; i++) { if (s[i] === '\\') { i++; continue; } if (s[i] === q) break; }
+      const map = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v' };
+      const text = s.slice(at + 1, i).replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[\s\S])/g, (m, g) =>
+        (g[0] === 'x' && g.length === 3) || (g[0] === 'u' && g.length === 5) ? String.fromCharCode(parseInt(g.slice(1), 16)) : (map[g] !== undefined ? map[g] : g));
+      try { return JSON.parse(text); } catch (e) { return null; }
+    };
+    let from = 0;
+    for (;;) {
+      const at = html.indexOf('ytInitialData', from);
+      if (at < 0) return null;
+      from = at + 13;
+      const m = /^["'\]]*\s*[:=]\s*(\{|JSON\.parse\(\s*["']|["'])/.exec(html.slice(from, from + 40));
+      if (!m) continue;
+      const valueAt = from + m[0].length - 1;
+      const obj = m[1] === '{' ? objectAt(html, valueAt) : stringAt(html, valueAt);
+      if (obj && typeof obj === 'object') return obj;
+    }
+  }
+  // Every video in a search answer (WEB, MWEB or newer shapes): [{ id, title, channel, lengthSeconds?, thumb? }]
+  function finderVideos(data, max) {
+    max = max || 12;
+    const out = [], seen = new Set();
+    const text = (t) => !t ? '' : typeof t === 'string' ? t : t.simpleText || t.content || (Array.isArray(t.runs) ? t.runs.map((r) => r.text || '').join('') : '');
+    const clock = (s) => { const m = /(?:(\d+):)?(\d+):(\d{2})/.exec(String(s || '')); return m ? (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]) : undefined; };
+    const thumbOf = (list) => { const t = Array.isArray(list) && list.length ? list[list.length - 1].url : ''; return t ? (t.startsWith('//') ? 'https:' + t : t) : undefined; };
+    const add = (v) => {
+      if (!v.id || !/^[\w-]{11}$/.test(v.id) || seen.has(v.id) || out.length >= max) return;
+      seen.add(v.id);
+      out.push({ id: v.id, title: (v.title || '').trim(), channel: (v.channel || '').trim(),
+        lengthSeconds: v.lengthSeconds, thumb: v.thumb || 'https://i.ytimg.com/vi/' + v.id + '/mqdefault.jpg' });
+    };
+    const isLive = (r) => /"(LIVE|BADGE_STYLE_TYPE_LIVE_NOW|UPCOMING)"/.test(JSON.stringify([r.badges || [], r.thumbnailOverlays || [], r.upcomingEventData ? 'UPCOMING' : ''])) && !r.lengthText;
+    (function walk(o, depth) {
+      if (!o || typeof o !== 'object' || depth > 60 || out.length >= max) return;
+      if (Array.isArray(o)) { for (const x of o) walk(x, depth + 1); return; }
+      const r = o.videoRenderer || o.videoWithContextRenderer || o.compactVideoRenderer || o.gridVideoRenderer;
+      if (r && r.videoId) {
+        if (!isLive(r)) add({ id: r.videoId, title: text(r.title) || text(r.headline), channel: text(r.ownerText) || text(r.shortBylineText) || text(r.longBylineText),
+          lengthSeconds: clock(text(r.lengthText)), thumb: thumbOf(r.thumbnail && r.thumbnail.thumbnails) });
+        return;
+      }
+      const l = o.lockupViewModel;
+      if (l && l.contentId && /VIDEO/.test(String(l.contentType || ''))) {
+        const md = (l.metadata && l.metadata.lockupMetadataViewModel) || {};
+        const rows = (((md.metadata || {}).contentMetadataViewModel || {}).metadataRows) || [];
+        const parts = rows.length && rows[0].metadataParts ? rows[0].metadataParts : [];
+        const img = (((l.contentImage || {}).thumbnailViewModel || {}).image || {}).sources;
+        const s = JSON.stringify(l.contentImage || {});
+        const len = /"text":"((?:\d+:)?\d+:\d{2})"/.exec(s);
+        add({ id: l.contentId, title: text(md.title), channel: parts.length ? text(parts[0].text) : '', lengthSeconds: len ? clock(len[1]) : undefined, thumb: thumbOf(img) });
+        return;
+      }
+      for (const k of Object.keys(o)) walk(o[k], depth + 1);
+    })(data, 0);
+    return out;
+  }
+  // FINDER-PURE-END
+
+  // YouTube search, same origin (www or m.youtube.com): videos with subtitles first, then any video. Never throws.
+  async function searchVideos(query) {
+    try {
+      const q = String(query || '').trim().slice(0, 150);
+      if (!q) return [];
+      for (const sp of ['&sp=EgIoAQ%3D%3D', '']) { // EgIoAQ== = the "Subtitles/CC" filter
+        try {
+          const res = await fetch('/results?search_query=' + encodeURIComponent(q) + sp, { credentials: 'include' });
+          const hits = finderVideos(finderInitialData(await res.text()), 12);
+          if (hits.length) return hits;
+        } catch (e) { /* try without the filter */ }
+      }
+    } catch (e) { /* nothing */ }
+    return [];
+  }
+
+  // The subtitles (cues) of ANY video, the cheap way (the phone-app player list, as fromAndroidTrack). [] = none / failed.
+  async function cuesFor(id) {
+    try {
+      if (!/^[\w-]{11}$/.test(String(id || ''))) return [];
+      const html = await getPageHtml();
+      const key = (html.match(/"INNERTUBE_API_KEY":\s*"([^"]+)"/) || [])[1];
+      if (!key) return [];
+      const res = await fetch('/youtubei/v1/player?key=' + encodeURIComponent(key) + '&prettyPrint=false', {
+        method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          context: { client: { clientName: 'ANDROID', clientVersion: '20.10.38', androidSdkVersion: 30, hl: 'en', gl: 'US' } },
+          videoId: id, contentCheckOk: true, racyCheckOk: true
+        })
+      });
+      const pr = await res.json();
+      const track = pickTrack(trackList(pr));
+      if (!track) return [];
+      return (await cuesFromTrack(track, 'finder')).cues;
+    } catch (e) { return []; }
+  }
+
   // My tutor (dream/dream-yt.js, the same isolated world) reads the video and its subtitles through this
   window.__ytcApi = {
     loadTranscript, videoId, isAd: () => isAd(), video: () => video || document.querySelector('video'),
@@ -310,9 +424,14 @@
     // what the microphone hears now is closed (Chrome gives it as final), then it listens again
     finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
     micBlocked: () => recWanted === 'blocked',
+    micState: () => ({ listening: !!rec, blocked: recWanted === 'blocked', lastError: micError, failsInARow: micFails }),
     micChangedAt: () => micAt,
     // 🩺 Check: the report over the page, with a Copy button (the app's bar has a button for it)
     showReport: () => showReport(),
+    // the video finder: search YouTube (same origin) -> [{ id, title, channel, lengthSeconds?, thumb? }], and any video's cues
+    searchVideos: (q) => searchVideos(q),
+    cuesFor: (id) => cuesFor(id),
+    videosFromInitialData: (data, max) => { try { return finderVideos(data, max); } catch (e) { return []; } },
   };
 
   window.__ytcDebug = {
@@ -452,6 +571,8 @@
   // (a microphone in use with echo cancelling makes all other sound quieter and muffled on a Mac: so never otherwise)
   let rec = null;
   let recWanted = false;
+  /** the microphone's last error and how often in a row it failed (for 🩺 Check) */
+  let micError = '', micErrorAt = 0, micFails = 0, micRetryAt = 0;
   let recSession = 0;
   // when the microphone last went on or off (a phone may stop the video's sound for a moment then)
   let micAt = 0;
@@ -461,7 +582,7 @@
   function dreamCallOpen() { try { const d = window.__ytcDream; return !!(d && d.callOpen && d.callOpen()); } catch (e) { return false; } }
   setInterval(() => {
     const want = ((dreamOwns() && dreamWantsMic()) || dreamCallOpen()) && location.pathname === '/watch' && !!video;
-    if (want && !rec && recWanted !== 'blocked') startListening();
+    if (want && !rec && recWanted !== 'blocked' && Date.now() >= micRetryAt) startListening();
     if (!want && rec) stopListening();
   }, 500);
 
@@ -488,7 +609,10 @@
         if (tailKey) onHeard(tail.replace(/\s+/g, ' ').trim(), false, tailKey);
       };
       r.onerror = (e) => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        micError = String(e.error || 'error'); micErrorAt = Date.now();
+        // (the iPhone app says "service-not-allowed" only when the microphone or speech recognition is really refused;
+        // "unavailable" / recognizer errors: not blocked, it tries again a little later)
+        if (e.error === 'not-allowed' || (e.error === 'service-not-allowed' && !window.__ytcShimYT)) {
           recWanted = 'blocked';
           setBarStatus(window.__ytcSafari || navigator.maxTouchPoints > 1
             ? 'The microphone is blocked. iPhone Settings → this app → allow the Microphone and Speech Recognition. (You can type.)'
@@ -499,7 +623,12 @@
         if (rec !== r) return;
         rec = null;
         micAt = Date.now();
-        if (recWanted === true) setTimeout(startListening, 300);
+        // (failing again and again: wait longer each time, up to 5 s, so the phone is not busy restarting)
+        const failing = Date.now() - micErrorAt < 1500;
+        micFails = failing ? micFails + 1 : 0;
+        const wait = failing ? Math.min(5000, 300 * 2 ** micFails) : 300;
+        micRetryAt = Date.now() + wait;
+        if (recWanted === true) setTimeout(startListening, wait);
       };
       micAt = Date.now();
       r.start();
@@ -508,6 +637,8 @@
 
   // back on the page (perhaps from the Settings, where the microphone was allowed): try the microphone again
   document.addEventListener('visibilitychange', () => { if (!document.hidden && recWanted === 'blocked') recWanted = false; });
+  // (a new video: the microphone may be tried again)
+  document.addEventListener('yt-navigate-finish', () => { if (recWanted === 'blocked') recWanted = false; });
 
   function stopListening() {
     if (recWanted !== 'blocked') recWanted = false;

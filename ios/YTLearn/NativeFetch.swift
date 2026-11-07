@@ -10,7 +10,8 @@ final class NativeFetch: NSObject, URLSessionDataDelegate {
 
     static func allowed(_ url: URL) -> Bool {
         guard url.scheme == "https", let host = url.host?.lowercased() else { return false }
-        return ["api.anthropic.com", "api.openai.com", "api.elevenlabs.io"].contains(host) || host.hasSuffix(".tts.speech.microsoft.com")
+        // (+ lrclib.net: the lyrics of lyrics mode; api.github.com and gist.githubusercontent.com: the online vocabulary)
+        return ["api.anthropic.com", "api.openai.com", "api.elevenlabs.io", "lrclib.net", "api.github.com", "gist.githubusercontent.com"].contains(host) || host.hasSuffix(".tts.speech.microsoft.com")
     }
 
     private final class Job {

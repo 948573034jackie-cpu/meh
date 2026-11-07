@@ -29,6 +29,8 @@ export interface QuickCtx {
   /** say a test sentence with the chosen voice (teacher volume) / a test word (word volume) */
   testVoice(): void;
   testWord(): void;
+  /** the online copy's last sync, in words */
+  gist?: string;
   /** a phone: the page is always the book of subtitles */
   phone?: boolean;
   /** the minutes left on the sleep timer (0 = off), and how to set it */
@@ -94,10 +96,12 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
     <section><h4>My tutor stops for</h4>
-      <label>Words and phrases ${onOff('stopItemsOn', x.stopItemsOn !== false)} ${slider('capWords', x.capWords ?? 45, 0, 100, 5, '%')}</label>
+      <label>Words ${onOff('stopItemsOn', x.stopItemsOn !== false)} ${slider('capWords', x.capWords ?? 35, 0, 100, 5, '%')}</label>
+      <label>Phrases ${onOff('stopPhrasesOn', x.stopPhrasesOn !== false)} ${slider('capPhrases', x.capPhrases ?? 15, 0, 100, 5, '%')}</label>
       <label>Whole sentences ${onOff('stopHardOn', x.stopHardOn !== false)} ${slider('capSentences', x.capSentences ?? 5, 0, 50, 1, '%')}</label>
-      <p class="muted">Of every 100 sentences, at most this many stop: for a hard word or phrase, and for a whole hard sentence (5% = about 1 in 20). The tutor says the word ${s.listen.wordRepeats} times (a sentence is played once more) and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. Say “I know”: it is marked known, no explanation, the video goes on. Say nothing: it explains.</p>
-      <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 5, 0, 20)} explanations</label>
+      <p class="muted">Of every 100 sentences, at most this many stop for a hard word, for a phrase, or for a whole hard sentence (5% = about 1 in 20; 0% = never). A low share stops only for the hardest and most important; a high share for nearly everything. The tutor says the word ${s.listen.wordRepeats} times and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. "I know", "know", "bye" or "bye bye": marked known, no explanation, the video goes on. Say nothing: it explains.</p>
+      <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
+      <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
       <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
       <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
       <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
@@ -107,15 +111,16 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     </section>
     <section><h4>What you see</h4>
       <label>Play line ${slider('playLine', x.playLine ?? 40, 0, 100, 1, '')} <span class="muted">0 = bottom, 100 = top: the sentence being played or explained stays there</span></label>
-      <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['normal', '🎬 Video']])}</label>
-      <p class="muted">Listening: all the subtitles, the text moves with the sound. Reading: pages like a book, the text stays, a thin line follows the word and the pages turn by themselves (‹ › or a swipe turns them). Video: the video. Each mode has its own text size.</p>
-      ${x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : x.view === 'normal' ? `<label>Text size (Video: the subtitles on the video) ${slider('bandSize', s.appearance.subtitleSizePx || 26, 16, 96, 1, 'px')}</label>` : ctx.phone ? `<label>Text size (Listening) ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>` : `<label>Text size (Listening) ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>`}
-      ${ctx.phone ? `<label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
+      <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
+      ${x.view === 'reading' ? `<label>Reading look ${seg('readLook', x.readLook === 'night' ? 'night' : 'day', [['day', '☀️ Day'], ['night', '🌙 Night']])}</label>` : ''}
+      <p class="muted">Listening: all the subtitles, the text moves with the sound. Reading: pages like a book, the text stays, a thin line follows the word and the pages turn by themselves (‹ › or a swipe turns them). Lyrics: the song's lyrics, an introduction to the song first, and explanations about the lyrics. Video: the video. Each mode has its own text size.</p>
+      ${x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : x.view === 'normal' ? (ctx.phone ? `<label>Text size (Video: the subtitles on the video) ${slider('phoneBand', x.phoneBandPx ?? 17, 12, 40, 1, 'px')}</label>` : `<label>Text size (Video: the subtitles on the video) ${slider('bandSize', s.appearance.subtitleSizePx || 26, 16, 96, 1, 'px')}</label>`) : ctx.phone ? `<label>Text size (Listening) ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>` : `<label>Text size (Listening) ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>`}
+      <label>Letters ${slider('textWeight', x.textWeight ?? 400, 200, 800, 100, '')} <span class="muted">thinner ← → bolder</span></label>
+      ${ctx.phone ? `<label>E button on every sentence ${onOff('sentenceButtons', !!x.sentenceButtons)}</label>
+      <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
       <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[20, '20 s'], [30, '30 s'], [40, '40 s'], [60, '60 s']])}</label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
-      <label>Stops by itself ${seg('stopGap', x.stopGapSec ?? 45, [[-1, 'Off'], [90, 'Rarely'], [45, 'Sometimes'], [20, 'Often'], [0, 'Every hard word']])}</label>
-      <p class="muted">Every phrase and sentence above your level is highlighted and explained. Single hard words: Rarely / Sometimes / Often = at most one every 90 / 45 / 20 seconds. Off = it only stops when you pause.</p>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
     <section><h4>Subtitles on the video</h4>
@@ -163,9 +168,9 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
     <section><h4>API keys</h4>
-      ${(['azure', 'anthropic', 'openai', 'elevenlabs'] as const).map((k) => `<label${k === 'azure' && !keys.azure ? ' class="hl"' : ''}>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech) — the free voice, Key 1' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
+      ${(['azure', 'anthropic', 'openai', 'elevenlabs', 'github'] as const).map((k) => `<label${k === 'azure' && !keys.azure ? ' class="hl"' : ''}>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech) — the free voice, Key 1' : k === 'github' ? 'GitHub token (your words online, shared with your computer)' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
       <label>Microsoft region <input type="text" data-name="azureRegion" value="${esc(x.azureRegion ?? 'eastus')}" placeholder="eastus" style="width:140px" autocomplete="off"> <button type="button" data-act="test-azure">Test</button> <span class="muted">(“Location/Region” of your Speech resource)</span></label>
-      <p class="muted">Keys stay in Chrome on this computer. Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice.</p>
+      <p class="muted">Keys stay on this device (on the iPhone in its Keychain). Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice. The GitHub token (github.com → Settings → Developer settings → Fine-grained tokens, with only "Gists: Read and write") keeps your words in one private gist, shared by the phone and the computer within seconds.${ctx.gist ? ` ${esc(ctx.gist)}` : ''}</p>
     </section>
     <section><h4>Shortcuts <span class="muted">(click one, then press the new keys)</span></h4>
       <div class="keys">${SHORTCUTS.map((a) => `<div><span>${esc(a.label)}</span><button type="button" data-sc="${a.id}">${esc(comboLabel(sc[a.id]))}</button></div>`).join('')}</div>
@@ -208,6 +213,10 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'showSay') void store.patchExtras({ showSay: v === 'on' });
       else if (segName === 'stopItemsOn') void store.patchExtras({ stopItemsOn: v === 'on' });
       else if (segName === 'stopHardOn') void store.patchExtras({ stopHardOn: v === 'on' });
+      else if (segName === 'stopPhrasesOn') void store.patchExtras({ stopPhrasesOn: v === 'on' });
+      else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : 'day' });
+      else if (segName === 'sentenceButtons') void store.patchExtras({ sentenceButtons: v === 'on' });
+      else if (segName === 'teachLength') patchAi({ explanationLength: v as Settings['ai']['explanationLength'] });
       else if (segName === 'sleep') ctx.setSleep?.(Number(v));
       else if (segName === 'replayPart') void store.patchExtras({ replayPart: v === 'on' });
       else if (segName === 'aiSentences') void store.patchExtras({ aiSentences: v === 'on' });
@@ -259,7 +268,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       const v = inp?.value.trim() ?? '';
       if (!v) { ctx.toast('Paste the key first.'); return; }
       // a Microsoft key pasted into another box (ElevenLabs keys start with sk_, OpenAI ones with sk-): saved as Microsoft
-      if (k !== 'azure' && k !== 'anthropic' && !/^sk[-_]/.test(v)) {
+      // (not for a GitHub token: it never goes anywhere but GitHub)
+      if (k !== 'azure' && k !== 'anthropic' && k !== 'github' && k !== 'genius' && !/^sk[-_]/.test(v)) {
         void (chrome.runtime.sendMessage({ type: 'dream-test-azure', key: v }) as Promise<{ ok: boolean; message: string } | undefined>).then(async (r) => {
           if (!r?.ok) { void store.setKey(k, v).then(() => { if (inp) inp.value = ''; ctx.toast('Key saved.'); }); return; }
           await store.setKey('azure', v);
@@ -312,10 +322,13 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (name === 'playLine') later(() => void store.patchExtras({ playLine: n }));
     else if (name === 'capWords') later(() => void store.patchExtras({ capWords: n }), 300);
     else if (name === 'capSentences') later(() => void store.patchExtras({ capSentences: n }), 300);
+    else if (name === 'capPhrases') later(() => void store.patchExtras({ capPhrases: n }), 300);
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
     else if (name === 'phoneSize') later(() => void store.patchExtras({ phoneSizePx: n }), 120);
     else if (name === 'readSize') later(() => void store.patchExtras({ readSizePx: n }), 120);
+    else if (name === 'phoneBand') later(() => void store.patchExtras({ phoneBandPx: n }), 120);
+    else if (name === 'textWeight') later(() => void store.patchExtras({ textWeight: n }), 120);
     else if (name === 'stageSize') later(() => void store.patchExtras({ stageSizePx: n }), 120);
     else if (name === 'panelSize') later(() => patchLook({ fontSizePx: n }), 120);
     else if (name === 'bandSize') later(() => patchLook({ subtitleSizePx: n }), 120);

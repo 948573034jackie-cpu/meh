@@ -348,7 +348,9 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
     // only the first one was asked: its explanation covers the sentence
     expect(t.windows).toHaveLength(1);
     expect(t.targets).toEqual(['rest']);
-    expect(t.requests[0].kind).toBe('sentence');
+    // (the learner's rules: only that one word is explained, in its sentence)
+    expect(t.requests[0].kind).toBe('word');
+    expect(t.requests[0].target).toBe('rest');
     expect(t.requests[0].sentence).toBe('Then she went home to rest.');
     await until(() => t.tts.spoken.some((x) => x.text.startsWith('She goes')), 10000);
     await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);

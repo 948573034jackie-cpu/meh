@@ -5,8 +5,18 @@
  */
 import type { PromptBundle } from '@core/ai/prompts';
 import { RuleGuard, ruleSystem } from './level-rule';
+import { STOP_TOKENS, type TeachLength } from './teacher-text';
 
-export interface AnalysisStop { id: string; index: number; text: string; items: string[] }
+/**
+ * One stop to explain. `focus`: the ONE word or phrase this stop is for (the learner's own rules explain only it);
+ * none = the sentence itself. Its id is the sentence's words plus the focus (stopId).
+ */
+export interface AnalysisStop { id: string; index: number; text: string; items: string[]; focus?: string; kind?: 'word' | 'phrase' | 'sentence' }
+
+/** the id of the explanation of one stop: a word stop and a sentence stop of the same line are not the same */
+export function stopId(text: string, focus?: string): string {
+  return focus ? `${analysisId(text)}|${analysisId(focus)}` : analysisId(text);
+}
 
 /** explanations written in one call */
 export const STOPS_PER_PART = 20;
@@ -19,25 +29,26 @@ export function analysisId(text: string): string {
 }
 
 /** All the sentences around these stops, numbered; the stops marked with * and what is hard in them. */
-export function buildAnalysisPrompt(o: { title: string; level: string; way?: string; part: readonly AnalysisStop[]; lineAt: (index: number) => string; total: number }): PromptBundle {
+export function buildAnalysisPrompt(o: { title: string; level: string; way?: string; length?: TeachLength; song?: string; part: readonly AnalysisStop[]; lineAt: (index: number) => string; total: number }): PromptBundle {
   const stops = new Map(o.part.map((s) => [s.index, s]));
   const from = Math.max(0, o.part[0].index - 2);
   const to = Math.min(o.total - 1, o.part[o.part.length - 1].index + 1);
   const lines: string[] = [];
   for (let i = from; i <= to; i++) {
     const s = stops.get(i);
-    lines.push(s ? `*${i + 1}. ${o.lineAt(i)}${s.items.length ? `  [hard: ${s.items.join(', ')}]` : ''}` : `${i + 1}. ${o.lineAt(i)}`);
+    const mark = s ? (s.focus ? `  [explain only: "${s.focus}"]` : `  [explain the sentence${s.items.length ? `; hard: ${s.items.join(', ')}` : ''}]`) : '';
+    lines.push(s ? `*${i + 1}. ${o.lineAt(i)}${mark}` : `${i + 1}. ${o.lineAt(i)}`);
   }
   return {
-    system: ruleSystem(o.level, o.way),
+    system: ruleSystem(o.level, o.way, 'mixed', o.length ?? 'normal', o.song),
     user: `Source: ${o.title || 'Untitled'}
 
-These are numbered sentences in order. The sentences marked with * are the hard ones, and [hard: ...] says what is hard in them for this learner. Write one explanation for EACH marked sentence, following the rules. Use the other sentences only to understand the story. Write only this, for every marked sentence, in order:
+These are numbered sentences in order. The sentences marked with * are stops. [explain only: "x"] = explain only that word or phrase (the word rules); [explain the sentence] = explain the whole sentence (the sentence rules). Write one explanation for EACH marked sentence, following the rules. Use the other sentences only to understand the story. Write only this, for every marked sentence, in order:
 @@<its number>
 <the explanation>
 
 ${lines.join('\n')}`,
-    maxTokens: Math.min(16000, o.part.length * (o.way ? 200 : 160) + 200),
+    maxTokens: Math.min(16000, o.part.length * (STOP_TOKENS[o.length ?? 'normal'] ?? 190) + 200),
   };
 }
 
@@ -66,6 +77,10 @@ export interface AnalysisOpts {
   level(): string;
   /** the teaching way chosen (Settings → My teacher), when it is one of the seven */
   way?(): string | undefined;
+  /** how long each explanation is */
+  length?(): TeachLength;
+  /** lyrics mode: what is known about the song */
+  song?(): string | undefined;
   stream(prompt: PromptBundle, onDelta: (full: string) => void): { done: Promise<string>; cancel(): void };
   onChange?(): void;
 }
@@ -139,7 +154,8 @@ export class Analysis {
         const s = byNumber.get(n);
         if (!s || s.id in this.texts) continue;
         // (the rule's check: nothing the rule forbids is saved or said)
-        const guard = new RuleGuard({ sentence: s.text, items: s.items });
+        // (a word stop starts with its word; a sentence starts with its easy-English version)
+        const guard = new RuleGuard({ sentence: s.text, items: s.focus ? [s.focus] : [] });
         const clean = guard.finish(text);
         this.rejected += guard.rejected;
         if (clean) { this.settle(s.id, clean); got = true; }
@@ -147,7 +163,7 @@ export class Analysis {
       if (got) this.o.onChange?.();
     };
     try {
-      const job = this.o.stream(buildAnalysisPrompt({ title: this.o.title(), level: this.o.level(), way: this.o.way?.(), part, lineAt: (i) => this.o.lineAt(i), total: this.o.total() }), (full) => take(full, false));
+      const job = this.o.stream(buildAnalysisPrompt({ title: this.o.title(), level: this.o.level(), way: this.o.way?.(), length: this.o.length?.(), song: this.o.song?.(), part, lineAt: (i) => this.o.lineAt(i), total: this.o.total() }), (full) => take(full, false));
       this.job = job;
       take(await job.done, true);
       await this.o.save(this.texts).catch(() => undefined);

@@ -10,7 +10,8 @@ import { createSegmenter } from '@core/segment';
 import { computeStats } from '@core/import/text';
 
 export interface TimedWord { w: string; t: number; e: number }
-export interface TimedSentence { start: number; end: number; text: string; words?: TimedWord[] | null }
+/** `para`: this sentence starts a new paragraph (a verse of a song) */
+export interface TimedSentence { start: number; end: number; text: string; words?: TimedWord[] | null; para?: boolean }
 
 export interface SentenceTiming {
   start: number;
@@ -111,7 +112,7 @@ export function buildVideoBook(video: { id: string; title: string; channel?: str
   let cur: typeof clean = [];
   for (const x of clean) {
     const last = cur[cur.length - 1];
-    if (last && (x.start - last.end >= gap || x.end - cur[0].start > maxLen)) { groups.push(cur); cur = []; }
+    if (last && (x.para || x.start - last.end >= gap || x.end - cur[0].start > maxLen)) { groups.push(cur); cur = []; }
     cur.push(x);
   }
   if (cur.length) groups.push(cur);

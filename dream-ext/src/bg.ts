@@ -21,12 +21,13 @@ import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodSt
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
-import { installLevelDb, writeDatabase, currentDoc, NATIVE_HOST } from './level-db-bg';
+import { installLevelDb, writeDatabase, syncGist, currentDoc, NATIVE_HOST } from './level-db-bg';
 import { levelSummary } from './level-db';
 import { buildRulePrompt, type RuleRequest } from './level-rule';
 import { splitByScript } from '@core/listen/script';
 import { getLevel, updateLevel } from './store';
 import { getSound, putSound, CACHE_MAX_CHARS } from './tts-cache';
+import { findLyrics } from './lyrics';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
 const PRICES: Record<string, [number, number, number]> = {
@@ -204,7 +205,8 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const style = styled || part ? resolveStyle((req.styleId as StyleId) ?? s.ai.activeStyle, s.ai.styles) : null;
   const picked = pickProvider(s, keys);
   // (Level Check: always the cheap model)
-  const cheap = (req as RuleRequest).levelRule || (req as RuleRequest).levelCheap ? levelModelFor(s, keys, (await getExtras()).analysisModel) : null;
+  const song = (req as RuleRequest).levelRule?.song ?? (req as RuleRequest & { songNotes?: string }).songNotes;
+  const cheap = !song && ((req as RuleRequest).levelRule || (req as RuleRequest).levelCheap) ? levelModelFor(s, keys, (await getExtras()).analysisModel) : null;
   const provider = cheap ? cheap.provider : style?.provider && keys[style.provider] ? style.provider : picked.provider;
   const model = cheap ? cheap.model : style?.model && provider === style.provider ? style.model : picked.model;
   const key = keys[provider];
@@ -218,6 +220,8 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const prompt = rule && styled ? buildRulePrompt(req as RuleRequest) : await withTeacher(style
     ? buildStyledPrompt(partPrompt ? { ...req, kind: 'sentence' } : req, { style: partPrompt ?? style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
     : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }), part ? undefined : style?.id);
+  // (lyrics mode, Explain N s and questions: the song's context goes with them too)
+  if (song && !(rule && styled)) prompt.system = `${prompt.system}\n\nThis is a SONG. Explain it like a music teacher who knows this song well: what the lines mean in the song, the images, slang, references and feelings, and how listeners understand them. What is known about the song:\n${song}`;
   try {
     const r = provider === 'anthropic' ? await streamAnthropic(key, model, prompt, signal, onDelta) : await streamOpenAI(key, model, prompt, signal, onDelta);
     const u = await record(provider, model, r);
@@ -602,6 +606,14 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
     if (msg?.type === 'dream-db-write') { void writeDatabase().then(sendResponse); return true; }
+    if (msg?.type === 'dream-gist-poll') { void syncGist().then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false })); return true; }
+    // lyrics mode: the song's lyrics from LRCLIB (timed when it has them)
+    if (msg?.type === 'dream-lyrics') {
+      const m = msg as { title?: string; channel?: string; duration?: number };
+      void findLyrics(m.title ?? '', m.channel ?? '', m.duration ?? 0, async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then((lyr) => sendResponse({ ok: true, lyrics: lyr }), (e: Error) => sendResponse({ ok: false, error: e.message }));
+      return true;
+    }
     if (msg?.type === 'dream-db-host') { sendResponse({ host: NATIVE_HOST, id: chrome.runtime.id }); return false; }
     if (msg?.type === 'dream-level-copy') {
       void (async () => {

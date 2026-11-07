@@ -329,8 +329,9 @@ const fakeWebkit = () => {
   await act('talk');
   const callMic = await until(async () => (await dbg()).callOpen === true && nativeLog.filter((l) => l.kind === 'speech' && l.op === 'start').length > micOff, 8000);
   ok('📞: the call turns the iOS microphone on', !!callMic, JSON.stringify(nativeLog.filter((l) => l.kind === 'speech').slice(-3)));
-  const yourTurn = await until(async () => /Your turn: just talk/.test(await talkBar()), 12000);
-  ok('...and the talk bar says "just talk"', !!yourTurn, await talkBar());
+  const endBtn = () => yt.evaluate(() => { const b = document.getElementById('dr-end-call'); return b ? b.textContent : ''; });
+  const yourTurn = await until(async () => /End call/.test(await endBtn()), 12000);
+  ok('...and only one button is shown: "End call"', !!yourTurn, await endBtn());
   await sleep(1200);
   await hear('ok let\'s go');
   await until(async () => { const d = await dbg(); const v = await vstate(); return !d.talk && !v.paused; }, 10000);
@@ -362,8 +363,8 @@ const fakeWebkit = () => {
   await act('vocab');
   ok('📒 opens My Vocabulary in the app (ytlearn://app/dream/vocab.html)', !!(await until(() => nativeLog.find((l) => l.kind === 'openPage' && /ytlearn:\/\/app\/dream\/vocab\.html/.test(l.url)), 3000)));
   const quickText = await act('quick') === true && await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); return !!q && !q.hidden ? q.textContent : ''; });
-  ok('⚙ opens the settings over the book: the two groups of stops (on/off and %), the play line, the sleep timer, the microphone Low / Mid / High, the text size',
-    /Words and phrases/.test(quickText) && /Whole sentences/.test(quickText) && /Play line/.test(quickText) && /Sleep timer/.test(quickText) && /Low/.test(quickText) && /High/.test(quickText) && /Text size/.test(quickText) && /Show what the tutor says as text/.test(quickText) && /Word test before each video/.test(quickText), String(quickText).slice(0, 300));
+  ok('⚙ opens the settings over the book: the three groups of stops (on/off and %), the play line, the sleep timer, the microphone Low / Mid / High, the text size',
+    /Words/.test(quickText) && /Phrases/.test(quickText) && /Whole sentences/.test(quickText) && /Explanations/.test(quickText) && /Mid/.test(quickText) && /Letters/.test(quickText) && /Play line/.test(quickText) && /Sleep timer/.test(quickText) && /Low/.test(quickText) && /High/.test(quickText) && /Text size/.test(quickText) && /Show what the tutor says as text/.test(quickText) && /Word test before each video/.test(quickText), String(quickText).slice(0, 300));
   // sentences off: saved at once
   await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="off"]').click(); });
   ok('...whole sentences can be turned off', !!(await until(() => stores.local.drExtras && stores.local.drExtras.stopHardOn === false, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.stopHardOn));
@@ -376,8 +377,9 @@ const fakeWebkit = () => {
   await act('talk');
   await until(() => yt.evaluate(() => !!window.__ytcActiveSR), 8000, 100);
   await yt.evaluate(() => { window.__ytcSpeech({ type: 'error', error: 'not-allowed' }); window.__ytcSpeech({ type: 'end' }); });
-  const refused = await until(async () => /microphone is blocked/i.test(await talkBar()), 5000);
-  ok('iOS refuses the microphone: the talk bar says so (you can type)', !!refused, await talkBar());
+  const toastText = () => yt.evaluate(() => { const t = document.getElementById('dr-stage-host')?.shadowRoot?.querySelector('.toast'); return t && !t.hidden ? t.textContent : ''; });
+  const refused = await until(async () => /microphone is blocked/i.test(await toastText()), 5000);
+  ok('iOS refuses the microphone: a message says so and where to allow it', !!refused, (await toastText()) + ' | ' + (await talkBar()));
   await act('goOn');
   await sleep(300);
 
@@ -476,7 +478,7 @@ const fakeWebkit = () => {
       size: getComputedStyle(page).fontSize, line: cr ? (cr.top + cr.height / 2 - pr.top) / pr.height : null, fills: host.getBoundingClientRect().height >= innerHeight - 1 };
   });
   ok('the phone: the whole screen is the book of subtitles: no toolbar, no "▶ Explain" pills, one normal text size', book.phone === '1' && book.view === 'all' && !book.top && !book.pills && book.size === '21px' && book.fills, JSON.stringify(book));
-  ok('...what the tutor says is not shown as text; one line to ask, with a send button', book.say === '0' && !book.sayText && book.ask && book.send === '➤', JSON.stringify(book));
+  ok('...what the tutor says is not shown as text; no box to ask (just talk or call)', book.say === '0' && !book.sayText && !book.ask, JSON.stringify(book));
   const lineNow = () => lv.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const page = r.querySelector('.page'), cur = r.querySelector('.s.cur'); if (!cur) return null; const pr = page.getBoundingClientRect(), cr = cur.getBoundingClientRect(); return (cr.top + cr.height / 2 - pr.top) / pr.height; });
   const onLine = await until(async () => { const l = await lineNow(); return l !== null && l > 0.48 && l < 0.72 ? l : null; }, 4000, 80);
   ok('...the stop\'s sentence is on the play line (40 of 100 from the bottom)', !!onLine, String(await lineNow()));
@@ -509,9 +511,10 @@ const fakeWebkit = () => {
   // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
   await lv.evaluate(() => window.__ytcDream.action('check'));
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
-  ok('the Check button shows the report: the app, just talk, the microphone, the two groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words and phrases 45%/.test(rep), String(rep).slice(0, 500));
+  ok('the Check button shows the report: the app, just talk, the microphone, the three groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words 35% · phrases 15% · sentences 5%/.test(rep), String(rep).slice(0, 500));
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
-  // ---- Reading mode: pages like an e-reader ----
+  // ---- Reading mode: pages like an e-reader (big letters, so this short video makes two pages or more) ----
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 40 } })));
   await lv.evaluate(() => window.__ytcDream.action('mode'));
   const rd = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'read' && d.stage.pages >= 2 ? d : null; }, 6000);
   const readLook = async () => lv.evaluate(() => {
@@ -533,8 +536,8 @@ const fakeWebkit = () => {
   // each mode has its own text size
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 30 } })));
   const r3 = await until(async () => { const x = await readLook(); return x.size === '30px' ? x : null; }, 4000);
-  await lv.evaluate(() => window.__ytcDream.action('mode')); // Video
-  await lv.evaluate(() => window.__ytcDream.action('mode')); // Listening
+  // (back to Listening: the Mode button goes Listening → Reading → Lyrics → Video)
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, view: 'listening' } })));
   const backL = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'all' && d.stage.shown ? d : null; }, 6000);
   ok('...the text size of Reading (30) does not change Listening (21)', !!r3 && !!backL && backL.stage.size === '21px' && stores.local.drExtras.view === 'listening', JSON.stringify({ r3: r3 && r3.size, back: backL && backL.stage }));
   // a double tap on a word of the book (two taps: a touch screen sends no double-click of its own) = I know

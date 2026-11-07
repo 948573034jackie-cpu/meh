@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { realDictionary } from './helpers';
 import { SEED, seedWords, itemKey, phraseSig, estimateLevel, unknownChance, buildDoc, levelSummary, mergeDocs, sameDoc, isDoc, EMPTY_META, type LevelMeta, type VocabularyDoc } from '../src/level-db';
 import { collectItems, parseItems, pickForScreen, scoreTest, chipsHeight, MIN_PER_GROUP, MAX_PER_GROUP, type TestGroups, type TestItem } from '../src/level-check';
-import { scoreSentences, selectStops, selectStopsByKind, stopKindOf, groupOf, mayStopGroup, mayStop, counterText, itemsToHits, MAX_STOP_RATIO, DEFAULT_CAPS } from '../src/level-stops';
+import { scoreSentences, selectStops, selectStopsByKind, stopKindOf, kindWith, mayStopGroup, mayStop, counterText, itemsToHits, MAX_STOP_RATIO, DEFAULT_CAPS } from '../src/level-stops';
 import { checkExplanation, cleanRuleSentence, RuleGuard, buildRulePrompt, type RuleRequest } from '../src/level-rule';
 import { textBook, orderOf, paragraphsOf, pagesToText } from '../src/reader-text';
-import { Analysis, analysisId, buildAnalysisPrompt, parseAnalysis, STOPS_PER_PART, LOOK_AHEAD, type AnalysisStop } from '../src/level-analysis';
+import { Analysis, analysisId, stopId, buildAnalysisPrompt, parseAnalysis, STOPS_PER_PART, LOOK_AHEAD, type AnalysisStop } from '../src/level-analysis';
 import { sentenceKey, sentenceText } from '@core/model';
 
 const dict = realDictionary();
@@ -198,22 +198,30 @@ describe('the stops', () => {
     const hard = new Set(order.map((p) => sentenceKey(p)));
     const list = score(() => undefined, { hard });
     const n = order.length;
-    const count = (set: Set<string>, kind: string) => list.filter((s) => set.has(s.key) && s.kind === kind).length;
+    const count = (set: Set<string>, kind: string, caps = DEFAULT_CAPS) => list.filter((s) => set.has(s.key) && kindWith(s, caps) === kind).length;
     const def = selectStopsByKind(list);
-    expect(count(def, 'word') + count(def, 'phrase')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.item));
+    expect(count(def, 'word')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.word));
+    expect(count(def, 'phrase')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.phrase));
     expect(count(def, 'sentence')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.sentence));
     expect(def.size).toBeLessThanOrEqual(n / 2);
-    // sentences off: only words and phrases stop; both off: nothing stops
-    const noSentences = selectStopsByKind(list, { item: 1, sentence: 0 });
-    expect(count(noSentences, 'sentence')).toBe(0);
-    expect(noSentences.size).toBe(list.filter((s) => groupOf(s.kind) === 'item').length);
-    const onlySentences = selectStopsByKind(list, { item: 0, sentence: 1 });
-    expect(count(onlySentences, 'word') + count(onlySentences, 'phrase')).toBe(0);
-    expect(selectStopsByKind(list, { item: 0, sentence: 0 }).size).toBe(0);
+    // sentences off: only words and phrases stop; all off: nothing stops
+    const allItems = { word: 1, phrase: 1, sentence: 0 };
+    const noSentences = selectStopsByKind(list, allItems);
+    expect(count(noSentences, 'sentence', allItems)).toBe(0);
+    expect(noSentences.size).toBe(list.filter((s) => kindWith(s, allItems) !== null).length);
+    const onlySentences = selectStopsByKind(list, { word: 0, phrase: 0, sentence: 1 });
+    expect([...onlySentences].every((k) => list.find((s) => s.key === k)!.hard)).toBe(true);
+    expect(selectStopsByKind(list, { word: 0, phrase: 0, sentence: 0 }).size).toBe(0);
+    // words off, phrases on: a sentence with a word and a phrase stops for its phrase
+    const mixed = { kinds: ['word', 'phrase'] as ('word' | 'phrase')[], hard: false };
+    expect(kindWith(mixed, { word: 0, phrase: 1, sentence: 0 })).toBe('phrase');
+    expect(kindWith(mixed, { word: 1, phrase: 1, sentence: 0 })).toBe('word');
+    expect(kindWith({ kinds: ['word'], hard: false }, { word: 0, phrase: 1, sentence: 1 })).toBe(null);
     // in a group, the hardest first
-    const one = selectStopsByKind(list, { item: 1 / n, sentence: 0 });
+    const words = { word: 1 / n, phrase: 0, sentence: 0 };
+    const one = selectStopsByKind(list, words);
     expect(one.size).toBe(1);
-    const best = list.filter((s) => groupOf(s.kind) === 'item').sort((a, b) => b.score - a.score)[0];
+    const best = list.filter((s) => kindWith(s, words) === 'word').sort((a, b) => b.score - a.score)[0];
     expect(one.has(best.key)).toBe(true);
   });
   it('as the video plays the count stays at half or under', () => {
@@ -388,7 +396,13 @@ describe('analyze once', () => {
     expect(parseAnalysis('@@3\nOne two.\n@@7\nThree', true)).toEqual([{ n: 3, text: 'One two.' }, { n: 7, text: 'Three' }]);
     expect(analysisId('It\u2019s a  TEST, here!')).toBe('it s a test here');
     const p = buildAnalysisPrompt({ title: 'T', level: 'B2', part: stopsOf(2), lineAt: (i) => `Line ${i}.`, total: 10 });
-    expect(p.user).toContain('*1. Line 0.  [hard: hard]');
+    expect(p.user).toContain('*1. Line 0.  [explain the sentence; hard: hard]');
+    // a word stop: only its word (the learner's own rules), in the chosen length
+    const w = buildAnalysisPrompt({ title: 'T', level: 'B2', length: 'long', part: [{ id: stopId('Line 0.', 'Line'), index: 0, text: 'Line 0.', items: ['Line'], focus: 'Line', kind: 'word' }], lineAt: (i) => `Line ${i}.`, total: 3 });
+    expect(w.user).toContain('*1. Line 0.  [explain only: "Line"]');
+    expect(w.system).toContain('explain ONLY that one word or phrase');
+    expect(w.system).toContain('3 sentences');
+    expect(stopId('Line 0.', 'Line')).not.toBe(stopId('Line 0.'));
     expect(p.user).toContain('2. Line 1.');
     expect(p.user).toContain('*3. Line 2.');
     expect(p.system).toContain('These rules are absolute');

@@ -7,6 +7,7 @@ import WebKit
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar)
+    @Published var oneButton = false     // one-button mode: the page is one big "explain" button; the bar shows only a way out
     @Published var explainSeconds = 30   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
@@ -43,6 +44,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         bridge.model = self
         pageBridge.model = self
         tutorOn = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["tutorOn"] as? Bool) ?? true
+        oneButton = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["oneButton"] as? Bool) ?? false
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
         vocabFolder = VocabFile.shared.folderName
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in Store.shared.flush() }
@@ -279,6 +281,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if area == "local", let extras = obj["drExtras"] as? [String: Any] {
             let on = extras["tutorOn"] as? Bool ?? true
             if on != tutorOn { tutorOn = on }
+            let one = extras["oneButton"] as? Bool ?? false
+            if one != oneButton { oneButton = one }
         }
         if area == "local", let settings = obj["drSettings"] {
             let seconds = AppModel.partSeconds(in: settings)

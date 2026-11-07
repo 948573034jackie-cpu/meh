@@ -33,12 +33,21 @@ export interface SentenceScore {
 
 export type ItemKind = 'word' | 'phrase';
 export type StopKind = 'word' | 'phrase' | 'sentence';
-/** The two groups of stops: for a hard word or phrase ('item'), and for a whole sentence. */
-export type StopGroup = 'item' | 'sentence';
-export const groupOf = (kind: StopKind): StopGroup => (kind === 'sentence' ? 'sentence' : 'item');
-/** The share of the sentences that may stop, for each group (0..1; 0 = never). */
-export interface StopCaps { item: number; sentence: number }
-export const DEFAULT_CAPS: StopCaps = { item: 0.45, sentence: 0.05 };
+/** The three groups of stops, each with its own switch and share: words, phrases, whole sentences. */
+export type StopGroup = StopKind;
+export const groupOf = (kind: StopKind): StopGroup => kind;
+/** The share of the sentences that may stop, for each group (0..1; 0 = never or switched off). */
+export interface StopCaps { word: number; phrase: number; sentence: number }
+export const DEFAULT_CAPS: StopCaps = { word: 0.35, phrase: 0.15, sentence: 0.05 };
+/**
+ * What a stop here is for, with the groups that are on: a hard word, else a phrase; a sentence only when the sentence
+ * itself is hard (or has nothing else). null = nothing here for the groups that are on.
+ */
+export function kindWith(s: Pick<SentenceScore, 'kinds' | 'hard'>, caps: StopCaps): StopKind | null {
+  const ks = s.kinds.filter((k) => caps[k] > 0);
+  if (ks.length) return stopKindOf(ks);
+  return caps.sentence > 0 && (s.hard || !s.kinds.length) ? 'sentence' : null;
+}
 /** What a stop is for, from what is (still) hard in the sentence. */
 export const stopKindOf = (kinds: readonly ItemKind[]): StopKind => (kinds.includes('word') ? 'word' : kinds.includes('phrase') ? 'phrase' : 'sentence');
 
@@ -125,14 +134,14 @@ export function selectStops(scores: readonly SentenceScore[], ratio = MAX_STOP_R
 }
 
 /**
- * The stops by group: of all the sentences, at most `caps.item` stop for a hard word or phrase and `caps.sentence`
- * for the sentence itself; in each group the hardest ones.
+ * The stops by group: of all the sentences, at most `caps.word` stop for a hard word, `caps.phrase` for a phrase and
+ * `caps.sentence` for the sentence itself; in each group the hardest ones (a low share = only the hardest).
  */
 export function selectStopsByKind(scores: readonly SentenceScore[], caps: StopCaps = DEFAULT_CAPS): Set<string> {
   const out = new Set<string>();
-  for (const group of ['item', 'sentence'] as const) {
+  for (const group of ['word', 'phrase', 'sentence'] as const) {
     const max = Math.floor(scores.length * Math.max(0, Math.min(1, caps[group])));
-    const list = scores.filter((s) => groupOf(s.kind) === group && s.score >= MIN_SCORE).sort((a, b) => b.score - a.score || a.index - b.index);
+    const list = scores.filter((s) => kindWith(s, caps) === group && s.score >= MIN_SCORE).sort((a, b) => b.score - a.score || a.index - b.index);
     for (const s of list.slice(0, max)) out.add(s.key);
   }
   return out;
