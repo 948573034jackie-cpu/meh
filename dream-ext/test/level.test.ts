@@ -194,21 +194,27 @@ describe('the stops', () => {
     const hard = new Set(order.map((p) => sentenceKey(p)));
     expect(score(() => undefined, { hard }).filter((s) => !s.items.length).every((s) => s.kind === 'sentence' && s.hard)).toBe(true);
   });
-  it('each kind of stop has its own share of the sentences; 0 = never', () => {
+  it('each kind of stop: its share of what is hard of that kind, the hardest first; 100% = all; 0 = never', () => {
     const hard = new Set(order.map((p) => sentenceKey(p)));
     const list = score(() => undefined, { hard });
-    const n = order.length;
     const count = (set: Set<string>, kind: string, caps = DEFAULT_CAPS) => list.filter((s) => set.has(s.key) && kindWith(s, caps) === kind).length;
+    const cands = (kind: string, caps = DEFAULT_CAPS) => list.filter((s) => s.score >= 0.45 && kindWith(s, caps) === kind);
     const def = selectStopsByKind(list);
-    expect(count(def, 'word')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.word));
-    expect(count(def, 'phrase')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.phrase));
-    expect(count(def, 'sentence')).toBeLessThanOrEqual(Math.floor(n * DEFAULT_CAPS.sentence));
-    expect(def.size).toBeLessThanOrEqual(n / 2);
+    for (const k of ['word', 'phrase', 'sentence'] as const) {
+      const c = cands(k).length;
+      expect(count(def, k)).toBe(c ? Math.max(1, Math.round(c * DEFAULT_CAPS[k])) : 0);
+    }
+    // the hardest first: every word stop is at least as hard as every word sentence left out
+    const ws = cands('word'), chosen = ws.filter((s) => def.has(s.key)), left = ws.filter((s) => !def.has(s.key));
+    if (chosen.length && left.length) expect(Math.min(...chosen.map((s) => s.score))).toBeGreaterThanOrEqual(Math.max(...left.map((s) => s.score)));
+    // 100%: every hard one
+    const all = selectStopsByKind(list, { word: 1, phrase: 1, sentence: 1 });
+    expect(all.size).toBe(list.filter((s) => s.score >= 0.45 && kindWith(s, { word: 1, phrase: 1, sentence: 1 }) !== null).length);
     // sentences off: only words and phrases stop; all off: nothing stops
     const allItems = { word: 1, phrase: 1, sentence: 0 };
     const noSentences = selectStopsByKind(list, allItems);
     expect(count(noSentences, 'sentence', allItems)).toBe(0);
-    expect(noSentences.size).toBe(list.filter((s) => kindWith(s, allItems) !== null).length);
+    expect(noSentences.size).toBe(list.filter((s) => s.score >= 0.45 && kindWith(s, allItems) !== null).length);
     const onlySentences = selectStopsByKind(list, { word: 0, phrase: 0, sentence: 1 });
     expect([...onlySentences].every((k) => list.find((s) => s.key === k)!.hard)).toBe(true);
     expect(selectStopsByKind(list, { word: 0, phrase: 0, sentence: 0 }).size).toBe(0);
@@ -218,7 +224,7 @@ describe('the stops', () => {
     expect(kindWith(mixed, { word: 1, phrase: 1, sentence: 0 })).toBe('word');
     expect(kindWith({ kinds: ['word'], hard: false }, { word: 0, phrase: 1, sentence: 1 })).toBe(null);
     // in a group, the hardest first
-    const words = { word: 1 / n, phrase: 0, sentence: 0 };
+    const words = { word: 0.001, phrase: 0, sentence: 0 }; // (a tiny share: only the very hardest one)
     const one = selectStopsByKind(list, words);
     expect(one.size).toBe(1);
     const best = list.filter((s) => kindWith(s, words) === 'word').sort((a, b) => b.score - a.score)[0];

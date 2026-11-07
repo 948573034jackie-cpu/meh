@@ -418,7 +418,7 @@ export class ListenController {
           const res = await this.runExplanation(asked.kind, asked.target, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }], asked.lemma);
           if (res === 'done' && !over()) {
             this.deps.onWordAgain?.();
-            const again = await this.sayTarget(asked.target, asked.lemma, Math.max(0, this.deps.settings().listen.wordRepeats));
+            const again = await this.sayTarget(asked.target, asked.lemma, asked.kind === 'word' ? Math.max(0, this.deps.settings().listen.wordRepeats) : 1);
             if (again === 'done' && !over()) await this.sayTarget(cur.text, lemma, 1);
           }
         }
@@ -635,8 +635,9 @@ export class ListenController {
     // stop; the app closes its card first. Then the reading goes on where it was, when it was playing.)
     if (res === 'done' && this.deps.directStop?.() && !question && (kind === 'word' || kind === 'phrase') && !this.disposed) {
       this.deps.onWordAgain?.();
-      const again = await this.sayTarget(target, lemma, Math.max(0, s.listen.wordRepeats));
+      const again = await this.sayTarget(target, lemma, kind === 'word' ? Math.max(0, s.listen.wordRepeats) : 1);
       if (again === 'skipped') res = 'skipped';
+      else if (cur?.text && cur.text !== target && !this.disposed) { if ((await this.sayTarget(cur.text, lemma, 1)) === 'skipped') res = 'skipped'; }
     }
     // (Level Check: a word tapped anywhere does not move the reading: it goes on where it was)
     const readOn = this.deps.directStop?.() ? resumeAt : kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;

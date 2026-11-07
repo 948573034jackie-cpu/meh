@@ -95,15 +95,17 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   ].filter(Boolean).join('\n      ');
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
+    <section><label>Volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <span class="muted">the tutor and the words read to you, together</span></label></section>
     <section><h4>My tutor stops for</h4>
       <label>Words ${onOff('stopItemsOn', x.stopItemsOn !== false)} ${slider('capWords', x.capWords ?? 35, 0, 100, 5, '%')}</label>
       <label>Phrases ${onOff('stopPhrasesOn', x.stopPhrasesOn !== false)} ${slider('capPhrases', x.capPhrases ?? 15, 0, 100, 5, '%')}</label>
       <label>Whole sentences ${onOff('stopHardOn', x.stopHardOn !== false)} ${slider('capSentences', x.capSentences ?? 5, 0, 50, 1, '%')}</label>
-      <p class="muted">Of every 100 sentences, at most this many stop for a hard word, for a phrase, or for a whole hard sentence (5% = about 1 in 20; 0% = never). A low share stops only for the hardest and most important; a high share for nearly everything. The tutor says the word ${s.listen.wordRepeats} times and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. "I know", "know", "bye" or "bye bye": marked known, no explanation, the video goes on. Say nothing: it explains.</p>
+      <p class="muted">How much of what is above your level the tutor explains, the hardest first: 100% = every hard word (phrase, sentence), 50% = the harder half, 10% = only the hardest 10%, 0% = never. Tap a word = explain it now; double tap = I know it. The tutor says the word ${s.listen.wordRepeats} times and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. "I know", "know", "bye" or "bye bye": marked known, no explanation, the video goes on. Say nothing: it explains.</p>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
       <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
       <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
+      ${ctx.phone ? `<label>Talk through Bluetooth headphones ${onOff('headsetMic', !!x.headsetMic)} <span class="muted">their microphone hears you (the sound becomes phone-call quality while on). Wired headphones with a microphone always work.</span></label>` : ''}
       <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
       <label>The word's volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
       <label>Word test before each video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
@@ -119,7 +121,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${ctx.phone ? `<label>E button on every sentence ${onOff('sentenceButtons', !!x.sentenceButtons)}</label>
       <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
-      <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[20, '20 s'], [30, '30 s'], [40, '40 s'], [60, '60 s']])}</label>
+      <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])}</label>
       <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
@@ -216,6 +218,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'stopPhrasesOn') void store.patchExtras({ stopPhrasesOn: v === 'on' });
       else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : 'day' });
       else if (segName === 'sentenceButtons') void store.patchExtras({ sentenceButtons: v === 'on' });
+      else if (segName === 'headsetMic') void store.patchExtras({ headsetMic: v === 'on' });
       else if (segName === 'teachLength') patchAi({ explanationLength: v as Settings['ai']['explanationLength'] });
       else if (segName === 'sleep') ctx.setSleep?.(Number(v));
       else if (segName === 'replayPart') void store.patchExtras({ replayPart: v === 'on' });
@@ -333,6 +336,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (name === 'panelSize') later(() => patchLook({ fontSizePx: n }), 120);
     else if (name === 'bandSize') later(() => patchLook({ subtitleSizePx: n }), 120);
     else if (name === 'rate') later(() => patchS((cur) => ({ voice: { ...cur.voice, rate: n } })));
+    else if (name === 'allVolume') later(() => void store.patchExtras({ teacherVolume: n, wordVolume: n }), 120);
     else if (name === 'teacherVolume') later(() => void store.patchExtras({ teacherVolume: n }), 120);
     else if (name === 'wordVolume') later(() => void store.patchExtras({ wordVolume: n }), 120);
     else if (name === 'bandBottom') later(() => void store.patchExtras({ bandBottom: n }), 80);

@@ -60,6 +60,8 @@ export interface YtExtras {
   oneButton?: boolean;
   /** an E button on every sentence (explain this sentence); on a phone a switch, off at first */
   sentenceButtons?: boolean;
+  /** iPhone: talk through the Bluetooth headphones' own microphone (the sound is then phone-call quality) */
+  headsetMic?: boolean;
   /** Reading pages: 'day' (light) or 'night' (dark) */
   readLook?: 'day' | 'night';
   /** text size of the reading pages, px (each mode has its own size) */
@@ -154,7 +156,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
  * 2 = three stop groups (words, phrases, sentences: the old "words and phrases" share goes to both), known after 7
  *     explanations, no "stops by itself: off" left over (that row is gone), the learner's own teacher.
  */
-export const EXTRAS_VERSION = 2;
+export const EXTRAS_VERSION = 3;
 export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   if ((x.migrated ?? 0) >= EXTRAS_VERSION) return null;
   const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };

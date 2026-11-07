@@ -51,7 +51,9 @@
       window.__ytcActiveSR = this;
       let level = 3; // the microphone's sensitivity (1 low, 2 mid, 3 high), from My tutor's settings
       try { if (window.__ytcDream && window.__ytcDream.micLevel) level = Number(window.__ytcDream.micLevel()) || 3; } catch (e) { /* the default */ }
-      post({ kind: 'speech', op: 'start', level }).catch(() => {});
+      let headset = false; // talk through the Bluetooth headphones' microphone (a setting)
+      try { headset = !!(window.__ytcDream && window.__ytcDream.headsetMic && window.__ytcDream.headsetMic()); } catch (e) { /* off */ }
+      post({ kind: 'speech', op: 'start', level, headset }).catch(() => {});
     }
     // (only the listener that has the microphone can close it: the 🎤 Speak button's own listener takes it over)
     abort() { if (window.__ytcActiveSR !== this) return; window.__ytcActiveSR = null; post({ kind: 'speech', op: 'stop' }).catch(() => {}); }

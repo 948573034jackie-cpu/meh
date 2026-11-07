@@ -52,7 +52,7 @@ import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } fr
 import { renderQuick } from './quick';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
-import { scoreSentences, selectStopsByKind, stopKindOf, kindWith, mayStopGroup, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
+import { scoreSentences, selectStopsByKind, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
 import { RuleGuard, type LevelRule, type RuleRequest } from './level-rule';
 import type { TeachLength } from './teacher-text';
 import { LevelGate } from './level-gate';
@@ -88,6 +88,7 @@ interface DreamHook {
   wantsMic?(): boolean;
   /** how easily the microphone hears you: 1 low, 2 mid, 3 high (the iPhone app's listener) */
   micLevel?(): number;
+  headsetMic?(): boolean;
   /** a voice call is open: youtube.js keeps the microphone on, even with voice commands off */
   callOpen?(): boolean;
   /** something the microphone heard; true = handled here */
@@ -464,7 +465,7 @@ class Session {
     this.render();
     this.setupController();
     this.listenVideo();
-    this.followTimer = setInterval(() => this.follow(), 150);
+    this.followTimer = setInterval(() => this.follow(), 60);
     // tests only (the silent test voice is on): what the tutor is doing, readable from the page
     if (E2E()) { const t = setInterval(() => { if (this.disposed) clearInterval(t); else document.documentElement.dataset.drDebug = JSON.stringify(this.debug()); }, 150); }
     this.setStatus(this.readyText(info.source));
@@ -932,7 +933,7 @@ class Session {
     const sentenceStop = kindWith(sc, caps) === 'sentence';
     if (!items.length && !sentenceStop) return null;
     const group: StopGroup = items.length ? stopKindOf(items.map((it) => it.kind)) : 'sentence';
-    if (!mayStopGroup(this.stopsBy[group], this.heardKeys.size, this.caps()[group])) return null;
+    if (!(this.caps()[group] > 0)) return null;
     this.trigger = { key, group };
     return { lemma: sentenceLemma(text), items };
   }
@@ -1296,8 +1297,9 @@ class Session {
     if (blocked && !this.micToldBlocked && this.wantsMic()) this.toast(micBlockedText(), 12000);
     this.micToldBlocked = blocked;
     // (the learner scrolled a moment ago: the page goes back to the line being heard by itself, like Speechify)
-    if (this.userScrollAt && Date.now() - this.userScrollAt > 2500 && !this.card) { this.userScrollAt = 0; this.scrollToCur(true); }
-    if (reading) return;
+    if (this.userScrollAt && Date.now() - this.userScrollAt > 2000 && !this.card) { this.userScrollAt = 0; this.scrollToCur(true); }
+    // (the tutor reads: its own word-by-word marks lead; the video's time still decides when they lag behind)
+    if (reading && v.paused) return;
     if (v.paused && this.mode === 'tutor' && (this.playback?.state === 'explaining' || this.controller?.busy)) return; // the stop's sentence stays marked
     const pos = this.vb.positionAt(v.currentTime);
     if (!pos) return;
@@ -1350,17 +1352,19 @@ class Session {
     this.setCurrent(part[0]);
     this.scrollToCur(true);
     this.preconnect();
-    if (playFirst) await this.replayPart(part, flow);
-    if (flow.abort || this.flow !== flow) return;
+    void playFirst;
     const text = part.map((p) => getSentence(this.vb!.book, p)?.text ?? '').filter(Boolean).join(' ');
     await c.explainNow('passage', text, part[0], null, undefined, undefined, false);
     if (flow.abort || this.flow !== flow) return;
     if (talkAfter() && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(part[part.length - 1], undefined, this.lastExplanation());
     if (flow.abort || this.flow !== flow) return;
+    // the whole part once more from the video (10, 20 or 30 s), then on after it (it was playing); stopped = it stays stopped
+    if (!(flow as { bye?: boolean }).bye) { this.setCurrent(part[0]); this.scrollToCur(true); await this.replayPart(part, flow); }
+    if (flow.abort || this.flow !== flow) return;
     this.flow = null;
-    // the last sentence again, then on (it was playing); it stays stopped (it was stopped)
-    if (wasPlaying || (flow as { bye?: boolean }).bye) this.continueFrom(part[part.length - 1], part[part.length - 1]);
-    else { const last = part[part.length - 1]; this.setCurrent(last); if (normalView()) this.hideStage(); }
+    const last = part[part.length - 1], after = nextPosition(this.vb!.book, last);
+    if (wasPlaying || (flow as { bye?: boolean }).bye) { if (after) this.continueFrom(after); else this.continueFrom(last, last); }
+    else { this.setCurrent(last); if (normalView()) this.hideStage(); }
   }
 
   /** the part plays from the video once (you see it on the page); pausing or "go on" skips to the explanation */
@@ -2417,7 +2421,7 @@ class Session {
     const sc = shortcutMap(extras.shortcuts);
     const playing = !!video() && !video()!.paused;
     top.innerHTML = `<span class="brand">Dream</span>${this.mode === 'tutor' ? `<button data-act="stop" class="stopbtn" title="${playing ? 'Stop everything' : 'Play on'} (${esc(comboLabel(sc.stop))})">${playing ? '⏸' : '▶'}</button>` : ''}<span class="ttl">${esc(this.vb?.book.title ?? '')}</span>${range ? `<span class="range">${range}</span>` : ''}<span class="grow"></span>
-      <span class="seg" data-name="secs">${[20, 30, 40, 60].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
+      <span class="seg" data-name="secs">${[10, 20, 30].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
       ${this.mode === 'tutor' ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
@@ -2765,7 +2769,7 @@ class Session {
   }
   /** the playing sentence stays on the play line (its middle on the line, all of it on the page), unless you scrolled a moment ago */
   private scrollToCur(force = false): void {
-    if (!this.cur || (!force && Date.now() - this.userScrollAt < 4000)) return;
+    if (!this.cur || (!force && Date.now() - this.userScrollAt < 2000)) return;
     // (Reading: an explanation never turns the page; only a sentence that is not on this page brings its page)
     if (this.readView()) { this.followRead(this.sentenceEl(this.stage!.el, this.cur), false); void force; }
     const f = this.lineAt();
@@ -2833,7 +2837,7 @@ class Session {
   }
   /** the page with this word or sentence, unless you turned a page yourself a moment ago */
   private followRead(el: Element | null | undefined, force = false): void {
-    if (!el || (!force && Date.now() - this.userPageAt < 8000)) return;
+    if (!el || (!force && Date.now() - this.userPageAt < 3000)) return;
     const p = this.pageOf(el);
     if (p !== this.readPage) this.gotoPage(p);
   }
@@ -3722,8 +3726,11 @@ async function boot(): Promise<void> {
   devCheck();
   const restored = await restoreIfFresh();
   [settings, extras, vocab, levelMeta] = await Promise.all([store.getSettings(), store.getExtras(), store.getVocab(), store.getLevel()]);
-  const mig = store.migrateExtras({ ...(await store.getRawExtras()) } as store.YtExtras);
+  const raw = await store.getRawExtras();
+  const mig = store.migrateExtras({ ...raw } as store.YtExtras);
   if (mig) extras = await store.patchExtras(mig);
+  // (once: "Explain N s" is 10, 20 or 30 seconds now, 20 the usual one)
+  if (mig && (raw.migrated ?? 0) < 3 && settings.listen.lastSecondsWindow !== 10 && settings.listen.lastSecondsWindow !== 20) settings = await store.patchSettings({ listen: { ...settings.listen, lastSecondsWindow: 20 } });
   if (PHONE) {
     const first = store.phoneDefaults(extras);
     if (first) {
@@ -3735,6 +3742,7 @@ async function boot(): Promise<void> {
     // (the finder's voice note has the microphone: the tutor lets it go meanwhile)
     wantsMic: () => !finderMic && !finderIsOpen() && !!session && session.wantsMic(),
     micLevel: () => extras.micLevel ?? 3,
+    headsetMic: () => !!extras.headsetMic,
     callOpen: () => !!session && session.callOpen(),
     heard: (text, final, key) => (session ? session.heard(text, final, key) : false),
     decorateBar: (bar) => {

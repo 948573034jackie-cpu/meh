@@ -36,7 +36,10 @@ export type StopKind = 'word' | 'phrase' | 'sentence';
 /** The three groups of stops, each with its own switch and share: words, phrases, whole sentences. */
 export type StopGroup = StopKind;
 export const groupOf = (kind: StopKind): StopGroup => kind;
-/** The share of the sentences that may stop, for each group (0..1; 0 = never or switched off). */
+/**
+ * How much of what is hard (above the learner's level) is explained, for each group, the hardest first (0..1):
+ * 1 = everything above the level, 0.5 = the harder half, 0.1 = only the hardest tenth; 0 = never or switched off.
+ */
 export interface StopCaps { word: number; phrase: number; sentence: number }
 export const DEFAULT_CAPS: StopCaps = { word: 0.35, phrase: 0.15, sentence: 0.05 };
 /**
@@ -134,14 +137,16 @@ export function selectStops(scores: readonly SentenceScore[], ratio = MAX_STOP_R
 }
 
 /**
- * The stops by group: of all the sentences, at most `caps.word` stop for a hard word, `caps.phrase` for a phrase and
- * `caps.sentence` for the sentence itself; in each group the hardest ones (a low share = only the hardest).
+ * The stops by group: of the sentences with something hard of that group (a word, a phrase, the sentence itself),
+ * the hardest `caps.word` / `caps.phrase` / `caps.sentence` share stop. 100% = every one, 10% = only the hardest tenth
+ * (at least one when the share is not 0).
  */
 export function selectStopsByKind(scores: readonly SentenceScore[], caps: StopCaps = DEFAULT_CAPS): Set<string> {
   const out = new Set<string>();
   for (const group of ['word', 'phrase', 'sentence'] as const) {
-    const max = Math.floor(scores.length * Math.max(0, Math.min(1, caps[group])));
+    const share = Math.max(0, Math.min(1, caps[group]));
     const list = scores.filter((s) => kindWith(s, caps) === group && s.score >= MIN_SCORE).sort((a, b) => b.score - a.score || a.index - b.index);
+    const max = share > 0 ? Math.max(1, Math.round(list.length * share)) : 0;
     for (const s of list.slice(0, max)) out.add(s.key);
   }
   return out;

@@ -84,7 +84,7 @@ export interface Settings {
     wordRepeats: number; // say the word N times before and after the explanation
     sentenceRepeatsAfterWord: number; // read the sentence N times after a word explanation
     sentenceRepeatsForPhrase: number; // read the sentence N times (once before, once after by default = 2)
-    lastSecondsWindow: 20 | 30 | 40 | 60;
+    lastSecondsWindow: 10 | 20 | 30 | 40 | 60;
     /** in listening mode, a single tap on a highlighted word cancels it instead of opening the popup */
     tapHighlightCancels: boolean;
     /** listening mode: silence after an explanation before the book continues */
@@ -198,7 +198,7 @@ export const DEFAULT_SETTINGS: Settings = {
     wordRepeats: 3,
     sentenceRepeatsAfterWord: 2,
     sentenceRepeatsForPhrase: 2,
-    lastSecondsWindow: 30,
+    lastSecondsWindow: 20,
     tapHighlightCancels: true,
     pauseAfterExplainMs: 5000,
     commandWindowMs: 5000,

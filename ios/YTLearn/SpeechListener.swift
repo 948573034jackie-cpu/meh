@@ -330,7 +330,9 @@ final class SpeechListener {
         let delay = wanted ? SpeechListener.idleReleaseSeconds : SpeechListener.releaseSeconds
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, self.releaseToken == token, !self.running else { return }
-            if AVAudioSession.sharedInstance().category == .playAndRecord { AudioSession.set(mode: "play") }
+            // (the sound is NOT set back to "play": that change of the sound stopped the video in the web view, a few
+            // seconds after every time the microphone closed. Play-and-record plays the same, on the same speaker.)
+            _ = self
         }
     }
 }

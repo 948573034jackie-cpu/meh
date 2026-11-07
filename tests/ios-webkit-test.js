@@ -211,7 +211,7 @@ const fakeWebkit = () => {
   Object.assign(stores.local, {
     barOn: true,
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 99 }, // (no starting data: these tests have their own words)
-    drExtras: { phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
+    drExtras: { capWords: 100, stopPhrasesOn: true, capPhrases: 100, capSentences: 0, phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 20 } },
   });
   keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key' });
@@ -511,7 +511,7 @@ const fakeWebkit = () => {
   // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
   await lv.evaluate(() => window.__ytcDream.action('check'));
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
-  ok('the Check button shows the report: the app, just talk, the microphone, the three groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words 35% · phrases 15% · sentences 5%/.test(rep), String(rep).slice(0, 500));
+  ok('the Check button shows the report: the app, just talk, the microphone, the three groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words 100% · phrases 100% · sentences 0%/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
   // ---- Reading mode: pages like an e-reader (big letters, so this short video makes two pages or more) ----
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 40 } })));
@@ -528,11 +528,13 @@ const fakeWebkit = () => {
   const r1 = await readLook();
   ok('the Mode button: Reading mode, pages like a book: the text does not scroll, a light page, "page / pages" under it', !!rd && r1.scrolls === 'hidden' && r1.pager !== 'none' && new RegExp('^\\d+ / ' + rd.stage.pages + '$').test(r1.pg) && r1.bg === 'rgb(246, 241, 229)', JSON.stringify({ r1, st: rd && rd.stage }));
   ok('...the sentence being read is on the page shown', r1.onPage === true, JSON.stringify(r1));
-  await lv.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.pager [data-act="next"]').click());
+  // (› on the last page cannot turn: then ‹)
+  const turnBy = /^(\d+) \/ \1$/.test(r1.pg) ? 'prev' : 'next';
+  await lv.evaluate((a) => document.getElementById('dr-stage-host').shadowRoot.querySelector(`.pager [data-act="${a}"]`).click(), turnBy);
   await sleep(400);
   const r2 = await readLook();
   ok('...› turns to the next page (‹ back)', r2.tx !== r1.tx && r2.pg !== r1.pg, JSON.stringify({ a: r1.pg, b: r2.pg }));
-  await lv.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.pager [data-act="prev"]').click());
+  await lv.evaluate((a) => document.getElementById('dr-stage-host').shadowRoot.querySelector(`.pager [data-act="${a}"]`).click(), turnBy === 'next' ? 'prev' : 'next');
   // each mode has its own text size
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 30 } })));
   const r3 = await until(async () => { const x = await readLook(); return x.size === '30px' ? x : null; }, 4000);

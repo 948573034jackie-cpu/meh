@@ -161,7 +161,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
 
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' }, voiceOn: false,
-    drExtras: { tutorOn: true, fakeVoice: true, migrated: 1 }, // (everything else as it comes for a new learner)
+    drExtras: { tutorOn: true, fakeVoice: true, migrated: 1, capWords: 100, stopPhrasesOn: true, capPhrases: 100, capSentences: 0 }, // (every hard word and phrase: 100%; everything else as it comes for a new learner)
     drTestBaseUrls: { anthropic: 'http://localhost:8795' },
     drSettings: { learnerLevel: 'B2', ai: { hintsModel: 'claude-haiku-5-5' } },
   }));
@@ -304,7 +304,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const final = await dbg();
   const pct = Math.round(100 * final.level.stops / final.level.total);
   ok('at most 50% of the sentences stopped', final.level.stops <= final.level.total / 2 && final.level.stops >= 2, `${final.level.stops} of ${final.level.total} sentences = ${pct}%`);
-  ok('each group of stops keeps to its own share: words 35%, phrases 15%, whole sentences 5%', final.level.byKind.word <= final.level.total * 0.35 && final.level.byKind.phrase <= Math.max(1, final.level.total * 0.15) && final.level.byKind.sentence <= Math.max(1, final.level.total * 0.05) && final.level.byKind.word + final.level.byKind.phrase + final.level.byKind.sentence === final.level.stops, JSON.stringify(final.level.byKind));
+  ok('each group of stops keeps to its own share: words 100%, phrases 100%, whole sentences 0% = none', final.level.byKind.sentence === 0 && final.level.byKind.word + final.level.byKind.phrase + final.level.byKind.sentence === final.level.stops, JSON.stringify(final.level.byKind));
   ok('the counter never went over 50%', worst <= 0.5, `worst ${Math.round(worst * 100)}% · last ${await counter()}`);
   const askedAbout = (s) => final.level.stoppedAt.includes(s);
   ok('known words never cause a stop: only known words ("threaten", "violence") = no stop', !askedAbout(LINES[3]) && !askedAbout(LINES[12]), final.level.stoppedAt.join(' | '));

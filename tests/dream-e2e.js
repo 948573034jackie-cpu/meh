@@ -128,7 +128,7 @@ const api = http.createServer((req, res) => {
     if (kind === 'chat') return sse(req, res, /gregarious/i.test(user) ? 'Gregarious means friendly. A gregarious man loves parties and people. Do you know someone like that?' : 'Sure. Ask me anything about this part.');
     // explanations: about the sentence being read now (the context around it holds the other hard words too)
     const cur = (/The sentence being read now:\\n(.*?)(?:\\n|")/.exec(user) || [])[1] || '';
-    if (/The learner just paused the video/.test(user)) return sse(req, res, /just heard, in complete sentences[^]*?sentence number five[^]*?First, tell the learner/.test(user) ? '"This is complete sentence number five of the lesson." In this part the speaker counts the sentences of the lesson. That is the main point.' : 'In this part the speaker counts the sentences of the lesson. That is the main point.');
+    if (/The learner just paused the video/.test(user)) return sse(req, res, /just heard, in complete sentences[^]*?sentence number five[^]*?First, in two or three short sentences/.test(user) ? '"This is complete sentence number five of the lesson." In this part the speaker counts the sentences of the lesson. That is the main point.' : 'In this part the speaker counts the sentences of the lesson. That is the main point.');
     if (/What is a gregarious man/.test(user)) return sse(req, res, 'A gregarious man loves being with people.');
     return sse(req, res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again so that nothing is wrong.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : /number six/.test(cur) ? 'This sentence simply says it is the sixth sentence.' : 'It means something simple.');
   });
@@ -267,11 +267,11 @@ const api = http.createServer((req, res) => {
   const lay6 = await until(async () => { const d = await dbg(); return d && d.layout && d.layout.fits ? d.layout : null; }, 3000);
   ok('text size 96 px: the 6 lines are made smaller until every word is on the page', lay6 && lay6.fontPx < 96 && lay6.fontPx >= 9, JSON.stringify(lay6 || (await dbg()).layout));
   await patch('drExtras', { stageSizePx: 34 });
-  const replayed = await until(async () => (await seeksTo(7.85)) >= 1 ? await vstate() : null, 6000, 60);
-  ok('the part plays again from its start (the audio, the page stays on)', !!replayed && (await dbg()).stage.shown, JSON.stringify(replayed));
-  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="40"]').click());
-  const more = await until(async () => { const d = await dbg(); return d && d.stage.visibleLines === 8 && d.layout && d.layout.fits ? d : null; }, 4000, 80);
-  ok('40 s on the page: at once the last 40 s (8 complete sentences), all on the screen', !!more, JSON.stringify((await dbg()).stage));
+  const seeksFirst = await seeksTo(7.85);
+  ok('the part stays on the page (the explanation comes first now, the part plays again after it)', (await dbg()).stage.shown);
+  await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="30"]').click());
+  const more = await until(async () => { const d = await dbg(); return d && d.stage.visibleLines > 6 && d.layout && d.layout.fits ? d : null; }, 4000, 80);
+  ok('30 s on the page: at once the last 30 s (more complete sentences), all on the screen', !!more, JSON.stringify((await dbg()).stage));
   await sroot(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.top [data-secs="20"]').click());
   await until(async () => (await dbg()).stage.visibleLines === 6, 4000, 80);
   const passage = await until(() => apiLog.slice(nBefore).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 20000);
@@ -282,8 +282,13 @@ const api = http.createServer((req, res) => {
   // the original sentence the teacher quotes is played from the video (the real speaker; no voice characters)
   const quoteSpoken = (await speak()).some((x) => /complete sentence number five/.test(x));
   ok('a sentence of the video the teacher quotes is played from the video itself, not read by the voice', !quoteSpoken && (await seeksTo(16 - 0.15)) >= 1, JSON.stringify({ quoteSpoken, seeks: await seeksTo(16 - 0.15) }));
-  const back = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow ? v : null; }, 15000, 80);
-  ok('then (it was playing) the last sentence of the part again and on, playing', !!back, JSON.stringify(back));
+  // (after the explanation: the whole part once more from the video, then on after it)
+  await yt.evaluate(() => { document.querySelector('video').playbackRate = 3; });
+  const replayEnd = await until(async () => (await seeksTo(7.85)) > seeksFirst ? await vstate() : null, 20000, 60);
+  ok('after the explanation the whole part plays again from its start', !!replayEnd, JSON.stringify({ seeks: await seeksTo(7.85) }));
+  const back = await until(async () => { const v = await vstate(); const d = await dbg(); return !v.paused && !d.flow ? v : null; }, 30000, 80);
+  await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
+  ok('then (it was playing) on after the part, playing', !!back && back.t >= 29, JSON.stringify(back));
   await sleep(1500);
   ok('the part replays without stopping at "gregarious" again', !(await dbg()).window);
 
@@ -319,9 +324,9 @@ const api = http.createServer((req, res) => {
   await sleep(300);
   const quick = await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); return q && !q.hidden ? { text: q.innerText, teacher: (q.querySelector('textarea[data-name="teacher"]') || {}).value || '' } : null; });
   ok('⚙ quick settings open right on the page (sizes, voice, talk, my teacher\'s rules, keys, shortcuts)', quick && /Reading page/i.test(quick.text) && /Tutor's voice/i.test(quick.text) && /Live voice call/i.test(quick.text) && /Microphone/i.test(quick.text) && /RULE ONE/.test(quick.teacher) && /Shortcuts/i.test(quick.text), quick && quick.text.slice(0, 120));
-  await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); q.querySelector('.seg[data-name="seconds"] button[data-v="40"]').click(); });
+  await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); q.querySelector('.seg[data-name="seconds"] button[data-v="30"]').click(); });
   await sleep(500);
-  ok('changing the part length there is saved at once', (await store('drSettings')).listen.lastSecondsWindow === 40);
+  ok('changing the part length there is saved at once', (await store('drSettings')).listen.lastSecondsWindow === 30);
   // the two volume sliders
   const volUi = await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); return { t: !!q.querySelector('input[data-name="teacherVolume"]'), w: !!q.querySelector('input[data-name="wordVolume"]'), tw: !!q.querySelector('[data-act="test-word"]') }; });
   await sroot(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.quick'); const i = q.querySelector('input[data-name="teacherVolume"]'); i.value = '35'; i.dispatchEvent(new Event('input', { bubbles: true })); const j = q.querySelector('input[data-name="wordVolume"]'); j.value = '50'; j.dispatchEvent(new Event('input', { bubbles: true })); });
@@ -523,7 +528,7 @@ const api = http.createServer((req, res) => {
   const helloPart = await until(async () => { const d = await dbg(); return d.flow === 'part' ? d : null; }, 5000);
   const helloReq = await until(() => apiLog.slice(nHello).find((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), 30000);
   await yt.evaluate(() => { document.querySelector('video').playbackRate = 1; });
-  ok('voice mode: "hello" stops the video, plays the last part again and explains it (what is happening first)', !!helloPart && !!helloReq && /tell the learner what is happening in this part/.test(helloReq.user), JSON.stringify({ flow: helloPart && helloPart.flow, req: !!helloReq }));
+  ok('voice mode: "hello" stops the video, plays the last part again and explains it (what is happening first)', !!helloPart && !!helloReq && /what is happening in this moment of the video/.test(helloReq.user), JSON.stringify({ flow: helloPart && helloPart.flow, req: !!helloReq }));
   await say('bye bye', 'vm:4');
   const byePlays = await until(async () => { const d = await dbg(); return d && !d.flow && d.state === 'playing' && await yt.evaluate(() => !document.querySelector('video').paused); }, 8000);
   ok('voice: "bye bye" = the tutor goes and the video plays; the microphone stays on for the next "hello"', !!byePlays && (await store('drExtras')).voiceMode === true, JSON.stringify({ byePlays, vm: (await store('drExtras')).voiceMode }));
@@ -574,17 +579,22 @@ const api = http.createServer((req, res) => {
   await sleep(1500);
   const nTap = apiLog.length;
   await slow.evaluate(() => document.querySelector('video').pause());
-  const wpos = await until(() => slow.evaluate(() => { const h = document.getElementById('dr-stage-host'); if (!h || h.hidden) return null; const w = h.shadowRoot.querySelector('.page .s.in-part .w[data-lemma]'); if (!w) return null; const r = w.getBoundingClientRect(); return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2, lemma: w.dataset.lemma } : null; }), 3000, 30);
+  const wpos = await until(() => slow.evaluate(() => { const h = document.getElementById('dr-stage-host'); if (!h || h.hidden) return null; const w = h.shadowRoot.querySelector('.page .s.in-part .w[data-lemma]:not([data-lemma="meticulous"])'); if (!w) return null; const r = w.getBoundingClientRect(); return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2, lemma: w.dataset.lemma } : null; }), 3000, 30);
   if (wpos) await slow.mouse.click(wpos.x, wpos.y);
   await sleep(900);
   const ghost = await slow.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .card'); return !!(c && !c.hidden); });
   ok('the click that paused the video does not tap a word on the page that appears under the mouse', wpos && !ghost && !apiLog.slice(nTap).some((r) => r.kind === 'explain' && /said aloud|The word|word/.test(r.user) && r.user.includes(wpos.lemma) && !/paused the video/.test(r.user)), JSON.stringify({ wpos, ghost }));
-  if (wpos) await slow.mouse.click(wpos.x, wpos.y);
+  // (the page may have moved meanwhile: where that word is now)
+  const wpos2 = await slow.evaluate((lemma) => { const h = document.getElementById('dr-stage-host'); const w = h && h.shadowRoot.querySelector(`.page .w[data-lemma="${lemma}"]`); if (!w) return null; const r = w.getBoundingClientRect(); return r.width ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null; }, wpos && wpos.lemma);
+  if (wpos2) await slow.mouse.click(wpos2.x, wpos2.y);
   const real = await until(() => slow.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .card'); return c && !c.hidden ? c.innerText.slice(0, 40) : null; }), 3000);
-  ok('a click a moment later opens the word card as before', !!real, real);
+  ok('a click a moment later opens the word card as before', !!real, real || JSON.stringify(await slow.evaluate(() => { try { const d = JSON.parse(document.documentElement.dataset.drDebug || 'null'); return d && { trail: (d.trail || []).slice(-12), state: d.state, flow: d.flow, stage: d.stage, t: document.querySelector('video').currentTime, p: document.querySelector('video').paused, ev: (window.__vev || []).slice(-8) }; } catch (e) { return null; } })));
   // the new default: after an explanation the video simply goes on (no talk, no live call, no waiting for you)
   await slow.keyboard.press('Escape');
   await sleep(500);
+  // (a fresh start of this page: the word just tapped does not space out the stops below)
+  await slow.reload();
+  await until(() => slow.evaluate(() => { const h = document.getElementById('dr-panel-host'); return !!h && h.shadowRoot.querySelectorAll('.lines .s').length > 3; }), 15000);
   const sdbg = () => slow.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
   await slow.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 4.2; return v.play(); });
   let sawTalk = false;
@@ -599,7 +609,7 @@ const api = http.createServer((req, res) => {
   await until(async () => { const d = await sdbg(); const t = await slow.evaluate(() => document.querySelector('video').currentTime); if (d && d.window && t < 6.6 + 45) early = { t, w: d.window.target }; return t > 40 || early; }, 25000, 100);
   await slow.evaluate(() => { document.querySelector('video').playbackRate = 1; });
   ok('stops are spaced (Sometimes = at most one every 45 s): no stop at ephemeral / the hard sentence / gregarious right after', !early, JSON.stringify(early));
-  const wayReq = apiLog.slice(nWay).find((r) => r.kind === 'explain' && /meticulous/.test(r.user));
+  const wayReq = apiLog.slice(nWay).find((r) => r.kind === 'explain' && /meticulous/.test(r.user) && !/paused the video/.test(r.user));
   ok('the chosen teaching way (Little Story, intermediate for B2) is what the AI is asked to do', wayReq && /short new story, six to nine sentences/.test(wayReq.user) && /follow the teaching way in the task/.test(wayReq.sys), wayReq && wayReq.user.slice(-300));
   await slow.close();
 
