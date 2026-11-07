@@ -148,6 +148,8 @@ function pageStyle(): void {
     /* (Safari on a phone: the tutor's own bar is at the bottom of the screen; the page ends above it) */
     html.yt2c-tutor-bar #dr-stage-host { bottom: var(--yt2c-bar-h, 0px); }
     html.dr-hide-cc-always .ytp-caption-window-container { display: none !important; }
+    /* (a phone, "Subtitles off": no subtitles at all on the video, YouTube's own captions hidden too) */
+    html.dr-cc-off.dr-hide-cc .ytp-caption-window-container { display: none !important; }
     /* your video size (normal view): the video takes this share of the page width, the panel the rest */
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #primary.ytd-watch-flexy { flex: 0 0 auto !important; width: calc(var(--dr-vsize) - 24px) !important; max-width: none !important; min-width: 320px !important; }
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #secondary.ytd-watch-flexy { flex: 1 1 auto !important; width: auto !important; min-width: 260px !important; max-width: none !important; }
@@ -2553,10 +2555,13 @@ class Session {
     b.title = `${playing ? 'Stop everything' : 'Play on'} (${comboLabel(shortcutMap(extras.shortcuts).stop)})`;
   }
 
-  /** shows the page; `part` = only these sentences (a stop, a pause); none = all subtitles */
-  private showStage(part?: Position[]): void {
+  /**
+   * shows the page; `part` = only these sentences (a stop, a pause); none = all subtitles.
+   * `force`: shown even with the big page off (the full stop card: the learner asked for it)
+   */
+  private showStage(part?: Position[], force = false): void {
     if (!this.stage || !this.vb) return;
-    if (normalView() && !extras.stageOn && part) return;
+    if (!force && normalView() && !extras.stageOn && part) return;
     this.partKeys = part && part.length ? new Set(part.map((p) => sentenceKey(p))) : null;
     this.partEnd = part && part.length ? part[part.length - 1] : null;
     this.stageShown = true;
@@ -2564,7 +2569,7 @@ class Session {
     this.placeStage();
     this.stage.host.hidden = false;
     document.documentElement.classList.add('dr-stage');
-    document.documentElement.classList.toggle('dr-hide-cc', extras.hideYtCaptions);
+    document.documentElement.classList.toggle('dr-hide-cc', extras.hideYtCaptions || (TOUCH && extras.band === 'off'));
     this.markPart();
     this.renderStageTop();
     this.showCommandWindow(this.cmdWin);
@@ -3330,7 +3335,10 @@ class Session {
     const shown = this.bandVisible();
     this.band.host.style.display = want ? '' : 'none';
     document.documentElement.classList.toggle('dr-band', want);
-    document.documentElement.classList.toggle('dr-hide-cc', (want || this.stageVisible()) && extras.hideYtCaptions);
+    // (a phone: subtitles off = off, YouTube's own captions stay hidden too, whatever the page shows)
+    const ccOff = TOUCH && extras.band === 'off';
+    document.documentElement.classList.toggle('dr-cc-off', ccOff);
+    document.documentElement.classList.toggle('dr-hide-cc', ((want || this.stageVisible()) && extras.hideYtCaptions) || ccOff);
     if (want !== shown) { this.renderBandLine(); this.showCommandWindow(this.cmdWin); }
   }
   private renderBandLine(): void {
@@ -3457,7 +3465,8 @@ class Session {
     else if (a.id === 'page') { if (this.stageVisible()) this.hideStage(); else this.showStage(this.partAt(video()?.currentTime ?? 0, settings.listen.lastSecondsWindow)); }
     else if (a.id === 'bigger' || a.id === 'smaller') this.resize(a.id === 'bigger' ? 1 : -1);
     else if (a.id === 'zh') void store.patchExtras({ zhLines: !extras.zhLines });
-    else if (a.id === 'band') { const on = !this.bandVisible(); void store.patchExtras({ band: on ? 'on' : 'off' }); this.toast(on ? 'Subtitles on the video: on' : 'Subtitles on the video: off'); }
+    // (a phone: the switch itself, not what is seen now; the band is hidden while the page is up at a stop)
+    else if (a.id === 'band') { const on = TOUCH ? extras.band === 'off' : !this.bandVisible(); void store.patchExtras({ band: on ? 'on' : 'off' }); this.toast(on ? 'Subtitles on the video: on' : 'Subtitles on the video: off'); }
     else return false;
     return true;
   }
@@ -3508,7 +3517,7 @@ class Session {
     this.panel?.host.remove();
     this.band?.host.remove();
     this.stage?.host.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-stage');
+    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage');
     applyPageLook(false);
   }
 
@@ -3861,7 +3870,7 @@ async function boot(): Promise<void> {
     session = null;
     try { speechSynthesis.cancel(); } catch { /* no speech */ }
     for (const id of ['dr-panel-host', 'dr-band-host', 'dr-stage-host', 'dr-page-style', 'yt2c-overlay', 'yt2c-bar', 'dr-level-host', 'dr-stop-counter']) document.getElementById(id)?.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize');
+    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize');
     document.documentElement.style.removeProperty('--dr-vsize');
     window.dispatchEvent(new Event('resize'));
     // a note: reloading the page brings the new tutor

@@ -426,6 +426,67 @@ const api = H.startServer();
   ok('official subtitles made by people: used as they are on the phone too (10 sentences, no AI split)', !!human && !apiLog.slice(nHum).some((r) => r.kind === 'split'), JSON.stringify(human ? { split: human.split, n: human.sentences } : (await hdbg() || {}).split));
   await hctx.close();
 
+  // ---- 14. Video mode: the two switches of the bar (subtitles on / off, the big page on / off) ----
+  const cv = fs.readFileSync(path.join(IOS, 'ContentView.swift'), 'utf8');
+  ok('the bar has the two Video mode switches (subtitles, the big page), shown only in Video mode', /if model\.videoMode \{[\s\S]{0,200}tutorButton\("band"[\s\S]{0,200}tutorButton\("pageAuto"/.test(cv)
+    && /@Published var bandOn/.test(H.swift) && /@Published var pageOn/.test(H.swift) && /@Published var videoMode/.test(H.swift) && /videoSwitches\(extras\)/.test(H.swift));
+  stores.local.drExtras = { ...stores.local.drExtras, view: 'normal', band: 'auto', stageOn: true, hideYtCaptions: true, levelAsk: false, levelMode: false, oneButton: false, voiceMode: false };
+  stores.local.drVocab = { ...stores.local.drVocab, words: { ...stores.local.drVocab.words, meticulous: 'learning', gregarious: 'learning' } };
+  const vm = await ctx.newPage();
+  vm.on('pageerror', (e) => console.log('PAGE ERROR (video mode)', String(e.message || e).slice(0, 300)));
+  await vm.goto('https://m.youtube.com/watch?v=ios00000006');
+  await vm.addScriptTag({ content: source(ytScripts) });
+  const vdbg = () => vm.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const vact = (id) => vm.evaluate((x) => window.__ytcDream.action(x), id);
+  // what is seen: the band over the video, YouTube's own captions (a stand-in in the player), the class on <html>
+  const seen = () => vm.evaluate(() => {
+    const b = document.getElementById('dr-band-host'), cc = document.querySelector('.ytp-caption-window-container');
+    return { band: !!b && b.style.display !== 'none', cc: !!cc && getComputedStyle(cc).display !== 'none', hideCc: document.documentElement.classList.contains('dr-hide-cc') };
+  });
+  const vready = await until(async () => { const d = await vdbg(); return d && d.sentences === 10 && (await vm.evaluate(() => !!document.getElementById('dr-band-host'))) ? d : null; }, 30000);
+  // the video stands still while the switches are tried (no stop comes); it starts paused here, so ⏸ only if it plays
+  await until(async () => { const d = await vdbg(); return d && !d.window && !d.flow; }, 15000, 60);
+  const vpaused = () => vm.evaluate(() => document.querySelector('video').paused);
+  if (!(await vpaused())) await vact('stop');
+  await until(vpaused, 5000);
+  await sleep(300);
+  if ((await vdbg()).stage.shown) await vact('page');
+  await vm.evaluate(() => { const c = document.createElement('div'); c.className = 'ytp-caption-window-container'; c.textContent = 'YouTube CC'; document.getElementById('movie_player').appendChild(c); });
+  const s0 = await until(async () => { const s = await seen(); return s.band && !s.cc ? s : null; }, 5000);
+  ok('Video mode: the subtitles are on the video, YouTube\'s own captions hidden under them', !!vready && !!s0, JSON.stringify({ s: await seen(), view: vready && vready.view }));
+  await vact('band');
+  const s1 = await until(async () => { const s = await seen(); return stores.local.drExtras.band === 'off' && !s.band && s.hideCc && !s.cc ? s : null; }, 5000);
+  ok('"Subtitles off": the band is gone and YouTube\'s own captions stay hidden (no subtitles at all)', !!s1, JSON.stringify({ band: stores.local.drExtras.band, s: await seen() }));
+  await vact('band');
+  const s2 = await until(async () => { const s = await seen(); return stores.local.drExtras.band === 'on' && s.band && !s.cc ? s : null; }, 5000);
+  ok('..."Subtitles on" again: the band is back', !!s2, JSON.stringify({ band: stores.local.drExtras.band, s: await seen() }));
+  // the switch while the page is up (the band is hidden then): it still turns the subtitles off
+  await vact('page');
+  const up = await until(async () => { const d = await vdbg(); return d.stage.shown && !(await seen()).band; }, 5000);
+  await vact('band');
+  const s3 = await until(() => stores.local.drExtras.band === 'off', 5000);
+  await vact('page');
+  const s4 = await until(async () => { const d = await vdbg(); const s = await seen(); return !d.stage.shown && !s.band && !s.cc ? s : null; }, 5000);
+  ok('..."Subtitles off" pressed while the page is up: off (not on again), still off when the page goes', !!up && !!s3 && !!s4, JSON.stringify({ up, band: stores.local.drExtras.band, s: await seen() }));
+  await vact('band');
+  await until(async () => stores.local.drExtras.band === 'on' && (await seen()).band, 5000);
+  // "Page off": a stop in Video mode keeps the video (no page), the subtitles stay on it
+  await vact('pageAuto');
+  const pOff = await until(() => stores.local.drExtras.stageOn === false, 5000);
+  if (await vpaused()) await vact('stop');
+  await until(async () => !(await vpaused()), 5000);
+  await vm.evaluate(() => { document.querySelector('video').currentTime = 0; });
+  const vwin = await until(async () => { const d = await vdbg(); return d && d.window ? d : null; }, 30000, 80);
+  const atStop = await seen();
+  ok('"Page off": a stop in Video mode does not show the page, the subtitles stay on the video', !!pOff && !!vwin && !vwin.stage.shown && atStop.band, JSON.stringify({ w: vwin && vwin.window, stage: vwin && vwin.stage, s: atStop }));
+  await vact('know');
+  await until(async () => { const d = await vdbg(); return d && !d.window && d.state === 'playing'; }, 10000, 100);
+  // both switches back as they were
+  await vact('pageAuto');
+  const restored = await until(() => stores.local.drExtras.stageOn === true && stores.local.drExtras.band === 'on', 5000);
+  ok('...both switches back on (the page at stops, the subtitles)', !!restored, JSON.stringify({ stageOn: stores.local.drExtras.stageOn, band: stores.local.drExtras.band }));
+  await vm.close();
+
   await browser.close();
   api.close();
   console.log(H.fails() ? `\n${H.fails()} FAILED` : '\nALL PASSED');

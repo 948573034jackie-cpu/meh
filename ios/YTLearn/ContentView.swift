@@ -19,7 +19,8 @@ struct ContentView: View {
 
     /// The one bar of the app (there is no keyboard on the phone: the same actions as My tutor's keyboard shortcuts).
     /// Left to right, in view on an iPhone: the tutor's switch (a small dot), play / stop, explain the last N seconds,
-    /// explain the LAST sentence, call the tutor, bigger than before (the ask box is gone). Swipe the bar for the
+    /// explain the LAST sentence, in Video mode the two switches (subtitles on / off, the big page on / off), call the
+    /// tutor, bigger than before (the ask box is gone). Swipe the bar for the
     /// rest: Find a video, Voice, Mode, One button, Sleep, Words, Settings, Check, then the app's own Home, Paste link
     /// and App settings. With the tutor off: its switch, Find, and those three. In one-button mode: only the way out.
     private var tutorBar: some View {
@@ -45,6 +46,11 @@ struct ContentView: View {
                         tutorButton("stop", "playpause.fill", "Play / stop", big: true)
                         tutorButton("explainLast", "text.bubble", "Explain \(model.explainSeconds) s", big: true)
                         tutorButton("explainSentence", "arrow.uturn.backward", "Last sentence", big: true)
+                        // Video mode: the two switches (the subtitles on the video, the big page at stops)
+                        if model.videoMode {
+                            tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off", big: true)
+                            tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off", big: true)
+                        }
                         tutorButton("talk", "phone.fill", "Call", big: true)
                     }
                     // (after a swipe)

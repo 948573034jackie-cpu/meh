@@ -9,6 +9,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar)
     @Published var oneButton = false     // one-button mode: the page is one big "explain" button; the bar shows only a way out
+    @Published var bandOn = true         // Video mode: the subtitles on the video (drExtras.band is not "off")
+    @Published var pageOn = true         // Video mode: the big page at stops and pauses (drExtras.stageOn)
+    @Published var videoMode = false     // the tutor's view is Video mode (drExtras.view "normal"): the two switches show
     @Published var explainSeconds = 20   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
@@ -44,8 +47,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
         bridge.model = self
         pageBridge.model = self
-        tutorOn = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["tutorOn"] as? Bool) ?? true
-        oneButton = ((Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["oneButton"] as? Bool) ?? false
+        let x = Store.shared.value(area: "local", key: "drExtras") as? [String: Any] ?? [:]
+        tutorOn = x["tutorOn"] as? Bool ?? true
+        oneButton = x["oneButton"] as? Bool ?? false
+        (bandOn, pageOn, videoMode) = AppModel.videoSwitches(x)
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
         vocabFolder = VocabFile.shared.folderName
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in Store.shared.flush() }
@@ -288,12 +293,21 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if on != tutorOn { tutorOn = on }
             let one = extras["oneButton"] as? Bool ?? false
             if one != oneButton { oneButton = one }
+            let (band, page, video) = AppModel.videoSwitches(extras)
+            if band != bandOn { bandOn = band }
+            if page != pageOn { pageOn = page }
+            if video != videoMode { videoMode = video }
         }
         if area == "local", let settings = obj["drSettings"] {
             let seconds = AppModel.partSeconds(in: settings)
             if seconds != explainSeconds { explainSeconds = seconds }
         }
         tellOtherWindows(obj, area: area, except: web)
+    }
+
+    /// the two switches of Video mode in My tutor's extras: subtitles on the video, the big page; and the view
+    static func videoSwitches(_ x: [String: Any]) -> (band: Bool, page: Bool, video: Bool) {
+        ((x["band"] as? String) != "off", x["stageOn"] as? Bool ?? true, (x["view"] as? String ?? "normal") == "normal")
     }
 
     func storageRemove(area: String, keys: [String], from web: WKWebView?) {
