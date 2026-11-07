@@ -58,7 +58,11 @@ import type { TeachLength } from './teacher-text';
 import { LevelGate } from './level-gate';
 import { Analysis, stopId, type AnalysisStop } from './level-analysis';
 
-interface YtcInfo { title: string; channel?: string; url: string; cues: unknown[]; errors: string[]; source: string | null }
+interface YtcInfo {
+  title: string; channel?: string; url: string; cues: unknown[]; errors: string[]; source: string | null;
+  /** good English subtitles made by people: used as they are (no AI complete sentences) */
+  human?: boolean;
+}
 interface YtcApi {
   loadTranscript(): Promise<YtcInfo>;
   video(): HTMLVideoElement | null;
@@ -66,7 +70,8 @@ interface YtcApi {
   isAd(): boolean;
   /** voiceOn: the browser can hear you (speech recognition) */
   settings(): { voiceOn: boolean };
-  buildSentences(cues: unknown[]): TimedSentence[];
+  /** o.human: subtitles made by people (a long sentence stays whole) */
+  buildSentences(cues: unknown[], o?: { human?: boolean }): TimedSentence[];
   setBarStatus(text: string, bad?: boolean): void;
   /** the browser refused the microphone */
   micBlocked?(): boolean;
@@ -227,7 +232,9 @@ class Session {
   mode: Mode;
   private vb: VideoBook | null = null;
   private ruleSentences: TimedSentence[] = [];
-  private source: 'rule' | 'ai' | 'lyrics' = 'rule';
+  // where the sentences come from: the rule-based first guess, the AI's complete sentences, the lyrics, or the
+  // video's official subtitles made by people (used as they are: no AI split)
+  private source: 'rule' | 'ai' | 'lyrics' | 'human' = 'rule';
   private dict: Dictionary | null = null;
   private names = new Set<string>();
   private hints: HintMap = {};
@@ -425,7 +432,7 @@ class Session {
       }
     } catch (e) { this.setStatus(`Could not start: ${(e as Error).message}`, true); this.bookReady(false); return; }
     if (this.disposed) return;
-    let sentences = info.cues.length ? window.__ytcApi!.buildSentences(info.cues) : [];
+    let sentences = info.cues.length ? window.__ytcApi!.buildSentences(info.cues, { human: !!info.human }) : [];
     // lyrics mode: the song's lyrics are the page (timed by LRCLIB when it can; the subtitles stay when none is found)
     if (extras.view === 'lyrics') {
       this.setStatus('Finding the lyrics…');
@@ -446,10 +453,11 @@ class Session {
     }
     this.ruleSentences = sentences;
     if (this.lyrics) this.source = 'lyrics';
+    else if (info.human) this.source = 'human';
     this.keys = await store.getKeys().catch(() => ({}));
-    // the AI's complete sentences, when this video was read before
+    // the AI's complete sentences, when this video was read before (not for official subtitles: they are used as they are)
     let use = sentences;
-    const split = extras.aiSentences && !this.lyrics ? await store.getSplit(this.cacheId(), SPLIT_VERSION).catch(() => null) : null;
+    const split = extras.aiSentences && this.source === 'rule' ? await store.getSplit(this.cacheId(), SPLIT_VERSION).catch(() => null) : null;
     const words = flatten(sentences);
     if (split && split.words === words.length) { use = regroup(words, split.ends.map((end, i) => ({ end, text: split.texts[i] ?? '' }))); this.source = 'ai'; }
     this.buildBook(use, this.lyrics ? `${this.lyrics.title} — ${this.lyrics.artist}` : info.title || document.title.replace(/ - YouTube$/, ''), info.channel);
@@ -553,7 +561,7 @@ class Session {
 
   private readyText(src?: string | null): string {
     const n = this.vb?.order.length ?? 0;
-    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : ''} · ${src ?? 'subtitles'}${this.mode === 'tutor' ? ` · stops at what is above ${settings.learnerLevel}` : ''}`;
+    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'}${this.mode === 'tutor' ? ` · stops at what is above ${settings.learnerLevel}` : ''}`;
   }
 
   private buildBook(sentences: TimedSentence[], title?: string, channel?: string): void {

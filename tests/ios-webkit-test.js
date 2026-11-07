@@ -408,6 +408,23 @@ const api = H.startServer();
   ok('...and it goes in only once', JSON.stringify(stores.local.drVocab.words) === snap && stores.local.drLevel.tests.filter((t) => t.source === 'Eveline').length === 1);
   await sd.close();
 
+  // ---- 13. official subtitles made by people (a .en track next to the auto one): used as they are, no AI split ----
+  const plainJson3 = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * H.SEC * 1000, dDurationMs: H.SEC * 1000, segs: [{ utf8: t.toLowerCase().replace(/[.,?!]/g, '') }] })) });
+  const hid = 'ios00000005';
+  const hctx = await H.newAppContext(browser, 'iPhone 13', { device: 'phone', video: { id: hid, tracks: [
+    { baseUrl: `https://m.youtube.com/api/timedtext?v=${hid}&lang=en&kind=asr`, languageCode: 'en', kind: 'asr', vssId: 'a.en' },
+    { baseUrl: `https://m.youtube.com/api/timedtext?v=${hid}&lang=en&name=Official`, languageCode: 'en', vssId: '.en' }], json3ByUrl: { 'kind=asr': plainJson3 } } });
+  const nHum = apiLog.length;
+  const hp = await hctx.newPage();
+  hp.on('pageerror', (e) => console.log('PAGE ERROR (official subtitles)', String(e.message || e).slice(0, 300)));
+  await hp.goto(`https://m.youtube.com/watch?v=${hid}`);
+  await hp.addScriptTag({ content: source(ytScripts) });
+  const hdbg = () => hp.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const human = await until(async () => { const d = await hdbg(); return d && d.sentences === 10 && d.split === 'human' ? d : null; }, 30000);
+  await until(() => apiLog.slice(nHum).some((r) => r.kind === 'hints'), 15000); // (a split request would have come before this)
+  ok('official subtitles made by people: used as they are on the phone too (10 sentences, no AI split)', !!human && !apiLog.slice(nHum).some((r) => r.kind === 'split'), JSON.stringify(human ? { split: human.split, n: human.sentences } : (await hdbg() || {}).split));
+  await hctx.close();
+
   await browser.close();
   api.close();
   console.log(H.fails() ? `\n${H.fails()} FAILED` : '\nALL PASSED');

@@ -40,8 +40,8 @@ const LINES = [
 ];
 const SEC = 4, DUR = 60;
 const json3 = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * SEC * 1000, dDurationMs: SEC * 1000, segs: [{ utf8: t }] })) });
-// the video's subtitle tracks (one English track); makePr() gives the player response the page has
-const tracksOf = (id) => [{ baseUrl: `https://m.youtube.com/api/timedtext?v=${id}&lang=en`, languageCode: 'en' }];
+// the video's subtitle tracks (one English track, made by YouTube's speech recognition); makePr() gives the player response the page has
+const tracksOf = (id) => [{ baseUrl: `https://m.youtube.com/api/timedtext?v=${id}&lang=en`, languageCode: 'en', kind: 'asr', vssId: 'a.en' }];
 const TRACKS = tracksOf('ios00000001');
 const makePr = (id = 'ios00000001', tracks = tracksOf(id)) => JSON.stringify({ videoDetails: { videoId: id, title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: tracks } } });
 const pr = makePr();

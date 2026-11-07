@@ -31,7 +31,7 @@ const LINES = [
 const SEC = 4;
 const json3 = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * SEC * 1000, dDurationMs: SEC * 1000, segs: [{ utf8: t }] })) });
 const DUR = 60;
-const pr = JSON.stringify({ videoDetails: { videoId: 'drm00000001', title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=drm00000001&lang=en', languageCode: 'en' }] } } });
+const pr = JSON.stringify({ videoDetails: { videoId: 'drm00000001', title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=drm00000001&lang=en', languageCode: 'en', kind: 'asr', vssId: 'a.en' }] } } });
 const makeWav = (sec, tone) => { const n = Math.round(8000 * sec), b = Buffer.alloc(44 + n, 128); if (tone) for (let i = 0; i < n; i++) b[44 + i] = 128 + Math.round(50 * Math.sin(2 * Math.PI * 330 * i / 8000)); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; };
 const wav = makeWav(DUR, true);
 const ttsWav = makeWav(0.25, false);
@@ -46,6 +46,14 @@ const ytHtml = `<!doctype html><title>Dream Lesson - YouTube</title><body style=
 // a slow page: YouTube builds its right column 2.5 s late (the subtitles are read before the panel can be placed)
 const ytHtmlLate = ytHtml.replace('<div id="secondary" style="width:420px"><div id="secondary-inner">related videos</div></div>', '').replace(/drm00000001/g, 'drm00000002')
   + `<script>setTimeout(() => { const s = document.createElement('div'); s.id = 'secondary'; s.style.width = '420px'; s.innerHTML = '<div id="secondary-inner">related videos</div>'; document.getElementById('columns').appendChild(s); }, 2500);</script>`;
+// official subtitles: a video with YouTube's auto track (no punctuation) and a track made by people (.en), and a
+// video whose only English track was made by people but has no punctuation (the AI's complete sentences are used then)
+const json3Plain = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * SEC * 1000, dDurationMs: SEC * 1000, segs: [{ utf8: t.toLowerCase().replace(/[.,?!]/g, '') }] })) });
+const htmlWith = (id, tracks) => ytHtml.replace(pr, JSON.stringify({ ...JSON.parse(pr), videoDetails: { videoId: id, title: 'Dream Lesson', lengthSeconds: String(DUR) }, captions: { playerCaptionsTracklistRenderer: { captionTracks: tracks } } }));
+const ytHtmlHuman = htmlWith('drm00000003', [
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=drm00000003&lang=en&kind=asr', languageCode: 'en', kind: 'asr', vssId: 'a.en' },
+  { baseUrl: 'https://www.youtube.com/api/timedtext?v=drm00000003&lang=en&name=Official', languageCode: 'en', vssId: '.en' }]);
+const ytHtmlPlain = htmlWith('drm00000004', [{ baseUrl: 'https://www.youtube.com/api/timedtext?v=drm00000004&lang=en', languageCode: 'en', vssId: '.en' }]);
 const claudeHtml = `<!doctype html><title>Claude</title><div id="box" class="ProseMirror" contenteditable="true" style="min-height:40px;border:1px solid #999"></div><input type="file" id="files" multiple><div id="slot"></div>
 <script>window.__sent=[];const b=document.getElementById('box'),slot=document.getElementById('slot');b.addEventListener('input',()=>{ if(b.textContent.trim()&&!slot.firstChild){const x=document.createElement('button');x.setAttribute('aria-label','Send message');x.textContent='Send';x.onclick=()=>{__sent.push(b.textContent);b.textContent='';slot.innerHTML='';};slot.appendChild(x);} });</script>`;
 // the fake OpenAI realtime server: answers the WebRTC offer, keeps the data channel, plays a tone as the voice
@@ -117,9 +125,12 @@ const api = http.createServer((req, res) => {
     if (kind === 'phrases') return sse(req, res, '{"phrases":[]}');
     if (kind === 'split') {
       // the complete sentences, one line each; the third gets a comma (so the AI's text shows)
+      // (words with no punctuation at all: the sentences end at the last words of the 10 lines)
       const words = [...user.matchAll(/(\d+):(\S+?)(?= \d+:|\\n|"|$)/g)].map((m) => [Number(m[1]), m[2]]);
+      const plain = !words.some(([, w]) => /[.?!]$/.test(w));
+      const ends = new Set(LINES.map((l) => l.split(' ').pop().replace(/\W/g, '').toLowerCase()));
       const out = []; let cur = [];
-      for (const [n, w] of words) { cur.push(w); if (/[.?!]$/.test(w)) { let t = cur.join(' '); if (/twice\.$/.test(t)) t = t.replace(' twice.', ', twice.'); out.push(`${n}|${t}`); cur = []; } }
+      for (const [n, w] of words) { cur.push(w); if (/[.?!]$/.test(w) || (plain && ends.has(w))) { let t = cur.join(' '); if (plain) t = t.charAt(0).toUpperCase() + t.slice(1) + '.'; if (/twice\.$/.test(t)) t = t.replace(' twice.', ', twice.'); out.push(`${n}|${t}`); cur = []; } }
       return sse(req, res, out.join('\n'));
     }
     if (kind === 'hard') { const m = [...user.matchAll(/(\d+)\. ([^\\]*)/g)].find((x) => /number six/.test(x[2])); return sse(req, res, JSON.stringify({ hard: m ? [Number(m[1])] : [] })); }
@@ -141,8 +152,8 @@ const api = http.createServer((req, res) => {
   await ctx.route('https://www.youtube.com/**', (route) => {
     const u = route.request().url();
     if (u.includes('/v.wav')) { const rg = route.request().headers()['range']; if (rg) { const m = /bytes=(\d+)-(\d*)/.exec(rg); const a = +m[1], e = m[2] ? +m[2] : wav.length - 1; return route.fulfill({ status: 206, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-range': `bytes ${a}-${e}/${wav.length}` }, body: wav.slice(a, e + 1) }); } return route.fulfill({ status: 200, headers: { 'content-type': 'audio/wav', 'accept-ranges': 'bytes' }, body: wav }); }
-    if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: json3 });
-    return route.fulfill({ status: 200, contentType: 'text/html', body: u.includes('drm00000002') ? ytHtmlLate : ytHtml });
+    if (u.includes('/api/timedtext')) return route.fulfill({ status: 200, contentType: 'application/json', body: u.includes('kind=asr') || u.includes('v=drm00000004') ? json3Plain : json3 });
+    return route.fulfill({ status: 200, contentType: 'text/html', body: u.includes('drm00000002') ? ytHtmlLate : u.includes('drm00000003') ? ytHtmlHuman : u.includes('drm00000004') ? ytHtmlPlain : ytHtml });
   });
   const sw = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 15000 });
   const extId = sw.url().split('/')[2];
@@ -612,6 +623,30 @@ const api = http.createServer((req, res) => {
   const wayReq = apiLog.slice(nWay).find((r) => r.kind === 'explain' && /meticulous/.test(r.user) && !/paused the video/.test(r.user));
   ok('the chosen teaching way (Little Story, intermediate for B2) is what the AI is asked to do', wayReq && /short new story, six to nine sentences/.test(wayReq.user) && /follow the teaching way in the task/.test(wayReq.sys), wayReq && wayReq.user.slice(-300));
   await slow.close();
+
+  // ---- 11c. official subtitles made by people: used as they are (no AI complete sentences); none good: the AI's ----
+  const nHum = apiLog.length;
+  const hum = await ctx.newPage();
+  hum.on('pageerror', (e) => console.log('PAGE ERROR (official subtitles)', e.message));
+  await hum.goto('https://www.youtube.com/watch?v=drm00000003');
+  const hdbg = () => hum.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const hpanel = () => hum.evaluate(() => { const h = document.getElementById('dr-panel-host'); if (!h) return null; const r = h.shadowRoot; return { text: r.textContent, status: (r.querySelector('.status') || {}).textContent || '' }; });
+  const human1 = await until(async () => { const d = await hdbg(); return d && d.sentences === 10 && d.split === 'human' ? d : null; }, 20000);
+  // (the AI still reads the hard words: wait for that, so a split request would have been asked by now)
+  await until(() => apiLog.slice(nHum).some((r) => r.kind === 'hints'), 15000);
+  const hp = await until(async () => { const p = await hpanel(); return p && /official subtitles/.test(p.status) ? p : null; }, 8000);
+  ok('official subtitles made by people: used as they are (10 sentences, no AI split asked, their own text)', human1 && !apiLog.slice(nHum).some((r) => r.kind === 'split') && hp && hp.text.includes('She checked every small detail twice.') && !hp.text.includes('detail, twice.'), JSON.stringify({ split: human1 && human1.split, n: human1 && human1.sentences, splits: apiLog.slice(nHum).filter((r) => r.kind === 'split').length, status: hp && hp.status }));
+  ok('...the status line says "official subtitles", the saved copy says made by people', hp && /official subtitles/.test(hp.status) && /made by people/.test(hp.status) && ((await store('subsCache')) || {}).drm00000003?.human === true, JSON.stringify({ status: hp && hp.status, saved: ((await store('subsCache')) || {}).drm00000003?.human }));
+  await hum.reload();
+  const human2 = await until(async () => { const d = await hdbg(); const p = await hpanel(); return d && d.sentences === 10 && d.split === 'human' && p && /saved copy/.test(p.status) ? { d, p } : null; }, 20000);
+  ok('...after a reload the saved copy still gives the official subtitles', !!human2 && !apiLog.slice(nHum).some((r) => r.kind === 'split'), JSON.stringify(human2 ? human2.p.status : await hpanel()));
+  await hum.close();
+  const nPlain = apiLog.length;
+  const plainPg = await ctx.newPage();
+  await plainPg.goto('https://www.youtube.com/watch?v=drm00000004');
+  const plain1 = await until(async () => { const d = await plainPg.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } }); return d && d.sentences === 10 && d.split === 'ai' ? d : null; }, 25000);
+  ok('subtitles made by people with no punctuation: the AI\'s complete sentences are used (as before)', !!plain1 && apiLog.slice(nPlain).some((r) => r.kind === 'split'), JSON.stringify(plain1 ? { split: plain1.split } : await plainPg.evaluate(() => document.documentElement.dataset.drDebug && JSON.parse(document.documentElement.dataset.drDebug).split)));
+  await plainPg.close();
 
   // ---- 12. the settings page and My Vocabulary ----
   const opt = await ctx.newPage();

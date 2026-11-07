@@ -122,7 +122,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
       <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])}</label>
-      <label>Complete sentences by the AI ${onOff('aiSentences', x.aiSentences)}</label>
+      <label>Complete sentences by the AI <span class="muted">(only when the video has no good official subtitles)</span> ${onOff('aiSentences', x.aiSentences)}</label>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
     <section><h4>Subtitles on the video</h4>

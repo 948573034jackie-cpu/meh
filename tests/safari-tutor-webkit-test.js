@@ -38,7 +38,7 @@ const LINES = [
 ];
 const SEC = 4, DUR = 60;
 const json3 = JSON.stringify({ events: LINES.map((t, i) => ({ tStartMs: i * SEC * 1000, dDurationMs: SEC * 1000, segs: [{ utf8: t }] })) });
-const pr = JSON.stringify({ videoDetails: { videoId: 'saf00000001', title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://m.youtube.com/api/timedtext?v=saf00000001&lang=en', languageCode: 'en' }] } } });
+const pr = JSON.stringify({ videoDetails: { videoId: 'saf00000001', title: 'Dream Lesson', lengthSeconds: String(DUR) }, playabilityStatus: { status: 'OK' }, captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: 'https://m.youtube.com/api/timedtext?v=saf00000001&lang=en', languageCode: 'en', kind: 'asr', vssId: 'a.en' }] } } });
 const makeWav = (sec, tone) => { const n = Math.round(8000 * sec), b = Buffer.alloc(44 + n, 128); if (tone) for (let i = 0; i < n; i++) b[44 + i] = 128 + Math.round(50 * Math.sin(2 * Math.PI * 330 * i / 8000)); b.write('RIFF', 0); b.writeUInt32LE(36 + n, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24); b.writeUInt32LE(8000, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write('data', 36); b.writeUInt32LE(n, 40); return b; };
 const wav = makeWav(DUR, true);
 const ttsWav = makeWav(0.25, false);

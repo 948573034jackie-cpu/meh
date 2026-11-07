@@ -213,3 +213,25 @@ console.log('30-second part tests passed');
   if (bad) { console.log(bad + ' cleanText tests FAILED'); process.exit(1); }
   console.log('subtitle code-cleaning tests passed');
 }
+// --- official subtitles made by people: which track, are they good, long sentences stay whole
+{
+  const asrEn = { kind: 'asr', vssId: 'a.en', languageCode: 'en' }, human = { vssId: '.en', languageCode: 'en' };
+  assert.equal(L.pickTrack([asrEn, human]), human, 'pickTrack: the .en track made by people');
+  assert.equal(L.pickTrack([asrEn, { vssId: '.en-GB', languageCode: 'en-GB', name: 'British' }, human]), human, 'pickTrack: the plain English one first');
+  assert.equal(L.isHumanEnglish(human, [asrEn, human]), true, 'isHumanEnglish: .en');
+  assert.equal(L.isHumanEnglish(asrEn, [asrEn, human]), false, 'isHumanEnglish: a.en');
+  assert.equal(L.isHumanEnglish(human, [{ kind: 'asr', vssId: 'a.es', languageCode: 'es' }, human]), false, 'isHumanEnglish: a translation (the speech is Spanish)');
+  const sent = 'This is a careful sentence, written by a person, with commas and a full stop.';
+  const cuesOf = (lines) => lines.map((t, i) => ({ start: i * 3, end: i * 3 + 3, text: t }));
+  assert.equal(L.judgeHuman(cuesOf([sent, sent, sent, 'And one more line here.'])).ok, true, 'judgeHuman: punctuated mixed case');
+  assert.equal(L.judgeHuman(cuesOf([sent, sent, sent].map((t) => t.toLowerCase().replace(/[.,]/g, '')))).ok, false, 'judgeHuman: no punctuation');
+  assert.equal(L.judgeHuman(cuesOf([sent, sent, sent].map((t) => t.toUpperCase()))).ok, false, 'judgeHuman: ALL CAPS');
+  assert.equal(L.judgeHuman(cuesOf([sent])).ok, false, 'judgeHuman: under 30 words');
+  // a punctuated 45-word sentence: whole with human, cut at 30 words without (the old rule for speech subtitles)
+  const w45 = Array.from({ length: 45 }, (_, i) => 'word' + i).join(' ').replace(/^w/, 'W') + '.';
+  const long45 = [{ start: 0, end: 20, text: w45 }, { start: 20, end: 22, text: 'Then a short one. And another.' }];
+  const withH = L.buildSentences(long45, { human: true });
+  assert.equal(withH[0].text.split(' ').length, 45, 'buildSentences human: the long sentence stays whole');
+  assert(L.buildSentences(long45)[0].text.split(' ').length <= 30, 'buildSentences: cut at 30 words without human');
+  console.log('official subtitles tests passed');
+}

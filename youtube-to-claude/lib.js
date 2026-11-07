@@ -170,17 +170,39 @@
     }
   }
 
-  // English first (typed captions before auto-generated), then anything.
+  // English first (typed captions before auto-generated; the plain "English" one before a named variant), then anything.
   function pickTrack(tracks) {
     if (!tracks || !tracks.length) return null;
     const isEn = (t) => (t.languageCode || '').toLowerCase().startsWith('en');
-    const manual = (t) => t.kind !== 'asr';
+    const manual = (t) => !isAsr(t);
+    const plain = (t) => t.vssId === '.en' || t.languageCode === 'en';
     return (
+      tracks.find((t) => isEn(t) && manual(t) && plain(t)) ||
       tracks.find((t) => isEn(t) && manual(t)) ||
       tracks.find((t) => isEn(t)) ||
       tracks.find(manual) ||
       tracks[0]
     );
+  }
+
+  // a track YouTube made by itself (speech recognition): kind "asr", or a vssId like "a.en"
+  function isAsr(t) { return !!t && (t.kind === 'asr' || /^a\./.test(t.vssId || '')); }
+  // a track made by people, in English, on a video whose speech is English (not the creator's translation)
+  function isHumanEnglish(track, tracks) {
+    if (!track || isAsr(track) || !(track.languageCode || '').toLowerCase().startsWith('en')) return false;
+    const auto = (tracks || []).find(isAsr); // the auto track tells the spoken language
+    return !auto || (auto.languageCode || '').toLowerCase().startsWith('en');
+  }
+  // are these subtitles (made by people) good enough to use as they are, without the AI's complete sentences?
+  function judgeHuman(cues) {
+    const words = (cues || []).flatMap((c) => cleanText(c.text || '').split(/\s+/)).filter(Boolean);
+    if (words.length < 30) return { ok: false, reason: 'too few words' };
+    const ends = words.filter(endsSentence).length / words.length; // about 1 in 8-15 in real subtitles
+    const letters = words.join('').replace(/[^A-Za-z]/g, '');
+    const upper = letters.replace(/[^A-Z]/g, '').length / Math.max(1, letters.length);
+    if (ends < 0.03) return { ok: false, reason: 'no punctuation (probably auto text uploaded by hand)' };
+    if (upper > 0.6) return { ok: false, reason: 'ALL CAPS (TV captions)' };
+    return { ok: true, reason: '' };
   }
 
   // ---------- complete sentences ----------
@@ -324,10 +346,12 @@
   // Cues -> complete sentences [{start, end, text}]. Uses punctuation when the captions have it,
   // otherwise pauses between words, and never cuts after a word like "the", "and", "to", "because".
   // opts.words: also keep each word with its time ({ w, t, e }), for the Dream Tutor (karaoke + stopping after a hard word)
+  // opts.human: subtitles made by people (used as they are): a long sentence stays whole (cut only at 60 words / 30 s)
   function buildSentences(cues, opts) {
     const words = toWords(cues);
     if (!words.length) return [];
     const withWords = !!(opts && opts.words);
+    const human = !!(opts && opts.human);
     const punct = words.filter((x) => endsSentence(x.w)).length / words.length > 0.02;
     const out = [];
     let cur = [];
@@ -353,7 +377,7 @@
       if (brk) { push(cur); cur = []; continue; }
 
       // too long without a natural break: cut at the biggest pause among the last words
-      if (cur.length >= 30 || w.e - cur[0].t >= 14) {
+      if (cur.length >= (human ? 60 : 30) || w.e - cur[0].t >= (human ? 30 : 14)) {
         let best = -1, bestGap = -1;
         for (let k = Math.max(3, cur.length - 12); k < cur.length; k++) {
           const g = (cur[k + 1] ? cur[k + 1].t : next.t) - cur[k].e;
@@ -411,7 +435,7 @@
     return groups;
   }
 
-  const api = { fmtTime, cleanText, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, parseJson3, extractPlayerResponse, matchJson, pickTrack, formatTranscript, buildSentences, pickSegment, groupSentences };
+  const api = { fmtTime, cleanText, parseSubtitleFile, parseClock, parseTranscriptResponse, judgeCues, parseJson3, extractPlayerResponse, matchJson, pickTrack, isAsr, isHumanEnglish, judgeHuman, formatTranscript, buildSentences, pickSegment, groupSentences };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.YTC = api;
 })(typeof window !== 'undefined' ? window : globalThis);

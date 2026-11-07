@@ -6,7 +6,7 @@
   'use strict';
   if (window.__ytToClaudeLoaded) return;
   window.__ytToClaudeLoaded = true;
-  const { parseJson3, parseClock, parseTranscriptResponse, judgeCues, extractPlayerResponse, pickTrack, buildSentences } = window.YTC;
+  const { parseJson3, parseClock, parseTranscriptResponse, judgeCues, extractPlayerResponse, pickTrack, isAsr, isHumanEnglish, judgeHuman, buildSentences } = window.YTC;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -78,7 +78,8 @@
   }
 
   // download one caption track (timed text) and turn it into cues
-  async function cuesFromTrack(track, via) {
+  // (tracks: the video's whole list; human = good English subtitles made by people, used as they are)
+  async function cuesFromTrack(track, via, tracks) {
     // (set, not added: the phone-app list's address already asks for fmt=srv3, and YouTube follows the first one)
     const u0 = new URL(track.baseUrl, location.href);
     u0.searchParams.set('fmt', 'json3');
@@ -90,15 +91,17 @@
     try { json = JSON.parse(body); } catch (e) { throw new Error('the caption file was not readable (status ' + res.status + ')'); }
     const cues = parseJson3(json);
     if (!cues.length) throw new Error('caption file had no text');
-    return { cues, source: 'captions (' + (track.languageCode || '?') + (track.kind === 'asr' ? ', auto-generated' : '') + ', via ' + via + ')' };
+    const human = isHumanEnglish(track, tracks) && judgeHuman(cues).ok;
+    return { cues, human, source: 'captions (' + (track.languageCode || '?') + (isAsr(track) ? ', auto-generated' : human ? ', made by people' : '') + ', via ' + via + ')' };
   }
 
   // Method 1: the caption track the player itself uses (fetched with your normal YouTube session).
   async function fromCaptionTrack() {
     const { pr, via, note } = await getPlayerResponse();
-    const track = pickTrack(trackList(pr));
+    const tracks = trackList(pr);
+    const track = pickTrack(tracks);
     if (!track) throw new Error('this video has no captions [' + note + ']');
-    return cuesFromTrack(track, via);
+    return cuesFromTrack(track, via, tracks);
   }
 
   // Method 2: the same captions, asked the way YouTube's phone app asks (its caption addresses need no extra key).
@@ -116,9 +119,10 @@
     let pr;
     try { pr = await res.json(); } catch (e) { throw new Error('the phone-app answer was not readable (status ' + res.status + ')'); }
     noteMeta(pr);
-    const track = pickTrack(trackList(pr));
+    const tracks = trackList(pr);
+    const track = pickTrack(tracks);
     if (!track) throw new Error('no captions in the phone-app answer (' + ((pr.playabilityStatus || {}).status || 'no status') + ')');
-    return cuesFromTrack(track, 'phone-app list');
+    return cuesFromTrack(track, 'phone-app list', tracks);
   }
 
   // Method 3: YouTube's own transcript service (what the "Show transcript" button uses), asked directly:
@@ -156,14 +160,16 @@
     const { subsCache } = await chrome.storage.local.get('subsCache');
     const mine = subsCache && subsCache[videoId()];
     if (!mine || !mine.cues || !mine.cues.length) throw new Error('nothing saved for this video yet');
-    return { cues: mine.cues, source: mine.source + ' — saved copy', fromSaved: true, length: mine.length || 0 };
+    // (a copy saved by 3.7 has no "human": a caption track that was not auto-generated was made by people)
+    const human = typeof mine.human === 'boolean' ? mine.human : /^captions \(en[^,)]*, via/.test(mine.source || '') && judgeHuman(mine.cues).ok;
+    return { cues: mine.cues, human, source: mine.source + ' — saved copy', fromSaved: true, length: mine.length || 0 };
   }
-  async function saveCopy(cues, source) {
+  async function saveCopy(cues, source, human) {
     try {
       const size = JSON.stringify(cues).length;
       if (size > 6000000) return; // absurdly big: skip
       const { subsCache = {} } = await chrome.storage.local.get('subsCache');
-      subsCache[videoId()] = { cues, source, length: videoLength(), savedAt: Date.now() };
+      subsCache[videoId()] = { cues, source, human: !!human, length: videoLength(), savedAt: Date.now() };
       const ids = Object.keys(subsCache).sort((a, b) => subsCache[a].savedAt - subsCache[b].savedAt);
       while (ids.length > 25) delete subsCache[ids.shift()]; // keep the newest 25 videos
       await chrome.storage.local.set({ subsCache });
@@ -200,7 +206,9 @@
       try { json = JSON.parse(body); } catch (e) { throw new Error('the player subtitle file was not readable'); }
       const cues = parseJson3(json);
       if (!cues.length) throw new Error('the player subtitle file had no text');
-      return { cues, source: 'the subtitles the player loaded (' + (u.searchParams.get('lang') || '?') + ')' };
+      // (an auto-generated file's address says kind=asr; a translated one says tlang)
+      const human = !u.searchParams.get('kind') && !u.searchParams.get('tlang') && /^en/.test(u.searchParams.get('lang') || '') && judgeHuman(cues).ok;
+      return { cues, human, source: 'the subtitles the player loaded (' + (u.searchParams.get('lang') || '?') + (human ? ', made by people' : '') + ')' };
     } finally {
       if (switchedOn && btn && btn.getAttribute('aria-pressed') === 'true') btn.click(); // put it back like it was
     }
@@ -282,7 +290,7 @@
           const j = judgeCues(r.cues, videoLength() || r.length || 0);
           if (j.tooLate) { errors.push(method.name + ': ' + j.reason); continue; } // another video's transcript: never use
           r.coverage = j.coverage;
-          if (j.ok) { best = r; if (!r.fromSaved) saveCopy(r.cues, r.source); break; }
+          if (j.ok) { best = r; if (!r.fromSaved) saveCopy(r.cues, r.source, !!r.human); break; }
           errors.push(method.name + ': ' + j.reason + ' (kept as a backup)');
           if (!best || r.coverage > best.coverage) best = r;
         } catch (e) {
@@ -292,7 +300,7 @@
       if (best) {
         const cues = best.cues;
         lastLoaded = { cues };
-        return { ...info, cues, sentences: buildSentences(cues), source: best.source, lines: cues.length, errors };
+        return { ...info, cues, human: !!best.human, sentences: buildSentences(cues, { human: !!best.human }), source: best.source, lines: cues.length, errors };
       }
       cache.promise = null; // nothing found: try again next time
       return { ...info, cues: [], sentences: [], source: null, lines: 0, errors };
@@ -419,7 +427,7 @@
     loadTranscript, videoId, isAd: () => isAd(), video: () => video || document.querySelector('video'),
     // "voiceOn": the browser can hear you (the tutor then says "just talk" in a call)
     settings: () => ({ voiceOn: !!(window.SpeechRecognition || window.webkitSpeechRecognition) }),
-    buildSentences: (cues) => buildSentences(cues, { words: true }),
+    buildSentences: (cues, o) => buildSentences(cues, { words: true, human: !!(o && o.human) }),
     setBarStatus: (text, bad) => setBarStatus(text, bad),
     // what the microphone hears now is closed (Chrome gives it as final), then it listens again
     finishSpeech: () => { const r = rec; if (!r) return; try { r.stop(); } catch (e) { /* ignore */ } },
