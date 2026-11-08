@@ -150,6 +150,8 @@ function pageStyle(): void {
     html.dr-hide-cc-always .ytp-caption-window-container { display: none !important; }
     /* (a phone, "Subtitles off": no subtitles at all on the video, YouTube's own captions hidden too) */
     html.dr-cc-off.dr-hide-cc .ytp-caption-window-container { display: none !important; }
+    /* (the full stop card: nothing over it, not even the small counter) */
+    html.dr-fullcard #dr-stop-counter { display: none !important; }
     /* your video size (normal view): the video takes this share of the page width, the panel the rest */
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #primary.ytd-watch-flexy { flex: 0 0 auto !important; width: calc(var(--dr-vsize) - 24px) !important; max-width: none !important; min-width: 320px !important; }
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #secondary.ytd-watch-flexy { flex: 1 1 auto !important; width: auto !important; min-width: 260px !important; max-width: none !important; }
@@ -333,7 +335,10 @@ class Session {
   private windowOpen = false;
   private transcript: TranscriptEntry[] = [];
   private saved = new Set<number>();
-  private card: { lemma: string; word: string; pos: Position; token: number; kind: 'word' | 'phrase'; entryId: number | null } | null = null;
+  // (`full`: the stop card over the whole screen (a touch screen); `forcedStage`: it showed the page itself (page off),
+  // so the page goes again when it closes; `openedAt`: a tap right after it opened is not "I know")
+  private card: { lemma: string; word: string; pos: Position; token: number; kind: 'word' | 'phrase' | 'sentence'; entryId: number | null; full: boolean; forcedStage: boolean; openedAt: number } | null = null;
+  private cardTouchAt = 0;
   private cardClose: ReturnType<typeof setTimeout> | null = null;
   private followTimer: ReturnType<typeof setInterval> | null = null;
   private statusText = '';
@@ -436,6 +441,7 @@ class Session {
         if (this.disposed) return;
         this.applyLook();
         if (this.vb) { this.placeBand(); this.scrollToCur(true); }
+        this.fitFullCard();
       }, 150);
     };
     window.addEventListener('resize', onResize);
@@ -2202,7 +2208,8 @@ class Session {
   private onStopTarget(t: { kind: string; target: string; lemma?: string } | null): void {
     // (Level Check: a stop always ends with its sentence from the video; "I know" = no explanation, so it is played now)
     // (the stop is over: the card closes at once, before the sentence plays again)
-    if (!t) { this.inStop = false; if (this.levelOn()) this.engine.replayUnlessHeard(); this.closeCard(); return; }
+    // (the full card: closed a moment later, so the next word of the same stop changes it in place, without a flash)
+    if (!t) { this.inStop = false; if (this.levelOn()) this.engine.replayUnlessHeard(); if (this.card?.full) this.closeCardLater(); else this.closeCard(); return; }
     this.inStop = true;
     const pos = this.playback?.position ?? this.cur;
     if (pos && this.levelOn()) this.countStop(pos);
@@ -2279,6 +2286,12 @@ class Session {
   private onWindow(w: CommandWindow | null): void {
     this.showCommandWindow(w);
     if (!w || this.mode !== 'tutor') return;
+    // a hard sentence (a touch screen): its full card, after the sentence was played; it stays during the explanation
+    // and closes when the sentence plays again
+    if (TOUCH && w.phase === 'before' && w.kind === 'sentence' && !this.card) {
+      const pos = this.playback?.position ?? this.cur;
+      if (pos) this.openCard(pos, -1, sentenceLemma(w.target), w.target, 'sentence', null, undefined, { full: true });
+    }
     if (w.phase === 'before') { this.muteTalk(); return; }
     if (w.phase === 'after' && talkAfter() && !this.flow && !this.levelOn()) {
       // (keeping the window open while we talk reports it again: the talk is only opened once)
@@ -2364,6 +2377,8 @@ class Session {
     this.zhSave = setTimeout(() => void store.setZh(this.cacheId(), this.zh).catch(() => undefined), 1500);
   }
   private paintZh(pos: Position, zh: string): void {
+    // (the full card of this very sentence: its translation came now, so it shows on the card too)
+    if (this.card?.full && this.card.kind === 'sentence' && sentenceKey(this.card.pos) === sentenceKey(pos)) this.paintFullCard();
     const el = this.sentenceEl(this.stage?.el, pos);
     if (!el) return;
     let z = el.querySelector<HTMLElement>('.zh-line');
@@ -3149,7 +3164,7 @@ class Session {
     const sEl = this.sentenceEl(root, pos);
     const words = Array.from(sEl?.querySelectorAll<HTMLElement>('.w[data-lemma]') ?? []);
     const el = words.find((w) => w.dataset.lemma === lemma) ?? words.find((w) => (w.textContent ?? '').trim().toLowerCase() === target.toLowerCase().split(' ')[0]);
-    this.openCard(pos, el ? Number(el.dataset.t) : 0, lemma, target, kind === 'phrase' ? 'phrase' : 'word', null, el ?? undefined);
+    this.openCard(pos, el ? Number(el.dataset.t) : 0, lemma, target, kind === 'phrase' ? 'phrase' : 'word', null, el ?? undefined, { full: true });
   }
 
   private visibleRoot(): HTMLElement | undefined {
@@ -3157,9 +3172,18 @@ class Session {
     return this.bandVisible() ? this.band?.el : this.panel?.el ?? this.band?.el;
   }
 
-  private openCard(pos: Position, token: number, lemma: string, target: string, kind: 'word' | 'phrase', entryId: number | null, anchor?: HTMLElement): void {
+  private openCard(pos: Position, token: number, lemma: string, target: string, kind: 'word' | 'phrase' | 'sentence', entryId: number | null, anchor?: HTMLElement, opts?: { full?: boolean }): void {
     if (this.cardClose) { clearTimeout(this.cardClose); this.cardClose = null; }
-    this.card = { lemma, word: target, pos, token, kind, entryId };
+    // (the full card is only for a stop on a touch screen; a tapped word keeps the small card)
+    const full = TOUCH && !!opts?.full;
+    const prev = this.card;
+    // (page off: the full card shows the page under it, as its background; it goes again when the card closes)
+    let forcedStage = !!(full && prev?.full && prev.forcedStage);
+    if (full && !this.stageVisible() && this.stage) { this.showStage(undefined, true); forcedStage = this.stageVisible(); }
+    this.card = { lemma, word: target, pos, token, kind, entryId, full, forcedStage, openedAt: Date.now() };
+    if (full) return this.paintFullCard();
+    if (prev?.full) { this.stage?.el.classList.remove('fullcard'); document.documentElement.classList.remove('dr-fullcard'); }
+    if (kind === 'sentence') return;
     const root = this.visibleRoot();
     for (const r of [this.panel?.el, this.band?.el, this.stage?.el]) { if (r && r !== root) { const c = r.querySelector<HTMLElement>('.card'); if (c) c.hidden = true; } }
     const cardEl = root?.querySelector<HTMLElement>('.card');
@@ -3184,6 +3208,10 @@ class Session {
       <div class="row"><button data-act="known" class="${status === 'known' ? 'active' : ''}">I know</button><button data-act="dontknow" class="${status === 'learning' ? 'active' : ''}">I don't know</button><button data-act="ignore">Ignore</button>
       ${plain || TOUCH ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
     cardEl.hidden = false;
+    cardEl.classList.remove('full', 'sentence', 'one');
+    cardEl.removeAttribute('role');
+    cardEl.removeAttribute('aria-label');
+    cardEl.ontouchstart = cardEl.ontouchend = null;
     // the AI's meaning in this very sentence, written live (when the video's hints do not have this word)
     // (a phone: the dictionary's Chinese is enough when it has the word; the AI translates only what it does not have)
     if (!plain && !here && (!TOUCH || !glosses.length) && this.vb && (this.keys.anthropic || this.keys.openai)) {
@@ -3241,6 +3269,99 @@ class Session {
     };
   }
 
+  /**
+   * The full stop card (a touch screen): the word, phrase or sentence very big in the middle of the screen and its
+   * Chinese big under it; nothing else (the learner's rule: no buttons, no labels, no small text). The whole card is
+   * the "I know" button; no tap = "I don't know" (the window runs out, the tutor explains). Only what costs nothing:
+   * the dictionary, the video's Chinese meanings and translations already made; never the AI.
+   */
+  private paintFullCard(): void {
+    const c = this.card;
+    const root = this.stage?.el;
+    const cardEl = root?.querySelector<HTMLElement>('.card');
+    if (!c || !root || !cardEl) return;
+    for (const r of [this.panel?.el, this.band?.el]) { const o = r?.querySelector<HTMLElement>('.card'); if (o) o.hidden = true; }
+    for (const r of [this.panel?.el, this.band?.el, root]) r?.querySelectorAll('.stop-target').forEach((e) => e.classList.remove('stop-target'));
+    root.classList.remove('card-side');
+    root.classList.add('fullcard');
+    document.documentElement.classList.add('dr-fullcard');
+    const { lemma, word: target, kind, pos } = c;
+    let zh = '';
+    if (kind === 'sentence') {
+      // the sentence: its translation when one was made already, otherwise the Chinese of its hard words (up to 3)
+      zh = esc(this.zh[this.zhKey(pos)] ?? '');
+      if (!zh) {
+        const seen = new Set<string>();
+        const parts: string[] = [];
+        for (const w of Array.from(this.sentenceEl(root, pos)?.querySelectorAll<HTMLElement>('.w.hl-unknown[data-lemma], .w.hl-learning[data-lemma]') ?? [])) {
+          const l = w.dataset.lemma!;
+          if (seen.has(l) || parts.length >= 3) continue;
+          seen.add(l);
+          const e = this.dict?.lookup(l)?.entry;
+          const g = this.hints[l]?.[0] || (e?.zh ? parseGloss(e.zh)[0]?.zh : '') || '';
+          if (g) parts.push(`${esc((w.textContent ?? l).trim())} ${esc(g)}`);
+        }
+        zh = parts.join('<br>');
+      }
+    } else {
+      // a word or phrase: its meaning in this video when the analysis gave one, otherwise the dictionary's first two
+      const here = this.hints[lemma]?.[0];
+      if (here) zh = esc(here);
+      else {
+        const look = this.dict?.lookup(kind === 'word' ? target : lemma) ?? (kind === 'phrase' ? this.dict?.lookupPhrase(target.split(/\s+/)) : null) ?? null;
+        const z = look?.entry.zh;
+        if (z) zh = parseGloss(z).slice(0, 2).map((g) => esc(g.zh)).filter(Boolean).join('；');
+      }
+    }
+    cardEl.innerHTML = `<div class="word">${esc(target)}</div>${zh ? `<div class="zh here">${zh}</div>` : ''}`;
+    cardEl.style.removeProperty('left');
+    cardEl.style.removeProperty('top');
+    cardEl.style.removeProperty('bottom');
+    cardEl.classList.add('full');
+    cardEl.classList.toggle('sentence', kind === 'sentence');
+    cardEl.classList.toggle('one', !zh);
+    cardEl.setAttribute('role', 'button');
+    cardEl.setAttribute('aria-label', `I know: ${target}`);
+    cardEl.hidden = false;
+    this.fitFullCard();
+    // (the tap is ours alone: the page under it never sees it, and iOS makes no click of its own after it)
+    const tap = (ev: Event) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.type === 'touchstart') return;
+      if (ev.type === 'click' && Date.now() - this.cardTouchAt < 700) return;
+      if (ev.type === 'touchend') this.cardTouchAt = Date.now();
+      this.tapFullCard();
+    };
+    cardEl.ontouchstart = tap;
+    cardEl.ontouchend = tap;
+    cardEl.onclick = tap;
+  }
+
+  /** the full card's text fits the screen: smaller, step by step, until nothing is cut (a long sentence, a turned phone) */
+  private fitFullCard(): void {
+    const cardEl = this.card?.full ? this.stage?.el.querySelector<HTMLElement>('.card.full') : null;
+    if (!cardEl) return;
+    const parts = Array.from(cardEl.querySelectorAll<HTMLElement>('.word, .zh'));
+    for (const p of parts) p.style.removeProperty('font-size');
+    const base = parts.map((p) => parseFloat(getComputedStyle(p).fontSize) || 20);
+    const over = () => cardEl.scrollHeight > cardEl.clientHeight + 1 || parts.some((p) => p.scrollWidth > p.clientWidth + 1);
+    for (let k = 0.92; over() && k > 0.3; k *= 0.92) parts.forEach((p, i) => { p.style.fontSize = `${Math.max(14, Math.round(base[i] * k))}px`; });
+  }
+
+  /** a tap on the full card = "I know" (not in the first 450 ms: that tap was meant for what was there before) */
+  private tapFullCard(): void {
+    const c = this.card;
+    if (!c?.full || Date.now() - c.openedAt < 450) return;
+    this.trail(`full card: I know (${c.word.slice(0, 40)})`);
+    this.answerKnow();
+    if (this.card === c) this.closeCard();
+  }
+
+  private closeCardLater(): void {
+    if (this.cardClose) clearTimeout(this.cardClose);
+    this.cardClose = setTimeout(() => this.closeCard(), 0);
+  }
   private updateCardExplain(e: TranscriptEntry): void {
     const en = this.visibleRoot()?.querySelector<HTMLElement>('.card .en');
     if (!en) return;
@@ -3254,6 +3375,7 @@ class Session {
   }
   private closeCard(): void {
     if (this.cardClose) { clearTimeout(this.cardClose); this.cardClose = null; }
+    const was = this.card;
     this.card = null;
     for (const r of [this.panel?.el, this.band?.el, this.stage?.el]) {
       if (!r) continue;
@@ -3261,7 +3383,11 @@ class Session {
       if (c) c.hidden = true;
       r.querySelectorAll('.stop-target').forEach((e) => e.classList.remove('stop-target'));
     }
+    this.stage?.el.classList.remove('fullcard');
+    document.documentElement.classList.remove('dr-fullcard');
     if (this.stage?.el.classList.contains('card-side')) { this.stage.el.classList.remove('card-side'); this.fitPart(); }
+    // (page off: the page the full card showed goes again, unless something else needs it now)
+    if (was?.forcedStage && normalView() && !this.flow && !this.talk) this.hideStage();
   }
 
   // ---- the commands window ---------------------------------------------------------------------------------------
@@ -3517,7 +3643,7 @@ class Session {
     this.panel?.host.remove();
     this.band?.host.remove();
     this.stage?.host.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage');
+    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-fullcard');
     applyPageLook(false);
   }
 
@@ -3870,7 +3996,7 @@ async function boot(): Promise<void> {
     session = null;
     try { speechSynthesis.cancel(); } catch { /* no speech */ }
     for (const id of ['dr-panel-host', 'dr-band-host', 'dr-stage-host', 'dr-page-style', 'yt2c-overlay', 'yt2c-bar', 'dr-level-host', 'dr-stop-counter']) document.getElementById(id)?.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize');
+    document.documentElement.classList.remove('dr-panel', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-hide-cc-always', 'dr-vsize', 'dr-fullcard');
     document.documentElement.style.removeProperty('--dr-vsize');
     window.dispatchEvent(new Event('resize'));
     // a note: reloading the page brings the new tutor

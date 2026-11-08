@@ -82,7 +82,8 @@ const api = H.startServer();
   ok('then the video goes on', !!on, JSON.stringify(await vstate()));
   const entry = await until(() => { const e = stores.local.drEntries; return e && e.meticulous ? e.meticulous : null; }, 8000);
   ok('"meticulous" is in My Vocabulary, saved in the app\'s JSON store', entry && /very careful/.test(entry.explanation), JSON.stringify(entry).slice(0, 160));
-  await until(async () => (await dbg()).window, 15000); // the next stop ("ephemeral")
+  // the next stop ("ephemeral"; not the short window after "meticulous", which can still open as the video goes on)
+  await until(async () => { const d = await dbg(); return d.window && d.window.target !== 'meticulous'; }, 15000);
   await act('know');
   await until(async () => !(await vstate()).paused, 6000);
 
@@ -307,8 +308,10 @@ const api = H.startServer();
   const first = stores.local.drExtras;
   ok('...a phone\'s first settings: just talk is on, no Chinese under every line', first.phoneSet === true && first.voiceMode === true && first.zhLines === false, JSON.stringify({ v: first.voiceMode, zh: first.zhLines, s: stores.local.drSettings.listen.lastSecondsWindow }));
   const winL = await until(async () => { const d = await lvDbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 60);
-  const cardL = await lv.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return c && !c.hidden ? { word: (c.querySelector('.word') || {}).textContent, zh: !!c.querySelector('.zh') && /[\u4e00-\u9fff]/.test(c.textContent), ipa: !!c.querySelector('.ipa'), en: !!c.querySelector('.en') && getComputedStyle(c.querySelector('.en')).display !== 'none' } : null; });
-  ok('a hard word: the window "Do you know …?" waits, the word\'s card shows its Chinese (no IPA, no English text)', winL && winL.window.kind !== 'sentence' && cardL && cardL.word === winL.window.target && cardL.zh && !cardL.ipa && !cardL.en, JSON.stringify({ w: winL && winL.window, cardL }));
+  const cardL = await lv.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); if (!c || c.hidden) return null; const r = c.getBoundingClientRect();
+    return { word: (c.querySelector('.word') || {}).textContent, zh: !!c.querySelector('.zh') && /[\u4e00-\u9fff]/.test(c.textContent), ipa: !!c.querySelector('.ipa'), en: !!c.querySelector('.en'), buttons: c.querySelectorAll('button').length, parts: c.children.length,
+      full: c.classList.contains('full') && r.left <= 0.5 && r.top <= 0.5 && r.width >= innerWidth - 1 && r.height >= innerHeight - 1 }; });
+  ok('a hard word: the window "Do you know …?" waits, the full-screen card shows only the word and its Chinese (no IPA, no English, no buttons)', winL && winL.window.kind !== 'sentence' && cardL && cardL.full && cardL.word === winL.window.target && cardL.zh && !cardL.ipa && !cardL.en && cardL.buttons === 0 && cardL.parts === 2, JSON.stringify({ w: winL && winL.window, cardL }));
   const micOn = await lv.evaluate(() => ({ wants: window.__ytcDream.wantsMic(), level: window.__ytcDream.micLevel() }));
   ok('the microphone listens (just talk), at the highest of its 3 levels at first', micOn.wants === true && micOn.level === 3, JSON.stringify(micOn));
   ok('...its explanation is asked for with the hard rule', !!(await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000)));
@@ -477,15 +480,81 @@ const api = H.startServer();
   await until(async () => !(await vpaused()), 5000);
   await vm.evaluate(() => { document.querySelector('video').currentTime = 0; });
   const vwin = await until(async () => { const d = await vdbg(); return d && d.window ? d : null; }, 30000, 80);
-  const atStop = await seen();
-  ok('"Page off": a stop in Video mode does not show the page, the subtitles stay on the video', !!pOff && !!vwin && !vwin.stage.shown && atStop.band, JSON.stringify({ w: vwin && vwin.window, stage: vwin && vwin.stage, s: atStop }));
+  // (the full card shows anyway: it covers the whole screen, so no page is seen; it goes with the card)
+  const vcard = await vm.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card.full'); if (!c || c.hidden) return null; const r = c.getBoundingClientRect(); return { word: c.querySelector('.word').textContent, covers: r.width >= innerWidth - 1 && r.height >= innerHeight - 1 }; });
+  ok('"Page off": a stop in Video mode still shows the full-screen card (over the whole screen, no page seen)', !!pOff && !!vwin && !!vcard && vcard.covers && vcard.word === vwin.window.target && vwin.card && vwin.card.forcedStage, JSON.stringify({ w: vwin && vwin.window, card: vcard, forced: vwin && vwin.card && vwin.card.forcedStage }));
   await vact('know');
-  await until(async () => { const d = await vdbg(); return d && !d.window && d.state === 'playing'; }, 10000, 100);
+  const vback = await until(async () => { const d = await vdbg(); const s = await seen(); return d && !d.window && !d.card && d.state === 'playing' && !d.stage.shown && s.band ? d : null; }, 10000, 100);
+  ok('..."I know": the card goes and the page with it, the video is back with its subtitles', !!vback, JSON.stringify({ d: (await vdbg() || {}).stage, s: await seen() }));
   // both switches back as they were
   await vact('pageAuto');
   const restored = await until(() => stores.local.drExtras.stageOn === true && stores.local.drExtras.band === 'on', 5000);
   ok('...both switches back on (the page at stops, the subtitles)', !!restored, JSON.stringify({ stageOn: stores.local.drExtras.stageOn, band: stores.local.drExtras.band }));
   await vm.close();
+
+  // ---- 15. the full-screen stop card: only the word (or the sentence) and its Chinese; one tap anywhere = "I know";
+  // no tap = "I don't know": explained, the card stays during the explanation and goes before the video plays again ----
+  H.setHard([5]); // (the AI finds sentence 5 hard: a sentence stop)
+  stores.local.drExtras = { ...stores.local.drExtras, view: 'listening', band: 'auto', stageOn: true, levelAsk: false, levelMode: false, oneButton: false, voiceMode: false, zhLines: true, stopSentences: true, stopHardOn: true, capSentences: 100, capWords: 100, talkAfterExplain: false };
+  stores.local.drVocab = { ...stores.local.drVocab, words: { ...stores.local.drVocab.words, meticulous: 'learning', ephemeral: 'learning', gregarious: 'learning' } };
+  const fc = await ctx.newPage();
+  fc.on('pageerror', (e) => console.log('PAGE ERROR (full card)', String(e.message || e).slice(0, 300)));
+  await fc.goto('https://m.youtube.com/watch?v=ios00000008');
+  await fc.addScriptTag({ content: source(ytScripts) });
+  const fdbg = () => fc.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const fready = await until(async () => { const d = await fdbg(); return d && d.sentences === 10 && d.hardSentences.length === 1 ? d : null; }, 30000);
+  // (what is on the screen, every 40 ms, from here to the end: the card, the video, the tutor's state, what was said)
+  await fc.evaluate(() => {
+    const r = document.getElementById('dr-stage-host').shadowRoot;
+    window.__fcLog = [];
+    window.__fcEarly = null;
+    setInterval(() => {
+      const c = r.querySelector('.card'), d = window.__drDebug && window.__drDebug();
+      const shown = !!c && !c.hidden && c.classList.contains('full');
+      // (a tap at once, in the card's first 450 ms: that tap was meant for what was there before, it is not "I know")
+      if (shown && !window.__fcEarly) { window.__fcEarly = { at: Date.now(), lemma: d && d.card && d.card.lemma }; c.click(); }
+      const rr = shown ? c.getBoundingClientRect() : null;
+      window.__fcLog.push({ at: Date.now(), card: shown ? { sentence: c.classList.contains('sentence'), word: (c.querySelector('.word') || {}).textContent, zh: (c.querySelector('.zh') || {}).textContent || '', parts: c.children.length, buttons: c.querySelectorAll('button').length,
+        covers: rr.width >= innerWidth - 1 && rr.height >= innerHeight - 1, fits: c.scrollHeight <= c.clientHeight + 1 } : null,
+        playing: !document.querySelector('video').paused, state: d && d.state, win: d && d.window ? d.window.phase + ':' + d.window.kind : '', said: d ? d.spoken.join(' | ') : '' });
+    }, 40);
+  });
+  const fvol = (w) => (stores.local.drVocab.words || {})[w];
+  await fc.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 0; return v.play(); });
+  const fwin = await until(async () => { const d = await fdbg(); return d && d.window && d.window.phase === 'before' && d.window.target === 'meticulous' && d.card ? d : null; }, 30000, 60);
+  const early = await fc.evaluate(() => window.__fcEarly);
+  ok('the full card: a tap in its first 450 ms does nothing (the window still waits, the word not known)', !!fready && !!fwin && !!early && early.lemma === 'meticulous' && fwin.card.full && fvol('meticulous') === 'learning', JSON.stringify({ early, w: fwin && fwin.window, st: fvol('meticulous') }));
+  await sleep(Math.max(0, 520 - (Date.now() - fwin.card.openedAt)));
+  const nTap = apiLog.length;
+  const said0 = (await fdbg()).spoken.length;
+  const vp = fc.viewportSize();
+  await fc.touchscreen.tap(Math.round(vp.width * 0.2), Math.round(vp.height * 0.8));
+  const tapped = await until(async () => { const d = await fdbg(); return d && !d.card && !d.window && d.state === 'playing' && fvol('meticulous') === 'known' && !(await fc.evaluate(() => document.querySelector('video').paused)) ? d : null; }, 8000, 80);
+  ok('one tap anywhere on the full card = "I know": known, the card goes, nothing explained, the video plays on', !!tapped && !apiLog.slice(nTap).some((r) => r.kind === 'explain') && !tapped.spoken.slice(said0).some((x) => /Meticulous means/.test(x)),
+    JSON.stringify({ st: fvol('meticulous'), d: tapped ? null : await fdbg().then((d) => d && { card: d.card, w: d.window, state: d.state }), asked: apiLog.slice(nTap).map((r) => r.kind) }));
+  // "ephemeral": nothing tapped, the window runs out = "I don't know"
+  const ewin = await until(async () => { const d = await fdbg(); return d && d.window && d.window.target === 'ephemeral' ? d : null; }, 20000, 60);
+  const eFrom = Date.now();
+  const eDone = await until(async () => { const d = await fdbg(); return d && d.spoken.some((x) => /^It means something simple/.test(x)) && d.state === 'playing' && !(await fc.evaluate(() => document.querySelector('video').paused)) ? d : null; }, 30000, 100);
+  const eLog = (await fc.evaluate(() => window.__fcLog)).filter((s) => s.at >= eFrom && s.at <= Date.now());
+  const eExpl = eLog.filter((s) => s.state === 'explaining' && /It means something simple/.test(s.said));
+  ok('no tap: the window runs out, the tutor explains, the full card stays on the screen during the explanation', !!ewin && !!eDone && eExpl.length > 0 && eExpl.some((s) => s.card && s.card.word === 'ephemeral'),
+    JSON.stringify({ n: eExpl.length, first: eExpl[0], st: fvol('ephemeral') }));
+  ok('...and it is gone before the video plays again', !!eDone && eLog.filter((s) => s.playing).every((s) => !s.card), JSON.stringify(eLog.filter((s) => s.playing && s.card).slice(0, 2)));
+  // the hard sentence (5): after it was played, the sentence big and its translation under it, fitted to the screen
+  const sFrom = Date.now();
+  const swin = await until(async () => { const d = await fdbg(); return d && d.window && d.window.phase === 'before' && d.window.kind === 'sentence' ? d : null; }, 30000, 60);
+  await sleep(200);
+  const sNow = (await fc.evaluate(() => window.__fcLog.slice(-1)[0])).card;
+  ok('a hard sentence: the full card shows the sentence and its translation (nothing else), fitted to the screen', !!swin && !!sNow && sNow.sentence && sNow.word === LINES[4] && /中文第\d+句/.test(sNow.zh) && sNow.parts === 2 && sNow.buttons === 0 && sNow.covers && sNow.fits,
+    JSON.stringify({ w: swin && swin.window, card: sNow }));
+  const sDone = await until(async () => { const d = await fdbg(); return d && d.state === 'playing' && !d.window && (await fc.evaluate(() => document.querySelector('video').currentTime)) > 21 ? d : null; }, 40000, 100);
+  const sLog = (await fc.evaluate(() => window.__fcLog)).filter((s) => s.at >= sFrom);
+  const sExpl = sLog.filter((s) => s.state === 'explaining' && s.card && s.card.sentence && !/^before/.test(s.win));
+  ok('...no tap: explained with the sentence card still there, gone when the sentence plays again', !!sDone && sExpl.length > 0 && sLog.filter((s) => s.playing).every((s) => !s.card),
+    JSON.stringify({ n: sExpl.length, playingWithCard: sLog.filter((s) => s.playing && s.card).slice(0, 2), st: sDone && sDone.state }));
+  await fc.close();
+  H.setHard([]);
 
   await browser.close();
   api.close();

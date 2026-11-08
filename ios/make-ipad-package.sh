@@ -22,7 +22,7 @@ let package = Package(
     ],
     products: [
         .iOSApplication(
-            name: "YT Learn",
+            name: "I Know",
             targets: ["AppModule"],
             bundleIdentifier: "local.ytlearn.playgrounds",
             displayVersion: "3.0",

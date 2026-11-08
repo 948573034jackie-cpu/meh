@@ -75,6 +75,7 @@ const sse = (res, text) => {
   tick();
 };
 let failNextAzure = 0; // (a test sets it with failAzure(n): the next n Microsoft answers are "busy")
+let hardReply = []; // (the AI's hard sentences, 1-based; a test sets them with setHard([...]); none by default)
 const kindOf = (sys, url) => (url.includes('/azure/') ? (url.includes('/voices/list') ? 'azure-list' : 'azure') : /Word Wise/.test(sys) ? 'hints' : /multi-word expressions/.test(sys) ? 'phrases' : /well-punctuated sentences/.test(sys) ? 'split' : /judge which spoken sentences/.test(sys) ? 'hard' : /translate the English subtitles/.test(sys) ? 'zhlines' : /Simplified Chinese meaning of an English word/.test(sys) ? 'zhword' : /This call works through text/.test(sys) ? 'chat' : 'explain');
 const apiHandler = (req, res) => {
   const chunks = [];
@@ -100,7 +101,7 @@ const apiHandler = (req, res) => {
       for (const [n, w] of words) { cur.push(w); if (/[.?!]$/.test(w)) { let t = cur.join(' '); if (/twice\.$/.test(t)) t = t.replace(' twice.', ', twice.'); out.push(`${n}|${t}`); cur = []; } }
       return sse(res, out.join('\n'));
     }
-    if (kind === 'hard') return sse(res, JSON.stringify({ hard: [] }));
+    if (kind === 'hard') return sse(res, JSON.stringify({ hard: hardReply }));
     if (kind === 'zhlines') { const n = [...user.matchAll(/\\n(\d+)\. /g)].map((m) => Number(m[1])); return sse(res, n.map((k) => `${k}. 中文第${k}句`).join('\n')); }
     if (kind === 'zhword') return sse(res, '细致的；仔细的');
     if (kind === 'chat') return sse(res, /gregarious/i.test(user) ? 'Gregarious means friendly. A gregarious man loves parties and people.' : 'Hi! Ask me anything about this part.');
@@ -232,5 +233,6 @@ module.exports = {
   apiLog, nativeLog, fetchLog, stores, keychain, vocabWrites,
   get vocabShared() { return vocabShared; }, // (the stand-in replaces it on every write)
   failAzure: (n) => { failNextAzure = n; },
+  setHard: (list) => { hardReply = list; },
   native, fakeWebkit, startServer, newAppContext,
 };
