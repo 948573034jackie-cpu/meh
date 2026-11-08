@@ -70,6 +70,8 @@ It lists the problems in plain words. **Copy report** lets you send them for hel
 - Jumping back can take a moment while YouTube loads that part again.
 - YouTube sometimes shows "Sign in to confirm you're not a bot" on some connections: sign in to YouTube in the app or in Safari.
 - A Safari extension cannot write files, so YT Safari has no shared vocabulary file.
+- Free mode (My tutor off in the app: no AI, no cost) has no English definitions: the built-in dictionary gives the Chinese meaning only.
+- Free mode's sentence translation is Apple's Translation, on the iPhone / iPad: it needs iOS 18 (older iPhones show the dictionary only), and the first time iOS may ask to download English and Chinese.
 
 ---
 

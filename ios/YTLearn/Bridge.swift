@@ -72,6 +72,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "audioSession":
             AudioSession.set(mode: body["mode"] as? String ?? "play")
             reply(nil, nil)
+        // ---- free mode: a sentence in Chinese by Apple's Translation (Translator.swift) ----
+        case "translate":
+            model.translate(body["text"] as? String ?? "", reply: reply)
         // ---- My tutor's pages: settings, My Vocabulary (a sheet of the app) ----
         case "openPage":
             model.openPage(body["url"] as? String ?? "")

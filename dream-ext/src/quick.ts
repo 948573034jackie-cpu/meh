@@ -105,6 +105,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <p class="muted">How much of what is above your level the tutor explains, the hardest first: 100% = every hard word (phrase, sentence), 50% = the harder half, 10% = only the hardest 10%, 0% = never. Tap a word = explain it now; double tap = I know it. The tutor says the word ${s.listen.wordRepeats} times and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. "I know", "know", "bye" or "bye bye": marked known, no explanation, the video goes on. Say nothing: it explains.</p>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
+      ${ctx.phone ? `<label>Free mode: seconds to look at the card ${slider('freeWindow', x.freeWindowSec ?? 7, 3, 20, 1, ' s')} <span class="muted">(My tutor off: no AI; one tap = I know)</span></label>` : ''}
       <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
       <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
       ${ctx.phone ? `<label>Talk through Bluetooth headphones ${onOff('headsetMic', !!x.headsetMic)} <span class="muted">their microphone hears you (the sound becomes phone-call quality while on). Wired headphones with a microphone always work.</span></label>` : ''}
@@ -330,6 +331,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (name === 'capPhrases') later(() => void store.patchExtras({ capPhrases: n }), 300);
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
+    else if (name === 'freeWindow') later(() => void store.patchExtras({ freeWindowSec: n }), 200);
     else if (name === 'phoneSize') later(() => void store.patchExtras({ phoneSizePx: n }), 120);
     else if (name === 'readSize') later(() => void store.patchExtras({ readSizePx: n }), 120);
     else if (name === 'phoneBand') later(() => void store.patchExtras({ phoneBandPx: n }), 120);

@@ -123,6 +123,8 @@ const nativeLog = [];
 let vocabShared = { version: 1, updatedAt: '2026-11-03T10:00:00.000Z', currentLevel: 'about B2 for reading', tests: [{ date: '2026-11-03', source: 'A Mac video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }],
   known: [{ item: 'serendipity', date: '2026-11-03' }], stillLearning: [{ item: 'flabbergasted', date: '2026-11-03', sentence: 'I was flabbergasted by the news.' }] };
 const vocabWrites = [];
+// Apple's Translation (Translator.swift): what it answers for a sentence; a test sets it with setTranslate(text or Error)
+let translateReply = '这是测试译文';
 const fetchLog = [];
 const aborts = {};
 const MIME = { '.gz': 'application/gzip', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.txt': 'text/plain' };
@@ -184,6 +186,11 @@ async function native(page, b) {
       }, 20);
       return null;
     }
+    case 'translate': { // (on the device: free, no AI) an Error = Swift's reply(nil, "…"): the page's promise fails
+      await sleep(30);
+      if (translateReply instanceof Error) throw translateReply;
+      return translateReply;
+    }
     case 'chatInfo': return { url: '' };
     default: return null; // speakStop, speakPause, speakResume, speech, openPage, audioSession, log, voice …
   }
@@ -234,5 +241,6 @@ module.exports = {
   get vocabShared() { return vocabShared; }, // (the stand-in replaces it on every write)
   failAzure: (n) => { failNextAzure = n; },
   setHard: (list) => { hardReply = list; },
+  setTranslate: (r) => { translateReply = r; },
   native, fakeWebkit, startServer, newAppContext,
 };

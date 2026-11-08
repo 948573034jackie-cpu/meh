@@ -15,6 +15,17 @@ struct ContentView: View {
         .onAppear { model.start() }
         .overlay(alignment: .bottom) { toastView }
         .sheet(isPresented: $showSettings) { SettingsView(model: model) }
+        .background(translatorHost)
+    }
+
+    /// free mode's translation (Apple's Translation, iOS 18): an invisible view keeps its session open
+    @ViewBuilder
+    private var translatorHost: some View {
+        #if canImport(Translation) && compiler(>=6.0)
+        if #available(iOS 18.0, *) {
+            if let t = model.translator as? FreeTranslator { TranslatorHost(translator: t) }
+        }
+        #endif
     }
 
     /// The one bar of the app (there is no keyboard on the phone: the same actions as My tutor's keyboard shortcuts).
@@ -22,7 +33,8 @@ struct ContentView: View {
     /// explain the LAST sentence, in Video mode the two switches (subtitles on / off, the big page on / off), call the
     /// tutor, bigger than before (the ask box is gone). Swipe the bar for the
     /// rest: Find a video, Voice, Mode, One button, Sleep, Words, Settings, Check, then the app's own Home, Paste link
-    /// and App settings. With the tutor off: its switch, Find, and those three. In one-button mode: only the way out.
+    /// and App settings. With the tutor off (free mode: no AI, nothing paid): its switch, play / stop, in Video mode the
+    /// two switches, Mode, Find, and those three. In one-button mode: only the way out.
     private var tutorBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 2) {
@@ -33,7 +45,7 @@ struct ContentView: View {
                         .frame(width: 30, height: 44)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(model.tutorOn ? "My tutor is on: turn it off" : "My tutor is off: turn it on")
+                .accessibilityLabel(model.tutorOn ? "My tutor is on: switch to free mode" : "Free mode (no AI): turn My tutor on")
                 if model.tutorOn && model.oneButton {
                     Button { model.dream("oneButton") } label: {
                         Text("Leave one-button mode").font(.system(size: 13, weight: .semibold))
@@ -67,6 +79,13 @@ struct ContentView: View {
                         tutorButton("check", "stethoscope", "Check")
                     }
                 } else {
+                    // free mode: the video stops at hard words by itself, the card shows the dictionary (no AI)
+                    tutorButton("stop", "playpause.fill", "Play / stop", big: true)
+                    if model.videoMode {
+                        tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off", big: true)
+                        tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off", big: true)
+                    }
+                    tutorButton("mode", "book", "Mode")
                     tutorButton("find", "magnifyingglass", "Find video")
                 }
                 if !(model.tutorOn && model.oneButton) {

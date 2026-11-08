@@ -283,7 +283,7 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
   let cleanup: (() => void) | null = null;
   afterEach(() => { cleanup?.(); cleanup = null; });
 
-  const setup = (items: { kind: 'word' | 'phrase'; target: string; lemma: string }[]) => {
+  const setup = (items: { kind: 'word' | 'phrase'; target: string; lemma: string }[], free?: { windowMs: number }) => {
     const s1 = 'Hello and welcome back.';
     const s2 = 'Then she went home to rest.';
     const vb = buildVideoBook({ id: 'vid00000003', title: 'Test' }, [
@@ -302,6 +302,7 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
     const requests: ExplainRequest[] = [];
     const windows: CommandWindow[] = [];
     const targets: string[] = [];
+    const marked: string[] = [];
     const playback = new Playback(vb.book, { engine: () => engine, voice: () => ({ voiceId: 'v', rate: 1 }), pauseMs: () => 0 }, vb.order[0]);
     playback.on('sentence', (pos) => { engine.target = pos; });
     playback.on('state', (st) => { if (st === 'explaining') engine.hold(); });
@@ -314,16 +315,17 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
       voice: () => ({ voiceId: 'v', rate: 1 }), explainVoice: () => ({ voiceId: 'v', rate: 1 }), zhVoiceId: () => null,
       explain: (req, onDelta) => { requests.push(req); onDelta('She goes to her house. '); return { done: Promise.resolve({ text: 'She goes to her house.', usage: { usd: 0, dailyUsd: 0, monthlyUsd: 0 } }), cancel: () => undefined }; },
       onTranscript: () => undefined,
-      onMarkLearning: (l) => { vocab.words[l] = 'learning'; },
+      onMarkLearning: (l) => { marked.push(l); vocab.words[l] = 'learning'; },
       onCommandWindow: (w) => { if (w) windows.push(w); },
       onStopTarget: (t) => { if (t) { targets.push(t.target); stopped = true; } else engine.replayUnlessHeard(); },
       directStop: () => true,
+      ...(free ? { freeStop: () => true, freeWindowMs: () => free.windowMs } : {}),
       directTrigger: (pos) => (!stopped && pos.sentence === at.sentence && pos.paragraph === at.paragraph ? { lemma: 'sentence: then she went home to rest', items } : null),
       streamProse: () => true,
     });
     controller.enabled = true;
     cleanup = () => { clearInterval(clock); controller.dispose(); playback.stop(); };
-    return { video, tts, vocab, requests, windows, targets, playback, controller };
+    return { video, tts, vocab, requests, windows, targets, marked, playback, controller };
   };
 
   it('the word 3 times, the window; "I know" = no explanation, the sentence plays again and the video goes on', async () => {
@@ -376,5 +378,51 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
     t.controller.answerWindow('know');
     await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
     expect(t.requests).toHaveLength(0);
+  }, 20000);
+
+  // ---- free mode (My tutor off in the app): no AI at all ----
+  it('free mode: the word said once, its own window; nothing said = still to learn, never explained, the video goes on', async () => {
+    const t = setup([{ kind: 'word', target: 'rest', lemma: 'rest' }, { kind: 'phrase', target: 'went home', lemma: 'go home' }], { windowMs: 250 });
+    t.playback.play();
+    await until(() => t.marked.length === 1, 10000);
+    // one window, of free mode's length; the word once (not wordRepeats times)
+    expect(t.windows).toHaveLength(1);
+    expect(t.windows[0]).toMatchObject({ phase: 'before', target: 'rest', kind: 'word', ms: 250 });
+    expect(t.tts.spoken.filter((x) => x.text === 'rest')).toHaveLength(1);
+    expect(t.marked).toEqual(['rest']);
+    // the sentence again from its start, then on to the end; the AI was never asked
+    await until(() => t.video.events.filter((e) => e === 'seek@1.45').length >= 1, 10000);
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    expect(t.requests).toHaveLength(0);
+    expect(t.windows).toHaveLength(1); // (the first one not known ends the stop)
+    expect(t.tts.spoken.filter((x) => x.text === 'rest')).toHaveLength(1);
+  }, 20000);
+
+  it('free mode: "I know" = no mark, the next one is asked; all known = the video plays on, no AI', async () => {
+    const t = setup([{ kind: 'word', target: 'rest', lemma: 'rest' }, { kind: 'phrase', target: 'went home', lemma: 'go home' }], { windowMs: 3000 });
+    t.playback.play();
+    await until(() => t.windows.length === 1);
+    t.controller.markKnown('rest');
+    expect(t.controller.answerWindow('know')).toBe(true);
+    await until(() => t.windows.length === 2, 10000);
+    expect(t.windows[1]).toMatchObject({ target: 'went home', kind: 'phrase', ms: 3000 });
+    t.controller.markKnown('go home');
+    t.controller.answerWindow('know');
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    expect(t.marked).toEqual([]);
+    expect(t.requests).toHaveLength(0);
+  }, 20000);
+
+  it('free mode: a whole hard sentence plays once from the video, the window, then on after it (no explanation)', async () => {
+    const t = setup([], { windowMs: 250 });
+    t.playback.play();
+    await until(() => t.marked.length === 1, 10000);
+    expect(t.windows).toHaveLength(1);
+    expect(t.windows[0]).toMatchObject({ kind: 'sentence', target: 'Then she went home to rest.' });
+    expect(t.marked).toEqual(['sentence: then she went home to rest']);
+    await until(() => t.playback.state === 'idle' || t.video.currentTime > 3.95, 10000);
+    expect(t.requests).toHaveLength(0);
+    // (played again once by the stop, from its start; then the reading went on after it, not a third time)
+    expect(t.video.events.filter((e) => e === 'seek@1.45')).toHaveLength(1);
   }, 20000);
 });

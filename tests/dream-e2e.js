@@ -648,6 +648,17 @@ const api = http.createServer((req, res) => {
   ok('subtitles made by people with no punctuation: the AI\'s complete sentences are used (as before)', !!plain1 && apiLog.slice(nPlain).some((r) => r.kind === 'split'), JSON.stringify(plain1 ? { split: plain1.split } : await plainPg.evaluate(() => document.documentElement.dataset.drDebug && JSON.parse(document.documentElement.dataset.drDebug).split)));
   await plainPg.close();
 
+  // ---- 11d. My tutor off in Chrome: no tutor at all (free mode is only the iPhone / iPad app's) ----
+  await patch('drExtras', { tutorOn: false });
+  const nOff = apiLog.length;
+  const offPg = await ctx.newPage();
+  await offPg.goto('https://www.youtube.com/watch?v=drm00000001');
+  await sleep(3500);
+  const offLook = await offPg.evaluate(() => { const b = document.getElementById('yt2c-b-tutor'); return { panel: !!document.getElementById('dr-panel-host'), stage: !!document.getElementById('dr-stage-host'), debug: !!document.documentElement.dataset.drDebug, button: b ? b.textContent : null }; });
+  ok('My tutor off in Chrome: no session (no panel, no page, nothing asked of the AI), the button says off', !offLook.panel && !offLook.stage && !offLook.debug && /off/.test(offLook.button || '') && apiLog.length === nOff, JSON.stringify({ offLook, asked: apiLog.slice(nOff).map((r) => r.kind) }));
+  await offPg.close();
+  await patch('drExtras', { tutorOn: true });
+
   // ---- 12. the settings page and My Vocabulary ----
   const opt = await ctx.newPage();
   opt.on('pageerror', (e) => console.log('OPTIONS PAGE ERROR', e.message));

@@ -7,7 +7,7 @@ import AVFoundation
 /// shared with the Mac.
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
-    @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar)
+    @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar); off = free mode (no AI)
     @Published var oneButton = false     // one-button mode: the page is one big "explain" button; the bar shows only a way out
     @Published var bandOn = true         // Video mode: the subtitles on the video (drExtras.band is not "off")
     @Published var pageOn = true         // Video mode: the big page at stops and pauses (drExtras.stageOn)
@@ -28,6 +28,13 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     private let speech = SpeechListener()
     let tutorVoice = TutorVoice()
+    #if canImport(Translation) && compiler(>=6.0)
+    /// free mode's translation of a sentence (Apple's Translation, on the device): a FreeTranslator on iOS 18, else nil
+    let translator: AnyObject? = {
+        if #available(iOS 18.0, *) { return FreeTranslator() }
+        return nil
+    }()
+    #endif
     private let pageBridge = Bridge(world: .page)
     private(set) lazy var sheet: WKWebView = {
         let web = WKWebView(frame: .zero, configuration: AppModel.makeSheetConfig(bridge: self.pageBridge))
@@ -154,6 +161,17 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     func goHome() {
         if let url = URL(string: "https://m.youtube.com/") { youtube.load(URLRequest(url: url)) }
+    }
+
+    /// a sentence in Chinese by the device (free mode's card, and the tutor's sentence card): the answer goes back to the page
+    func translate(_ text: String, reply: @escaping (Any?, String?) -> Void) {
+        #if canImport(Translation) && compiler(>=6.0)
+        if #available(iOS 18.0, *), let t = translator as? FreeTranslator {
+            t.translate(text, reply: reply)
+            return
+        }
+        #endif
+        reply(nil, "Translation needs iOS 18")
     }
 
     // ---- the bar's own buttons (Home, Paste link) ----

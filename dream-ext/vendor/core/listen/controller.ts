@@ -146,6 +146,14 @@ export interface ListenDeps {
    */
   directStop?: () => boolean;
   directTrigger?: (pos: Position) => DirectTrigger | null;
+  /**
+   * (YouTube, free mode: no AI) a direct stop without any explanation: each hard word or phrase (or the whole
+   * sentence) is said once and the commands window waits freeWindowMs. "I know" = known, the next one; nothing said,
+   * "I don't know" or "go on" = still to learn, and the reading goes on. explain() is never called.
+   */
+  freeStop?: () => boolean;
+  /** (free mode) how long the window waits for "I know", ms (default 7000) */
+  freeWindowMs?: () => number;
 }
 
 export interface DirectItem { kind: 'word' | 'phrase'; target: string; lemma: string }
@@ -287,6 +295,7 @@ export class ListenController {
   private async onStop(pos: Position, stoppedAtToken: number | null): Promise<'next' | 'stop'> {
     if (this.deps.directStop?.()) {
       const d = this.deps.directTrigger?.(pos);
+      if (d && this.deps.freeStop?.()) return this.freeStopFlow(pos, d);
       return d ? this.directStopFlow(pos, d) : 'next';
     }
     const triggers = this.pick(this.triggersFor(pos), pos);
@@ -441,6 +450,51 @@ export class ListenController {
     return 'stop';
   }
 
+  /**
+   * (free mode) The stop without the AI: the hard words and phrases one by one (or the sentence itself), each said
+   * once, then the window. "I know" = known, the next one; anything else = still to learn, and the stop is over (the
+   * first one not known ends it, as an explanation would). Then the reading goes on from the sentence's start.
+   */
+  private async freeStopFlow(pos: Position, d: DirectTrigger): Promise<'next' | 'stop'> {
+    const cur = getSentence(this.deps.book, pos)!;
+    this.skipRequested = false;
+    this.rereadGuard = pos;
+    let aborted = false;
+    const off = this.playback.on('state', (st) => { if (st !== 'explaining') { aborted = true; this.flowWin?.resolve('aborted'); } });
+    const over = () => aborted || this.disposed || this.skipRequested;
+    const ms = this.deps.freeWindowMs?.() ?? 7000;
+    const list: Trigger[] = d.items?.length
+      ? d.items.map((it) => ({ kind: it.kind, token: -1, end: -1, target: it.target, lemma: it.lemma }))
+      : [{ kind: 'sentence', token: -1, end: -1, target: cur.text, lemma: d.lemma }];
+    try {
+      for (const it of list) {
+        if (over()) break;
+        const lemma = it.lemma!;
+        if (this.dismissed.has(lemma) || this.deps.vocab().words[lemma] === 'known') continue;
+        this.deps.onStopTarget?.({ kind: it.kind, target: it.target, lemma });
+        this.last = { kind: it.kind, target: it.target, pos, dict: null, lemma };
+        this.earlyAnswer = false;
+        // once (a sentence plays from the video)
+        const said = await this.sayTarget(it.target, lemma, 1);
+        const early = this.earlyAnswer;
+        this.earlyAnswer = false;
+        if (over()) break;
+        if (said === 'skipped' && !early) continue; // known while it was said (a tap on the card)
+        const a = early ? 'dont_know' : await this.commandWindow('before', it, ms);
+        if (a === 'aborted' || over()) break;
+        if (a === 'know') { this.dismissed.add(lemma); continue; }
+        // nothing said, "I don't know", "go on": still to learn (there is no explanation in free mode)
+        this.deps.onMarkLearning(lemma);
+        break;
+      }
+    } finally { this.deps.onStopTarget?.(null); off(); }
+    if (aborted || this.disposed) return 'stop';
+    if (this.held || this.current) return 'stop';
+    this.rereadGuard = pos;
+    this.playback.play(pos);
+    return 'stop';
+  }
+
   /** Says the word or phrase `times` times with the reading voice (slowly); 'skipped' when it was cancelled. */
   private async sayTarget(target: string, lemma: string | undefined, times: number): Promise<'done' | 'skipped'> {
     let cancelled = false;
@@ -465,11 +519,12 @@ export class ListenController {
   }
 
   /** The commands window of a Listening stop: the mic listens, nothing is said; ends on an answer or after commandWindowMs. */
-  private async commandWindow(phase: 'before' | 'after', t: Trigger): Promise<WindowResult> {
+  private async commandWindow(phase: 'before' | 'after', t: Trigger, only?: number): Promise<WindowResult> {
     if (this.disposed) return 'aborted';
     const full = this.deps.settings().listen.commandWindowMs ?? 5000;
     // (YouTube) after an explanation the app may want only a short moment before the video goes on
-    const ms = phase === 'after' && this.deps.afterWindowMs ? Math.min(full, this.deps.afterWindowMs()) : full;
+    // (`only`: this window's own length, free mode's card)
+    const ms = only ?? (phase === 'after' && this.deps.afterWindowMs ? Math.min(full, this.deps.afterWindowMs()) : full);
     if (!(ms > 0)) return 'timeout';
     this.deps.onPauseWindow?.(true);
     this.deps.onCommandWindow?.({ phase, ms, target: t.target, kind: t.kind });
