@@ -5,7 +5,7 @@
  */
 import type { Dictionary } from '@core/dict/types';
 import type { WordStatus } from '@shared/settings';
-import { wordDifficulty, harderThan } from './level100';
+import { wordNumber, harderThan } from './level100';
 
 export type WordMark = 'hard' | 'learning' | null;
 export interface LevelCtx {
@@ -27,13 +27,12 @@ export function difficultyOf(token: string, ctx: Pick<LevelCtx, 'dict' | 'zipf'>
   if (!isWordToken(token)) return null;
   const look = ctx.dict.lookup(token);
   const lemma = look?.lemma ?? token.toLowerCase();
-  const z = ctx.zipf(lemma) ?? ctx.zipf(token.toLowerCase());
-  if (!look && z === null) return null;
+  const zForm = ctx.zipf(token.toLowerCase()), zLemma = ctx.zipf(lemma);
+  if (!look && zForm === null && zLemma === null) return null;
   // (a word with a capital that the frequency table does not have: a name)
-  if (/^\p{Lu}/u.test(token) && z === null) return null;
-  // (only the school levels of the two word lists count; an estimated level says nothing more than the frequency)
-  const cefr = look && look.entry.levelSource !== 'est' ? look.entry.level : '';
-  return wordDifficulty(z, cefr);
+  if (/^\p{Lu}/u.test(token) && zForm === null && zLemma === null) return null;
+  // (the SAME number as in a video: level100.ts wordNumber, so a word is hard everywhere or nowhere)
+  return wordNumber(zForm, zLemma, look?.entry.level ?? null);
 }
 
 export function markOf(token: string, ctx: LevelCtx): WordMark {
