@@ -8,7 +8,13 @@ import AVFoundation
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar); off = free mode (no AI)
-    @Published var oneButton = false     // one-button mode: the page is one big "explain" button; the bar shows only a way out
+    @Published var oneButton = false     // One button mode: a touch on the page or the video explains the last part (the bar stays as it is)
+    @Published var tutorVolume = 60      // the tutor's volume, % (drExtras.teacherVolume): the bar's Volume button
+    @Published var volumeOpen = false    // the two big buttons, quieter / louder, are on the screen
+    @Published var barPeek = false       // full screen on an iPhone on its side: the whole bar is back for a moment ("More")
+    /// the page shows the video over the whole window (its own full screen); then a swipe from the edge must not leave the video
+    @Published var pageFull = false { didSet { if oldValue != pageFull { youtube.allowsBackForwardNavigationGestures = !pageFull } } }
+    private var volumeTouchedAt = Date()
     @Published var bandOn = true         // Video mode: the subtitles on the video (drExtras.band is not "off")
     @Published var pageOn = true         // Video mode: the big page at stops and pauses (drExtras.stageOn)
     @Published var videoMode = false     // the tutor's view is Video mode (drExtras.view "normal"): the two switches show
@@ -25,6 +31,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     static let youtubeScripts = ["shim-common", "shim-youtube", "shim-dream", "lib", "background", "youtube", "dream-bg", "dream-yt"]
     /// My tutor's settings and vocabulary pages (in the page world, before the page's own script)
     static let sheetScripts = ["shim-common", "shim-dream", "dream-bg"]
+    /// in the YouTube page's OWN JavaScript world (not the tutor's): YouTube's full-screen request is handed to the tutor
+    static let pageScripts = ["page-hooks"]
 
     private let speech = SpeechListener()
     let tutorVoice = TutorVoice()
@@ -61,6 +69,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         oneButton = x["oneButton"] as? Bool ?? false
         (bandOn, pageOn, videoMode) = AppModel.videoSwitches(x)
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
+        tutorVolume = AppModel.volume(in: x)
         vocabFolder = VocabFile.shared.folderName
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.leaving() }
         // back in the app: the vocabulary file may have new words from the Mac
@@ -233,6 +242,18 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
               const rect = v.getBoundingClientRect();
               out.videoRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)];
             }
+            // full screen on the REAL YouTube page: the player must cover the whole window, and go back
+            try {
+              const boxOf = () => { const p = document.querySelector('#player-container-id, ytm-player, .player-container'); const r = p ? p.getBoundingClientRect() : null; const vr = v ? v.getBoundingClientRect() : null;
+                return { full: document.documentElement.classList.contains('dr-full'), player: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] : null, video: vr ? [Math.round(vr.left), Math.round(vr.top), Math.round(vr.width), Math.round(vr.height)] : null, win: [window.innerWidth, window.innerHeight] }; };
+              const before = boxOf();
+              const did = window.__ytcDream && window.__ytcDream.action ? window.__ytcDream.action('full') : null;
+              await new Promise(r => setTimeout(r, 900));
+              const during = boxOf();
+              if (during.full !== before.full) { window.__ytcDream.action('full'); await new Promise(r => setTimeout(r, 600)); }
+              out.fullScreen = { did, before, during, after: boxOf(), hookFlag: document.documentElement.dataset.ytcTutor || null,
+                topBar: !!document.querySelector('ytm-mobile-topbar-renderer, header.mobile-topbar-header'), fsButton: !!document.querySelector('.ytp-fullscreen-button, .fullscreen-icon, .ytmFullscreenButtonHost, button[aria-label*="ull screen" i], button[aria-label*="ullscreen" i]') };
+            } catch (e) { out.fullScreenError = String(e); }
             return out;
             """
             self.youtube.callAsyncJavaScript(ytTest, arguments: [:], in: nil, in: AppModel.world) { result in
@@ -418,6 +439,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if on != tutorOn { tutorOn = on }
             let one = extras["oneButton"] as? Bool ?? false
             if one != oneButton { oneButton = one }
+            let vol = AppModel.volume(in: extras)
+            if vol != tutorVolume { tutorVolume = vol }
             let (band, page, video) = AppModel.videoSwitches(extras)
             if band != bandOn { bandOn = band }
             if page != pageOn { pageOn = page }
@@ -428,6 +451,46 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if seconds != explainSeconds { explainSeconds = seconds }
         }
         tellOtherWindows(obj, area: area, except: web)
+    }
+
+    /// the tutor's volume in My tutor's extras, % (60 when not set yet)
+    static func volume(in x: [String: Any]) -> Int {
+        min(100, max(0, (x["teacherVolume"] as? NSNumber)?.intValue ?? 60))
+    }
+
+    // ---- the bar's Volume button: two big buttons, quieter / louder, for 4 s after the last touch ----
+    func showVolume() {
+        if volumeOpen { volumeOpen = false; return }
+        volumeOpen = true
+        volumeTouched()
+    }
+
+    func volumeStep(_ action: String) {
+        volumeTouched()
+        dream(action)
+    }
+
+    private func volumeTouched() {
+        let now = Date()
+        volumeTouchedAt = now
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            if self?.volumeTouchedAt == now { self?.volumeOpen = false }
+        }
+    }
+
+    // ---- full screen: the page puts the video over the whole window; an iPhone also turns on its side ----
+    func fullScreen() {
+        let entering = !pageFull
+        dream("full")
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              let scene = youtube.window?.windowScene else { return }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: entering ? .landscapeRight : .portrait)) { _ in }
+    }
+
+    /// full screen on an iPhone on its side: "More" shows the whole bar again for 6 s
+    func peekBar() {
+        barPeek = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.barPeek = false }
     }
 
     /// the two switches of Video mode in My tutor's extras: subtitles on the video, the big page; and the view
@@ -510,6 +573,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         controller.addScriptMessageHandler(bridge, contentWorld: world, name: "ytc")
 
         controller.addUserScript(WKUserScript(source: deviceScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
+        // (the page's own world gets one small script and nothing of the app: see page-hooks.js)
+        controller.addUserScript(WKUserScript(source: pageScripts.map(script).joined(separator: "\n;\n"), injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         // (the saved settings are read from Store when the page starts: storageAll)
         let source = youtubeScripts.map(script).joined(separator: "\n;\n")
         controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))

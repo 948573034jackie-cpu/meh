@@ -14,12 +14,12 @@ const api = H.startServer();
 const extrasNow = () => ({ capWords: 100, stopPhrasesOn: false, capPhrases: 100, capSentences: 0, stopItemsOn: false, stopHardOn: false, phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 1, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, stopSentences: false });
 
 const DEVICES = [
-  { name: 'iPhone 13', device: 'phone', lay: 'p-port', px: 21, band: 17 },
-  { name: 'iPhone 13 landscape', device: 'phone', lay: 'p-land', px: 20, band: 22 },
-  { name: 'iPad (gen 7)', device: 'pad', lay: 't-port', px: 28, band: 26 },
-  { name: 'iPad (gen 7) landscape', device: 'pad', lay: 't-land', px: 26, band: 30 },
-  { name: 'iPad (gen 7)', label: 'iPad (gen 7) split in half (507 x 768)', viewport: { width: 507, height: 768 }, device: 'pad', lay: 't-narrow', px: 24, band: 22 },
-  ...(pw.devices['iPad Pro 11'] ? [{ name: 'iPad Pro 11', device: 'pad', lay: 't-port', px: 28, band: 26 }] : []),
+  { name: 'iPhone 13', device: 'phone', lay: 'p-port', px: 21, band: 21 },
+  { name: 'iPhone 13 landscape', device: 'phone', lay: 'p-land', px: 20, band: 20 },
+  { name: 'iPad (gen 7)', device: 'pad', lay: 't-port', px: 28, band: 28 },
+  { name: 'iPad (gen 7) landscape', device: 'pad', lay: 't-land', px: 26, band: 26 },
+  { name: 'iPad (gen 7)', label: 'iPad (gen 7) split in half (507 x 768)', viewport: { width: 507, height: 768 }, device: 'pad', lay: 't-narrow', px: 24, band: 24 },
+  ...(pw.devices['iPad Pro 11'] ? [{ name: 'iPad Pro 11', device: 'pad', lay: 't-port', px: 28, band: 28 }] : []),
 ];
 
 // the app's window on one device, the video loaded in Listening
@@ -77,7 +77,7 @@ async function turn(page, dbg, to, want, what) {
     const l = await lookOf(page);
     ok(`${what}: the layout is ${d.lay}, the device ${d.device}, the touch page`, !!ready && l && l.lay === d.lay && l.dev === d.device && l.phone === '1'
       && l.html.lay === d.lay && l.html.dev === d.device && l.html.phone === '1', JSON.stringify({ l, ready: !!ready }));
-    ok(`${what}: the page text is ${d.px} px (your 21 px on this layout), the subtitles on the video ${d.band} px (your 17 px)`, l && Math.abs(l.px - d.px) < 0.5 && ready && ready.stage.size === `${d.px}px` && l.band === `${d.band}px`, JSON.stringify({ px: l && l.px, size: ready && ready.stage.size, band: l && l.band }));
+    ok(`${what}: the page text is ${d.px} px (your 21 px on this layout), the subtitles on the video the same ${d.band} px (ONE text size)`, l && Math.abs(l.px - d.px) < 0.5 && ready && ready.stage.size === `${d.px}px` && l.band === `${d.band}px`, JSON.stringify({ px: l && l.px, size: ready && ready.stage.size, band: l && l.band }));
     const x = await dbg();
     ok(`${what}: the debug info says the same (device, lay; phone = touch)`, x && x.device === d.device && x.lay === d.lay && x.phone === true, JSON.stringify(x && { device: x.device, lay: x.lay, phone: x.phone }));
     if (d.name === 'iPhone 13' && !d.viewport) await turn(page, dbg, { width: 664, height: 390 }, 'p-land', 'the iPhone');

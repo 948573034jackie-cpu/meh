@@ -51,7 +51,8 @@ const ttsWav = makeWav(0.25, false);
 // the phone page: no right column; the player on top, the video's details and related videos under it
 const makeYtHtml = (pr) => `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Lesson - YouTube</title></head><body style="margin:0;background:#fff">
 <ytm-app><ytm-watch><div id="player-container-id" class="player-container" style="position:relative;width:100%;height:220px;background:#123">
-  <div id="movie_player" class="html5-video-player" style="width:100%;height:100%"><video muted playsinline src="https://m.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video></div></div>
+  <div id="movie_player" class="html5-video-player" style="width:100%;height:100%"><video muted playsinline src="https://m.youtube.com/v.wav" class="html5-main-video" style="width:100%;height:100%"></video>
+  <button class="ytp-fullscreen-button" aria-label="Full screen" style="position:absolute;right:0;bottom:0;width:48px;height:48px;z-index:5" onclick="window.__nativeFs=(window.__nativeFs||0)+1;var v=document.querySelector('video');if(v.webkitEnterFullscreen)v.webkitEnterFullscreen();"></button></div></div>
 <ytm-single-column-watch-next-results-renderer><div id="below"><h2 class="slim-video-metadata-title">Dream Lesson</h2></div><ytm-item-section-renderer>related videos</ytm-item-section-renderer></ytm-single-column-watch-next-results-renderer>
 </ytm-watch></ytm-app><script>var ytInitialPlayerResponse = ${pr};</script></body></html>`;
 const ytHtml = makeYtHtml(pr);
@@ -126,6 +127,7 @@ const vocabWrites = [];
 // Apple's Translation (Translator.swift): what it answers for a sentence; a test sets it with setTranslate(text or Error)
 let translateReply = '这是测试译文';
 const fetchLog = [];
+const layoutLog = [];
 const aborts = {};
 const MIME = { '.gz': 'application/gzip', '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.txt': 'text/plain' };
 function realToFake(url) { // what URLSession would reach: the real services, here the fake server
@@ -192,6 +194,7 @@ async function native(page, b) {
       return translateReply;
     }
     case 'chatInfo': return { url: '' };
+    case 'layout': layoutLog.push({ full: !!b.full, lay: b.lay }); return null; // the page tells the app: full screen or not
     default: return null; // speakStop, speakPause, speakResume, speech, openPage, audioSession, log, voice …
   }
 }
@@ -233,6 +236,7 @@ async function newAppContext(browser, deviceName = 'iPhone 13', { device = 'phon
 }
 
 module.exports = {
+  layoutLog,
   pw, IOS, BUILT, MIME, FAKE,
   ok, until, sleep, watchdog, fails: () => fails,
   swift, listOf, source, ytScripts, sheetScripts,

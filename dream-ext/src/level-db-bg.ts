@@ -13,15 +13,29 @@ import { LEVEL_KEY, DB_STATUS_KEY, STORAGE_KEYS, ensureSeeded, applyDoc, getLeve
 const BASE_KEY = 'drDbBase';
 import { getDictionary } from './ai-client';
 import { findGist, createGist, readGist, writeGist, GIST_STATE_KEY, type GistState } from './gist-sync';
-import { getKeys } from './store';
+import { getKeys, HEARD_KEY } from './store';
+import { readHeard, mergeHeard } from './heard';
 import { restoreFromOnline } from './vocab-sync';
 
 export const NATIVE_HOST = 'com.meh.english_vocab';
 
-export async function currentDoc() {
-  const o = await chrome.storage.local.get([LEVEL_KEY, STORAGE_KEYS.vocab, STORAGE_KEYS.entries]);
+export async function currentDoc(): Promise<VocabularyDoc> {
+  const o = await chrome.storage.local.get([LEVEL_KEY, STORAGE_KEYS.vocab, STORAGE_KEYS.entries, HEARD_KEY]);
   const words = (o[STORAGE_KEYS.vocab] as { words?: Record<string, WordStatus> } | undefined)?.words ?? {};
-  return buildDoc((o[LEVEL_KEY] as LevelMeta | undefined) ?? EMPTY_META, words, (o[STORAGE_KEYS.entries] as Record<string, VocabEntry> | undefined) ?? {});
+  const doc = buildDoc((o[LEVEL_KEY] as LevelMeta | undefined) ?? EMPTY_META, words, (o[STORAGE_KEYS.entries] as Record<string, VocabEntry> | undefined) ?? {});
+  const heard = readHeard(o[HEARD_KEY]);
+  return heard.n > 0 ? { ...doc, heard } : doc;
+}
+
+/** the other devices' "words heard" come in: the bigger counter, each word's newest explanation (heard.ts) */
+async function takeHeard(others: readonly VocabularyDoc[]): Promise<void> {
+  const theirs = others.map((d) => d.heard).filter((h): h is NonNullable<VocabularyDoc['heard']> => !!h && typeof h.n === 'number');
+  if (!theirs.length) return;
+  const o = await chrome.storage.local.get(HEARD_KEY);
+  const mine = readHeard(o[HEARD_KEY]);
+  let all = mine;
+  for (const t of theirs) all = mergeHeard(all, readHeard(t));
+  if (JSON.stringify(all) !== JSON.stringify(mine)) await chrome.storage.local.set({ [HEARD_KEY]: all });
 }
 
 let writing: Promise<unknown> = Promise.resolve();
@@ -53,6 +67,7 @@ export function writeDatabase(): Promise<DbStatus> {
         const r0 = await ask({ type: 'read' }).catch(() => undefined);
         oldHelper = !!r0 && r0.ok === false && /unknown message/i.test(r0.error ?? '');
         const others = (r0?.docs ?? []).filter(isDoc);
+        await takeHeard(others);
         if (others.length) {
           const o = await chrome.storage.local.get([BASE_KEY, STORAGE_KEYS.vocab, LEVEL_KEY, STORAGE_KEYS.entries]);
           const base = isDoc(o[BASE_KEY]) ? o[BASE_KEY] : null;
@@ -116,6 +131,7 @@ async function gistPass(): Promise<Pick<DbStatus, 'gist' | 'gistOk' | 'gistError
     let merged = 0;
     let etag = r.etag;
     if (r.changed && r.doc) {
+      await takeHeard([r.doc]);
       const words = (o[STORAGE_KEYS.vocab] as { words?: Record<string, WordStatus> } | undefined)?.words ?? {};
       const meta = (o[LEVEL_KEY] as LevelMeta | undefined) ?? EMPTY_META, entries = (o[STORAGE_KEYS.entries] as Record<string, VocabEntry> | undefined) ?? {};
       const ignored = new Set(Object.keys(words).filter((k) => words[k] === 'ignored').map((k) => itemId(meta.log?.[k]?.word || entries[k]?.word || k)));

@@ -186,9 +186,24 @@ const api = H.startServer();
   // ---- 7. the app's other buttons: My Vocabulary opens in the app's sheet; ⚙ quick settings ----
   await act('vocab');
   ok('📒 opens My Vocabulary in the app (ytlearn://app/dream/vocab.html)', !!(await until(() => nativeLog.find((l) => l.kind === 'openPage' && /ytlearn:\/\/app\/dream\/vocab\.html/.test(l.url)), 3000)));
-  const quickText = await act('quick') === true && await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); return !!q && !q.hidden ? q.textContent : ''; });
-  ok('⚙ opens the settings over the book: the three groups of stops (on/off and %), the play line, the sleep timer, the microphone Low / Mid / High, the text size',
-    /Words/.test(quickText) && /Phrases/.test(quickText) && /Whole sentences/.test(quickText) && /Explanations/.test(quickText) && /Mid/.test(quickText) && /Letters/.test(quickText) && /Play line/.test(quickText) && /Sleep timer/.test(quickText) && /Low/.test(quickText) && /High/.test(quickText) && /Text size/.test(quickText) && /Show what the tutor says as text/.test(quickText) && /Word test before each video/.test(quickText), String(quickText).slice(0, 300));
+  const quick = await act('quick') === true && await yt.evaluate(() => {
+    const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick');
+    if (!q || q.hidden) return null;
+    const first = q.querySelector('section.first'), adv = q.querySelector('details.adv'), lv = q.querySelector('input[data-name="myLevel"]');
+    const r = lv.getBoundingClientRect(), b = q.querySelector('.q-body').getBoundingClientRect();
+    return { first: first.textContent, adv: adv.textContent, advOpen: adv.open, level: { min: lv.min, max: lv.max, value: lv.value, wide: r.width >= b.width * 0.85, h: r.height }, switches: ['stopItemsOn', 'stopPhrasesOn', 'stopHardOn'].map((n) => !!first.querySelector(`.seg[data-name="${n}"]`)), oldShares: q.querySelectorAll('[data-name="capWords"], [data-name="capPhrases"], [data-name="capSentences"], .seg[data-name="level"]').length };
+  });
+  ok('⚙ opens the settings over the book: the first page is short: the tutor\'s volume, ONE text size, ONE long level slider 0 to 100, the three switches (Words, Phrases, Sentences), Explain 10 / 20 / 30 s, the mode, the voice',
+    !!quick && /Tutor volume/.test(quick.first) && /Text size/.test(quick.first) && /My level/.test(quick.first) && /0 = easiest · 100 = hardest/.test(quick.first) && quick.level.min === '0' && quick.level.max === '100' && quick.level.value === '50' && quick.level.wide && quick.level.h >= 44
+    && quick.switches.every(Boolean) && /Words/.test(quick.first) && /Phrases/.test(quick.first) && /Sentences/.test(quick.first) && /10 s/.test(quick.first) && /30 s/.test(quick.first) && /Mode/.test(quick.first) && /Tutor's voice/.test(quick.first) && quick.oldShares === 0, JSON.stringify(quick && { level: quick.level, sw: quick.switches, old: quick.oldShares, first: quick.first.slice(0, 200) }));
+  ok('...everything else is under "Advanced" (closed at first): explanations, letters, the play line, the sleep timer, the microphone, the keys',
+    !!quick && quick.advOpen === false && /Explanations/.test(quick.adv) && /Mid/.test(quick.adv) && /Letters/.test(quick.adv) && /Play line/.test(quick.adv) && /Sleep timer/.test(quick.adv) && /Low/.test(quick.adv) && /High/.test(quick.adv) && /Show what the tutor says as text/.test(quick.adv) && /Word test before each video/.test(quick.adv) && /API keys/.test(quick.adv), String(quick && quick.adv).slice(0, 200));
+  // the level slider moved: saved at once, and the school level the prompts use follows it
+  await yt.evaluate(() => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="myLevel"]'); lv.value = '80'; lv.dispatchEvent(new Event('input', { bubbles: true })); });
+  const lvSaved = await until(() => stores.local.drExtras && stores.local.drExtras.myLevel === 80 && stores.local.drSettings && stores.local.drSettings.learnerLevel === 'C1', 4000);
+  ok('...the level slider moved to 80: saved at once (my level 80; the prompts speak to a C1 learner)', !!lvSaved, JSON.stringify({ my: stores.local.drExtras && stores.local.drExtras.myLevel, cefr: stores.local.drSettings && stores.local.drSettings.learnerLevel }));
+  await yt.evaluate(() => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="myLevel"]'); lv.value = '50'; lv.dispatchEvent(new Event('input', { bubbles: true })); });
+  await until(() => stores.local.drExtras.myLevel === 50 && stores.local.drSettings.learnerLevel === 'B2', 4000);
   // sentences off: saved at once
   await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="off"]').click(); });
   ok('...whole sentences can be turned off', !!(await until(() => stores.local.drExtras && stores.local.drExtras.stopHardOn === false, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.stopHardOn));
@@ -233,8 +248,8 @@ const api = H.startServer();
   sheet.on('pageerror', (e) => console.log('PAGE ERROR (settings)', String(e.message || e).slice(0, 300)));
   await sheet.addInitScript({ content: source(sheetScripts) });
   await sheet.goto(`http://localhost:${PAGES_PORT}/options.html`);
-  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('learnerLevel'); return /saved|…/i.test(m) && l && l.value === 'B2' ? l.value : null; }), 12000);
-  ok('the settings page works in the sheet: it shows your level and the saved Claude key (only its end)', shown === 'B2' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
+  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('myLevel'); return /saved|…/i.test(m) && l && l.type === 'range' && l.max === '100' && Number(l.value) > 0 ? l.value : null; }), 12000);
+  ok('the settings page works in the sheet: it shows your level (one slider, 0 to 100; B2 starts at 50) and the saved Claude key (only its end)', shown === '50' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
   await sheet.fill('#key-anthropic', 'sk-ant-new-key-5678');
   await sheet.click('[data-save="anthropic"]');
   const saved = await until(() => JSON.parse(keychain.drKeys || '{}').anthropic === 'sk-ant-new-key-5678', 5000);
@@ -270,6 +285,9 @@ const api = H.startServer();
   await fp.close();
   // the switch in Settings is turned on: the test comes before the video
   stores.local.drExtras = { ...stores.local.drExtras, levelAsk: true };
+  // (a word the learner is still learning stops whatever its number: "soon" is easy, but it is on their own list.
+  // It gives this video a second stop near its end.)
+  stores.local.drVocab = { ...(stores.local.drVocab || {}), words: { ...((stores.local.drVocab || {}).words || {}), soon: 'learning' } };
   const lv = await ctx.newPage();
   lv.on('pageerror', (e) => console.log('PAGE ERROR (level)', String(e.message || e).slice(0, 300)));
   await lv.goto('https://m.youtube.com/watch?v=ios00000002');
@@ -337,10 +355,10 @@ const api = H.startServer();
   // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
   await lv.evaluate(() => window.__ytcDream.action('check'));
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
-  ok('the Check button shows the report: the app, just talk, the microphone, the three groups of stops', rep && /YT Learn app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /words 100% · phrases 100% · sentences 0%/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
+  ok('the Check button shows the report: the app, just talk, the microphone, my level and the three switches', rep && /I Know app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /my level 50 of 100 · words on · phrases on · sentences on/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
   // ---- Reading mode: pages like an e-reader (big letters, so this short video makes two pages or more) ----
-  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 40 } })));
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, phoneSizePx: 40 } })));
   await lv.evaluate(() => window.__ytcDream.action('mode'));
   const rd = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'read' && d.stage.pages >= 2 ? d : null; }, 6000);
   const readLook = async () => lv.evaluate(() => {
@@ -361,13 +379,15 @@ const api = H.startServer();
   const r2 = await readLook();
   ok('...› turns to the next page (‹ back)', r2.tx !== r1.tx && r2.pg !== r1.pg, JSON.stringify({ a: r1.pg, b: r2.pg }));
   await lv.evaluate((a) => document.getElementById('dr-stage-host').shadowRoot.querySelector(`.pager [data-act="${a}"]`).click(), turnBy === 'next' ? 'prev' : 'next');
-  // each mode has its own text size
-  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, readSizePx: 30 } })));
+  // ONE text size for every mode: the size set in Reading is the size of Listening too
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, phoneSizePx: 30 } })));
   const r3 = await until(async () => { const x = await readLook(); return x.size === '30px' ? x : null; }, 4000);
   // (back to Listening: the Mode button goes Listening → Reading → Lyrics → Video)
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, view: 'listening' } })));
   const backL = await until(async () => { const d = await lvDbg(); return d && d.stage.view === 'all' && d.stage.shown ? d : null; }, 6000);
-  ok('...the text size of Reading (30) does not change Listening (21)', !!r3 && !!backL && backL.stage.size === '21px' && stores.local.drExtras.view === 'listening', JSON.stringify({ r3: r3 && r3.size, back: backL && backL.stage }));
+  ok('...ONE text size: 30 in Reading is 30 in Listening too (no size per mode any more)', !!r3 && !!backL && backL.stage.size === '30px' && stores.local.drExtras.view === 'listening', JSON.stringify({ r3: r3 && r3.size, back: backL && backL.stage }));
+  await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, phoneSizePx: 21 } })));
+  await until(async () => { const d = await lvDbg(); return d && d.stage.size === '21px'; }, 4000);
   // a double tap on a word of the book (two taps: a touch screen sends no double-click of its own) = I know
   await sleep(800); // (the page that just appeared does not take a tap for a moment)
   const dbl = await lv.evaluate(() => {
@@ -395,6 +415,7 @@ const api = H.startServer();
   stores.local.drVocab = { ...stores.local.drVocab, words: vw };
   stores.local.drDbBase = { ...(stores.local.drDbBase || { version: 1, updatedAt: '2026-11-05T00:00:00.000Z', currentLevel: '', tests: [], known: [] }), stillLearning: [...((stores.local.drDbBase || {}).stillLearning || []).filter((l) => l.item !== 'invade'), { item: 'invade', date: '2026-11-04', sentence: '' }] };
   stores.local.drSettings = { ...stores.local.drSettings, learnerLevel: 'C1' };
+  stores.local.drExtras = { ...stores.local.drExtras, myLevel: 70 }; // (the level slider at 70 = a C1 learner for the prompts)
   const sd = await ctx.newPage();
   sd.on('pageerror', (e) => console.log('PAGE ERROR (seed)', String(e.message || e).slice(0, 300)));
   await sd.goto('https://m.youtube.com/watch?v=ios00000004');
@@ -404,7 +425,7 @@ const api = H.startServer();
   const nWords = Object.keys(w).length;
   ok('my own word list is built into the app: more than 1,200 words are there after the first start', !!seededNow && nWords >= 1200 && nWords > wordsBefore + 1000 && w.familiar === 'known' && w['keep nix'] === 'learning', JSON.stringify({ seeded: seededNow && seededNow.seeded, nWords, wordsBefore }));
   ok('...what the phone already has wins: known stays known, ignored stays ignored, still learning stays still learning, a word taken out does not come back', w.squander === 'known' && w.ubiquitous === 'ignored' && w.threaten === 'learning' && !w.invade, JSON.stringify({ squander: w.squander, ubiquitous: w.ubiquitous, threaten: w.threaten, invade: w.invade }));
-  ok('...no test twice, the level I chose stays, no example sentence comes with the list', seededNow && seededNow.tests.filter((t) => t.source === 'Eveline').length === 1 && seededNow.tests.some((t) => t.source === 'After Twenty Years') && stores.local.drSettings.learnerLevel === 'C1' && !(seededNow.log['keep nix'] || {}).sentence && (seededNow.log['keep nix'] || {}).group === 'c2', JSON.stringify(seededNow && { tests: seededNow.tests.map((t) => t.source), lvl: stores.local.drSettings.learnerLevel, log: seededNow.log['keep nix'] }));
+  ok('...no test twice, the level I chose stays, no example sentence comes with the list', seededNow && seededNow.tests.filter((t) => t.source === 'Eveline').length === 1 && seededNow.tests.some((t) => t.source === 'After Twenty Years') && stores.local.drSettings.learnerLevel === 'C1' && stores.local.drExtras.myLevel === 70 && !(seededNow.log['keep nix'] || {}).sentence && (seededNow.log['keep nix'] || {}).group === 'c2', JSON.stringify(seededNow && { tests: seededNow.tests.map((t) => t.source), lvl: stores.local.drSettings.learnerLevel, log: seededNow.log['keep nix'] }));
   // a second start changes nothing more
   const snap = JSON.stringify(stores.local.drVocab.words);
   await sd.goto('https://m.youtube.com/watch?v=ios00000004');

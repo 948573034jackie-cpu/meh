@@ -3,7 +3,7 @@ import Foundation
 /// The vocabulary database as a file (vocabulary.json, the same document the Mac's Chrome writes), so the MacBook and
 /// this phone share one database. The tutor's JavaScript talks to it like to the Mac helper (chrome.runtime.sendNativeMessage,
 /// shim-dream.js): "read" gives the file of the shared folder (the tutor merges it with its own words), "write" writes
-/// the merged document there and to the app's own copy (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json).
+/// the merged document there and to the app's own copy (Files ▸ On My iPhone ▸ I Know ▸ vocabulary.json).
 /// The shared place is one you picked in the Files app: the folder iCloud Drive ▸ MEH English, or (where the Files
 /// app does not let a folder be chosen, as with Google Drive) the file vocabulary.json itself. A security-scoped
 /// bookmark remembers it. Everything runs on one background queue (iCloud may have to download the file).

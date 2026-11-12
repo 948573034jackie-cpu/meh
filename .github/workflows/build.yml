@@ -59,11 +59,13 @@ jobs:
         run: |
           APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
           ls "$APP" | head -30
-          for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt page-hooks; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
           for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
-          plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch" || true
+          plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch|ShortVersion" || true
+          # (the app's name under its icon: "I Know")
+          plutil -p "$APP/Info.plist" | grep -q '"CFBundleDisplayName" => "I Know"' || { echo "the app's name is not I Know"; exit 1; }
       - name: Run the app in an iPhone and an iPad Simulator and test it on the real YouTube page
         continue-on-error: true   # (the simulator of a busy builder must not keep the app from being packed; its log is read)
         working-directory: ios
@@ -126,7 +128,7 @@ jobs:
 
   js-webkit:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -148,6 +150,9 @@ jobs:
       - name: The app with the tutor off (Free mode = no AI call), in WebKit
         if: always()
         run: node tests/ios-free-test.js
+      - name: I Know 3.8 (full screen, One button mode, the tutor's volume, the iPad layout, film-like subtitles), in WebKit
+        if: always()
+        run: node tests/ios-38-test.js
 
   dream-tutor:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)
@@ -220,5 +225,5 @@ jobs:
             dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
             dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
             --title "ClaudeSnap downloads" \
-            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (YT Learn)." \
+            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (I Know)." \
             --target "${{ github.sha }}"

@@ -2,6 +2,7 @@
 import { resolveStyles, resolveStyle, DEFAULT_CONTEXT_RULES, DEFAULT_STYLES, KNOBS, type StyleOverride, type ExplanationStyle, type StyleId } from '@shared/styles';
 import type { Settings, AiProviderId } from '@shared/settings';
 import { WebSpeechEngine } from '@core/tts/webspeech';
+import { myLevelOf, levelToCefr, clampLevel } from './level100';
 import * as store from './store';
 import { copyLevel } from './level-copy';
 
@@ -35,13 +36,13 @@ async function renderDb(): Promise<void> {
   const when = st ? new Date(st.at).toLocaleString() : '';
   const cameIn = st?.merged ? ` · ${st.merged} words came in from your other device` : '';
   if (st?.noDevice) el.textContent = st.safari
-    ? 'The Safari version keeps your words inside the extension (Apple does not let it write files). The YT Learn app can share the file with your Mac.'
+    ? 'The Safari version keeps your words inside the extension (Apple does not let it write files). The I Know app can share the file with your Mac.'
     : 'On this device your words stay inside the app or extension (there is no file).';
   else if (noHelper) el.textContent = 'Not saved to a file yet: the helper is not installed on this Mac.';
   else if (!st.ok) el.textContent = `Could not save: ${st.error ?? 'unknown problem'}`;
   else if (st.phone) el.textContent = st.shared
     ? `Saved ${when} in the shared folder “${st.folder ?? ''}”${st.sharedOk ? ' (your Mac sees it too)' : ` (the folder could not be written: ${st.sharedError ?? 'unknown problem'})`}${cameIn}`
-    : `Saved ${when} in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json). To share it with your Mac: the app's Settings (⚙ at the top) ▸ Choose the folder (iCloud Drive or Google Drive).`;
+    : `Saved ${when} in the app (Files ▸ On My iPhone ▸ I Know ▸ vocabulary.json). To share it with your Mac: the app's Settings (⚙ at the top) ▸ Choose the folder (iCloud Drive or Google Drive).`;
   else el.textContent = `Saved ${when}: ${st.path}${cameIn}${st.oldHelper ? ' · The helper on this Mac is an older one: it cannot bring the iPhone\'s words in. Run the command below once more.' : ''}`;
   $('db-drive').textContent = !st?.ok || st.phone ? '' : [
     st.icloud ? (st.icloudOk ? `iCloud Drive copy: ${st.icloud} (choose that folder in the iPhone app to share the file)` : `iCloud Drive copy not saved: ${st.icloudError ?? 'unknown problem'}`) : 'No iCloud Drive on this Mac (System Settings ▸ Apple ID ▸ iCloud Drive): the iPhone could share the file through it.',
@@ -106,8 +107,12 @@ async function init(): Promise<void> {
   $('spent').textContent = `Spent today $${store.usdSince(usage, day).toFixed(2)}, this month $${store.usdSince(usage, month).toFixed(2)} (estimate)`;
 
   // ---- level
-  $<HTMLSelectElement>('learnerLevel').value = S.learnerLevel;
-  $('learnerLevel').addEventListener('change', () => void save({ learnerLevel: $<HTMLSelectElement>('learnerLevel').value as Settings['learnerLevel'] }));
+  // ONE level, 0 (easiest) … 100 (hardest): the tutor stops by itself only for what is harder
+  const lv = $<HTMLInputElement>('myLevel');
+  lv.value = String(myLevelOf(X, S.learnerLevel));
+  $('myLevelNow').textContent = lv.value;
+  lv.addEventListener('input', () => { $('myLevelNow').textContent = lv.value; });
+  lv.addEventListener('change', () => { const n = clampLevel(Number(lv.value)); void saveX({ myLevel: n, levelAuto: false }); void save({ learnerLevel: levelToCefr(n) as Settings['learnerLevel'] }); });
 
   // ---- stops
   bindCheck('autoExplainWords', () => S.listen.autoExplainWords, (b) => save({ listen: { ...S.listen, autoExplainWords: b } }));

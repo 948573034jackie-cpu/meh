@@ -15,8 +15,8 @@
  */
 import type { CefrLevel } from '@core/model';
 
-/** the level a new learner starts with (about B2) */
-export const DEFAULT_LEVEL = 55;
+/** the level a new learner starts with (the start of B2) */
+export const DEFAULT_LEVEL = 50;
 /** the middle of each school level on the 0–100 line */
 export const CEFR_MID: Record<CefrLevel, number> = { A1: 8, A2: 24, B1: 40, B2: 56, C1: 73, C2: 90 } as Record<CefrLevel, number>;
 /** phrases (idioms, slang, phrasal verbs) are never easier than this: their single words say nothing */
@@ -45,6 +45,20 @@ export function wordDifficulty(zipf: number | null | undefined, cefr?: CefrLevel
   return 80;
 }
 
+/** this common or more (Zipf), frequency alone decides: the dictionary's level for such a form is often for another meaning ("found", "known") */
+export const TRUST_ZIPF = 4.8;
+/**
+ * A word AS MET in a text: the more common of its form and its dictionary word decides how common it is; a very common
+ * form is easy whatever school level the dictionary gives it. null = no number (not in the dictionary and not in the
+ * frequency table: a name, a typo, a caption mistake), so it can never be a reason to stop.
+ */
+export function wordNumber(zipfForm: number | null | undefined, zipfLemma: number | null | undefined, cefr?: CefrLevel | '' | null): number | null {
+  const z = typeof zipfForm === 'number' && typeof zipfLemma === 'number' ? Math.max(zipfForm, zipfLemma) : typeof zipfForm === 'number' ? zipfForm : typeof zipfLemma === 'number' ? zipfLemma : null;
+  if (z === null && !(cefr && CEFR_MID[cefr] !== undefined)) return null;
+  if (z !== null && z >= TRUST_ZIPF) return Math.round(zipfDifficulty(z));
+  return wordDifficulty(z, cefr);
+}
+
 /** a phrase's number from the AI's (or the dictionary's) level for it */
 export function phraseDifficulty(cefr?: CefrLevel | '' | null): number {
   return Math.max(PHRASE_FLOOR, cefr && CEFR_MID[cefr] !== undefined ? CEFR_MID[cefr] : 62);
@@ -55,8 +69,14 @@ export function sentenceDifficulty(cefr?: CefrLevel | '' | null): number {
   return cefr && CEFR_MID[cefr] !== undefined ? Math.max(PHRASE_FLOOR, CEFR_MID[cefr]) : HARD_SENTENCE;
 }
 
+/**
+ * Where a learner of each school level starts on the 0–100 line: near the START of the level's band, not its middle,
+ * because a learner "at B2" still meets many B2 words they do not know (so those words, about 50–56, must be able to
+ * stop). The learner moves the slider from there.
+ */
+export const CEFR_START: Record<CefrLevel, number> = { A1: 4, A2: 18, B1: 34, B2: 50, C1: 66, C2: 84 } as Record<CefrLevel, number>;
 /** the old A1–C2 setting as a number (once, when the app is updated) */
-export const cefrToLevel = (c: string | undefined | null): number => CEFR_MID[(c ?? '').toUpperCase() as CefrLevel] ?? DEFAULT_LEVEL;
+export const cefrToLevel = (c: string | undefined | null): number => CEFR_START[(c ?? '').toUpperCase() as CefrLevel] ?? DEFAULT_LEVEL;
 
 /** the nearest school level of a number (only for texts that still need one: prompts, a video's label) */
 export function levelToCefr(n: number): CefrLevel {

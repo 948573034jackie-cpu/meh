@@ -25,7 +25,7 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
 
   // ---- the app's side: the bar of free mode, Apple's Translation ----
   const cv = fs.readFileSync(path.join(IOS, 'ContentView.swift'), 'utf8');
-  const free = /\} else \{\s*\/\/ free mode[^\n]*\n([\s\S]*?)if !\(model\.tutorOn && model\.oneButton\)/.exec(cv);
+  const free = /\} else \{\s*\/\/ free mode[^\n]*\n([\s\S]*?)appButton\("house"/.exec(cv);
   ok('the bar of free mode: play / stop, the Video mode switches, Mode, Find (no Explain, no Call)', !!free && /tutorButton\("stop"/.test(free[1]) && /tutorButton\("band"/.test(free[1]) && /tutorButton\("pageAuto"/.test(free[1]) && /tutorButton\("mode"/.test(free[1]) && /tutorButton\("find"/.test(free[1]) && !/explainLast|"talk"/.test(free[1]) && /Free mode \(no AI\): turn My tutor on/.test(cv), free && free[1].trim().slice(0, 200));
   const tr = fs.existsSync(path.join(IOS, 'Translator.swift')) ? fs.readFileSync(path.join(IOS, 'Translator.swift'), 'utf8') : '';
   const bridge = fs.readFileSync(path.join(IOS, 'Bridge.swift'), 'utf8');

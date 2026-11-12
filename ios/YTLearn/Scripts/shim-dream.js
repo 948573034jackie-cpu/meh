@@ -49,7 +49,7 @@
   rt.onConnect = { addListener: (f) => connectListeners.push(f) };
   rt.id = 'ytlearn-ios';
   rt.getURL = (p) => 'ytlearn://app/' + String(p).replace(/^\/+/, '');
-  rt.getManifest = () => ({ manifest_version: 3, version: '3.6', name: 'YT Learn', update_url: 'ios' });
+  rt.getManifest = () => ({ manifest_version: 3, version: '3.8', name: 'I Know', update_url: 'ios' });
   // the vocabulary file: the Mac helper's messages (ping / read / write), answered by the app (VocabFile.swift)
   rt.sendNativeMessage = (host, msg) => post({ kind: 'vocabFile', host, msg });
   rt.reload = () => {};

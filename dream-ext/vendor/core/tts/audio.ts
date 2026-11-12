@@ -4,6 +4,7 @@ import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } fro
 import { ENGINE_LABELS } from './engine';
 import { estimateWordTimes } from './timing';
 import { synthesisSegments, PRIORITY, type SynthesisSegment } from './segments';
+import { bakeVolume, elementVolumeIgnored } from './gain';
 
 type Synthesize = (engine: TtsEngineId, text: string, voiceId: string, rate: number) => Promise<CloudTtsResult>;
 type ListVoices = (engine: TtsEngineId) => Promise<{ id: string; name: string; lang: string; gender?: string; quality?: string; note?: string }[]>;
@@ -79,6 +80,8 @@ export class AudioTtsEngine implements TtsEngine {
   private aheadGen = 0;
   /** ms from speak() to the audio playing, for the last speak() (diagnostics and tests) */
   lastStartDelayMs: number | null = null;
+  /** the last clip whose volume was put into its sound (an iPhone): the volume and the size (diagnostics and tests) */
+  lastBaked: { volume: number; bytes: number } | null = null;
   private opts: AudioEngineOptions;
 
   constructor(readonly id: TtsEngineId, private synthesize: Synthesize, private voices: ListVoices, wordBoundaries: boolean, opts: AudioEngineOptions = {}) {
@@ -197,13 +200,38 @@ export class AudioTtsEngine implements TtsEngine {
     // every segment is requested now, in order: the main process synthesizes them one after the other
     const results = segs.map((s) => { const p = this.fetch(s.text, opts.voiceId); p.catch(() => undefined); return p; });
     let started = false;
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
     const playSegment = (seg: SynthesisSegment, res: CloudTtsResult): Promise<SpeakOutcome> => new Promise<SpeakOutcome>((segDone) => {
       const k = this.key(seg.text, opts.voiceId);
       const ready = this.preloaded.get(k);
       if (ready) this.preloaded.delete(k);
-      const { audio, url } = ready ?? this.load(res);
-      audio.playbackRate = clampRate(this.liveRate);
-      setVolume(audio, Math.max(0, Math.min(1, opts.volume ?? 1)));
+      const volume = Math.max(0, Math.min(1, opts.volume ?? 1));
+      // an iPhone ignores the element's volume: there the clip is made again with the volume in its sound (gain.ts);
+      // when that cannot be done the clip plays as it is, through the gain when that works (never silent)
+      if (volume < 0.999 && elementVolumeIgnored()) {
+        let dropped = false;
+        cleanup = () => { dropped = true; segDone('cancelled'); };
+        void bakeVolume(res.audio, volume, k).then((blob) => {
+          if (dropped) return;
+          cleanup = null;
+          if (!blob) { const src = ready ?? this.load(res); run(src.audio, src.url, false); return; }
+          if (ready) { ready.audio.src = ''; URL.revokeObjectURL(ready.url); }
+          const url = URL.createObjectURL(blob);
+          const audio = new Audio(url);
+          audio.preload = 'auto';
+          audio.preservesPitch = true;
+          this.lastBaked = { volume, bytes: blob.size };
+          run(audio, url, true);
+        });
+        return;
+      }
+      const src = ready ?? this.load(res);
+      run(src.audio, src.url, false);
+
+      function run(this: void, audio: HTMLAudioElement, url: string, isBaked: boolean): void {
+      audio.playbackRate = clampRate(self.liveRate);
+      if (!isBaked) setVolume(audio, volume);
       // provider timings index the text it synthesized (trimmed by the main process); shift them to this text
       const offset = seg.start + (seg.text.length - seg.text.trimStart().length);
       let timings: WordTiming[] | null = res.timings?.length ? res.timings.map((w) => ({ ...w, charIndex: w.charIndex + offset })) : null;
@@ -232,7 +260,7 @@ export class AudioTtsEngine implements TtsEngine {
       };
       cleanup = () => end('cancelled');
       audio.onplaying = () => {
-        if (!started) { started = true; this.lastStartDelayMs = performance.now() - t0; opts.onStart?.(); }
+        if (!started) { started = true; self.lastStartDelayMs = performance.now() - t0; opts.onStart?.(); }
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(tick);
       };
@@ -242,8 +270,9 @@ export class AudioTtsEngine implements TtsEngine {
         end('ended');
       };
       audio.onerror = () => { handle.error = new Error('audio playback failed'); end('error'); };
-      this.current = { audio, cancel: handle.cancel };
+      self.current = { audio, cancel: handle.cancel };
       audio.play().catch((e: Error) => { if (!over) { handle.error = e; end('error'); } });
+      }
     });
 
     (async () => {

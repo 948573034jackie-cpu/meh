@@ -4,16 +4,33 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var showSettings = false
+    @State private var railTouchedAt = Date()
+    @State private var railDim = false
+    @Environment(\.verticalSizeClass) private var vSize
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    /// an iPhone on its side with the video full screen: no bar under the video, a small rail of buttons at the side
+    private var compactFull: Bool { model.pageFull && vSize == .compact }
+    private var hideBar: Bool { compactFull && !model.barPeek }
+    /// an iPad (a wide window): bigger buttons
+    private var wide: Bool { hSize == .regular && vSize == .regular }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // YouTube itself (search, your account, any video), with My tutor inside the page. No bar at the top:
-            // Home, Paste link and App settings are the last buttons of the bottom bar.
-            WebHost(webView: model.youtube)
-            tutorBar
+        ZStack(alignment: .trailing) {
+            VStack(spacing: 0) {
+                // YouTube itself (search, your account, any video), with My tutor inside the page. No bar at the top:
+                // Home, Paste link and App settings are the last buttons of the bottom bar.
+                WebHost(webView: model.youtube)
+                    .ignoresSafeArea(.container, edges: compactFull ? .all : [])
+                if !hideBar { tutorBar }
+            }
+            if hideBar { sideRail.padding(.trailing, 6) }
         }
         .onAppear { model.start() }
         .overlay(alignment: .bottom) { toastView }
+        .overlay(alignment: .bottomTrailing) { volumePanel }
+        .statusBarHidden(compactFull)
+        .persistentSystemOverlays(compactFull ? .hidden : .automatic)
         .sheet(isPresented: $showSettings) { SettingsView(model: model) }
         .background(translatorHost)
     }
@@ -30,47 +47,43 @@ struct ContentView: View {
 
     /// The one bar of the app (there is no keyboard on the phone: the same actions as My tutor's keyboard shortcuts).
     /// Left to right, in view on an iPhone: the tutor's switch (a small dot), play / stop, explain the last N seconds,
-    /// explain the LAST sentence, in Video mode the two switches (subtitles on / off, the big page on / off), call the
-    /// tutor, bigger than before (the ask box is gone). Swipe the bar for the
-    /// rest: Find a video, Voice, Mode, One button, Sleep, Words, Settings, Check, then the app's own Home, Paste link
-    /// and App settings. With the tutor off (free mode: no AI, nothing paid): its switch, play / stop, in Video mode the
-    /// two switches, Mode, Find, and those three. In one-button mode: only the way out.
+    /// explain the LAST sentence, call the tutor, the tutor's volume (quieter / louder). Swipe the bar for the rest:
+    /// in Video mode the two switches (subtitles on / off, the big page on / off), Full screen, Find a video, Voice,
+    /// Mode, One button, Sleep, Words, Settings, Check, then the app's own Home, Paste link and App settings.
+    /// With the tutor off (free mode: no AI, nothing paid): its switch, play / stop, the volume, the switches, Full
+    /// screen, Mode, Find, and those three. One button mode changes NOTHING here (its button shows that it is on).
     private var tutorBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
+            HStack(spacing: wide ? 8 : 2) {
                 Button { model.dream("tutor") } label: {
                     Circle()
                         .fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15))
                         .frame(width: 16, height: 16)
-                        .frame(width: 30, height: 44)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(model.tutorOn ? "My tutor is on: switch to free mode" : "Free mode (no AI): turn My tutor on")
-                if model.tutorOn && model.oneButton {
-                    Button { model.dream("oneButton") } label: {
-                        Text("Leave one-button mode").font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .background(Capsule().fill(Color(.tertiarySystemFill)))
-                    }
-                    .buttonStyle(.plain)
-                } else if model.tutorOn {
+                if model.tutorOn {
                     Group {
                         tutorButton("stop", "playpause.fill", "Play / stop", big: true)
                         tutorButton("explainLast", "text.bubble", "Explain \(model.explainSeconds) s", big: true)
                         tutorButton("explainSentence", "arrow.uturn.backward", "Last sentence", big: true)
-                        // Video mode: the two switches (the subtitles on the video, the big page at stops)
-                        if model.videoMode {
-                            tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off", big: true)
-                            tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off", big: true)
-                        }
                         tutorButton("talk", "phone.fill", "Call", big: true)
+                        volumeButton
                     }
                     // (after a swipe)
                     Group {
+                        // Video mode: the two switches (the subtitles on the video, the big page at stops)
+                        if model.videoMode {
+                            tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off")
+                            tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off")
+                        }
+                        fullButton
                         tutorButton("find", "magnifyingglass", "Find video")
                         tutorButton("voiceMode", "mic", "Voice")
                         tutorButton("mode", "book", "Mode")
-                        tutorButton("oneButton", "circle.fill", "One button")
+                        tutorButton("oneButton", model.oneButton ? "circle.inset.filled" : "circle", model.oneButton ? "One button on" : "One button")
                     }
                     Group {
                         tutorButton("sleep", "moon.zzz", "Sleep")
@@ -81,18 +94,19 @@ struct ContentView: View {
                 } else {
                     // free mode: the video stops at hard words by itself, the card shows the dictionary (no AI)
                     tutorButton("stop", "playpause.fill", "Play / stop", big: true)
+                    volumeButton
                     if model.videoMode {
-                        tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off", big: true)
-                        tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off", big: true)
+                        tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off")
+                        tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off")
                     }
+                    fullButton
                     tutorButton("mode", "book", "Mode")
                     tutorButton("find", "magnifyingglass", "Find video")
+                    tutorButton("quick", "slider.horizontal.3", "Settings")
                 }
-                if !(model.tutorOn && model.oneButton) {
-                    appButton("house", "Home") { model.goHome() }
-                    appButton("link", "Paste link") { model.pasteLink() }
-                    appButton("gearshape", "App settings") { showSettings = true }
-                }
+                appButton("house", "Home") { model.goHome() }
+                appButton("link", "Paste link") { model.pasteLink() }
+                appButton("gearshape", "App settings") { showSettings = true }
             }
             .padding(.horizontal, 6)
             .padding(.vertical, 4)
@@ -102,13 +116,14 @@ struct ContentView: View {
         .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
     }
 
-    /// a button of the bar: a symbol with a word under it. `big`: the four main ones (they fit side by side on 375 pt)
+    /// a button of the bar: a symbol with a word under it. `big`: the main ones (at least 60 pt wide and 48 high; an
+    /// iPad: 88 x 56); the others at least 50 x 44
     private func barLabel(_ symbol: String, _ title: String, big: Bool = false) -> some View {
         VStack(spacing: 3) {
-            Image(systemName: symbol).font(.system(size: big ? 23 : 17))
-            Text(title).font(.system(size: big ? 12 : 10, weight: big ? .medium : .regular)).lineLimit(1).fixedSize()
+            Image(systemName: symbol).font(.system(size: big ? (wide ? 26 : 23) : (wide ? 20 : 17)))
+            Text(title).font(.system(size: big ? (wide ? 14 : 12) : (wide ? 12 : 10), weight: big ? .medium : .regular)).lineLimit(1).fixedSize()
         }
-        .frame(minWidth: big ? 74 : 50, minHeight: big ? 48 : 40)
+        .frame(minWidth: big ? (wide ? 88 : 64) : (wide ? 64 : 50), minHeight: big ? (wide ? 56 : 48) : 44)
         .contentShape(Rectangle())
     }
 
@@ -124,6 +139,86 @@ struct ContentView: View {
         Button(action: run) { barLabel(symbol, title) }
             .buttonStyle(.plain)
             .accessibilityLabel(title)
+    }
+
+    // ---- the tutor's volume: one button in the bar opens two big buttons, quieter and louder ----
+    private var volumeSymbol: String { model.tutorVolume <= 32 ? "speaker.wave.1" : model.tutorVolume <= 63 ? "speaker.wave.2" : "speaker.wave.3" }
+    private var volumeButton: some View {
+        Button { model.showVolume() } label: { barLabel(volumeSymbol, "Volume") }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tutor volume \(model.tutorVolume) percent: quieter or louder")
+    }
+
+    /// quieter / louder, big (60 pt), over the bottom right of the page; it goes by itself 4 s after the last touch
+    @ViewBuilder
+    private var volumePanel: some View {
+        if model.volumeOpen {
+            HStack(spacing: 12) {
+                Button { model.volumeStep("quieter") } label: {
+                    Image(systemName: "minus").font(.system(size: 26, weight: .bold)).frame(width: 64, height: 60).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Tutor quieter")
+                VStack(spacing: 2) {
+                    Text("Tutor volume").font(.system(size: 12)).foregroundColor(.secondary)
+                    Text("\(model.tutorVolume)%").font(.system(size: 22, weight: .semibold)).monospacedDigit()
+                }
+                .frame(minWidth: 92)
+                Button { model.volumeStep("louder") } label: {
+                    Image(systemName: "plus").font(.system(size: 26, weight: .bold)).frame(width: 64, height: 60).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Tutor louder")
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .padding(.trailing, hideBar ? 76 : 10)
+            .padding(.bottom, hideBar ? 12 : (wide ? 80 : 68))
+        }
+    }
+
+    // ---- full screen ----
+    private var fullButton: some View {
+        Button { model.fullScreen() } label: {
+            barLabel(model.pageFull ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", model.pageFull ? "Leave full" : "Full screen")
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.pageFull ? "Leave full screen" : "Full screen")
+    }
+
+    /// an iPhone on its side, full screen: the main buttons in a rail at the side (60 pt each). It fades a little
+    /// when it is not touched for a moment, but it never goes away. "More" brings the whole bar back for 6 s.
+    private var sideRail: some View {
+        VStack(spacing: 6) {
+            railButton("playpause.fill", "Play / stop") { model.dream("stop") }
+            if model.tutorOn {
+                railButton("text.bubble", "Explain the last \(model.explainSeconds) seconds") { model.dream("explainLast") }
+                railButton("phone.fill", "Call") { model.dream("talk") }
+            }
+            railButton("arrow.down.right.and.arrow.up.left", "Leave full screen") { model.fullScreen() }
+            railButton("ellipsis", "More buttons") { model.peekBar() }
+        }
+        .opacity(railDim ? 0.4 : 1)
+        .onAppear { railTouch() }
+    }
+
+    private func railButton(_ symbol: String, _ title: String, _ run: @escaping () -> Void) -> some View {
+        Button { railTouch(); run() } label: {
+            Image(systemName: symbol).font(.system(size: 22, weight: .medium))
+                .frame(width: 60, height: 60)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
+    private func railTouch() {
+        let now = Date()
+        railTouchedAt = now
+        railDim = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if railTouchedAt == now { withAnimation(.easeOut(duration: 0.4)) { railDim = true } }
+        }
     }
 
     @ViewBuilder
@@ -153,7 +248,7 @@ struct SettingsView: View {
                     Button("My Vocabulary") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/vocab.html") }
                 }
                 Section(header: Text("My vocabulary file (one for the Mac and this phone)"),
-                        footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). iCloud Drive: choose that MEH English folder. Google Drive (the Files app does not let its folders be chosen): choose the file vocabulary.json inside it. The Mac and this phone then share one database: each adds its words, nothing is lost. Without that the words stay in the app (Files ▸ On My iPhone ▸ YT Learn ▸ vocabulary.json).")) {
+                        footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). iCloud Drive: choose that MEH English folder. Google Drive (the Files app does not let its folders be chosen): choose the file vocabulary.json inside it. The Mac and this phone then share one database: each adds its words, nothing is lost. Without that the words stay in the app (Files ▸ On My iPhone ▸ I Know ▸ vocabulary.json).")) {
                     Text(model.vocabFolder.map { "Shared: \($0)" } ?? "Nothing shared yet: the words stay in the app")
                     if !model.vocabStatus.isEmpty {
                         Text(model.vocabStatus).font(.footnote).foregroundColor(.secondary)

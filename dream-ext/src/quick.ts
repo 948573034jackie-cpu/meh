@@ -5,8 +5,8 @@
  */
 import { copyLevel } from './level-copy';
 import type { Settings } from '@shared/settings';
-import { CEFR_LEVELS } from '@core/model';
 import * as store from './store';
+import { myLevelOf, levelToCefr, clampLevel } from './level100';
 import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_ACCENTS } from './voice';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { isWay, wayOf, wayStyle, bandOf } from './teaching-ways';
@@ -59,8 +59,16 @@ function slider(name: string, value: number, min: number, max: number, step: num
   return `<span class="sl"><input type="range" data-name="${name}" min="${min}" max="${max}" step="${step}" value="${value}"><output>${value}${unit}</output></span>`;
 }
 
+/** "Advanced" is open (kept while the panel is drawn again after a change); a phone or iPad starts with it closed,
+ *  the computer with it open (there the panel is a list to scroll, as before) */
+let advOpen: boolean | null = null;
+/** a named on / off switch: "Words [On][Off]" */
+function onOff3(name: string, label: string, on: boolean): string { return `<span class="sw">${label} ${onOff(name, on)}</span>`; }
+
 export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const { settings: s, extras: x, keys } = ctx;
+  const lvl = myLevelOf(x, s.learnerLevel);
+  if (advOpen === null) advOpen = !ctx.phone;
   const sc = shortcutMap(x.shortcuts);
   const styles = resolveStyles(s.ai.styles).filter((st) => !st.hidden);
   const shape = styles.find((st) => st.id === s.ai.activeStyle)?.shape ?? styles[0].shape;
@@ -97,12 +105,19 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   ].filter(Boolean).join('\n      ');
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
-    <section><label>Volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <span class="muted">the tutor and the words read to you, together</span></label></section>
-    <section><h4>My tutor stops for</h4>
-      <label>Words ${onOff('stopItemsOn', x.stopItemsOn !== false)} ${slider('capWords', x.capWords ?? 35, 0, 100, 5, '%')}</label>
-      <label>Phrases ${onOff('stopPhrasesOn', x.stopPhrasesOn !== false)} ${slider('capPhrases', x.capPhrases ?? 15, 0, 100, 5, '%')}</label>
-      <label>Whole sentences ${onOff('stopHardOn', x.stopHardOn !== false)} ${slider('capSentences', x.capSentences ?? 5, 0, 50, 1, '%')}</label>
-      <p class="muted">How much of what is above your level the tutor explains, the hardest first: 100% = every hard word (phrase, sentence), 50% = the harder half, 10% = only the hardest 10%, 0% = never. Tap a word = explain it now; double tap = I know it. The tutor says the word ${s.listen.wordRepeats} times and waits ${Math.round((s.listen.commandWindowMs || 5000) / 1000)} seconds. "I know", "know", "bye" or "bye bye": marked known, no explanation, the video goes on. Say nothing: it explains.</p>
+    <section class="first">
+      <label>Tutor volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')}</label>
+      ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 17, 42, 1, 'px')} <span class="muted">every page, the subtitles on the video and the card: one size</span></label>` : ''}
+      <label class="col lvl"><span>My level <output class="lvl-n">${lvl}</output> <span class="muted">0 = easiest · 100 = hardest</span></span>
+        <input type="range" class="wide" data-name="myLevel" min="0" max="100" step="1" value="${lvl}" aria-label="My level, 0 easiest to 100 hardest"></label>
+      <label>Stop for ${onOff3('stopItemsOn', 'Words', x.stopItemsOn !== false)} ${onOff3('stopPhrasesOn', 'Phrases', x.stopPhrasesOn !== false)} ${onOff3('stopHardOn', 'Sentences', x.stopHardOn !== false)}</label>
+      <p class="muted">The tutor stops by itself only for words, phrases and sentences that are HARDER than your level. Anything at or below your level, and anything you know, never stops by itself. A switch off = that kind is never explained by itself. A tap on any word still explains it.</p>
+      <label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>
+      <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
+      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
+    </section>
+    <details class="adv"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
+    <section><h4>My tutor stops</h4>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
       ${ctx.phone ? `<label>Free mode: seconds to look at the card ${slider('freeWindow', x.freeWindowSec ?? 7, 3, 20, 1, ' s')} <span class="muted">(My tutor off: no AI; one tap = I know)</span></label>` : ''}
@@ -112,20 +127,19 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
       <label>The word's volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
       <label>Word test before each video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
-      <label>Just talk ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">“hello” = the tutor comes · “I know” · “bye bye” = the tutor goes, the video plays</span></label>
+      <label>Just talk ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">“hello” = explain the last part · “hi bro” = call the tutor · “I know” · “bye” = the tutor goes, the video plays</span></label>
     </section>
     <section><h4>What you see</h4>
       <label>Play line ${slider('playLine', x.playLine ?? 40, 0, 100, 1, '')} <span class="muted">0 = bottom, 100 = top: the sentence being played or explained stays there</span></label>
-      <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
       ${x.view === 'reading' ? `<label>Reading look ${seg('readLook', x.readLook === 'night' ? 'night' : 'day', [['day', '☀️ Day'], ['night', '🌙 Night']])}</label>` : ''}
       <p class="muted">Listening: all the subtitles, the text moves with the sound. Reading: pages like a book, the text stays, a thin line follows the word and the pages turn by themselves (‹ › or a swipe turns them). Lyrics: the song's lyrics, an introduction to the song first, and explanations about the lyrics. Video: the video. Each mode has its own text size.</p>
-      ${x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : x.view === 'normal' ? (ctx.phone ? `<label>Text size (Video: the subtitles on the video) ${slider('phoneBand', x.phoneBandPx ?? 17, 12, 40, 1, 'px')}</label>` : `<label>Text size (Video: the subtitles on the video) ${slider('bandSize', s.appearance.subtitleSizePx || 26, 16, 96, 1, 'px')}</label>`) : ctx.phone ? `<label>Text size (Listening) ${slider('phoneSize', x.phoneSizePx ?? 21, 14, 48, 1, 'px')}</label>` : `<label>Text size (Listening) ${slider('stageSize', x.stageSizePx, 16, 96, 1, 'px')}</label>`}
+      ${ctx.phone ? '' : (x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : '')}
       <label>Letters ${slider('textWeight', x.textWeight ?? 400, 200, 800, 100, '')} <span class="muted">thinner ← → bolder</span></label>
+      ${ctx.pad ? `<label>iPad: the page beside the video ${onOff('padSplit', x.padSplit !== false)} <span class="muted">(Video mode; off = the page over the whole screen)</span></label>` : ''}
+      ${ctx.phone ? `<label>Turn on its side = full screen ${onOff('fullOnTurn', x.fullOnTurn ?? !ctx.pad)}</label>` : ''}
       ${ctx.phone ? `<label>E button on every sentence ${onOff('sentenceButtons', !!x.sentenceButtons)}</label>
       <label>Show what the tutor says as text ${onOff('showSay', !!x.showSay)}</label>` : `<label>Page at every stop ${onOff('stageOn', x.stageOn)}</label>`}
       <label>When I pause: play the part again first ${onOff('replayPart', x.replayPart)}</label>
-      <label>Part length ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])}</label>
-      <label>Complete sentences by the AI <span class="muted">(only when the video has no good official subtitles)</span> ${onOff('aiSentences', x.aiSentences)}</label>
       <label>Stop at hard words ${onOff('stopWords', s.listen.autoExplainWords)} phrases ${onOff('stopPhrases', s.listen.autoExplainPhrases)} sentences ${onOff('stopSentences', x.stopSentences)}</label>
     </section>
     <section><h4>Subtitles on the video</h4>
@@ -146,7 +160,6 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     </section>
     <section><h4>Voice</h4>
       <label>Follow the video's volume ${onOff('followVol', x.followVideoVolume !== false)} <span class="muted">(100 % = as loud as the video)</span></label>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'Mac']])}</label>
       ${voiceRows}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
@@ -157,14 +170,12 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Voice call ${onOff('liveOn', x.liveOn)} <button type="button" data-act="test-call">📞 Test the call</button></label>
       <label>Talk with ${seg('callEngine', x.callEngine ?? 'claude', [['claude', 'Claude + my tutor’s voice (no OpenAI)'], ['openai', 'OpenAI realtime']])}${(x.callEngine ?? 'claude') === 'openai' && !keys.openai ? ' <span class="warn">needs an OpenAI key with credit</span>' : ''}</label>
       ${(x.callEngine ?? 'claude') === 'openai' ? `<label>Live model ${seg('liveModel', x.liveModel, [['gpt-realtime-2.1', 'Best'], ['gpt-realtime-2.1-mini', 'Cheaper']])}</label>` : '<p class="muted">You talk, Chrome writes down your words, Claude answers, and your tutor’s voice speaks. Say “stop” (or press Space) to interrupt, “go on” to go back to the video.</p>'}
-      <label>Microphone on ${seg('micAlways', x.micAlways ? 'always' : 'needed', [['needed', 'Only when the tutor waits for me'], ['always', 'Always (for “hi bro”)']])}</label>
+      <label>Microphone on ${seg('micAlways', x.micAlways ? 'always' : 'needed', [['needed', 'Only when the tutor waits for me'], ['always', 'Always (for “hello” and “hi bro”)']])}</label>
       <p class="muted">“Always” keeps the Mac’s microphone on, which makes the sound quieter and a little broken. “Only when…” is clean.</p>
       <label>Go on ${seg('silence', x.talkSilenceSec > 0 ? 'auto' : 'wait', [['wait', 'Wait for me'], ['auto', 'After quiet seconds']])}${x.talkSilenceSec > 0 ? ` <input type="number" data-name="silenceSec" min="3" max="120" value="${x.talkSilenceSec}" style="width:64px"> s` : ''}</label>
       <p class="muted">After an explanation you have a moment to ask; then the video goes on by itself. Say “bye bye” (or press Esc) to stop the AI at any time; Space pauses the teacher so you can ask.</p>
     </section>
     <section><h4>My teacher</h4>
-      <label>My level ${seg('level', s.learnerLevel, CEFR_LEVELS.map((l) => [l, l] as [string, string]))}</label>
-      <label>Level from my words ${onOff('levelAuto', x.levelAuto !== false)} <span class="muted">(up when you know most words of the next level, down when many of yours are new)</span></label>
       ${ctx.levelText ? `<p class="muted">${esc(ctx.levelText)}</p>` : ''}
       <label>AI <select data-name="model">${CLAUDE_MODELS.map(([v, l]) => `<option value="anthropic:${v}"${s.ai.provider === 'anthropic' && s.ai.anthropicModel === v ? ' selected' : ''}>${l}</option>`).join('')}<option value="openai:${esc(s.ai.openaiModel)}"${s.ai.provider === 'openai' ? ' selected' : ''}>OpenAI ${esc(s.ai.openaiModel)}</option></select></label>
       ${wayRows}
@@ -184,9 +195,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section><h4>Level Check</h4>
       <button type="button" data-act="copy-level">Copy my level for Claude</button>
     </section>
+    </details>
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button><button type="button" data-act="reader">📖 Read a PDF or text</button></section>
   </div>`;
 
+  el.querySelector<HTMLDetailsElement>('details.adv')?.addEventListener('toggle', (ev) => { advOpen = (ev.target as HTMLDetailsElement).open; });
   // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)
   const azUsed = el.querySelector<HTMLElement>('.az-used');
   if (azUsed) void store.getUsage().then((u) => {
@@ -217,6 +230,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'stageOn') void store.patchExtras({ stageOn: v === 'on' });
       else if (segName === 'showSay') void store.patchExtras({ showSay: v === 'on' });
       else if (segName === 'stopItemsOn') void store.patchExtras({ stopItemsOn: v === 'on' });
+      else if (segName === 'padSplit') void store.patchExtras({ padSplit: v === 'on' });
+      else if (segName === 'fullOnTurn') void store.patchExtras({ fullOnTurn: v === 'on' });
       else if (segName === 'stopHardOn') void store.patchExtras({ stopHardOn: v === 'on' });
       else if (segName === 'stopPhrasesOn') void store.patchExtras({ stopPhrasesOn: v === 'on' });
       else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : 'day' });
@@ -246,7 +261,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'mic') void store.patchExtras({ micLevel: Number(v) as 1 | 2 | 3 });
       else if (segName === 'silence') void store.patchExtras({ talkSilenceSec: v === 'auto' ? 3 : 0 });
       // (a level chosen by hand stays: the automatic level is turned off)
-      else if (segName === 'level') { void store.patchSettings({ learnerLevel: v as Settings['learnerLevel'] }); void store.patchExtras({ levelAuto: false }); }
+
       else if (segName === 'levelAuto') void store.patchExtras({ levelAuto: v === 'on' });
       else if (segName === 'followVol') void store.patchExtras({ followVideoVolume: v === 'on' });
       else if (segName === 'stopGap') void store.patchExtras({ stopGapSec: Number(v) });
@@ -326,9 +341,13 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (out && t instanceof HTMLInputElement && t.type === 'range') out.textContent = `${t.value}${out.textContent?.replace(/^[\d.]+/, '') ?? ''}`;
     const n = Number(t.value);
     if (name === 'playLine') later(() => void store.patchExtras({ playLine: n }));
-    else if (name === 'capWords') later(() => void store.patchExtras({ capWords: n }), 300);
-    else if (name === 'capSentences') later(() => void store.patchExtras({ capSentences: n }), 300);
-    else if (name === 'capPhrases') later(() => void store.patchExtras({ capPhrases: n }), 300);
+    else if (name === 'myLevel') {
+      // ONE level, 0 (easiest) … 100 (hardest); the school level the rest of the tutor uses (the prompts) follows it
+      const lv = clampLevel(n);
+      const o = el.querySelector<HTMLElement>('.lvl-n');
+      if (o) o.textContent = String(lv);
+      later(() => { void store.patchExtras({ myLevel: lv, levelAuto: false }); patchS(() => ({ learnerLevel: levelToCefr(lv) as Settings['learnerLevel'] })); }, 300);
+    }
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
     else if (name === 'freeWindow') later(() => void store.patchExtras({ freeWindowSec: n }), 200);

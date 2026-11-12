@@ -161,14 +161,14 @@ const api = http.createServer((req, res) => {
   console.log('extension loaded, version', await sw.evaluate(() => chrome.runtime.getManifest().version));
   const store = (k) => sw.evaluate((key) => chrome.storage.local.get(key).then((o) => o[key]), k);
   const patch = (k, v) => sw.evaluate(([key, val]) => chrome.storage.local.get(key).then((o) => chrome.storage.local.set({ [key]: { ...(o[key] || {}), ...val } })), [k, v]);
-  await sw.evaluate(() => chrome.storage.local.set({
+  await sw.evaluate((PORT) => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' },
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 99 }, // (no starting data: these tests have their own words)
     drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
     drTestBaseUrls: { anthropic: `http://localhost:${PORT}`, openai: `http://localhost:${PORT}/v1` },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,
-  }));
+  }), PORT);
   peer = await ctx.newPage();
   await peer.goto(`http://localhost:${PORT}/peer.html`);
 
@@ -544,6 +544,34 @@ const api = http.createServer((req, res) => {
   await say('bye bye', 'vm:4');
   const byePlays = await until(async () => { const d = await dbg(); return d && !d.flow && d.state === 'playing' && await yt.evaluate(() => !document.querySelector('video').paused); }, 8000);
   ok('voice: "bye bye" = the tutor goes and the video plays; the microphone stays on for the next "hello"', !!byePlays && (await store('drExtras')).voiceMode === true, JSON.stringify({ byePlays, vm: (await store('drExtras')).voiceMode }));
+  // "hello" is ALWAYS the explanation of the last part (also when the video is stopped), never a call;
+  // "hi bro" is ALWAYS the call, never the explanation; a lone "hi" is nothing
+  await sleep(1200);
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.pause(); });
+  await until(async () => (await vstate()).paused, 4000);
+  await sleep(2200); // (the same "hello" twice within 2 s counts once)
+  const nHello2 = apiLog.length;
+  await say('hello', 'vm:5');
+  const hello2 = await until(async () => { const d = await dbg(); return d.flow === 'part' ? d : null; }, 5000);
+  // (the same part as a moment ago may be explained from what was kept: no new request is needed for it)
+  await sleep(1500);
+  const hello2Later = await dbg();
+  ok('"hello" with the video stopped: still the explanation of the last part (never a call)', !!hello2 && !hello2.callOpen && hello2Later.flow !== 'call' && !hello2Later.callOpen && !apiLog.slice(nHello2).some((r) => r.kind === 'chat' || r.kind === 'call'), JSON.stringify({ flow: hello2 && hello2.flow, call: hello2 && hello2.callOpen, later: hello2Later.flow, reqs: apiLog.slice(nHello2).map((r) => r.kind) }));
+  await say('bye bye', 'vm:6');
+  await until(async () => { const d = await dbg(); return d && !d.flow && !d.talk; }, 15000);
+  await sleep(1200);
+  const nHi = apiLog.length;
+  await say('hi', 'vm:7');
+  await sleep(1500);
+  const afterHi = await dbg();
+  ok('a lone "hi" does nothing (no call, no explanation)', !afterHi.flow && !afterHi.talk && !afterHi.callOpen && !apiLog.slice(nHi).some((r) => r.kind === 'explain'), JSON.stringify({ flow: afterHi.flow, talk: !!afterHi.talk }));
+  await say('hi bro', 'vm:8');
+  const broCall = await until(async () => { const d = await dbg(); return d.flow === 'call' && d.talk ? d : null; }, 6000);
+  await sleep(1500);
+  ok('"hi bro" = the voice call with the tutor (never the explanation of the last part)', !!broCall && !apiLog.slice(nHi).some((r) => r.kind === 'explain' && /The learner just paused the video/.test(r.user)), JSON.stringify({ flow: broCall && broCall.flow, talk: !!(broCall && broCall.talk), reqs: apiLog.slice(nHi).map((r) => r.kind) }));
+  await say('bye', 'vm:9');
+  const broBye = await until(async () => { const d = await dbg(); return d && !d.flow && !d.talk; }, 15000);
+  ok('..."bye" ends the call', !!broBye);
   await patch('drExtras', { voiceMode: false });
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 15000);
 
@@ -665,11 +693,11 @@ const api = http.createServer((req, res) => {
   opt.on('pageerror', (e) => console.log('OPTIONS PAGE ERROR', e.message));
   await opt.goto(`chrome-extension://${extId}/dream/options.html`);
   await opt.waitForTimeout(800);
-  const o1 = await opt.evaluate(() => ({ level: document.getElementById('learnerLevel').value, model: document.getElementById('anthropicModel').value, styles: document.querySelectorAll('#style-list button').length, keyPh: document.getElementById('key-anthropic').placeholder, rules: document.getElementById('contextRules').value.length, mine: document.getElementById('style-list').textContent }));
-  ok('settings page: level, model, the 10 styles ("My Teacher (my rules)" first), saved key, rules', o1.level === 'B2' && o1.model === 'claude-opus-5-5' && o1.styles >= 10 && /saved/.test(o1.keyPh) && o1.rules > 100 && /My Teacher/.test(o1.mine), JSON.stringify(o1).slice(0, 200));
-  await opt.selectOption('#learnerLevel', 'C1');
-  await opt.waitForTimeout(400);
-  ok('changing the level is saved', ((await store('drSettings')) || {}).learnerLevel === 'C1');
+  const o1 = await opt.evaluate(() => ({ level: document.getElementById('myLevel').value, levelMax: document.getElementById('myLevel').max, model: document.getElementById('anthropicModel').value, styles: document.querySelectorAll('#style-list button').length, keyPh: document.getElementById('key-anthropic').placeholder, rules: document.getElementById('contextRules').value.length, mine: document.getElementById('style-list').textContent }));
+  ok('settings page: my level (one slider, 0 to 100; B2 starts at 50), model, the 10 styles ("My Teacher (my rules)" first), saved key, rules', o1.level === '50' && o1.levelMax === '100' && o1.model === 'claude-opus-5-5' && o1.styles >= 10 && /saved/.test(o1.keyPh) && o1.rules > 100 && /My Teacher/.test(o1.mine), JSON.stringify(o1).slice(0, 200));
+  await opt.evaluate(() => { const l = document.getElementById('myLevel'); l.value = '70'; l.dispatchEvent(new Event('input', { bubbles: true })); l.dispatchEvent(new Event('change', { bubbles: true })); });
+  await opt.waitForTimeout(500);
+  ok('changing the level is saved (my level 70; the prompts speak to a C1 learner)', ((await store('drExtras')) || {}).myLevel === 70 && ((await store('drSettings')) || {}).learnerLevel === 'C1', JSON.stringify({ my: ((await store('drExtras')) || {}).myLevel, cefr: ((await store('drSettings')) || {}).learnerLevel }));
   await opt.click('[data-test="anthropic"]');
   const tested = await until(() => opt.evaluate(() => document.getElementById('msg-anthropic').textContent).then((t) => (/Connected|rejected|error/i.test(t) ? t : null)), 8000);
   ok('Test key button talks to the API through the background', /Connected/.test(tested || ''), tested);

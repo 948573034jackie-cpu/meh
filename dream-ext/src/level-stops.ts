@@ -68,6 +68,12 @@ export interface ScoreOpts {
   hard: ReadonlySet<string>;
   chance: Chance;
   zipf: (word: string) => number | null;
+  /**
+   * ONE LEVEL (0-100): when given, THE RULE decides what is hard: a word or phrase counts only when its number is
+   * higher than the learner's level (this says so), or the learner is still learning it. Anything at or below the
+   * level adds nothing and never makes a stop. (`cefr`: the dictionary's or the AI's level of it, when there is one.)
+   */
+  harder?: (kind: ItemKind, text: string, lemma: string, cefr: CefrLevel | undefined) => boolean;
 }
 
 /** this common or more, a word is easy whatever level the dictionary gives it (Zipf: "found" 5.3, "themes" 4.1) */
@@ -99,11 +105,18 @@ export function scoreSentences(o: ScoreOpts): SentenceScore[] {
       for (let i = start; i < endExcl; i++) usedTokens.add(i);
       const st = o.status(lemma);
       if (st === 'known' || st === 'ignored' || o.phraseDone(phraseSig(o.dict, lemma)) || o.phraseDone(phraseSig(o.dict, text))) return;
+      if (o.harder) {
+        // (one level: only a phrase harder than the level, or one still being learned)
+        if (st !== 'learning' && !o.harder('phrase', text, lemma, level)) return;
+        score += st === 'learning' ? 2.5 : Math.max(1, ai ? 2 : (LEVEL_WEIGHT[level] ?? 0) * 1.5);
+        found.push({ at: start, text, lemma, kind: 'phrase' });
+        return;
+      }
       // idioms and slang are the hard part of listening, whatever their level
       score += st === 'learning' ? 2.5 : ai ? 2 : (LEVEL_WEIGHT[level] ?? 0) * chanceOf(o.chance, level) * 1.5;
       if (st === 'learning' || ai || chanceOf(o.chance, level) >= 0.3) found.push({ at: start, text, lemma, kind: 'phrase' });
     };
-    for (const p of ann.phrases) if (p.above) phrase(p.start, p.end, p.result.lemma, p.level, p.confirmed);
+    for (const p of ann.phrases) if (o.harder || p.above) phrase(p.start, p.end, p.result.lemma, p.level, p.confirmed);
     for (const h of ann.aiPhrases) phrase(h.start, h.end + 1, h.lemma, h.level, true);
     ann.infos.forEach((info, i) => {
       if (!info || info.isName || usedTokens.has(i)) return;
@@ -113,6 +126,13 @@ export function scoreSentences(o: ScoreOpts): SentenceScore[] {
       const weight = info.level ? (LEVEL_WEIGHT[info.level] ?? 0) * c * (1 + rarity(o.zipf(info.lemma))) : 0;
       // (a word the learner is still learning is surely unknown)
       if (st === 'learning') { score += Math.max(2.5, weight + 1); found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma, kind: 'word' }); return; }
+      if (o.harder) {
+        // (one level: only a word harder than the level; a contraction ("don't") is never a hard word)
+        if (s.tokens[i].kind !== 'word' || /['\u2019]/.test(s.tokens[i].text) || !o.harder('word', s.tokens[i].text, info.lemma, info.level ?? undefined)) return;
+        score += Math.max(1, weight);
+        found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma, kind: 'word' });
+        return;
+      }
       if (!info.level || !ann.hardTokens.includes(i) || looksEasy(s.tokens[i].text, o.zipf)) return;
       score += weight;
       if (c >= 0.3 && (LEVEL_WEIGHT[info.level] ?? 0) >= 1) found.push({ at: i, text: s.tokens[i].text, lemma: info.lemma, kind: 'word' });
@@ -148,6 +168,20 @@ export function selectStopsByKind(scores: readonly SentenceScore[], caps: StopCa
     const list = scores.filter((s) => kindWith(s, caps) === group && s.score >= MIN_SCORE).sort((a, b) => b.score - a.score || a.index - b.index);
     const max = share > 0 ? Math.max(1, Math.round(list.length * share)) : 0;
     for (const s of list.slice(0, max)) out.add(s.key);
+  }
+  return out;
+}
+
+/**
+ * ONE LEVEL: every sentence with something harder than the level stops, for the groups that are on (a word, a phrase,
+ * the sentence itself); no shares any more. (`scores` were made with `harder`, so what is at or below the level is
+ * not in them at all.)
+ */
+export function selectStopsByLevel(scores: readonly SentenceScore[], on: StopCaps): Set<string> {
+  const out = new Set<string>();
+  for (const s of scores) {
+    const k = kindWith(s, on);
+    if (k === 'sentence' ? s.hard : !!k) out.add(s.key);
   }
   return out;
 }

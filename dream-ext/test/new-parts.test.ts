@@ -426,3 +426,33 @@ describe('Level Check: a stop for a hard word (YouTube)', () => {
     expect(t.video.events.filter((e) => e === 'seek@1.45')).toHaveLength(1);
   }, 20000);
 });
+
+// ---- 3.8: very long sentences are cut at a natural place (item 21 / 22) ----
+import { cutLong, LONG_WORDS } from '../src/sentences-ai';
+describe('3.8: a very long sentence is cut in two at a natural place', () => {
+  const mk = (text: string) => {
+    const ws = text.split(' ');
+    return { start: 0, end: ws.length * 0.4, text, words: ws.map((w, i) => ({ w: w.replace(/[^A-Za-z']/g, '').toLowerCase(), t: i * 0.4, e: (i + 1) * 0.4 })) };
+  };
+  it('a normal sentence stays as it is', () => {
+    const s = mk('My friend was very careful about her work and she checked every page.');
+    expect(cutLong([s])).toEqual([s]);
+  });
+  it('a long one is cut after a comma or before "and" / "because", near the middle; every word and time is kept', () => {
+    const text = 'When I was a child my grandmother used to tell me every single evening that patience is not only the ability to wait for something, but also the ability to keep a good attitude while you are waiting for it because nothing good comes quickly.';
+    const s = mk(text);
+    expect(s.words.length).toBeGreaterThan(LONG_WORDS);
+    const out = cutLong([s]);
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    expect(out.flatMap((x) => x.words!).length).toBe(s.words.length);
+    expect(out[0].start).toBe(0);
+    expect(out[out.length - 1].end).toBe(s.end);
+    for (const x of out) { expect(x.words!.length).toBeLessThanOrEqual(LONG_WORDS); expect(/^[A-Z]/.test(x.text)).toBe(true); expect(/[.!?]$/.test(x.text)).toBe(true); }
+    // (the pieces follow each other in time, no gap in the words)
+    for (let i = 1; i < out.length; i++) expect(out[i].start).toBeCloseTo(out[i - 1].end, 5);
+  });
+  it('no natural place: the sentence stays whole (never a cut in the middle of a phrase)', () => {
+    const s = mk(Array.from({ length: 40 }, (_, i) => `word${i}`).join(' ') + '.');
+    expect(cutLong([s]).length).toBe(1);
+  });
+});

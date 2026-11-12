@@ -8,7 +8,7 @@
 import type { PromptBundle } from '@core/ai/prompts';
 import type { TimedSentence, TimedWord } from './video-book';
 
-export const SPLIT_VERSION = 7;
+export const SPLIT_VERSION = 8;
 const CHUNK_WORDS = 380;
 
 export function flatten(sentences: TimedSentence[]): TimedWord[] {
@@ -53,6 +53,8 @@ export function buildSplitPrompt(words: TimedWord[], from: number, to: number): 
     user: `These are the words of a YouTube video's subtitles, in order, each with its number (number:word). Speech-recognition subtitles often have no punctuation and are cut in the middle of sentences.
 
 Rebuild the complete sentences. A sentence is one complete thought, punctuated the way a careful writer would punctuate this speech; split run-on speech (thoughts joined with "and", "so", "but" without a real end) into natural sentences, but never cut a real sentence: a long sentence stays whole (up to 60 words), and a sentence never ends at a comma. Keep every word in the same order and do not add or remove words: only add punctuation and capital letters, and fix an obvious speech-recognition spelling mistake of a single word. Leave sound tags like [Music] out of the sentence text.
+
+A learner listens to these sentences one at a time, so keep each one short enough to follow by ear: when a thought runs past about 25 words, end the sentence at the nearest natural place (before "and", "but", "so", "because", "which", "when" …) and begin a new one there. Every sentence must start where a real sentence or clause starts and end where it really ends: never cut in the middle of a phrase, never glue two finished sentences into one line.
 
 Answer with one line per sentence and nothing else (no notes, no thinking aloud), in this form:
 <number of the last word of the sentence>|<the sentence, punctuated>
@@ -291,7 +293,44 @@ export async function splitWithAi(sentences: TimedSentence[], complete: (p: Prom
     out.push(...part);
   });
   if (carry) out.push(carry);
-  return joinCut(out, aiMade, punctuated);
+  return cutLong(joinCut(out, aiMade, punctuated));
+}
+
+/** a sentence longer than this is cut in two at a natural place (a listener cannot hold more by ear) */
+export const LONG_WORDS = 34;
+const CLAUSE_START = /^(and|but|so|because|which|who|when|while|although|though|if|then|or|since|unless|whereas|where)$/i;
+/**
+ * Very long sentences (the AI left them long, or a failed part kept the first guess): each is cut in two at the most
+ * natural place near its middle, after a comma or before "and", "but", "because" …, again and again until every piece
+ * is short enough. The words keep their times; nothing is lost or changed but the cut. A sentence without such a
+ * place stays whole (never a cut in the middle of a phrase).
+ */
+export function cutLong(list: TimedSentence[], max = LONG_WORDS): TimedSentence[] {
+  const out: TimedSentence[] = [];
+  const cut = (s: TimedSentence): void => {
+    const ws = s.words ?? [];
+    const tokens = s.text.split(/\s+/).filter(Boolean);
+    // (the text must be the words, one for one: then the text can be cut where the words are cut)
+    if (ws.length <= max || tokens.length !== ws.length) { out.push(s); return; }
+    let best = -1, bestScore = Infinity;
+    const lo = Math.max(6, Math.floor(ws.length * 0.25)), hi = Math.min(ws.length - 6, Math.ceil(ws.length * 0.75));
+    for (let i = lo; i <= hi; i++) {
+      // (a cut BEFORE word i)
+      const afterComma = /[,;:\u2014]$/.test(tokens[i - 1]);
+      const clause = CLAUSE_START.test(tokens[i].replace(/[^A-Za-z]/g, ''));
+      if (!afterComma && !clause) continue;
+      const score = Math.abs(i - ws.length / 2) - (afterComma && clause ? 3 : afterComma ? 1.5 : 0);
+      if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best < 0) { out.push(s); return; }
+    const head = tokens.slice(0, best).join(' ').replace(/[,;:\u2014\s]+$/, '');
+    const tail = tokens.slice(best).join(' ');
+    const a: TimedSentence = { start: s.start, end: ws[best - 1].e, text: /[.!?\u2026"'\u201d\u2019)]$/.test(head) ? head : `${head}.`, words: ws.slice(0, best), ...(s.para ? { para: true } : {}) };
+    const b: TimedSentence = { start: ws[best].t, end: s.end, text: tail[0].toUpperCase() + tail.slice(1), words: ws.slice(best) };
+    cut(a); cut(b);
+  };
+  for (const s of list) cut(s);
+  return out;
 }
 
 const ENDS_CLAUSE = /[,;:–—-]["”'’)]*$/;

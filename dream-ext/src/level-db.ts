@@ -119,6 +119,9 @@ export interface VocabularyDoc {
   stillLearning: { item: string; date: string; sentence: string; group?: GroupId }[];
   /** words taken out (removed, or ignored) on a device since the last merge: the other device takes them out too */
   removed?: { item: string; date: string }[];
+  /** "words heard": the learner's one counter and the words explained lately (heard.ts), so the 1,000-word rule
+   *  goes on from the phone to the iPad to the computer. It rides along whenever the words are written. */
+  heard?: { n: number; asked: Record<string, number> };
 }
 
 const dayOf = (iso: string | undefined): string => (iso ?? '').slice(0, 10);

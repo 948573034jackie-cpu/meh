@@ -79,6 +79,11 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "openPage":
             model.openPage(body["url"] as? String ?? "")
             reply(nil, nil)
+        // ---- the page says how it is laid out now (the video over the whole window or not) ----
+        case "layout":
+            let full = body["full"] as? Bool ?? false
+            if web === model.youtube, model.pageFull != full { model.pageFull = full }
+            reply(nil, nil)
         default:
             model.handle(kind: kind, body: body, reply: reply)
         }

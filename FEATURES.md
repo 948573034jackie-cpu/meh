@@ -9,8 +9,8 @@ There are 3 versions:
 
 | Version | Device | Where you use it |
 |---|---|---|
-| **Chrome extension** (v3.6) | Mac / computer | YouTube in Google Chrome |
-| **YT Learn** (v1.2, tutor 3.6) | iPhone / iPad | Its own app: YouTube inside it (search, your account, any video), with My tutor |
+| **Chrome extension** (v3.8) | Mac / computer | YouTube in Google Chrome |
+| **I Know** (v3.8; it was called YT Learn) | iPhone / iPad | Its own app: YouTube inside it (search, your account, any video), with My tutor, a reader and a browser |
 | ~~YT Safari~~ | — | no longer built: YT Learn is the iPhone version |
 
 ---
@@ -185,6 +185,33 @@ video; CSV download; progress per level (A1 to C2).
 Keys: Claude (explanations) and/or OpenAI (the voice, the live call, or everything). One key is enough to start.
 
 ---
+
+## 7c. I Know 3.8 (12 Nov 2026): what changed
+
+- **One level, 0 (easiest) to 100 (hardest).** One long slider in Settings, and three switches: Words, Phrases,
+  Sentences. The tutor stops by itself ONLY for what is harder than your level (`level100.ts`: a word's number comes
+  from how common it is and its school level). At or below your level, or known: never a stop. A tap on a word still
+  explains it. The old A1–C2 level and the three % sliders are gone.
+- **The 1,000-word rule counts across videos** (`heard.ts`): one "words heard" counter per learner; it goes on from one
+  video to the next and travels with the online vocabulary.
+- **The stop card:** a word = the word, its pronunciation, its translation; a phrase or sentence = the text and its
+  translation. One tap anywhere = I know; no tap = the tutor explains. Edge touches and slow presses do not count.
+- **Voice:** "hello" = always explain the last 10 / 20 / 30 s; "hi bro" = always the call. A "10 s" part is about 10 s.
+- **The tutor's volume really works on the iPhone** for cloud voices (the volume is put into the sound, `gain.ts`) and
+  the live call (a gain), with a Volume button in the bar (quieter / louder).
+- **Full screen both ways:** turn the phone, or YouTube's own full-screen button, or the bar's Full screen button: the
+  video over the whole window with the tutor's subtitles; an iPhone on its side gets a rail of big buttons.
+- **One button mode:** nothing on the screen changes; a touch on the page or the video = explain the last N s.
+- **One Text size** for every mode, the subtitles on the video and the card. **Video mode:** film-like subtitles (one or
+  two lines, only what is said now); the big page is off until its switch turns it on; an iPad shows the page beside
+  the video.
+- **Complete sentences for every video** (always made, once per video; very long ones cut at a natural place).
+- **Back where you stopped**, **Free mode** (no AI), official subtitles when good (3.8 steps 2 to 7).
+- **A daily word review** by plain counting (no AI): explained 7 times = known; not met for 90 days = to review again;
+  what your words say about your level (only said: your slider never moves by itself).
+- **Find me a video** (ranked 1 to 10, re-ranked by level without the AI, a list that stays and plays on), **lyrics
+  found by the app and shown with parts and notes**, a **reader** (EPUB, text, PDF) and a **browser** with Explanation mode.
+- Accounts with Google / Apple sign-in are NOT built: `docs/accounts-data-layout.md` has the plan for the data.
 
 ## 8. Downloads
 

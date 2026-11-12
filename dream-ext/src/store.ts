@@ -56,7 +56,11 @@ export interface YtExtras {
   phoneBandPx?: number;
   /** the letters thinner or bolder: 300 (thin) … 700 (bold), 400 = normal */
   textWeight?: number;
-  /** one-button mode (Listening): the page is one big dark button that explains the last N seconds */
+  /** an iPad, Video mode: the page beside (or under) the video instead of over it (not set = on) */
+  padSplit?: boolean;
+  /** the device turned on its side = the video full screen by itself (not set: an iPhone yes, an iPad no) */
+  fullOnTurn?: boolean;
+  /** One button mode: nothing on the screen changes; a touch anywhere on the page or the video explains the last N seconds */
   oneButton?: boolean;
   /** an E button on every sentence (explain this sentence); on a phone a switch, off at first */
   sentenceButtons?: boolean;
@@ -122,7 +126,7 @@ export interface YtExtras {
   videoSize: number;
   /** the microphone listens the whole time (voice commands like "hi bro") instead of only when the tutor waits for you */
   micAlways: boolean;
-  /** voice mode: the microphone is on; "hello" explains / opens the call, "stop", "play", anything else is a question,
+  /** voice mode: the microphone is on; "hello" explains the last part, "hi bro" opens the call, "stop", "play", anything else is a question,
    *  "bye bye" turns it off */
   voiceMode: boolean;
   /** automatic stops: at most one every N seconds of video (0 = at every hard word, -1 = never by itself) */
@@ -161,7 +165,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
  * 2 = three stop groups (words, phrases, sentences: the old "words and phrases" share goes to both), known after 7
  *     explanations, no "stops by itself: off" left over (that row is gone), the learner's own teacher.
  */
-export const EXTRAS_VERSION = 3;
+export const EXTRAS_VERSION = 4;
 export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   if ((x.migrated ?? 0) >= EXTRAS_VERSION) return null;
   const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };
@@ -355,6 +359,15 @@ export function setSpot(videoId: string, spot: VideoSpot): Promise<void> {
     const o = await area().get(SPOTS);
     await area().set({ [SPOTS]: newest({ ...((o[SPOTS] as Record<string, VideoSpot> | undefined) ?? {}), [videoId]: spot }, 300) });
   });
+}
+/** "words heard": the learner's one counter and the words explained lately (heard.ts); it goes on from video to video */
+export const HEARD_KEY = 'drHeard';
+export async function getHeard(): Promise<unknown> {
+  const o = await area().get(HEARD_KEY);
+  return o[HEARD_KEY] ?? null;
+}
+export function setHeard(state: { n: number; asked: Record<string, number> }): Promise<void> {
+  return oneAtATime(async () => { await area().set({ [HEARD_KEY]: state }); });
 }
 interface DoneList { keys: string[]; at: number }
 /** the sentences of a video whose stop (a hard phrase or sentence) was already explained */

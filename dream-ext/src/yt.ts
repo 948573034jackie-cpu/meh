@@ -39,6 +39,10 @@ import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book
 import type { Lyrics } from './lyrics';
 import { VideoEngine } from './video-engine';
 import { openFinder, finderIsOpen, type FoundVideo, type FinderLevel } from './finder';
+import { partRange } from './part';
+import { HeardCounter } from './heard';
+import { chunkWords, lettersPerLine } from './subtitle-chunks';
+import { dailyReview, reviewDue, reviewText, dayKey, REVIEW_KEY } from './review';
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf, gunzipVia } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
@@ -52,7 +56,8 @@ import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } fr
 import { renderQuick } from './quick';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
-import { scoreSentences, selectStopsByKind, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
+import { scoreSentences, selectStopsByLevel, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
+import { myLevelOf, wordNumber, phraseDifficulty, harderThan, levelToCefr, clampLevel, CEFR_MID } from './level100';
 import { RuleGuard, type LevelRule, type RuleRequest } from './level-rule';
 import type { TeachLength } from './teacher-text';
 import { LevelGate } from './level-gate';
@@ -152,6 +157,21 @@ function pageStyle(): void {
     html.dr-cc-off.dr-hide-cc .ytp-caption-window-container { display: none !important; }
     /* (the full stop card: nothing over it, not even the small counter) */
     html.dr-fullcard #dr-stop-counter { display: none !important; }
+    /* ---- the app, full screen (the phone turned, YouTube's full-screen button, the "Full screen" button): the video
+       over the whole window, with the tutor's subtitles, card and page over it (never Apple's own player) ---- */
+    html.dr-full, html.dr-full body { overflow: hidden !important; }
+    html.dr-full :is(#player-container-id, ytm-player, .player-container) { position: fixed !important; inset: 0 !important; top: 0 !important; left: 0 !important; width: 100vw !important; height: 100vh !important; height: 100dvh !important; max-height: none !important; margin: 0 !important; padding: 0 !important; z-index: 2147481000 !important; background: #000 !important; transform: none !important; }
+    html.dr-full :is(#player, #movie_player, .html5-video-player, .html5-video-container, video.html5-main-video) { width: 100% !important; height: 100% !important; left: 0 !important; top: 0 !important; max-height: none !important; }
+    html.dr-full video.html5-main-video { object-fit: contain !important; }
+    html.dr-full :is(ytm-mobile-topbar-renderer, header.mobile-topbar-header, ytm-pivot-bar-renderer) { display: none !important; }
+    html.dr-full #movie_player { touch-action: manipulation; }
+    /* ---- an iPad, Video mode, the page on the screen: the video beside the page (on its side) or over it (upright) ---- */
+    html.dr-split-r :is(#player-container-id, ytm-player, .player-container) { position: fixed !important; left: 0 !important; top: 0 !important; width: 58vw !important; height: calc(58vw * 9 / 16) !important; max-height: 100vh !important; z-index: 2147481000 !important; background: #000 !important; margin: 0 !important; }
+    html.dr-split-r #dr-stage-host { left: 58vw !important; }
+    html.dr-split-b :is(#player-container-id, ytm-player, .player-container) { position: fixed !important; left: 0 !important; top: 0 !important; width: 100vw !important; height: calc(100vw * 9 / 16) !important; max-height: 45vh !important; z-index: 2147481000 !important; background: #000 !important; margin: 0 !important; }
+    html.dr-split-b #dr-stage-host { top: min(calc(100vw * 9 / 16), 45vh) !important; }
+    :is(html.dr-split-r, html.dr-split-b) :is(#player, #movie_player, .html5-video-player, .html5-video-container, video.html5-main-video) { width: 100% !important; height: 100% !important; left: 0 !important; top: 0 !important; }
+    :is(html.dr-split-r, html.dr-split-b) video.html5-main-video { object-fit: contain !important; }
     /* your video size (normal view): the video takes this share of the page width, the panel the rest */
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #primary.ytd-watch-flexy { flex: 0 0 auto !important; width: calc(var(--dr-vsize) - 24px) !important; max-width: none !important; min-width: 320px !important; }
     html.dr-vsize ytd-watch-flexy:not([theater]):not([fullscreen]) #secondary.ytd-watch-flexy { flex: 1 1 auto !important; width: auto !important; min-width: 260px !important; max-width: none !important; }
@@ -237,10 +257,13 @@ const lay = (): Lay => {
 };
 /** the page text on each layout, times your size (phoneSizePx is the iPhone upright size): 21 → 21 / 20 / 24 / 28 / 26 */
 const PAGE_F: Record<Lay, number> = { 'p-port': 1, 'p-land': 0.95, 't-narrow': 1.15, 't-port': 1.33, 't-land': 1.25, desk: 1 };
-/** the subtitles on the video, the same way (phoneBandPx): 17 → 17 / 22 / 22 / 26 / 30 */
-const BAND_F: Record<Lay, number> = { 'p-port': 1, 'p-land': 1.3, 't-narrow': 1.3, 't-port': 1.5, 't-land': 1.75, desk: 1 };
+/**
+ * ONE text size for everything on a touch screen (the learner's "Text size", phoneSizePx): the Listening, Reading and
+ * Lyrics pages, the subtitles on the video, the stop card and the explanations all follow it (an iPad shows it a
+ * little bigger: PAGE_F). No size per mode any more (readSizePx and phoneBandPx are not used on a touch screen).
+ */
 const pagePx = (): number => Math.round(clamp(extras.phoneSizePx || 21, 14, 48) * PAGE_F[lay()]);
-const bandPx = (): number => Math.round(clamp(extras.phoneBandPx || 17, 12, 40) * BAND_F[lay()]);
+const bandPx = (): number => pagePx();
 /** the text size of the reading page: on a touch screen its own (bigger on an iPad), and it never changes by itself */
 const stageSize = (): number => (TOUCH ? pagePx() : clamp(extras.stageSizePx || 34, 16, 96));
 
@@ -372,6 +395,7 @@ class Session {
   private micToldBlocked = false;
   /** the online copy: when it was last looked at, and how it went (for Settings) */
   private gistPollAt = 0;
+  private followTick = 0;
   gistText = '';
   /** an automatic stop is going on (its word is being asked or explained) */
   private inStop = false;
@@ -389,7 +413,9 @@ class Session {
         this.knownEstimate = estimateKnown(progress, settings.learnerLevel);
         // my level follows my own words
         // (with Level Check the tests set the level)
-        const next = extras.levelAuto !== false && extras.levelMode === false ? suggestLevel(progress.levels, settings.learnerLevel) : null;
+        // (3.8: the level is the learner's own slider, 0-100; it never moves by itself. The daily review only says what
+        // the words suggest: see dailyReview)
+        const next = null as ReturnType<typeof suggestLevel> | null;
         this.recomputeStops();
         if (next && next.level !== settings.learnerLevel) {
           void store.patchSettings({ learnerLevel: next.level });
@@ -428,7 +454,8 @@ class Session {
   /** the stop being made: its sentence and what it is for */
   private trigger: { key: string; group: StopGroup } | null = null;
   /** where a word or phrase was last asked or explained, in words from the start (not again within extras.repeatWords) */
-  private askedAt = new Map<string, number>();
+  /** the learner's "words heard" counter and the words asked lately: it goes on from one video to the next (heard.ts) */
+  private wordsHeard = new HeardCounter();
   private offsets: ((pos: Position) => number) | null = null;
   private heardKeys = new Set<string>();
   private stopped = new Set<string>();
@@ -530,15 +557,17 @@ class Session {
     this.keys = await store.getKeys().catch(() => ({}));
     // the AI's complete sentences, when this video was read before (not for official subtitles: they are used as they are)
     let use = sentences;
-    const split = extras.aiSentences && this.source === 'rule' ? await store.getSplit(this.cacheId(), SPLIT_VERSION).catch(() => null) : null;
+    const split = this.source === 'rule' ? await store.getSplit(this.cacheId(), SPLIT_VERSION).catch(() => null) : null;
     const words = flatten(sentences);
     if (split && split.words === words.length) { use = regroup(words, split.ends.map((end, i) => ({ end, text: split.texts[i] ?? '' }))); this.source = 'ai'; }
     this.buildBook(use, this.lyrics ? `${this.lyrics.title} — ${this.lyrics.artist}` : info.title || document.title.replace(/ - YouTube$/, ''), info.channel);
     this.gate?.setTitle(this.vb!.book.title);
     this.zipf = await getZipf();
+    void this.runDailyReview();
     this.bookReady(true);
     this.zh = await store.getZh(this.cacheId()).catch(() => ({}));
     this.doneBefore = new Set(await store.getDone(this.cacheId()).catch(() => []));
+    this.wordsHeard = new HeardCounter(await store.getHeard().catch(() => null) as never);
     await this.loadHints();
     await this.prepareVoices();
     if (this.disposed) return;
@@ -634,7 +663,7 @@ class Session {
 
   private readyText(src?: string | null): string {
     const n = this.vb?.order.length ?? 0;
-    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · stops at what is above ${settings.learnerLevel}${this.ai() ? '' : ' · free mode (no AI)'}`;
+    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · stops only at what is harder than your level (${myLevel()} of 100)${this.ai() ? '' : ' · free mode (no AI)'}`;
   }
 
   private buildBook(sentences: TimedSentence[], title?: string, channel?: string): void {
@@ -646,8 +675,9 @@ class Session {
 
   private async loadHints(): Promise<void> {
     const cached = await store.getVideoHints(this.videoId).catch(() => null) as (store.VideoHints & { split?: string; sentences?: number[]; v?: number }) | null;
-    if (!cached || cached.level !== settings.learnerLevel) return;
+    if (!cached || !analysisCovers(cached.level)) return;
     this.hints = cached.hints;
+    this.hardLevel = cached.level;
     if (cached.v === HINTS_VERSION && cached.split === this.source) {
       this.phrases = cached.phrases as Record<string, PhraseHit[]>;
       this.hardSentences = this.markedFrom(cached.sentences ?? []);
@@ -962,39 +992,87 @@ class Session {
   private recomputeStops(): void {
     if (!this.vb || !this.dict || !this.levelOn()) return;
     const done = this.databaseSigs((st) => st === 'known' || st === 'ignored');
+    // ONE LEVEL, 0 (easiest) … 100 (hardest): only what is HARDER than my level can stop (level100.ts); a whole
+    // sentence the analysis found hard has the number of the level it was found hard for, a little above it
+    const mine = myLevel();
+    const zipf = this.zipf;
+    const hardNumber = Math.min(98, (CEFR_MID[(this.hardLevel || settings.learnerLevel) as CefrLevel] ?? 56) + 10);
     const list = scoreSentences({
       book: this.vb.book, order: this.vb.order, dict: this.dict, names: this.names,
-      status: (l) => vocab.words[l], phraseDone: (sig) => done.has(sig), phrases: this.phrases, hard: new Set(this.hardKeys.keys()),
-      chance: unknownChance(levelMeta.tests), zipf: this.zipf,
+      status: (l) => vocab.words[l], phraseDone: (sig) => done.has(sig), phrases: this.phrases,
+      hard: harderThan(hardNumber, mine) ? new Set(this.hardKeys.keys()) : new Set<string>(),
+      chance: unknownChance(levelMeta.tests), zipf,
+      harder: (kind, text, lemma, cefr) => {
+        if (kind === 'phrase') return harderThan(phraseDifficulty(cefr), mine);
+        const n = wordNumber(zipf(text), zipf(lemma), cefr);
+        return n !== null && harderThan(n, mine);
+      },
     });
     this.scores = new Map(list.map((s) => [s.key, s]));
-    this.stopSet = selectStopsByKind(list, this.caps());
+    this.stopSet = selectStopsByLevel(list, this.caps());
     this.paintCounter();
   }
+  /** the school level the video's hard sentences were found for (with the analysis; '' = not known) */
+  private hardLevel = '';
   levelChanged(): void { this.recomputeStops(); }
 
   private heardSentence(pos: Position): void {
+    // (the "words heard" counter: a sentence counts once; it is saved with where you are in the video)
+    const s = this.vb ? getSentence(this.vb.book, pos) : null;
+    if (s) this.wordsHeard.hear(sentenceKey(pos), this.wordsBefore(pos), s.sentence.tokens.filter((t) => t.kind === 'word').length);
     if (!this.levelOn()) return;
     this.heardKeys.add(sentenceKey(pos));
     this.paintCounter();
     this.planAnalysis();
   }
 
-  /** the share of the sentences that may stop for a hard word or phrase, and for the sentence itself (off = 0) */
+  /** the three switches: Words, Phrases, Sentences (1 = on, 0 = off: never explained by itself) */
   private caps(): StopCaps {
-    const c = (on: boolean | undefined, n: number | undefined, d: number) => (on === false ? 0 : clamp(n ?? d, 0, 100) / 100);
-    return { word: c(extras.stopItemsOn, extras.capWords, 35), phrase: c(extras.stopPhrasesOn, extras.capPhrases, 15), sentence: c(extras.stopHardOn, extras.capSentences, 5) };
+    const c = (on: boolean | undefined) => (on === false ? 0 : 1);
+    return { word: c(extras.stopItemsOn), phrase: c(extras.stopPhrasesOn), sentence: c(extras.stopHardOn) };
   }
   private wordsBefore(pos: Position): number {
     if (!this.vb) return 0;
     this.offsets ??= wordOffsets(this.vb.book);
     return this.offsets(pos);
   }
-  /** asked or explained a moment ago (within the last extras.repeatWords words): not again so soon */
+  /**
+   * asked or explained within the last extras.repeatWords (1,000) words HEARD: not again so soon. The words are counted
+   * across videos: a word explained near the end of one video is not explained again early in the next (heard.ts).
+   */
   private askedLately(lemma: string, here: number): boolean {
-    const at = this.askedAt.get(lemma);
-    const win = extras.repeatWords ?? 1000;
-    return at !== undefined && win > 0 && here >= at && here - at < win;
+    return this.wordsHeard.lately(lemma, here, extras.repeatWords ?? 1000);
+  }
+  /**
+   * The daily review of the whole word list (review.ts): once a day, when a video opens; plain counting, no AI. Its
+   * changes are saved like any other (and go to the online copy at once); the learner is told in one calm line.
+   */
+  private async runDailyReview(): Promise<void> {
+    try {
+      const o = await chrome.storage.local.get(REVIEW_KEY);
+      const last = (o[REVIEW_KEY] as { day?: string } | undefined)?.day;
+      const now = new Date();
+      if (!reviewDue(last, now) || !this.dict) return;
+      // (the day is written first: two windows open at once review once)
+      await chrome.storage.local.set({ [REVIEW_KEY]: { day: dayKey(now) } });
+      const entries = await store.getEntries();
+      const dict = this.dict, zipf = this.zipf, mine = myLevel();
+      const r = dailyReview({
+        words: vocab.words, entries, knownAfter: extras.knownAfter ?? 7, now, myLevel: mine,
+        numberOf: (lemma) => wordNumber(zipf(lemma), null, dict.lookup(lemma)?.entry.level ?? null),
+      });
+      for (const lemma of r.nowKnown) { this.controller?.markKnown(lemma); await this.changeStatus(lemma, 'known'); }
+      for (const lemma of r.backToLearn) await this.changeStatus(lemma, 'learning');
+      await chrome.storage.local.set({ [REVIEW_KEY]: { day: dayKey(now), nowKnown: r.nowKnown.length, back: r.backToLearn.length, suggested: r.suggested, known: r.known, learning: r.learning } });
+      const text = reviewText(r, mine);
+      if (text && !this.disposed) setTimeout(() => { if (!this.disposed) this.toast(text, 9000); }, 6000);
+    } catch { /* tomorrow again */ }
+  }
+  heardCameIn(state: unknown): void { this.wordsHeard.merge(state as never); }
+  private saveHeard(): void {
+    if (!this.wordsHeard.dirty) return;
+    this.wordsHeard.dirty = false;
+    void store.setHeard(this.wordsHeard.state(extras.repeatWords ?? 1000)).catch(() => undefined);
   }
 
   /**
@@ -1244,8 +1322,14 @@ class Session {
     // (free mode: nothing is asked of the AI; the stops come from the dictionary)
     if (!this.ai()) { this.aiJobsDone = true; this.startAnalysis(); return; }
     const keys = await store.getKeys().catch(() => ({} as store.Keys));
-    if (!keys.anthropic && !keys.openai) { this.aiJobsDone = true; this.startAnalysis(); return; }
-    if (extras.aiSentences && this.source === 'rule' && this.vb) {
+    if (!keys.anthropic && !keys.openai) {
+      // (said once, clearly: without a key the sentences stay as YouTube cut them)
+      if (this.source === 'rule') this.toast('No AI key: the sentences stay as YouTube cut them (not complete). Add a key in Settings → API keys.', 8000);
+      this.aiJobsDone = true; this.startAnalysis(); return;
+    }
+    // COMPLETE sentences for EVERY video: always done (once per video, then kept), whenever the subtitles are not good
+    // official ones; a failed part is tried again, and the learner is told when it could not be done
+    if (this.source === 'rule' && this.vb) {
       try {
         this.setStatus(`${this.statusText} · the AI is finding the complete sentences…`);
         const out = await splitWithAi(this.ruleSentences, complete, (d, n) => { if (n > 1) this.setStatus(`${this.statusText.split(' · the AI')[0]} · the AI is finding the complete sentences… ${d}/${n}`); });
@@ -1259,8 +1343,15 @@ class Session {
         if (this.disposed) return;
         this.rebuild(out);
         this.setStatus(this.readyText());
+        const failed = splitReport.filter((l) => !/: ok$/.test(l) && /^chunk \d+(:| \()/.test(l));
+        const parts = new Set(failed.map((l) => /^chunk (\d+)/.exec(l)?.[1])).size;
+        const okParts = splitReport.filter((l) => /: ok$/.test(l)).length;
+        if (parts > 0 && okParts + parts > 0 && parts > okParts && !this.disposed) this.toast('The AI could not make complete sentences for most of this video: some lines are as YouTube cut them.', 8000);
       } catch (e) {
-        if (!this.disposed) this.setStatus(`${this.statusText.split(' · the AI')[0]} · complete sentences: ${(e as Error).message}`);
+        if (!this.disposed) {
+          this.setStatus(`${this.statusText.split(' · the AI')[0]} · complete sentences: ${(e as Error).message}`);
+          this.toast(`Complete sentences could not be made for this video (${(e as Error).message.slice(0, 80)}). The lines are as YouTube cut them.`, 9000);
+        }
       }
     }
     await this.runHintsJob();
@@ -1356,6 +1447,17 @@ class Session {
     v.addEventListener('seeking', onSeeking);
     document.addEventListener('fullscreenchange', onFs);
     this.offs.push(() => { v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); v.removeEventListener('seeking', onSeeking); document.removeEventListener('fullscreenchange', onFs); });
+    // One button mode: a touch on the video (or on its subtitles) = explain the last N seconds, like a touch on the page
+    const onVideoTap = (ev: Event) => {
+      if (!this.oneTap() || window.__ytcApi?.isAd()) return;
+      const path = ev.composedPath();
+      const onPlayer = path.some((n) => n instanceof HTMLElement && (n.id === 'movie_player' || n.id === 'player-container-id' || n.id === 'dr-band-host' || n.tagName === 'YTM-PLAYER' || n.tagName === 'VIDEO'));
+      if (!onPlayer || path.some((n) => n instanceof HTMLElement && n.id === 'dr-stage-host')) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      this.oneTapExplain();
+    };
+    window.addEventListener('click', onVideoTap, true);
+    this.offs.push(() => window.removeEventListener('click', onVideoTap, true));
     // where you are is kept at once when the video stops or the app goes away (not only every 5 s while it plays),
     // so a paused video, or the app closed, opens there next time; never the time of an advert
     const onStopped = () => { if (!window.__ytcApi?.isAd() && v.currentTime > 0) this.keepSpot(v); };
@@ -1370,6 +1472,7 @@ class Session {
   private keepSpot(v: HTMLVideoElement): void {
     this.spotSavedAt = Date.now();
     void store.setSpot(this.videoId, { t: v.currentTime, d: v.duration || 0, at: Date.now() }).catch(() => undefined);
+    this.saveHeard();
   }
 
   /** the panel follows the video when the teacher is not reading it (call mode, ads, paused, replays) */
@@ -1390,10 +1493,11 @@ class Session {
     // where you are in this video (so next time it goes on from here)
     if (!v.paused && v.currentTime > 0 && Date.now() - this.spotSavedAt > 5000) this.keepSpot(v);
     const reading = this.playback?.state === 'playing';
-    this.placeBand();
-    this.paintOneButton();
-    // (the online copy: a look every 10 s while the page is in front; free when nothing changed)
-    if (this.keys.github && document.visibilityState === 'visible' && Date.now() - this.gistPollAt > 10_000) {
+    // (where the subtitles sit and the One button flag: a few times a second is enough; the words follow every time)
+    if (++this.followTick % 5 === 0) { this.placeBand(); this.paintOneButton(); this.applySplit(); }
+    // (the online copy: a look every 20 s while the page is in front; free when nothing changed. Changes made HERE
+    // go online at once, by themselves.)
+    if (this.keys.github && document.visibilityState === 'visible' && Date.now() - this.gistPollAt > 20_000) {
       this.gistPollAt = Date.now();
       void chrome.runtime.sendMessage({ type: 'dream-gist-poll' }).catch(() => undefined);
     }
@@ -1423,15 +1527,8 @@ class Session {
     const vb = this.vb;
     if (!vb) return [];
     const order = vb.order;
-    let end = -1;
-    for (let i = 0; i < order.length; i++) { const t = vb.timingOf(order[i])!; if (t.start <= time + 0.05) end = i; else break; }
-    if (end < 0) return order.length ? [order[0]] : [];
-    // a sentence that has only just started is not part of what was heard
-    const te = vb.timingOf(order[end])!;
-    if (end > 0 && time - te.start < 0.8) end--;
-    let start = end;
-    while (start > 0 && vb.timingOf(order[start - 1])!.end > time - seconds) start--;
-    return order.slice(start, end + 1);
+    const r = partRange(order.map((p) => vb.timingOf(p)!), time, seconds);
+    return r ? order.slice(r[0], r[1] + 1) : [];
   }
 
   // ---- your own flows: you paused (the part), ← (a sentence), 📞 (talk) -------------------------------------------
@@ -1822,17 +1919,24 @@ class Session {
 
   private callBtn: HTMLButtonElement | null = null;
   /**
-   * One-button mode (Listening): the whole page is one big dark button, "explain the last N seconds". While it explains,
-   * the page shows the subtitles as normal; when the video plays on, the dark button is back.
+   * One button mode: NOTHING on the screen changes (the same page, the same text size, the same mode, the video, the
+   * line moving); only a touch anywhere on the page or the video = explain the last N seconds. While the tutor
+   * explains, asks, or a call or a card is open, touches do what they always do.
    */
+  private oneTap(): boolean {
+    return !!extras.oneButton && this.ai() && !this.flow && !this.controller?.busy && !this.cmdWin && !this.talk && !this.card && !this.quickRoot && this.playback?.state !== 'explaining';
+  }
+  /** a touch in One button mode: the last N seconds, explained (two touches at once count as one) */
+  private oneTapExplain(): void {
+    if (Date.now() - this.oneTapAt < 700) return;
+    this.oneTapAt = Date.now();
+    this.trail('one button: a touch = explain the last part');
+    this.explainLast();
+  }
+  private oneTapAt = 0;
   private paintOneButton(): void {
-    const b = this.stage?.el.querySelector<HTMLButtonElement>('.onebtn');
-    if (!b) return;
-    const show = !!extras.oneButton && extras.view === 'listening' && this.ai() && this.stageVisible() && !this.flow && !this.controller?.busy && !this.cmdWin && !this.talk && !this.card && this.playback?.state !== 'explaining';
-    if (b.hidden === !show) return;
-    b.hidden = !show;
-    const span = b.querySelector('span');
-    if (span) span.textContent = `Tap anywhere: explain the last ${settings.listen.lastSecondsWindow} seconds`;
+    const el = this.stage?.el;
+    if (el) el.dataset.one = this.oneTap() ? '1' : '0';
   }
 
   /** the one button of a call on a phone: at the bottom of the screen, gone when the call ends */
@@ -1844,7 +1948,8 @@ class Session {
       const b = document.createElement('button');
       b.id = 'dr-end-call';
       b.textContent = 'End call';
-      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(12px + env(safe-area-inset-bottom) + var(--yt2c-bar-h, 0px));z-index:2147483200;border:0;border-radius:24px;padding:12px 28px;font:600 17px -apple-system,system-ui,sans-serif;color:#fff;background:#d93025;box-shadow:0 4px 16px rgba(0,0,0,.35)';
+      // (big: at least 60 pt high and 200 wide, clear of the home line at the bottom)
+      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom) + var(--yt2c-bar-h, 0px));z-index:2147483200;border:0;border-radius:30px;min-height:60px;min-width:200px;padding:14px 32px;font:600 18px -apple-system,system-ui,sans-serif;color:#fff;background:#d93025;box-shadow:0 4px 16px rgba(0,0,0,.35);touch-action:manipulation';
       // (bye: the call ends and the video plays)
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); this.byeBye(false); };
       (document.fullscreenElement ?? document.body).appendChild(b);
@@ -1915,7 +2020,8 @@ class Session {
     if (!words.length || words.length > 4) return null;
     const first = words[0], two = words.slice(0, 2).join(' ');
     const echo = (re: RegExp) => this.videoSaying(re) || this.tutorSaying(re);
-    if (/^(hello|hallo|hi|hey)$/.test(first) && (extras.voiceMode || extras.micAlways) && !echo(/\b(hello|hallo|hi|hey)\b/i)) return () => this.voiceHello();
+    // "hello" (said alone) = ALWAYS explain the last 10 / 20 / 30 s; a lone "hi" or "hey" is nothing ("hi bro" = the call: heard())
+    if (/^(hello|hallo)$/.test(first) && words.length <= 2 && (extras.voiceMode || extras.micAlways) && !echo(/\b(hello|hallo)\b/i)) return () => this.voiceHello();
     if (!extras.voiceMode) return null;
     if (/^(stop|pause)$/.test(first) && !echo(/\b(stop|pause)\b/i)) return () => this.voiceStop();
     if ((/^(play|continue|resume)$/.test(first) || /^(go on|let'?s go)$/.test(two)) && !echo(/\b(play|continue|resume|go on|let'?s go)\b/i)) return () => this.voicePlay();
@@ -1938,17 +2044,42 @@ class Session {
     return re.test(last.slice(-400)) || re.test(said.slice(-400));
   }
 
-  /** "hello": voice mode on; the video playing = stop, play the part again, explain it, play it again; stopped = the call */
+  /**
+   * "hello" = ALWAYS the explanation of the last 10 / 20 / 30 s (the same as the Explain button), whether the video
+   * plays or is stopped; it never opens a call. (The same "hello" twice within 2 s counts once.)
+   */
   voiceHello(): void {
     if (!this.ai()) { this.freeNote(); return; }
+    if (Date.now() - this.helloAt < 2000) return;
+    this.helloAt = Date.now();
     if (!extras.voiceMode) {
       extras.voiceMode = true;
       void store.patchExtras({ voiceMode: true });
-      this.toast('Voice on: “hello” = the tutor comes, “I know”, “stop”, “play”, ask anything, “bye bye” = the tutor goes, the video plays.', 9000);
+      this.toast(VOICE_HELP, 9000);
     }
-    const v = video();
-    if (v && !v.paused && !this.flow) void this.partFlow(v.currentTime, true);
-    else if (!this.talk) void this.callTutor();
+    if (this.talk) return; // (in a call "hello" is just a word said to the tutor)
+    if (this.flow?.kind === 'part') return; // (it is explaining a part already)
+    this.trail('voice: hello = explain the last part');
+    this.toast(`“hello”: the last ${settings.listen.lastSecondsWindow} s, explained`, 2500);
+    void this.partFlow(video()?.currentTime, true);
+  }
+  private helloAt = 0;
+
+  /** "hi bro" = ALWAYS a voice call with the tutor (the same as the Call button; "bye" ends it); never the explanation */
+  voiceCall(): void {
+    if (!this.ai()) { this.freeNote(); return; }
+    if (this.talk) return; // (a call is open already)
+    this.trail('voice: hi bro = the call');
+    this.toast('“hi bro”: the call (say “bye” to end it)', 2500);
+    void this.callTutor();
+  }
+
+  /** the quick control moved the tutor's volume: said on the screen; a live call follows at once */
+  volumeStepped(pct: number): void {
+    this.toast(`Tutor volume ${pct}%`, 1500);
+    const v = this.volumeOf('teacher');
+    this.talk?.live?.setVolume(v);
+    this.pre?.setVolume(v);
   }
 
   /** 🎙 button: voice mode on / off */
@@ -1956,7 +2087,7 @@ class Session {
     const on = !extras.voiceMode;
     extras.voiceMode = on;
     void store.patchExtras({ voiceMode: on });
-    this.toast(on ? 'Voice on: “hello” = the tutor comes, “I know”, “stop”, “play”, ask anything, “bye bye” = the tutor goes, the video plays.' : 'Voice off: the microphone only listens when the tutor waits for you.', on ? 9000 : 4000);
+    this.toast(on ? VOICE_HELP : 'Voice off: the microphone only listens when the tutor waits for you.', on ? 9000 : 4000);
   }
 
   /** "stop": the video and the tutor stop; you can ask now ("play" goes on) */
@@ -2000,7 +2131,7 @@ class Session {
   }
   private heldTalk = false;
 
-  /** "hi bro" / Shift+E: explain the last part */
+  /** the Explain button / Shift+E / "hello": explain the last part */
   explainLast(): void {
     if (!this.controller) return;
     if (!this.ai()) { this.freeNote(); return; }
@@ -2084,6 +2215,8 @@ class Session {
       const v = video();
       if (v && !v.paused && !this.videoSaying(/\b(hello|hallo)\b/i) && !this.tutorSaying(/\b(hello|hallo)\b/i)) { act(() => this.voiceHello()); return true; }
     }
+    // "hi bro" = the call, always (never the explanation of the last part); not the video's or the tutor's own words
+    if (HI_BRO.test(lower) && !this.talk && (final || /\b(bro|bruh|brah|bra)[.!?,]*$/.test(lower)) && !this.videoSaying(HI_BRO) && !this.tutorSaying(HI_BRO)) { act(() => this.voiceCall()); return true; }
     // the live call hears you itself (with echo cancelling); the page's recognition could hear the tutor
     if (this.talk?.live && this.talk.live.state !== 'error') return true;
     // the call with Claude: while the tutor talks only "stop" / "bye bye" count (its own voice must not be taken for yours)
@@ -2141,7 +2274,6 @@ class Session {
     }
     if (final) this.lastHeardAt = Date.now();
     if (/\bshut\s*up\b/.test(lower)) { act(() => this.shutUp()); return true; }
-    if (/\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/.test(lower)) { act(() => this.explainLast()); return true; }
     if (this.talk) {
       // the talk without the live call: commands, or a question for the tutor
       if (!final) return true;
@@ -2215,7 +2347,7 @@ class Session {
       const t = e.position ? this.vb.timingOf(e.position) : null;
       const input = { lemma: e.lemma, word: e.target, sentence: e.sentence, explanation: shown(e.text), chinese: e.chinese ?? (this.hints[e.lemma]?.join('，') ?? ''), bookId: this.vb.book.id, bookTitle: this.vb.book.title, chapter: t ? clock(t.start) : '', position: e.position, level: e.level as CefrLevel | undefined, again: e.again };
       const word = e.kind === 'word' || e.kind === 'phrase';
-      if (word && e.position) this.askedAt.set(e.lemma, this.wordsBefore(e.position));
+      if (word && e.position) { this.wordsHeard.ask(e.lemma, this.wordsBefore(e.position)); this.saveHeard(); }
       this.saveChain = this.saveChain.then(() => store.upsertEntry(input)).then((entry) => { if (word) this.knownAfterMany(entry.lemma, entry.timesExplained, e.target); }).catch(() => undefined);
       if (this.levelOn() && e.kind === 'sentence' && e.position && e.status === 'done') this.countExplained(e.position, e);
     }
@@ -2235,7 +2367,7 @@ class Session {
     const n = extras.knownAfter ?? 7;
     sc.lemmas.forEach((lemma, i) => {
       if (vocab.words[lemma] === 'known' || vocab.words[lemma] === 'ignored') return;
-      this.askedAt.set(lemma, here);
+      this.wordsHeard.ask(lemma, here);
       this.saveChain = this.saveChain
         .then(() => store.upsertEntry({ lemma, word: sc.items[i], sentence: e.sentence, explanation: shown(e.text), chinese: this.hints[lemma]?.join('，') ?? '', bookId: vb.book.id, bookTitle: vb.book.title, chapter: t ? clock(t.start) : '', position: pos }))
         .then((entry) => this.knownAfterMany(lemma, entry.timesExplained, sc.items[i]))
@@ -2265,7 +2397,7 @@ class Session {
     if (pos && this.levelOn()) this.countStop(pos);
     // remembered: next time this video is watched, this hard phrase / sentence is not stopped at again
     if (pos && (t.kind === 'phrase' || t.kind === 'sentence' || this.levelOn())) void store.addDone(this.cacheId(), sentenceKey(pos)).catch(() => undefined);
-    if (pos && t.lemma && t.kind !== 'sentence') this.askedAt.set(t.lemma, this.wordsBefore(pos));
+    if (pos && t.lemma && t.kind !== 'sentence') { this.wordsHeard.ask(t.lemma, this.wordsBefore(pos)); this.saveHeard(); }
     // the page jumps to the stop's sentence, whatever was scrolled to
     this.userScrollAt = 0;
     this.lastStopAt = pos && this.vb ? this.vb.timingOf(pos)?.start ?? null : null;
@@ -2358,13 +2490,15 @@ class Session {
     const keys = await store.getKeys().catch(() => ({} as store.Keys));
     if ((!keys.anthropic && !keys.openai) || !this.vb || !this.dict) return;
     const cached = await store.getVideoHints(this.videoId).catch(() => null) as (store.VideoHints & { split?: string; v?: number }) | null;
-    if (cached && cached.level === settings.learnerLevel && cached.v === HINTS_VERSION && cached.split === this.source) return;
+    // (analysed once: an analysis made for the same or an easier level holds everything a higher level needs; only a
+    // level that went DOWN a school band needs more words, once)
+    if (cached && analysisCovers(cached.level) && cached.v === HINTS_VERSION && cached.split === this.source) return;
     const book = this.vb.book;
     const known = new Set(Object.entries(vocab.words).filter(([, s]) => s === 'known' || s === 'ignored').map(([l]) => l));
-    const hints: HintMap = { ...(cached && cached.level === settings.learnerLevel ? cached.hints : {}) };
+    const hints: HintMap = { ...(cached && analysisCovers(cached.level) ? cached.hints : {}) };
     const vbAtStart = this.vb;
     try {
-      if (!cached || cached.level !== settings.learnerLevel) {
+      if (!cached || !analysisCovers(cached.level)) {
         for (const batch of batchHardWords(collectHardWords(book, 0, this.dict, settings.learnerLevel, this.names, known))) {
           if (this.disposed) return;
           Object.assign(hints, parseHints(await complete(buildHintsPrompt(batch, { title: book.title, chapter: 'YouTube video', level: settings.learnerLevel }))));
@@ -2393,6 +2527,7 @@ class Session {
         try { hard.push(...parseHardSentences(await complete(buildHardSentencesPrompt(lines, { level: settings.learnerLevel, title: book.title, max })), lines.length, max).map((i) => from + i)); } catch { /* this part keeps no sentence stops */ }
       }
       this.hardSentences = this.markedFrom(hard);
+      this.hardLevel = settings.learnerLevel;
       this.recomputeStops();
       await store.setVideoHints(this.cacheId(), { version: store.HINTS_VERSION, level: settings.learnerLevel, hints: this.hints, phrases: this.phrases, split: this.source, sentences: hard, v: HINTS_VERSION } as store.VideoHints);
       if (!this.disposed) { this.render(); this.setStatus(`${this.statusText.split(' · AI')[0]} · AI: hard words, phrases and ${hard.length} sentences ready`); }
@@ -2511,7 +2646,7 @@ class Session {
     el.className = 'stage';
     el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div><div class="pager"><button type="button" class="quiet" data-act="prev" title="The page before">‹</button><span class="pg"></span><button type="button" class="quiet" data-act="next" title="The next page">›</button></div>
       <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div>${TOUCH ? '' : '<form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">Ask</button></form>'}</div>
-      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button><button type="button" class="onebtn" hidden aria-label="Explain the last part"><span></span></button>`;
+      <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     this.stage = { host, root, el };
     // you clicked the video to pause it and the page appeared under the mouse: that same click must not tap a word
@@ -2528,7 +2663,15 @@ class Session {
     this.wireWords(page);
     this.wireAsk(el);
     // the reading pages: ‹ › and a swipe to the side turn the page
-    el.querySelector('.onebtn')!.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.explainLast(); this.paintOneButton(); });
+    // One button mode: a touch anywhere on the page = explain the last N seconds (before any word or line sees the tap;
+    // scrolling the page is not a tap and still works)
+    el.addEventListener('click', (ev) => {
+      if (!this.oneTap()) return;
+      // (the page's own controls keep working: the settings, a window, the page-turn buttons, any button)
+      if ((ev.target as HTMLElement).closest?.('.quick, .toast, .cmd, .card, .top, .pager, .dock, button, input, select, textarea, a')) return;
+      ev.preventDefault(); ev.stopImmediatePropagation();
+      this.oneTapExplain();
+    }, true);
     el.querySelector('.pager')!.addEventListener('click', (ev) => {
       const act = (ev.target as HTMLElement).closest('button')?.dataset.act;
       if (act === 'prev') this.turnPage(-1); else if (act === 'next') this.turnPage(1);
@@ -2569,7 +2712,7 @@ class Session {
       <span class="seg" data-name="secs">${[10, 20, 30].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
-      ${this.ai() ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
+      ${this.ai() ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
       <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? '🎬 Video' : '📖 Listening'}</button>
       ${listening ? '' : `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="This big page at stops and pauses: on / off (off = you only watch the video)">📄 Page ${extras.stageOn ? 'on' : 'off'}</button>`}
       <button data-act="quick" title="Quick settings">⚙</button>${listening ? '' : '<button data-act="close" class="quiet" title="Back to the video">✕</button>'}`;
@@ -2663,7 +2806,26 @@ class Session {
     this.renderStageTop();
     this.showCommandWindow(this.cmdWin);
     this.renderTalk();
+    this.applySplit();
     if (part?.length) { this.ensureZh(part); this.scrollToCur(true); }
+  }
+
+  /**
+   * An iPad, Video mode, the page on the screen: the video stays in sight. The window on its side: the video on the
+   * left, the page on the right; upright (or an iPad split in half): the video on top, the page under it. The full
+   * stop card and the app's full screen take the whole window as always. (Settings: "iPad: the page beside the video".)
+   */
+  private applySplit(): void {
+    if (!IPAD) return;
+    const root = document.documentElement;
+    const on = extras.padSplit !== false && normalView() && this.stageVisible() && !this.card?.full && !root.classList.contains('dr-full') && location.pathname === '/watch';
+    const l = lay();
+    const side = on && l === 't-land', under = on && (l === 't-port' || l === 't-narrow');
+    if (root.classList.contains('dr-split-r') === side && root.classList.contains('dr-split-b') === under) return;
+    root.classList.toggle('dr-split-r', side);
+    root.classList.toggle('dr-split-b', under);
+    // (the page has another size now: its text is laid out again)
+    window.dispatchEvent(new Event('resize'));
   }
 
   /** the last sentence of the part on the page (20 / 30 / 40 / 60 changes the part from there, at once) */
@@ -2676,6 +2838,7 @@ class Session {
     this.partEnd = null;
     this.stage.host.hidden = true;
     document.documentElement.classList.remove('dr-stage');
+    this.applySplit();
     if (this.quickRoot === this.stage.el) this.closeQuick();
     this.showCommandWindow(this.cmdWin);
     if (this.card) this.closeCard();
@@ -2737,7 +2900,8 @@ class Session {
   stageVisible(): boolean { return !!this.stage && !this.stage.host.hidden; }
 
   private resize(dir: number): void {
-    if (this.stageVisible() && extras.view === 'reading') void store.patchExtras({ readSizePx: clamp((extras.readSizePx || 22) + dir, 12, 60) });
+    if (TOUCH) void store.patchExtras({ phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) });
+    else if (this.stageVisible() && extras.view === 'reading') void store.patchExtras({ readSizePx: clamp((extras.readSizePx || 22) + dir, 12, 60) });
     else if (this.stageVisible()) void store.patchExtras(TOUCH ? { phoneSizePx: clamp((extras.phoneSizePx || 21) + dir, 14, 48) } : { stageSizePx: clamp(extras.stageSizePx + dir * 2, 16, 96) });
     else if (this.bandVisible()) void store.patchSettings({ appearance: { ...settings.appearance, subtitleSizePx: clamp((settings.appearance.subtitleSizePx || 26) + dir * 2, 16, 96) } });
     else void store.patchSettings({ appearance: { ...settings.appearance, fontSizePx: clamp((settings.appearance.fontSizePx || 19) + dir, 12, 48) } });
@@ -2782,7 +2946,7 @@ class Session {
       h.dataset.look = extras.readLook === 'night' ? 'night' : 'day';
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${stageSize()}px`);
-      h.style.setProperty('--read-size', `${clamp(extras.readSizePx || 22, 12, 60)}px`);
+      h.style.setProperty('--read-size', `${TOUCH ? stageSize() : clamp(extras.readSizePx || 22, 12, 60)}px`);
       // ("phone" means touch: the iPad gets the touch page too; dev and lay tell the sizes apart)
       h.dataset.phone = TOUCH ? '1' : '0';
       h.dataset.dev = DEVICE;
@@ -2805,12 +2969,12 @@ class Session {
     const tutor = this.ai();
     const sc = shortcutMap(extras.shortcuts);
     head.innerHTML = `<span class="brand">Dream</span><span class="mode tutor">My tutor</span><span class="grow"></span>
-      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hi bro”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
+      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hello”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
       <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
       ${tutor ? `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="The big page at stops and pauses: on / off (off = you only watch the video)">📄 ${extras.stageOn ? 'on' : 'off'}</button>` : ''}
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
-      <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello / stop / play / anything / bye bye">🎙${extras.voiceMode ? ' on' : ''}</button>
+      <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye">🎙${extras.voiceMode ? ' on' : ''}</button>
       <button data-act="vocab" title="My Vocabulary: you know about ${this.knownEstimate.toLocaleString()} English words">📒${this.knownEstimate ? ` ${this.knownEstimate.toLocaleString()}` : ''}</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts">⚙</button>`;
     head.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
@@ -2873,9 +3037,34 @@ class Session {
     this.renderBandLine();
   }
 
+  /**
+   * A sentence's element on a page. A long video's page holds thousands of sentences, and this is asked several times
+   * a second (the word being said, the line being heard): the elements are found once per drawing of the page and
+   * kept, instead of searching the whole page every time (the 3.7 slowness while playing).
+   */
   private sentenceEl(root: HTMLElement | undefined, pos: Position): HTMLElement | null {
-    return root?.querySelector<HTMLElement>(`.s[data-key="${sentenceKey(pos)}"]`) ?? null;
+    if (!root) return null;
+    const key = sentenceKey(pos);
+    const first = root.querySelector<HTMLElement>('.s[data-key]');
+    let c = this.sEls.get(root);
+    const hit = c && c.first === first ? c.map.get(key) : undefined;
+    if (hit && hit.isConnected) return hit;
+    if (!c || c.first !== first || hit) {
+      const map = new Map<string, HTMLElement>();
+      // (the first one of a key wins, like querySelector)
+      root.querySelectorAll<HTMLElement>('.s[data-key]').forEach((e) => { const k = e.dataset.key!; if (!map.has(k)) map.set(k, e); });
+      c = { first, map, n: map.size };
+      this.sEls.set(root, c);
+      return c.map.get(key) ?? null;
+    }
+    // (the same page as before and the key was not on it: a part of the video is shown; a look, in case lines were added)
+    const again = root.querySelector<HTMLElement>(`.s[data-key="${key}"]`);
+    if (again) c.map.set(key, again);
+    return again;
   }
+  private sEls = new WeakMap<HTMLElement, { first: HTMLElement | null; map: Map<string, HTMLElement>; n: number }>();
+  /** the sentence and the word marked now on each page (so the old marks come off without searching the whole page) */
+  private marks = new WeakMap<HTMLElement, { s?: HTMLElement | null; w?: Element | null }>();
 
   private setCurrent(pos: Position): void {
     const prev = this.cur;
@@ -2884,8 +3073,13 @@ class Session {
     for (const root of [this.panel?.el, this.stage?.el]) {
       if (!root) continue;
       const back = prev && this.vb && comparePositions(pos, prev) < 0;
-      root.querySelectorAll('.s.cur').forEach((e) => { e.classList.remove('cur'); e.classList.add('past'); });
-      root.querySelectorAll('.w.cur-w').forEach((e) => e.classList.remove('cur-w'));
+      const m = this.marks.get(root) ?? {};
+      // (the marks put on last time come off; only a page drawn again is searched whole)
+      if (m.s && m.s.isConnected && m.s.classList.contains('cur')) { m.s.classList.remove('cur'); m.s.classList.add('past'); }
+      else root.querySelectorAll('.s.cur').forEach((e) => { e.classList.remove('cur'); e.classList.add('past'); });
+      if (m.w && m.w.isConnected) m.w.classList.remove('cur-w');
+      else root.querySelectorAll('.w.cur-w').forEach((e) => e.classList.remove('cur-w'));
+      m.w = null;
       if (back || !prev) {
         const keys = new Set<string>();
         for (const p of this.vb!.order) { if (sentenceKey(p) === sentenceKey(pos)) break; keys.add(sentenceKey(p)); }
@@ -2893,6 +3087,8 @@ class Session {
       }
       const el = this.sentenceEl(root, pos);
       if (el) { el.classList.remove('past'); el.classList.add('cur'); }
+      m.s = el;
+      this.marks.set(root, m);
     }
     this.scrollToCur();
     this.renderBandLine();
@@ -2941,9 +3137,16 @@ class Session {
     this.curWord = ti;
     for (const root of [this.panel?.el, this.band?.el, this.stage?.el]) {
       if (!root) continue;
-      root.querySelectorAll('.w.cur-w').forEach((e) => e.classList.remove('cur-w'));
-      if (ti >= 0) this.sentenceEl(root, pos)?.querySelector(`.w[data-t="${ti}"]`)?.classList.add('cur-w');
+      const m = this.marks.get(root) ?? {};
+      // (the word marked last time; the small subtitle line, and a page drawn again, are searched whole)
+      if (root !== this.band?.el && m.w && m.w.isConnected && m.w.classList.contains('cur-w')) m.w.classList.remove('cur-w');
+      else root.querySelectorAll('.w.cur-w').forEach((e) => e.classList.remove('cur-w'));
+      const w = ti >= 0 ? this.sentenceEl(root, pos)?.querySelector(`.w[data-t="${ti}"]`) ?? null : null;
+      w?.classList.add('cur-w');
+      m.w = w;
+      this.marks.set(root, m);
     }
+    this.showBandPiece();
     // (the reading pages: the page turns when the word being read is on the next one)
     if (ti >= 0 && this.readView()) this.followRead(this.stage!.el.querySelector<HTMLElement>('.page .w.cur-w'));
   }
@@ -3407,12 +3610,28 @@ class Session {
     cardEl.hidden = false;
     this.fitFullCard();
     // (the tap is ours alone: the page under it never sees it, and iOS makes no click of its own after it)
+    // Guards, so that "I know" is never said by accident: a real tap is short (under half a second) and does not
+    // move; a touch that starts in the outer 16 pt at the left or right (the edge swipe, the hand holding the phone)
+    // does not count.
+    let down: { x: number; y: number; at: number } | null = null;
+    const pointOf = (ev: Event): { x: number; y: number } | null => {
+      const t = (ev as TouchEvent).changedTouches?.[0] ?? (ev as TouchEvent).touches?.[0];
+      if (t) return { x: t.clientX, y: t.clientY };
+      const m = ev as MouseEvent;
+      return typeof m.clientX === 'number' && (m.clientX || m.clientY) ? { x: m.clientX, y: m.clientY } : null;
+    };
     const tap = (ev: Event) => {
       ev.preventDefault();
       ev.stopPropagation();
-      if (ev.type === 'touchstart') return;
+      if (ev.type === 'touchstart') { const p = pointOf(ev); down = p ? { ...p, at: Date.now() } : null; return; }
       if (ev.type === 'click' && Date.now() - this.cardTouchAt < 700) return;
-      if (ev.type === 'touchend') this.cardTouchAt = Date.now();
+      const p = pointOf(ev);
+      if (ev.type === 'touchend') {
+        this.cardTouchAt = Date.now();
+        const d = down; down = null;
+        if (d && p && (Date.now() - d.at > 500 || Math.hypot(p.x - d.x, p.y - d.y) > 12)) return;
+        if (d && (d.x < 16 || d.x > innerWidth - 16)) return;
+      } else if (p && (p.x < 16 || p.x > innerWidth - 16)) return;
       this.tapFullCard();
     };
     cardEl.ontouchstart = tap;
@@ -3528,7 +3747,9 @@ class Session {
     const player = document.querySelector<HTMLElement>('#movie_player');
     const want = !this.stageVisible() && (TOUCH ? extras.view === 'normal' && extras.band !== 'off' : extras.band === 'on' || (extras.band === 'auto' && (!!document.fullscreenElement || !!document.querySelector('ytd-watch-flexy[theater]') || !this.panel)));
     if (!player) return;
+    let fresh = false;
     if (!this.band) {
+      fresh = true;
       const { host, root } = makeHost('dr-band-host');
       const el = document.createElement('div');
       el.className = 'band-wrap';
@@ -3547,7 +3768,8 @@ class Session {
     const ccOff = TOUCH && extras.band === 'off';
     document.documentElement.classList.toggle('dr-cc-off', ccOff);
     document.documentElement.classList.toggle('dr-hide-cc', ((want || this.stageVisible()) && extras.hideYtCaptions) || ccOff);
-    if (want !== shown) { this.renderBandLine(); this.showCommandWindow(this.cmdWin); }
+    // (also the very first time: the line being said is on the video at once, not only from the next sentence on)
+    if (want !== shown || (fresh && want)) { this.renderBandLine(); this.showCommandWindow(this.cmdWin); }
   }
   private renderBandLine(): void {
     const line = this.band?.el.querySelector<HTMLElement>('.line');
@@ -3556,6 +3778,56 @@ class Session {
     if (!cur) return;
     line.innerHTML = renderSentence(cur.para, cur.sentence, 0, this.renderOpts());
     if (this.curWord >= 0) line.querySelector(`.w[data-t="${this.curWord}"]`)?.classList.add('cur-w');
+    this.bandPieces = null;
+    if (TOUCH) this.cutBandLine(line);
+  }
+  /** a touch screen: which piece of the sentence each word of the subtitle line is in (null = the line is one piece) */
+  private bandPieces: { of: Map<number, number>; shown: number } | null = null;
+  /**
+   * Film-like subtitles (a touch screen): a sentence too long for two lines is shown in pieces, the piece being said
+   * now on the screen (subtitle-chunks.ts). Every bit of text of the line belongs to the piece of the word before it.
+   */
+  private cutBandLine(line: HTMLElement): void {
+    const words = Array.from(line.querySelectorAll<HTMLElement>('.w[data-t]'));
+    if (words.length < 2) return;
+    const fontPx = parseFloat(getComputedStyle(line).fontSize) || bandPx();
+    const width = (line.parentElement?.clientWidth || innerWidth) * 0.9 - 24;
+    const budget = lettersPerLine(width, fontPx) * 2 - 4;
+    // (the text between two words, a comma or a space, counts for the word before it)
+    const tail = (w: HTMLElement): string => { let t = '', n: Node | null = w.nextSibling; while (n && n.nodeType === Node.TEXT_NODE) { t += n.textContent ?? ''; n = n.nextSibling; } return t; };
+    const lengths = words.map((w) => (w.textContent ?? '').length + Math.max(1, tail(w).length));
+    const pieces = chunkWords(lengths, budget, words.map((w) => /[,.;:!?\u2014]/.test(tail(w))));
+    if (!pieces.some((p) => p > 0)) return;
+    const of = new Map<number, number>();
+    words.forEach((w, i) => { of.set(Number(w.dataset.t), pieces[i]); w.dataset.c = String(pieces[i]); });
+    // every loose bit of text gets its own element, so it can be shown and hidden with its piece
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    const loose: Text[] = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (!(n.parentElement?.closest('.w'))) loose.push(n as Text);
+    let last = 0;
+    const order = Array.from(line.querySelectorAll<HTMLElement>('.w[data-t]'));
+    for (const t of loose) {
+      const before = order.filter((w) => (w.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).pop();
+      last = before ? Number(before.dataset.c) : 0;
+      const span = document.createElement('span');
+      span.className = 'gap';
+      span.dataset.c = String(last);
+      t.replaceWith(span);
+      span.appendChild(t);
+    }
+    this.bandPieces = { of, shown: -1 };
+    this.showBandPiece();
+  }
+  /** the piece with the word being said now is the one on the screen */
+  private showBandPiece(): void {
+    const bp = this.bandPieces;
+    const line = this.band?.el.querySelector<HTMLElement>('.line');
+    if (!bp || !line) return;
+    const want = this.curWord >= 0 ? bp.of.get(this.curWord) ?? (bp.shown >= 0 ? bp.shown : 0) : 0;
+    if (want === bp.shown) return;
+    bp.shown = want;
+    line.dataset.piece = String(want);
+    line.querySelectorAll<HTMLElement>('[data-c]').forEach((e) => { e.hidden = Number(e.dataset.c) !== want; });
   }
   private renderBandSay(): void {
     const say = this.band?.el.querySelector<HTMLElement>('.say');
@@ -3620,8 +3892,8 @@ class Session {
       if (this.cur) this.setCurrent(this.cur);
     }
     if (prev.playLine !== extras.playLine) { this.padPage(); this.scrollToCur(true); }
-    if (prev.capWords !== extras.capWords || prev.capPhrases !== extras.capPhrases || prev.capSentences !== extras.capSentences || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
-    if (prev.aiSentences !== extras.aiSentences && extras.aiSentences && this.source === 'rule') void this.runAiJobs();
+    if (prev.myLevel !== extras.myLevel || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
+
     this.renderHead();
     this.renderStageTop();
     this.renderTalk();
@@ -3690,8 +3962,9 @@ class Session {
     if (id === 'mode') { this.nextMode(); return true; }
     if (id === 'oneButton') {
       const on = !extras.oneButton;
-      void store.patchExtras({ oneButton: on, ...(on && extras.view !== 'listening' ? { view: 'listening' as const } : {}) });
-      this.toast(on ? 'One-button mode: tap anywhere on the dark page to explain the last part. The bar has the way out.' : 'One-button mode off.', 5000);
+      // (nothing else changes: the same mode, the same page, the same text size)
+      void store.patchExtras({ oneButton: on });
+      this.toast(on ? `One button mode: touch anywhere on the page or the video = explain the last ${settings.listen.lastSecondsWindow} s. Everything else stays as it is. “One button” again = off.` : 'One button mode off.', 6000);
       return true;
     }
     if (id === 'pageAuto') { this.togglePageAuto(); return true; }
@@ -3733,7 +4006,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `words ${extras.stopItemsOn === false ? 'off' : `${extras.capWords ?? 35}%`} · phrases ${extras.stopPhrasesOn === false ? 'off' : `${extras.capPhrases ?? 15}%`} · sentences ${extras.stopHardOn === false ? 'off' : `${extras.capSentences ?? 5}%`}`, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `my level ${myLevel()} of 100 · words ${extras.stopItemsOn === false ? 'off' : 'on'} · phrases ${extras.stopPhrasesOn === false ? 'off' : 'on'} · sentences ${extras.stopHardOn === false ? 'off' : 'on'}`, wordsHeard: this.wordsHeard.total, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -3772,12 +4045,13 @@ class Session {
       spoken: (this.macRaw as unknown as { spoken?: { text: string }[] })?.spoken?.map((s) => s.text) ?? null,
       spokenVol: (this.macRaw as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
       callOpen: this.callOpen(),
+      volume: { teacher: this.volumeOf('teacher'), word: this.volumeOf('word') },
       cloud: cloudSpoken.slice(-30),
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { page: this.readPage + 1, pages: this.readPages, shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       phone: TOUCH, device: DEVICE, lay: lay(), sleep: sleepMinutes(), asleep,
-      level: { byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
+      level: { mine: myLevel(), why: Object.fromEntries([...this.stopped].map((k) => [k, (this.scores.get(k)?.items ?? []).join('+') + (this.scores.get(k)?.hard ? ' (hard sentence)' : '')])), byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
@@ -3849,6 +4123,24 @@ function saysKnow(lower: string): boolean {
   return w.length >= 1 && w.length <= 3 && (w.every(k) || (w[0] === 'i' && w.length >= 2 && w.slice(1).every(k)));
 }
 
+/** the tutor's volume steps of the quick control (the slider's %; about 4 dB apart, the lowest clearly quieter) */
+const VOLUME_STEPS = [20, 32, 40, 50, 63, 79, 100];
+/** one step quieter (-1) or louder (+1) from any slider value */
+function stepVolume(now: number, dir: 1 | -1): number {
+  if (dir > 0) return VOLUME_STEPS.find((s) => s > now + 0.5) ?? 100;
+  return [...VOLUME_STEPS].reverse().find((s) => s < now - 0.5) ?? VOLUME_STEPS[0];
+}
+/** a video's analysis made for this school level also serves the learner's level now (the same or a higher one) */
+const analysisCovers = (cachedLevel: string | undefined): boolean => {
+  const a = CEFR_ORDER.indexOf(cachedLevel ?? ''), b = CEFR_ORDER.indexOf(settings.learnerLevel);
+  return a >= 0 && b >= 0 && a <= b;
+};
+const CEFR_ORDER = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+/** MY LEVEL, 0 (easiest) … 100 (hardest): the slider's number (before it was ever moved: the old A1–C2 level as a number) */
+const myLevel = (): number => myLevelOf(extras, settings.learnerLevel);
+/** "hi bro" (also heard as "hey bro", "high bro", "hi bruh") = the voice call */
+const HI_BRO = /\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/i;
+const VOICE_HELP = 'Voice on: “hello” = explain the last part · “hi bro” = call the tutor · “I know” · “stop” · “play” · “bye” = the tutor goes, the video plays.';
 function saysBye(lower: string): boolean {
   if (/\b(bye|buy|by)[\s-]*(bye|buy|by)\b/.test(lower)) return true;
   const words = lower.replace(/[^a-z' ]/g, ' ').trim().split(/\s+/).filter((w) => w && !/^(ok|okay|oh|um|uh|well|so|and)$/.test(w));
@@ -3922,6 +4214,65 @@ function video(): HTMLVideoElement | null {
 // ---------------------------------------------------------------------------------------------------------------
 /** My tutor on: the tutor; off in the iPhone / iPad app: free mode (no AI); off in Chrome / Safari: nothing (as before) */
 function wantedMode(): Mode | null { return extras.tutorOn ? 'tutor' : (window as unknown as { __ytcShimYT?: unknown }).__ytcShimYT ? 'free' : null; }
+
+// ---------------------------------------------------------------------------------------------------------------
+// full screen both ways (the app): the video over the whole window (class dr-full). The phone turned on its side =
+// full screen by itself (an iPad: only with its switch, landscape is its normal way); YouTube's own full-screen
+// button and the app's "Full screen" button switch it by hand, which holds until the device is turned again.
+// ---------------------------------------------------------------------------------------------------------------
+let fullManual: boolean | null = null;
+let fullWasLand: boolean | null = null;
+const wantFull = (): boolean => TOUCH && location.pathname === '/watch' && (fullManual ?? (innerWidth > innerHeight && (extras.fullOnTurn ?? !IPAD)));
+function postLayout(): void {
+  try {
+    const h = (window as unknown as { webkit?: { messageHandlers?: { ytc?: { postMessage(o: unknown): unknown } } } }).webkit?.messageHandlers?.ytc;
+    void Promise.resolve(h?.postMessage({ kind: 'layout', full: document.documentElement.classList.contains('dr-full'), lay: lay() })).catch(() => undefined);
+  } catch { /* not the app */ }
+}
+function applyFull(): void {
+  if (!TOUCH) return;
+  const land = innerWidth > innerHeight;
+  // (the device was turned: the choice by hand is over, the turn decides again)
+  if (fullWasLand !== null && fullWasLand !== land) fullManual = null;
+  fullWasLand = land;
+  if (location.pathname !== '/watch') fullManual = null;
+  const on = wantFull();
+  const root = document.documentElement;
+  if (root.classList.contains('dr-full') === on) return;
+  root.classList.toggle('dr-full', on);
+  postLayout();
+  window.dispatchEvent(new Event('resize'));
+}
+/** the "Full screen" button, YouTube's full-screen button: the other way round */
+function toggleFull(): boolean {
+  if (!TOUCH || location.pathname !== '/watch') return false;
+  fullManual = !wantFull();
+  applyFull();
+  return true;
+}
+function wireFull(): void {
+  if (!TOUCH) return;
+  window.addEventListener('resize', () => applyFull());
+  setInterval(applyFull, 700);
+  // YouTube's own full-screen button: our full screen instead (its own would open Apple's player, without the tutor)
+  const onTap = (ev: Event) => {
+    if (location.pathname !== '/watch') return;
+    const hit = ev.composedPath().some((n) => n instanceof Element && (n.matches('.ytp-fullscreen-button, .fullscreen-icon, .ytmFullscreenButtonHost, button[aria-label*="ull screen" i], button[aria-label*="ullscreen" i]')));
+    if (!hit) return;
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    if (ev.type === 'click') toggleFull();
+  };
+  for (const type of ['click', 'touchend'] as const) window.addEventListener(type, onTap, true);
+  // (the page's own script asked for Apple's player: page-hooks.js stopped it and tells us)
+  document.addEventListener('ytc-fs-request', () => { if (!document.documentElement.classList.contains('dr-full')) { fullManual = true; applyFull(); } });
+  document.documentElement.dataset.ytcTutor = '1';
+  // (the last guard: Apple's player opened anyway: out of it, into ours)
+  document.addEventListener('webkitbeginfullscreen', (ev) => {
+    const v = ev.target as (HTMLVideoElement & { webkitExitFullscreen?: () => void }) | null;
+    try { v?.webkitExitFullscreen?.(); } catch { /* it stays */ }
+    fullManual = true; applyFull();
+  }, true);
+}
 
 function refresh(): void {
   const api = window.__ytcApi;
@@ -4018,6 +4369,17 @@ async function boot(): Promise<void> {
       extras = await store.patchExtras(first);
     }
   }
+  // 3.8, once: ONE level 0-100 (the old A1–C2 level as a number, B2 = 56) with the three switches (no shares any more);
+  // on a phone or iPad the big page is off in Video mode until its switch turns it on (the learner's wish of 7 Nov)
+  if ((raw.migrated ?? 0) < 4) {
+    const p: Partial<store.YtExtras> = {};
+    if (typeof raw.myLevel !== 'number') p.myLevel = myLevelOf(null, settings.learnerLevel);
+    if (TOUCH && raw.migrated !== undefined) p.stageOn = false;
+    if (Object.keys(p).length) extras = await store.patchExtras(p);
+  }
+  if (TOUCH && raw.migrated === undefined && raw.stageOn === undefined) extras = await store.patchExtras({ stageOn: false });
+  // (the school level the prompts use always follows the slider)
+  if (typeof extras.myLevel === 'number' && levelToCefr(extras.myLevel) !== settings.learnerLevel) settings = await store.patchSettings({ learnerLevel: levelToCefr(extras.myLevel) as Settings['learnerLevel'] });
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
     // (the finder's voice note has the microphone: the tutor lets it go meanwhile)
@@ -4042,6 +4404,16 @@ async function boot(): Promise<void> {
       if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
       if (id === 'check') { window.__ytcApi?.showReport?.(); return !!window.__ytcApi?.showReport; }
       if (id === 'find') return openVideoFinder();
+      if (id === 'full') return toggleFull();
+      // the tutor quieter / louder, one step (the app's quick control): it counts at once, also during an explanation or a call
+      if (id === 'quieter' || id === 'louder') {
+        const now = extras.teacherVolume ?? 60;
+        const next = stepVolume(now, id === 'louder' ? 1 : -1);
+        extras = { ...extras, teacherVolume: next, wordVolume: next };
+        void store.patchExtras({ teacherVolume: next, wordVolume: next });
+        session?.volumeStepped(next);
+        return true;
+      }
       if (id === 'oneButton' && !session) { void store.patchExtras({ oneButton: false }); return true; }
       if (id === 'sleep') { if (!session) return false; const m = sleepMinutes() > 30 ? 0 : sleepMinutes() > 0 ? 60 : 30; setSleep(m); return true; }
       return session ? session.action(id) : false;
@@ -4061,6 +4433,8 @@ async function boot(): Promise<void> {
     }
     if (ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...(ch[store.STORAGE_KEYS.vocab].newValue?.words ?? {}) }, marked: {} }; session?.countKnown(); }
     if (ch[store.STORAGE_KEYS.keys]) session?.keysChanged({ ...(ch[store.STORAGE_KEYS.keys].newValue ?? {}) });
+    // (another device's "words heard" came in with the online copy)
+    if (ch[store.HEARD_KEY]?.newValue) session?.heardCameIn(ch[store.HEARD_KEY].newValue);
     if (ch[store.LEVEL_KEY]) { levelMeta = { ...EMPTY_META, ...(ch[store.LEVEL_KEY].newValue as Partial<LevelMeta> | undefined) }; session?.levelChanged(); }
     if (ch.drAzureVoices) void session?.loadAzureAvail().then(() => session?.renderQuickIfOpen());
   });
@@ -4099,6 +4473,7 @@ async function boot(): Promise<void> {
   });
   // YouTube is a single-page app: a new video = a new session
   document.addEventListener('yt-navigate-finish', () => { setTimeout(refresh, 300); devCheck(); });
+  wireFull();
   setInterval(() => { const id = location.pathname === '/watch' ? window.__ytcApi?.videoId() : null; if ((session?.videoId ?? null) !== (id && wantedMode() ? id : null)) refresh(); }, 1500);
   refresh();
   backupSoon();

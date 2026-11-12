@@ -10,9 +10,9 @@ async function diagnose() {
   const out = [], problems = [];
   const add = (k, v) => out.push(k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v)));
   const man = chrome.runtime.getManifest();
-  const app = !!self.__ytcShimYT; // (the iPhone app YT Learn)
+  const app = !!self.__ytcShimYT; // (the iPhone / iPad app, I Know)
   const phone = !!self.__ytcSafari || app;
-  add('Extension', man.version + (app ? ' (YT Learn app)' : phone ? ' (Safari)' : ' (Chrome)') + ' · ' + new Date().toLocaleString());
+  add('Extension', man.version + (app ? ' (I Know app)' : phone ? ' (Safari)' : ' (Chrome)') + ' · ' + new Date().toLocaleString());
   try { add('Device', (self.navigator && navigator.userAgent || '').slice(0, 140)); } catch (e) { /* ignore */ }
   const st = await chrome.storage.local.get(null).catch(() => ({}));
   const ex = st.drExtras || {}, ds = st.drSettings || {}, ks = st.drKeys || {};
@@ -52,7 +52,7 @@ async function diagnose() {
   const db = st.drDbStatus;
   if (db) {
     add('Vocabulary file', db);
-    if (db.noDevice) out.push('(the Safari version keeps the words inside the extension; the YT Learn app can share the file)');
+    if (db.noDevice) out.push('(the Safari version keeps the words inside the extension; the I Know app can share the file)');
     else if (!db.ok) problems.push('The vocabulary file was not saved: ' + (db.notInstalled ? 'the helper is not installed on this Mac (All settings → Level Check shows the one command).' : db.error || 'unknown problem'));
   }
 

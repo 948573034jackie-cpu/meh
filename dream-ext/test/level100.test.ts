@@ -33,13 +33,15 @@ describe('one level, 0 (easiest) to 100 (hardest)', () => {
     expect(harderThan(1, 0)).toBe(true);
   });
   it('the old A1–C2 level becomes a number once; a number has a nearest school level', () => {
-    expect(cefrToLevel('B2')).toBe(56);
+    expect(cefrToLevel('B2')).toBe(50);
+    // (there and back: the start of a level is still that level)
+    for (const c of ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']) expect(levelToCefr(cefrToLevel(c))).toBe(c);
     expect(cefrToLevel('nonsense')).toBe(DEFAULT_LEVEL);
     expect(levelToCefr(56)).toBe('B2');
     expect(levelToCefr(0)).toBe('A1');
     expect(levelToCefr(100)).toBe('C2');
     expect(myLevelOf({ myLevel: 42 }, 'C1')).toBe(42);
-    expect(myLevelOf({}, 'C1')).toBe(73);
+    expect(myLevelOf({}, 'C1')).toBe(66);
     expect(clampLevel(140)).toBe(100);
     expect(clampLevel('x')).toBe(DEFAULT_LEVEL);
   });

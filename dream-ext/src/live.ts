@@ -124,6 +124,7 @@ export class LiveCall {
     this.audio = audio;
     pc.ontrack = (e) => {
       audio.srcObject = e.streams[0];
+      this.applyVolume();
       // Chrome may block sound until the page is clicked: then the next click starts it
       void audio.play().catch(() => {
         this.ev.state(this.state, 'Click or tap the page once to hear your tutor.');
@@ -179,7 +180,45 @@ export class LiveCall {
   }
 
   /** the teacher's volume slider moved */
-  setVolume(v: number): void { this.cfg = { ...this.cfg, volume: v }; if (this.audio) this.audio.volume = Math.max(0, Math.min(1, v)); }
+  setVolume(v: number): void { this.cfg = { ...this.cfg, volume: v }; this.applyVolume(); }
+
+  private outCtx: AudioContext | null = null;
+  private outGain: GainNode | null = null;
+  /** how the call's voice gets its volume here: the element's own volume, or a gain (an iPhone), for the diagnostics */
+  volumeBy: 'element' | 'gain' | 'none' = 'element';
+  /**
+   * The call's voice at the learner's volume. An iPhone ignores `audio.volume`, so the call could not be turned down
+   * there: on such a device the voice goes through a gain and the element itself is silent while the gain sounds.
+   * When the gain cannot sound (its audio context does not run), the element plays as it is: never a silent call.
+   */
+  private applyVolume(): void {
+    const audio = this.audio;
+    if (!audio) return;
+    const v = Math.max(0, Math.min(1, this.cfg.volume ?? 1));
+    audio.volume = v;
+    const forced = (globalThis as { __ytcBakeVolume?: boolean }).__ytcBakeVolume;
+    const ignored = typeof forced === 'boolean' ? forced : Math.abs(audio.volume - v) > 0.01;
+    // (once the gain carries the sound it keeps carrying it, also back at full volume)
+    if (!ignored && !this.outGain) { this.volumeBy = 'element'; return; }
+    const stream = audio.srcObject as MediaStream | null;
+    if (!stream) return;
+    try {
+      if (!this.outGain) {
+        const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+        const AC = w.AudioContext ?? w.webkitAudioContext;
+        if (!AC) { this.volumeBy = 'none'; return; }
+        const ctx = this.outCtx = new AC();
+        const gain = ctx.createGain();
+        ctx.createMediaStreamSource(stream).connect(gain).connect(ctx.destination);
+        this.outGain = gain;
+        const follow = () => { const on = ctx.state === 'running'; audio.muted = on; this.volumeBy = on ? 'gain' : 'none'; };
+        ctx.onstatechange = follow;
+        if (ctx.state !== 'running') void ctx.resume().then(follow, () => undefined);
+        follow();
+      }
+      this.outGain.gain.value = v;
+    } catch { audio.muted = false; this.volumeBy = 'none'; }
+  }
 
   /** new context (another part of the video, the explanation just given) */
   update(instructions: string): void {
@@ -280,6 +319,7 @@ export class LiveCall {
     this.mic?.getTracks().forEach((t) => t.stop()); this.mic = null;
     this.sendTrack?.stop(); this.sendTrack = null;
     void this.ctx?.close().catch(() => undefined); this.ctx = null;
+    if (this.outCtx) { this.outCtx.onstatechange = null; void this.outCtx.close().catch(() => undefined); this.outCtx = null; this.outGain = null; }
   }
 
   private ctx: AudioContext | null = null;
