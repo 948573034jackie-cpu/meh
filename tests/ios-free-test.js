@@ -67,7 +67,7 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
   const v1 = await vstate();
   const sayM = said(/^meticulous$/);
   ok('a hard word stops the video by itself, with no AI: "meticulous" said once, by an iOS voice', !!win && v1.paused && v1.t > 5 && v1.t < 8.5 && sayM.length === 1 && /^com\.apple\.voice\./.test(sayM[0].voice || ''), JSON.stringify({ v1, says: sayM.map((l) => l.voice) }));
-  ok('...the full-screen card: the word and its Chinese from the dictionary, nothing else', !!c1 && c1.covers && c1.word === 'meticulous' && /[一-鿿]/.test(c1.zh) && !c1.ipa && c1.buttons === 0 && c1.parts === 2, JSON.stringify(c1));
+  ok('...the full-screen card: the word, its pronunciation and its Chinese from the dictionary, nothing else', !!c1 && c1.covers && c1.word === 'meticulous' && /[一-鿿]/.test(c1.zh) && c1.ipa && c1.buttons === 0 && c1.parts === 3, JSON.stringify(c1));
   ok('...the window waits the free mode seconds (3 s here)', win && win.window.ms === 3000 && win.window.phase === 'before', JSON.stringify(win && win.window));
   // no tap: the window runs out = still to learn, the video plays on; nothing explained
   const on1 = await until(async () => { const d = await dbg(); const v = await vstate(); return d && !d.window && !d.card && d.state === 'playing' && !v.paused ? d : null; }, 10000, 100);
@@ -90,6 +90,8 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
   ok('a hard sentence: its card shows the sentence and Apple\'s translation (on the device, free)', !!swin && !!sc && sc.word === LINES[4] && sc.covers && trs.length === 1 && trs[0].text === LINES[4], JSON.stringify({ w: swin && swin.window, sc: sc || await card(), trs }));
   const on3 = await until(async () => { const d = await dbg(); const v = await vstate(); return d && !d.window && !d.card && !v.paused && v.t > 20 ? d : null; }, 12000, 100);
   ok('...no tap: still to learn, the video goes on after it (nothing explained)', !!on3 && stores.local.drVocab.words[`sentence: ${LINES[4].toLowerCase().replace(/[^a-z' ]/g, '')}`] === 'learning' && !on3.transcript.length, JSON.stringify(Object.keys(stores.local.drVocab.words).filter((k) => /^sentence/.test(k))));
+  const spotFree = await until(() => { const s = (stores.local.drSpots || {}).iosfree0001; return s && s.t > 20 && s.d > 0 && Date.now() - s.at < 8000 ? s : null; }, 8000, 100);
+  ok('free mode keeps where you are in the video too (back where you stopped)', !!spotFree, JSON.stringify((stores.local.drSpots || {}).iosfree0001));
   const zhSaved = await until(() => { const z = stores.local['drZh:iosfree0001']; return z && Object.values(z).includes('这是测试译文') ? z : null; }, 5000);
   ok('...the translation is kept with the video', !!zhSaved, JSON.stringify(zhSaved));
 

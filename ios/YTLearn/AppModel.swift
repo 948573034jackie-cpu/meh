@@ -45,6 +45,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     private var started = false
     private var jsLogs: [String] = []
     private var selfTestReport: [String: Any] = [:]
+    private var urlWatch: NSKeyValueObservation?   // the YouTube window's address (back where you stopped)
+    private var timeWatch: Timer?                   // the minute of the video, kept every 15 s
 
     override init() {
         let bridge = Bridge(world: AppModel.world)
@@ -60,11 +62,15 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         (bandOn, pageOn, videoMode) = AppModel.videoSwitches(x)
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
         vocabFolder = VocabFile.shared.folderName
-        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in Store.shared.flush() }
+        NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.leaving() }
         // back in the app: the vocabulary file may have new words from the Mac
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.syncVocabulary() }
         youtube.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
+        // (every new page, also inside YouTube's own page: the last one is opened again next time)
+        urlWatch = youtube.observe(\.url, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.rememberPage() }
+        }
 
         // (index: the number of the piece that was heard; the page acts once per piece)
         speech.onText = { [weak self] text, final, index in
@@ -85,7 +91,108 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             runSelfTest()
             return
         }
-        goHome()
+        // back where you stopped: the same page (the same video, at the same minute); the mode, the view and the
+        // switches are in My tutor's saved settings already
+        let spots = Store.shared.value(area: "local", key: "drSpots") as? [String: Any]
+        if let last = AppModel.lastPage(Store.shared.value(area: "local", key: "appLastPage"), spots: spots, now: AppModel.nowMs) {
+            youtube.load(URLRequest(url: last.url))
+            if let t = last.t { show("Back where you stopped (\(AppModel.clock(t))).") }
+        } else {
+            goHome()
+        }
+        timeWatch = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            if UIApplication.shared.applicationState == .active { self?.keepVideoTime() }
+        }
+    }
+
+    // ---- back where you stopped ----
+    static var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
+
+    /// the video of a YouTube address ("watch:abc", "shorts:abc"), or nil for any other page
+    static func videoKey(_ address: String?) -> String? {
+        guard let address = address, let parts = URLComponents(string: address) else { return nil }
+        if parts.path == "/watch", let v = parts.queryItems?.first(where: { $0.name == "v" })?.value, !v.isEmpty { return "watch:" + v }
+        if parts.path.hasPrefix("/shorts/") { return "shorts:" + parts.path.dropFirst(8) }
+        return nil
+    }
+
+    /// the YouTube page now (m.youtube.com only, without a time in its address) is kept at once (appLastPage, with
+    /// the minute of its video while it is the same video); not through storageSet: the page does not need to know
+    private func rememberPage() {
+        guard let now = youtube.url, var parts = URLComponents(url: now, resolvingAgainstBaseURL: false), parts.host == "m.youtube.com" else { return }
+        parts.queryItems = parts.queryItems?.filter { !["t", "start", "pp"].contains($0.name) }
+        if parts.queryItems?.isEmpty == true { parts.queryItems = nil }
+        guard let url = parts.url?.absoluteString else { return }
+        let old = Store.shared.value(area: "local", key: "appLastPage") as? [String: Any]
+        if (old?["url"] as? String) == url { return }
+        var page: [String: Any] = ["url": url, "at": AppModel.nowMs]
+        if let old = old, let key = AppModel.videoKey(url), AppModel.videoKey(old["url"] as? String) == key {
+            page["t"] = old["t"]
+            page["d"] = old["d"]
+        }
+        Store.shared.set(area: "local", json: AppModel.jsonString(["appLastPage": page]))
+    }
+
+    /// the minute of the video on the page is added to the kept page (then `done`: the app going away writes it at once)
+    private func keepVideoTime(then done: (() -> Void)? = nil) {
+        let js = "(()=>{const v=document.querySelector('video');if(!v||!(v.duration>0)||(window.__ytcApi&&window.__ytcApi.isAd&&window.__ytcApi.isAd()))return null;return [v.currentTime,v.duration]})()"
+        youtube.evaluateJavaScript(js, in: nil, in: AppModel.world) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .success(let value) = result, let a = value as? [NSNumber], a.count == 2 { self?.keepTime(a[0].doubleValue, a[1].doubleValue) }
+                done?()
+            }
+        }
+    }
+
+    private func keepTime(_ t: Double, _ d: Double) {
+        guard var page = Store.shared.value(area: "local", key: "appLastPage") as? [String: Any],
+              let key = AppModel.videoKey(page["url"] as? String), AppModel.videoKey(youtube.url?.absoluteString) == key else { return }
+        // (the same second as before, a paused video: nothing to write)
+        if let was = (page["t"] as? NSNumber)?.doubleValue, abs(was - t) < 1 { return }
+        page["t"] = t
+        page["d"] = d
+        page["at"] = AppModel.nowMs
+        Store.shared.set(area: "local", json: AppModel.jsonString(["appLastPage": page]))
+    }
+
+    /// the app goes to the background (or is closed): the minute of the video is kept and everything is written
+    private func leaving() {
+        let app = UIApplication.shared
+        var task = UIBackgroundTaskIdentifier.invalid
+        let end = {
+            if task != .invalid { app.endBackgroundTask(task); task = .invalid }
+        }
+        task = app.beginBackgroundTask(withName: "back where you stopped") { end() }
+        Store.shared.flush()
+        keepVideoTime {
+            Store.shared.flush()
+            end()
+        }
+    }
+
+    /// the page to open at the start: the last YouTube page (kept less than 60 days ago); a video well started and
+    /// not finished opens 3 s before its minute (the address's &t=). The minute is the app's own (kept when it went
+    /// away), else My tutor's (drSpots, every 5 s while it plays). nil: the home page.
+    static func lastPage(_ saved: Any?, spots: [String: Any]?, now: Double) -> (url: URL, t: Double?)? {
+        guard let page = saved as? [String: Any], let address = page["url"] as? String,
+              let at = (page["at"] as? NSNumber)?.doubleValue, now - at < 60 * 86400 * 1000,
+              let url = URL(string: address), url.host == "m.youtube.com" else { return nil }
+        // (a /watch address always has its ?v=)
+        guard url.path == "/watch", let key = videoKey(address) else { return (url, nil) }
+        var t = (page["t"] as? NSNumber)?.doubleValue ?? 0
+        var d = (page["d"] as? NSNumber)?.doubleValue ?? 0
+        if page["t"] == nil, let spot = spots?[String(key.dropFirst(6))] as? [String: Any] {
+            t = (spot["t"] as? NSNumber)?.doubleValue ?? 0
+            d = (spot["d"] as? NSNumber)?.doubleValue ?? 0
+        }
+        guard t > 30, t < d - 30, let back = URL(string: address + "&t=\(Int(t) - 3)s") else { return (url, nil) }
+        return (back, t - 3)
+    }
+
+    /// 957 s -> "15:57", 3725 s -> "1:02:05"
+    static func clock(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds))
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // ---- automatic test (used by the build server: launch the app with the argument -selftest) ----

@@ -13,6 +13,7 @@
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const PAGES_PORT = (+process.env.IOS_TEST_PORT || 8791) + 1;
 const H = require('./ios-harness');
 const { pw, IOS, BUILT, MIME, ok, until, sleep, source, ytScripts, sheetScripts, LINES, ttsWav, apiLog, nativeLog, fetchLog, stores, keychain, vocabWrites } = H;
 H.watchdog(6);
@@ -227,11 +228,11 @@ const api = H.startServer();
   await yt2.close();
 
   // ---- 9. the settings page in the app's sheet (its own window: the shims + the tutor's background, at document start) ----
-  const pages = http.createServer((q, r) => { const f = path.join(IOS, 'Web/dream', path.basename(q.url.split('?')[0])); if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); } r.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'text/plain' }); r.end(fs.readFileSync(f)); }).listen(8792);
+  const pages = http.createServer((q, r) => { const f = path.join(IOS, 'Web/dream', path.basename(q.url.split('?')[0])); if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); } r.writeHead(200, { 'content-type': MIME[path.extname(f)] || 'text/plain' }); r.end(fs.readFileSync(f)); }).listen(PAGES_PORT);
   const sheet = await ctx.newPage();
   sheet.on('pageerror', (e) => console.log('PAGE ERROR (settings)', String(e.message || e).slice(0, 300)));
   await sheet.addInitScript({ content: source(sheetScripts) });
-  await sheet.goto('http://localhost:8792/options.html');
+  await sheet.goto(`http://localhost:${PAGES_PORT}/options.html`);
   const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('learnerLevel'); return /saved|…/i.test(m) && l && l.value === 'B2' ? l.value : null; }), 12000);
   ok('the settings page works in the sheet: it shows your level and the saved Claude key (only its end)', shown === 'B2' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
   await sheet.fill('#key-anthropic', 'sk-ant-new-key-5678');
@@ -245,7 +246,7 @@ const api = H.startServer();
   const reader = await ctx.newPage();
   reader.on('pageerror', (e) => console.log('PAGE ERROR (reader)', String(e.message || e).slice(0, 300)));
   await reader.addInitScript({ content: source(sheetScripts) });
-  await reader.goto('http://localhost:8792/reader.html');
+  await reader.goto(`http://localhost:${PAGES_PORT}/reader.html`);
   await reader.fill('#paste', READ.join(' '));
   await reader.click('#paste-go');
   const rOpen = await until(() => reader.evaluate(() => document.body.dataset.sentences), 15000);
@@ -311,7 +312,7 @@ const api = H.startServer();
   const cardL = await lv.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); if (!c || c.hidden) return null; const r = c.getBoundingClientRect();
     return { word: (c.querySelector('.word') || {}).textContent, zh: !!c.querySelector('.zh') && /[\u4e00-\u9fff]/.test(c.textContent), ipa: !!c.querySelector('.ipa'), en: !!c.querySelector('.en'), buttons: c.querySelectorAll('button').length, parts: c.children.length,
       full: c.classList.contains('full') && r.left <= 0.5 && r.top <= 0.5 && r.width >= innerWidth - 1 && r.height >= innerHeight - 1 }; });
-  ok('a hard word: the window "Do you know …?" waits, the full-screen card shows only the word and its Chinese (no IPA, no English, no buttons)', winL && winL.window.kind !== 'sentence' && cardL && cardL.full && cardL.word === winL.window.target && cardL.zh && !cardL.ipa && !cardL.en && cardL.buttons === 0 && cardL.parts === 2, JSON.stringify({ w: winL && winL.window, cardL }));
+  ok('a hard word: the window "Do you know …?" waits, the full-screen card shows only the word, its pronunciation and its Chinese (no English, no buttons)', winL && winL.window.kind !== 'sentence' && cardL && cardL.full && cardL.word === winL.window.target && cardL.zh && cardL.ipa && !cardL.en && cardL.buttons === 0 && cardL.parts === 3, JSON.stringify({ w: winL && winL.window, cardL }));
   const micOn = await lv.evaluate(() => ({ wants: window.__ytcDream.wantsMic(), level: window.__ytcDream.micLevel() }));
   ok('the microphone listens (just talk), at the highest of its 3 levels at first', micOn.wants === true && micOn.level === 3, JSON.stringify(micOn));
   ok('...its explanation is asked for with the hard rule', !!(await until(() => apiLog.filter((r) => /These rules are absolute/.test(r.sys)).slice(nRule)[0], 10000)));
@@ -555,6 +556,34 @@ const api = H.startServer();
     JSON.stringify({ n: sExpl.length, playingWithCard: sLog.filter((s) => s.playing && s.card).slice(0, 2), st: sDone && sDone.state }));
   await fc.close();
   H.setHard([]);
+
+  // ---- 16. back where you stopped: the app opens the last page again (the same video, at its minute), and the tutor
+  // keeps the minute at once when the video stops or the app goes away ----
+  ok('the app keeps its last YouTube page (its address watched) and opens it again at the same minute (&t=), else the home page',
+    /appLastPage/.test(H.swift) && /observe\(\\\.url/.test(H.swift) && /&t=/.test(H.swift) && /willResignActiveNotification[^\n]*leaving\(\)/.test(H.swift) && /beginBackgroundTask/.test(H.swift)
+    && /withTimeInterval: 15, repeats: true/.test(H.swift) && /func start\(\)[\s\S]{0,900}lastPage\([\s\S]{0,300}goHome\(\)/.test(H.swift));
+  stores.local.drExtras = { ...stores.local.drExtras, view: 'listening', stopItemsOn: false, stopPhrasesOn: false, stopHardOn: false, stopSentences: false, explainOnStop: false, oneButton: false, voiceMode: false };
+  const sid = 'ios00000009';
+  const rs = await ctx.newPage();
+  rs.on('pageerror', (e) => console.log('PAGE ERROR (where you stopped)', String(e.message || e).slice(0, 300)));
+  await rs.goto(`https://m.youtube.com/watch?v=${sid}`);
+  await rs.addScriptTag({ content: source(ytScripts) });
+  const rdbg = () => rs.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  const rv = () => rs.evaluate(() => { const v = document.querySelector('video'); return { t: v.currentTime, paused: v.paused }; });
+  await until(async () => { const d = await rdbg(); return d && d.sentences === 10; }, 30000);
+  // (from 33 s for about 2.5 s: the 5 s save while it plays came at about 33 s; the pause is kept at its own minute)
+  await rs.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 33; return v.play(); });
+  await until(async () => { const v = await rv(); return !v.paused && v.t > 35.3; }, 10000, 40);
+  const pausedAt = await rs.evaluate(() => { const v = document.querySelector('video'); v.pause(); return v.currentTime; });
+  const spotP = await until(() => { const s = (stores.local.drSpots || {})[sid]; return s && Math.abs(s.t - pausedAt) < 0.3 ? s : null; }, 3000, 50);
+  ok('the video paused at about 35 s: its minute is kept at once (drSpots), not only every 5 s while it plays', !!spotP && pausedAt > 35 && spotP.d > 0, JSON.stringify({ pausedAt, spot: (stores.local.drSpots || {})[sid] }));
+  // the app goes to the background (the page is hidden): the minute is kept then too
+  await rs.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 42; return v.play(); });
+  await until(async () => { const v = await rv(); return !v.paused && v.t > 44.3; }, 10000, 40);
+  const hiddenAt = await rs.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); document.dispatchEvent(new Event('visibilitychange')); return document.querySelector('video').currentTime; });
+  const spotH = await until(() => { const s = (stores.local.drSpots || {})[sid]; return s && Math.abs(s.t - hiddenAt) < 0.3 ? s : null; }, 3000, 50);
+  ok('...the app going to the background (the page hidden): the minute is kept then too', !!spotH && hiddenAt > 44, JSON.stringify({ hiddenAt, spot: (stores.local.drSpots || {})[sid] }));
+  await rs.close();
 
   await browser.close();
   api.close();

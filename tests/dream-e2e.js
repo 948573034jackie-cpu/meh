@@ -9,6 +9,7 @@
 const pw = require(process.env.PWMOD || 'playwright');
 const path = require('path');
 const http = require('http');
+const PORT = +process.env.DREAM_PORT || 8790;
 const EXT = path.resolve(__dirname, '../youtube-to-claude');
 let fails = 0;
 const trace = [];
@@ -143,7 +144,7 @@ const api = http.createServer((req, res) => {
     if (/What is a gregarious man/.test(user)) return sse(req, res, 'A gregarious man loves being with people.');
     return sse(req, res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again so that nothing is wrong.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : /number six/.test(cur) ? 'This sentence simply says it is the sixth sentence.' : 'It means something simple.');
   });
-}).listen(8790);
+}).listen(PORT);
 
 (async () => {
   const ctx = await pw.chromium.launchPersistentContext(require('os').tmpdir() + '/dr-profile-' + Date.now(), {
@@ -164,12 +165,12 @@ const api = http.createServer((req, res) => {
     drKeys: { anthropic: 'sk-ant-test-key' },
     drLevel: { tests: [], currentLevel: '', log: {}, seeded: 99 }, // (no starting data: these tests have their own words)
     drExtras: { levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true, talkAfterExplain: true, migrated: 1, stopGapSec: 0 },
-    drTestBaseUrls: { anthropic: 'http://localhost:8790', openai: 'http://localhost:8790/v1' },
+    drTestBaseUrls: { anthropic: `http://localhost:${PORT}`, openai: `http://localhost:${PORT}/v1` },
     drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 1500, pauseAfterExplainMs: 1500, wordRepeats: 3, repeatWindowWords: 500, autoExplainWords: true, autoExplainPhrases: true, lastSecondsWindow: 30 } },
     voiceOn: false,
   }));
   peer = await ctx.newPage();
-  await peer.goto('http://localhost:8790/peer.html');
+  await peer.goto(`http://localhost:${PORT}/peer.html`);
 
   const yt = await ctx.newPage();
   yt.on('pageerror', (e) => console.log('PAGE ERROR', e.message));
@@ -547,7 +548,7 @@ const api = http.createServer((req, res) => {
   await until(async () => { const d = await dbg(); return !d.flow && !d.talk; }, 15000);
 
   // ---- 10e. the Microsoft voice (Azure Speech, free plan): with its key Auto uses it; the tutor speaks with it ----
-  await patch('drTestBaseUrls', { azure: 'http://localhost:8790/azure' });
+  await patch('drTestBaseUrls', { azure: `http://localhost:${PORT}/azure` });
   // (as it happened for real) the Microsoft key pasted into the ElevenLabs box: Microsoft takes it, so it is saved as Microsoft
   await sroot(() => { for (const id of ['dr-stage-host', 'dr-panel-host']) { const b = document.getElementById(id).shadowRoot.querySelector('[data-act="quick"]'); if (b && b.offsetParent) { b.click(); return; } } });
   await sleep(600);

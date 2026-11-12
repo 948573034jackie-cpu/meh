@@ -74,6 +74,9 @@ export interface YtExtras {
   phoneSizePx: number;
   /** show what the tutor says as text too (off: you only hear it) */
   showSay: boolean;
+  /** MY LEVEL, 0 (easiest) … 100 (hardest): the tutor stops by itself only for what is harder (level100.ts);
+   *  not set yet = taken from the old A1–C2 level once */
+  myLevel?: number;
   /** Level Check stops for hard WORDS: on / off, and their share of the sentences in % */
   stopItemsOn: boolean;
   capWords: number;

@@ -110,7 +110,7 @@ const apiHandler = (req, res) => {
     return sse(res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : 'It means something simple.');
   });
 };
-const PORT = 8791;
+const PORT = +process.env.IOS_TEST_PORT || 8791;   // (another port: two runs side by side)
 const FAKE = 'http://localhost:' + PORT;
 // the fake server is started by the test (startServer() once; close() it at the end)
 const startServer = () => http.createServer(apiHandler).listen(PORT);
@@ -215,7 +215,7 @@ async function newAppContext(browser, deviceName = 'iPhone 13', { device = 'phon
   if (pageScripts) await ctx.addInitScript({ content: source(pageScripts) });
   const pageHits = [];
   ctx.pageHits = pageHits;
-  ctx.on('request', (r) => { if (/api\.anthropic\.com|api\.openai\.com|tts\.speech\.microsoft\.com|localhost:8791/.test(r.url())) pageHits.push(r.url()); });
+  ctx.on('request', (r) => { if (/api\.anthropic\.com|api\.openai\.com|tts\.speech\.microsoft\.com|localhost:\d+/.test(r.url())) pageHits.push(r.url()); });
   const html = video ? makeYtHtml(makePr(video.id, video.tracks)) : ytHtml;
   const subsFor = (u) => {
     const by = video && video.json3ByUrl;

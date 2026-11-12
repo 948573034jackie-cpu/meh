@@ -1356,6 +1356,20 @@ class Session {
     v.addEventListener('seeking', onSeeking);
     document.addEventListener('fullscreenchange', onFs);
     this.offs.push(() => { v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); v.removeEventListener('seeking', onSeeking); document.removeEventListener('fullscreenchange', onFs); });
+    // where you are is kept at once when the video stops or the app goes away (not only every 5 s while it plays),
+    // so a paused video, or the app closed, opens there next time; never the time of an advert
+    const onStopped = () => { if (!window.__ytcApi?.isAd() && v.currentTime > 0) this.keepSpot(v); };
+    const onHidden = () => { if (document.visibilityState === 'hidden') onStopped(); };
+    v.addEventListener('pause', onStopped);
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onStopped);
+    this.offs.push(() => { v.removeEventListener('pause', onStopped); document.removeEventListener('visibilitychange', onHidden); window.removeEventListener('pagehide', onStopped); });
+  }
+
+  /** where you are in this video, saved (next time it goes on from here: store.resumeAt) */
+  private keepSpot(v: HTMLVideoElement): void {
+    this.spotSavedAt = Date.now();
+    void store.setSpot(this.videoId, { t: v.currentTime, d: v.duration || 0, at: Date.now() }).catch(() => undefined);
   }
 
   /** the panel follows the video when the teacher is not reading it (call mode, ads, paused, replays) */
@@ -1374,10 +1388,7 @@ class Session {
     }
     if (ad) return;
     // where you are in this video (so next time it goes on from here)
-    if (!v.paused && v.currentTime > 0 && Date.now() - this.spotSavedAt > 5000) {
-      this.spotSavedAt = Date.now();
-      void store.setSpot(this.videoId, { t: v.currentTime, d: v.duration || 0, at: Date.now() }).catch(() => undefined);
-    }
+    if (!v.paused && v.currentTime > 0 && Date.now() - this.spotSavedAt > 5000) this.keepSpot(v);
     const reading = this.playback?.state === 'playing';
     this.placeBand();
     this.paintOneButton();
@@ -3353,6 +3364,8 @@ class Session {
     document.documentElement.classList.add('dr-fullcard');
     const { lemma, word: target, kind, pos } = c;
     let zh = '';
+    // (a WORD shows its pronunciation too; a phrase or a sentence: only the text and its translation)
+    let ipa = '';
     if (kind === 'sentence') {
       // the sentence: its translation when one was made already, otherwise the Chinese of its hard words (up to 3)
       // while the device translates it (Apple's Translation, free; the card shows it as soon as it comes)
@@ -3380,8 +3393,9 @@ class Session {
         const z = look?.entry.zh;
         if (z) zh = parseGloss(z).slice(0, 2).map((g) => esc(g.zh)).filter(Boolean).join('；');
       }
+      if (kind === 'word') ipa = (this.dict?.lookup(target) ?? this.dict?.lookup(lemma))?.entry.ipa ?? '';
     }
-    cardEl.innerHTML = `<div class="word">${esc(target)}</div>${zh ? `<div class="zh here">${zh}</div>` : ''}`;
+    cardEl.innerHTML = `<div class="word">${esc(target)}</div>${ipa ? `<div class="ipa">${esc(/^[\/\[]/.test(ipa) ? ipa : `/${ipa}/`)}</div>` : ''}${zh ? `<div class="zh here">${zh}</div>` : ''}`;
     cardEl.style.removeProperty('left');
     cardEl.style.removeProperty('top');
     cardEl.style.removeProperty('bottom');
@@ -3410,7 +3424,7 @@ class Session {
   private fitFullCard(): void {
     const cardEl = this.card?.full ? this.stage?.el.querySelector<HTMLElement>('.card.full') : null;
     if (!cardEl) return;
-    const parts = Array.from(cardEl.querySelectorAll<HTMLElement>('.word, .zh'));
+    const parts = Array.from(cardEl.querySelectorAll<HTMLElement>('.word, .ipa, .zh'));
     for (const p of parts) p.style.removeProperty('font-size');
     const base = parts.map((p) => parseFloat(getComputedStyle(p).fontSize) || 20);
     const over = () => cardEl.scrollHeight > cardEl.clientHeight + 1 || parts.some((p) => p.scrollWidth > p.clientWidth + 1);

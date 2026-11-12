@@ -273,6 +273,7 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
   padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
   display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 3vh; }
 .card.full .word { font: 700 clamp(44px, 13vmin, 120px)/1.1 var(--font-serif, Georgia, serif); color: var(--fg); overflow-wrap: anywhere; max-width: 100%; }
+.card.full .ipa { font: 400 clamp(20px, 5.2vmin, 44px)/1.2 var(--font-sans, system-ui, sans-serif); color: var(--fg-muted, #aaa); max-width: 100%; overflow-wrap: anywhere; }
 .card.full .zh.here { display: block; font-size: clamp(30px, 8.5vmin, 72px); line-height: 1.3; color: var(--fg); max-width: 100%; overflow-wrap: anywhere; }
 .card.full.sentence .word { font-size: clamp(26px, 7vmin, 60px); font-weight: 600; line-height: 1.3; }
 .card.full.sentence .zh.here { font-size: clamp(22px, 5.5vmin, 46px); }
@@ -280,6 +281,9 @@ kbd { font-family: var(--font-sans); font-size: 11px; border: 1px solid var(--bo
 :host([data-phone="1"]) .stage.fullcard > .cmd, :host([data-phone="1"]) .stage.fullcard > .dock { visibility: hidden; }
 /* (a phone on its side: the word on the left, its Chinese on the right) */
 :host([data-lay="p-land"]) .stage > .card.full:not(.sentence):not(.one) { display: grid; grid-template-columns: 1fr 1fr; align-content: center; align-items: center; justify-items: center; column-gap: 6vw; }
+:host([data-lay="p-land"]) .stage > .card.full:not(.sentence):not(.one) .word { grid-column: 1; grid-row: 1; align-self: end; }
+:host([data-lay="p-land"]) .stage > .card.full:not(.sentence):not(.one) .ipa { grid-column: 1; grid-row: 2; align-self: start; }
+:host([data-lay="p-land"]) .stage > .card.full:not(.sentence):not(.one) .zh.here { grid-column: 2; grid-row: 1 / span 2; }
 :host([data-dev="pad"]) .card.full > * { max-width: 960px; }
 /* ---- Reading: the page never changes its height during an explanation (the window, the hand and the talk float over its foot) ---- */
 .stage[data-view="read"] > .cmd, .stage[data-view="read"] > .dock { position: absolute; left: 0; right: 0; bottom: 30px; z-index: 30; margin: 0 auto; }

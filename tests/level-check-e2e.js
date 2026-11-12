@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
+const PORT = +process.env.LEVEL_PORT || 8795;
 const { execFileSync } = require('child_process');
 const EXT = path.resolve(__dirname, '../youtube-to-claude');
 let fails = 0;
@@ -90,7 +91,7 @@ const api = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id: 'm', type: 'message', role: 'assistant', model: j.model, content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
   });
-}).listen(8795);
+}).listen(PORT);
 
 // ---- a real PDF, two pages ----
 function makePdf(pages) {
@@ -162,7 +163,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await sw.evaluate(() => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' }, voiceOn: false,
     drExtras: { tutorOn: true, fakeVoice: true, migrated: 1, capWords: 100, stopPhrasesOn: true, capPhrases: 100, capSentences: 0 }, // (every hard word and phrase: 100%; everything else as it comes for a new learner)
-    drTestBaseUrls: { anthropic: 'http://localhost:8795' },
+    drTestBaseUrls: { anthropic: `http://localhost:${PORT}` },
     drSettings: { learnerLevel: 'B2', ai: { hintsModel: 'claude-haiku-5-5' } },
   }));
 
