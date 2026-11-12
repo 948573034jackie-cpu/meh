@@ -41,6 +41,12 @@ final class ReaderHost: NSObject, WKNavigationDelegate {
         if ready { run() } else { waiting.append(run); open() }
     }
 
+    /// the reader goes away (Done): the reading aloud stops, the place is kept
+    func quiet() {
+        guard ready else { return }
+        web.evaluateJavaScript("window.__iknowReader && window.__iknowReader.quiet && window.__iknowReader.quiet(); 0", in: nil, in: .page, completionHandler: nil)
+    }
+
     private func storageChanged(_ obj: [String: Any], area: String, except from: WKWebView?) {
         guard ready, web !== from else { return }
         web.callAsyncJavaScript("window.__ytcStorageChanged && window.__ytcStorageChanged(obj, area)",
@@ -66,6 +72,7 @@ final class ReaderHost: NSObject, WKNavigationDelegate {
     }
 
     /// only the app's own pages are shown here; a link in a book opens nothing
+    @objc(webView:decidePolicyForNavigationAction:decisionHandler:)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         let scheme = navigationAction.request.url?.scheme?.lowercased() ?? ""
         decisionHandler(scheme == SchemeHandler.scheme || scheme == "about" || scheme == "blob" ? .allow : .cancel)
@@ -94,7 +101,10 @@ struct ReaderScreen: View {
             model.coverOpened()
             model.reader.open()
         }
-        .onDisappear { model.coverClosed() }
+        .onDisappear {
+            model.reader.quiet()
+            model.coverClosed()
+        }
     }
 }
 

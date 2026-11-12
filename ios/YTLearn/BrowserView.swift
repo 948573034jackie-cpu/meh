@@ -38,7 +38,11 @@ struct BrowserScreen: View {
         }
         .sheet(item: $list) { which in BrowserListView(browser: browser, which: which) }
         .background(Color.clear.sheet(item: $sharing) { item in ShareSheet(items: [item.url]) })
-        .alert(browser.ask?.title ?? "", isPresented: Binding(get: { browser.ask != nil }, set: { if !$0 { browser.answer(false) } }), presenting: browser.ask) { q in
+        .alert(browser.ask?.title ?? "", isPresented: Binding(get: { browser.ask != nil }, set: { on in
+            // (a button's own answer comes first; this is only for an alert that went away by itself)
+            let id = browser.ask?.id
+            if !on { DispatchQueue.main.async { if browser.ask?.id == id { browser.answer(false) } } }
+        }), presenting: browser.ask) { q in
             switch q.kind {
             case .alert:
                 Button("OK") { browser.answer(true) }

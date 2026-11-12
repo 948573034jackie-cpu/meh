@@ -1,5 +1,6 @@
 import SwiftUI
 import WebKit
+import AVFoundation
 
 /// The browser inside the app (wish 29): any website, with the tutor on it when Explanation mode is on.
 ///
@@ -76,13 +77,17 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     init(web: WKWebView) {
         self.web = web
         super.init()
+        // (the values are read on the main thread, a moment after WebKit says they changed)
+        let later: (@escaping (BrowserTab) -> Void) -> Void = { [weak self] change in
+            DispatchQueue.main.async { if let self = self { change(self) } }
+        }
         watches = [
-            web.observe(\.title, options: [.new]) { [weak self] w, _ in let v = w.title ?? ""; DispatchQueue.main.async { self?.title = v } },
-            web.observe(\.url, options: [.new]) { [weak self] w, _ in let v = w.url?.absoluteString ?? ""; DispatchQueue.main.async { if !v.isEmpty && v != "about:blank" { self?.address = v } } },
-            web.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in let v = w.estimatedProgress; DispatchQueue.main.async { self?.progress = v } },
-            web.observe(\.isLoading, options: [.new]) { [weak self] w, _ in let v = w.isLoading; DispatchQueue.main.async { self?.loading = v } },
-            web.observe(\.canGoBack, options: [.new]) { [weak self] w, _ in let v = w.canGoBack; DispatchQueue.main.async { self?.canGoBack = v } },
-            web.observe(\.canGoForward, options: [.new]) { [weak self] w, _ in let v = w.canGoForward; DispatchQueue.main.async { self?.canGoForward = v } },
+            web.observe(\.title, options: [.new]) { _, _ in later { $0.title = $0.web.title ?? "" } },
+            web.observe(\.url, options: [.new]) { _, _ in later { let v = $0.web.url?.absoluteString ?? ""; if !v.isEmpty && v != "about:blank" { $0.address = v } } },
+            web.observe(\.estimatedProgress, options: [.new]) { _, _ in later { $0.progress = $0.web.estimatedProgress } },
+            web.observe(\.isLoading, options: [.new]) { _, _ in later { $0.loading = $0.web.isLoading } },
+            web.observe(\.canGoBack, options: [.new]) { _, _ in later { $0.canGoBack = $0.web.canGoBack } },
+            web.observe(\.canGoForward, options: [.new]) { _, _ in later { $0.canGoForward = $0.web.canGoForward } },
         ]
     }
 
@@ -119,6 +124,9 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     private var shown = false
     private var listening = false
     private var micRefused = false
+    private var listenStart = Date.distantPast
+    /// the tutor's cloud voice on web pages is played by the app itself (a website's own rules cannot silence it)
+    fileprivate let audio = PageAudio()
 
     var current: BrowserTab? { tabs.first { $0.id == currentID } ?? tabs.first }
 
@@ -182,7 +190,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
             if on { run(BrowserModel.scriptSource + "\n;window.__iknowWeb&&window.__iknowWeb.setMode(true)", in: tab) }
             else { run("window.__iknowWeb&&window.__iknowWeb.setMode(false)", in: tab) }
         }
-        if !on { speaking = false; app?.tutorVoice.stop() }
+        if !on { speaking = false; app?.tutorVoice.stop(); audio.stop() }
         micRefused = false
         updateListening()
     }
@@ -202,6 +210,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     func stopTalking() {
         run("window.__iknowWeb&&window.__iknowWeb.stop()", in: current)
         app?.tutorVoice.stop()
+        audio.stop()
         speaking = false
     }
 
@@ -216,7 +225,11 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         micRefused = false
         if on { loadIfWaiting(current) }
         else {
-            for tab in tabs { run("window.__iknowWeb&&window.__iknowWeb.stop()", in: tab) }
+            // (nothing talks or plays behind the video: the tutor stops, a site's own video or sound is paused)
+            for tab in tabs where tab.waitingURL == nil && !tab.address.isEmpty {
+                run("window.__iknowWeb&&window.__iknowWeb.stop();document.querySelectorAll('video,audio').forEach(function(m){try{m.pause()}catch(e){}})", in: tab)
+            }
+            audio.stop()
             speaking = false
             saveTabs()
         }
@@ -232,7 +245,9 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         if want {
             let extras = Store.shared.value(area: "local", key: "drExtras") as? [String: Any]
             let level = (extras?["micLevel"] as? NSNumber)?.intValue ?? 3
-            app.handle(kind: "speech", body: ["op": "start", "level": level]) { _, _ in }
+            let headset = extras?["headsetMic"] as? Bool ?? false
+            listenStart = Date()
+            app.handle(kind: "speech", body: ["op": "start", "level": level, "headset": headset]) { _, _ in }
         } else {
             app.handle(kind: "speech", body: ["op": "stop"]) { _, _ in }
         }
@@ -251,8 +266,10 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }
         if type == "end" {
             // (a listening task ended by itself: the next one starts, like the video page does)
+            // (one that ended as soon as it began — no internet for the recognizer — is tried again more slowly)
             listening = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.updateListening() }
+            let wait = Date().timeIntervalSince(listenStart) < 2 ? 5.0 : 0.4
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in self?.updateListening() }
             return
         }
         current?.web.callAsyncJavaScript("window.__iknowWeb && window.__iknowWeb.heard(ev)", arguments: ["ev": event], in: nil, in: BrowserModel.world, completionHandler: nil)
@@ -461,6 +478,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
     // ---- WKNavigationDelegate ----
     private func tab(of web: WKWebView) -> BrowserTab? { tabs.first { $0.web === web } }
 
+    @objc(webView:decidePolicyForNavigationAction:decisionHandler:)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.allow); return }
         let scheme = url.scheme?.lowercased() ?? ""
@@ -474,6 +492,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         }, from: webView)
     }
 
+    @objc(webView:decidePolicyForNavigationResponse:decisionHandler:)
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         let disposition = (navigationResponse.response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased() ?? ""
         if navigationResponse.isForMainFrame && (!navigationResponse.canShowMIMEType || disposition.hasPrefix("attachment")) {
@@ -518,6 +537,7 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
 
     // ---- WKUIDelegate ----
     /// a link that wants a new window (target=_blank, window.open): a new tab
+    @objc(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:)
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame != nil { return nil }
         if tabs.count >= BrowserModel.maxTabs {
@@ -535,26 +555,31 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
         if let tab = tab(of: webView) { close(tab) }
     }
 
+    @objc(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:)
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
         put(BrowserAsk(kind: .alert, title: BrowserModel.short(webView.url?.host ?? "This page"), message: String(message.prefix(600))) { _, _ in completionHandler() }, from: webView)
     }
 
+    @objc(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:)
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         put(BrowserAsk(kind: .confirm, title: BrowserModel.short(webView.url?.host ?? "This page"), message: String(message.prefix(600))) { ok, _ in completionHandler(ok) }, from: webView)
     }
 
+    @objc(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:)
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (String?) -> Void) {
         put(BrowserAsk(kind: .prompt, title: BrowserModel.short(webView.url?.host ?? "This page"), message: String(prompt.prefix(600)), preset: defaultText ?? "") { ok, text in completionHandler(ok ? (text ?? "") : nil) }, from: webView)
     }
 
     /// websites get no camera and no microphone (the tutor's own "hello" is heard by the app, not by the page)
     @available(iOS 15.0, *)
+    @objc(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:)
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(.deny)
     }
 
     /// ... and no motion sensors
     @available(iOS 15.0, *)
+    @objc(webView:requestDeviceOrientationAndMotionPermissionForOrigin:initiatedByFrame:decisionHandler:)
     func webView(_ webView: WKWebView, requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(.deny)
     }
@@ -610,6 +635,13 @@ final class BrowserBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "resource":
             guard BrowserBridge.files.contains(body["path"] as? String ?? "") else { replyHandler(nil, nil); return }
             inner.userContentController(userContentController, didReceive: message, replyHandler: replyHandler)
+        case "audioPlay":
+            // the tutor's cloud voice: played by the app (not by the page), for the page in front only
+            guard let browser = browser, message.webView === browser.current?.web else { replyHandler(["ok": false], nil); return }
+            replyHandler(browser.audio.play(body, web: message.webView), nil)
+        case "audioStop":
+            browser?.audio.stop(id: (body["id"] as? NSNumber)?.intValue)
+            replyHandler(nil, nil)
         case "webState":
             let busy = body["busy"] as? Bool ?? false
             let web = message.webView
@@ -619,5 +651,59 @@ final class BrowserBridge: NSObject, WKScriptMessageHandlerWithReply {
             if BrowserBridge.passed.contains(kind) { inner.userContentController(userContentController, didReceive: message, replyHandler: replyHandler) }
             else { replyHandler(nil, nil) }   // keychainSet, storageRemove, openPage, vocabFile, speech, …: not for web pages
         }
+    }
+}
+
+/// Plays the tutor's cloud voice for a web page: the sound comes from the page's private script world as data, and
+/// the start and the end go back there (window.__ytcAudio). One sound at a time.
+final class PageAudio: NSObject, AVAudioPlayerDelegate {
+    private var player: AVAudioPlayer?
+    private var id = 0
+    private weak var web: WKWebView?
+
+    private func tell(_ event: String, id: Int, web: WKWebView?) {
+        let ev: [String: Any] = ["id": id, "event": event]
+        web?.callAsyncJavaScript("window.__ytcAudio && window.__ytcAudio(ev)", arguments: ["ev": ev], in: nil, in: BrowserModel.world, completionHandler: nil)
+    }
+
+    /// { ok, duration } for the page; the sound starts at once
+    func play(_ body: [String: Any], web: WKWebView?) -> [String: Any] {
+        stop()
+        guard let id = (body["id"] as? NSNumber)?.intValue, let b64 = body["b64"] as? String, let data = Data(base64Encoded: b64), !data.isEmpty else { return ["ok": false] }
+        // (heard with the Ring/Silent switch on silent; an open microphone session, play-and-record, is left alone)
+        let category = AVAudioSession.sharedInstance().category
+        if category != .playback && category != .playAndRecord { AudioSession.set(mode: "play") }
+        guard let p = try? AVAudioPlayer(data: data) else { return ["ok": false] }
+        p.delegate = self
+        p.enableRate = true
+        p.rate = Float(min(2.5, max(0.5, (body["rate"] as? NSNumber)?.doubleValue ?? 1)))
+        p.volume = Float(min(1, max(0, (body["volume"] as? NSNumber)?.doubleValue ?? 1)))
+        guard p.prepareToPlay(), p.play() else { return ["ok": false] }
+        player = p
+        self.id = id
+        self.web = web
+        tell("start", id: id, web: web)
+        return ["ok": true, "duration": p.duration]
+    }
+
+    /// `id` nil: whatever plays
+    func stop(id only: Int? = nil) {
+        guard let p = player, only == nil || only == id else { return }
+        player = nil
+        p.delegate = nil
+        p.stop()
+        tell("cancel", id: id, web: web)
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === self.player else { return }
+        self.player = nil
+        tell(flag ? "end" : "error", id: id, web: web)
+    }
+
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        guard player === self.player else { return }
+        self.player = nil
+        tell("error", id: id, web: web)
     }
 }

@@ -244,6 +244,13 @@ const epub = (extra = {}) => Buffer.from(zipSync(Object.fromEntries(Object.entri
     return { letters: rg.toString().length, width: Math.round(document.getElementById('text').getBoundingClientRect().width), screen: innerWidth };
   });
   ok('on an iPad the text is a column of 50 to 75 letters', col.letters >= 50 && col.letters <= 75, JSON.stringify(col));
+  // the browser's "Reader" button hands an article's text to this page (ReaderHost.openText in the app)
+  const art = await pd.evaluate(() => window.__iknowReader.openText('An article of the web', 'The headline of the article\n\nIts first paragraph is short. It has a ubiquitous word.\n\nIts second paragraph ends here.'));
+  const web = await until(() => pd.evaluate(() => (document.getElementById('title').textContent === 'An article of the web' ? { n: document.body.dataset.sentences, text: document.getElementById('text').textContent, mark: [...document.querySelectorAll('#text .w')].find((x) => x.textContent === 'ubiquitous').className } : null)), 15000);
+  ok('an article sent by the browser opens here as a book (its title, its paragraphs, the marks)', art === true && web && web.n === '4' && /^The headline of the article/.test(web.text) && /\bhard\b/.test(web.mark), JSON.stringify(web));
+  await pd.tap('#back');
+  const both = await until(() => pd.evaluate(() => (document.querySelectorAll('#shelf .book').length >= 2 ? document.getElementById('shelf').innerText : null)), 5000);
+  ok('...and it is kept in the library like any other text', /An article of the web/.test(String(both)), String(both).replace(/\n/g, ' | '));
   await pd.close();
   await pad.close();
 

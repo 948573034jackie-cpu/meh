@@ -678,6 +678,8 @@ async function openPasted(title: string, text: string, kind: 'text' | 'web' = 't
 (window as unknown as { __iknowReader?: unknown }).__iknowReader = {
   openText: (title: string, text: string) => openPasted(title.trim() || text.trim().split(/\s+/).slice(0, 6).join(' '), text, 'web').then(() => true, (e: Error) => { $('open-msg').textContent = e.message; return false; }),
   library: () => showLibrary(),
+  /** the app's reader goes away (Done): nothing is read aloud behind the video; the place is kept */
+  quiet: () => { if (shelf) { setPlaying(false); cancelAll(); savePlaceNow(); } },
 };
 
 $('file').addEventListener('change', () => { const f = $<HTMLInputElement>('file').files?.[0]; if (f) void openFile(f); });

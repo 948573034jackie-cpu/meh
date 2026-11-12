@@ -11,6 +11,7 @@ import { explain as aiExplain, completeStream } from './ai-client';
 import * as store from './store';
 import { cloudEngine, resolveVoice, VoiceWithBackup } from './voice';
 import { RuleGuard, type RuleRequest } from './level-rule';
+import { NativeAudioEngine } from './native-audio';
 
 type Job = { done: Promise<string>; cancel(): void };
 
@@ -27,7 +28,8 @@ export class TutorSay {
   /** the sentence being said now (the microphone must not take it for a command) */
   nowSaying = '';
 
-  constructor(private onBusy: (busy: boolean) => void = () => undefined) {}
+  /** `appPlays`: a cloud voice's sound is played by the app itself, not by the page (the app's browser: see native-audio.ts) */
+  constructor(private onBusy: (busy: boolean) => void = () => undefined, private appPlays = false) {}
 
   get busy(): boolean { return this.active > 0; }
 
@@ -40,7 +42,7 @@ export class TutorSay {
     this.rate = settings.voice.rate;
     const kind = free ? 'mac' : resolveVoice(extras.voice, keys);
     if (kind === 'mac') { this.tts = mac; this.voiceId = macVoice; return; }
-    this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), mac, () => macVoice, () => undefined);
+    this.tts = new VoiceWithBackup(this.appPlays ? new NativeAudioEngine(kind) : cloudEngine(kind, 'en'), mac, () => macVoice, () => undefined);
     this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
   }
 
@@ -92,7 +94,13 @@ export class TutorSay {
       for (;;) {
         if (mine !== this.run) { job.cancel(); return { text: '', error: '', stopped: true }; }
         const next = queue.shift();
-        if (next !== undefined) { if (!(await this.speak(next))) { job.cancel(); return { text: '', error: '', stopped: true }; } continue; }
+        if (next !== undefined) {
+          const said = this.speak(next);
+          // (the sentence after this one is made while this one is said: no gap between them)
+          if (queue.length) this.tts?.prefetch?.(queue[0], this.voiceId, this.rate);
+          if (!(await said)) { job.cancel(); return { text: '', error: '', stopped: true }; }
+          continue;
+        }
         if (finished) break;
         await new Promise<void>((r) => { wake = r; });
         wake = null;

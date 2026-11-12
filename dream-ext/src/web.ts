@@ -28,7 +28,7 @@ import { TutorSay } from './tutor-say';
 import { markOf, cardOf } from './word-level';
 import { myLevelOf, levelToCefr } from './level100';
 import { markLearning, markKnown, saveExplained } from './word-save';
-import { appPost, nativeTranslate } from './native-bridge';
+import { appPost, inApp, nativeTranslate } from './native-bridge';
 import { wordAt, wordsIn, sentenceAt, visibleText, tapDecision, articleText, screenPrompt, voiceCommand, type ScreenBlock, type PageBlock } from './web-text';
 import type { RuleRequest } from './level-rule';
 import type { TeachLength } from './teacher-text';
@@ -68,7 +68,8 @@ class WebTutor {
   private settings: Settings | null = null;
   private card: WordCard | null = null;
   private cardFor: { lemma: string; word: string; zh: string; hit: Hit | null } | null = null;
-  private say = new TutorSay((busy) => { void appPost({ kind: 'webState', busy }); this.debug(); });
+  // (the tutor's cloud voice is played by the app itself: a website's own rules cannot silence it)
+  private say = new TutorSay((busy) => { void appPost({ kind: 'webState', busy }); this.debug(); }, inApp());
   private pending: { at: number; x: number; y: number; timer: ReturnType<typeof setTimeout> } | null = null;
   private lastDouble = 0;
   /** the bubble follows a link: the click made here is the site's own */

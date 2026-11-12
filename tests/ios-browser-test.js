@@ -60,6 +60,12 @@ async function bridge(page, b) {
     case 'nativeFetch': if (!fetchAllowed(b.url)) throw new Error('address not allowed'); return H.native(page, b);
     case 'resource': return FILES.has(b.path) ? H.native(page, b) : null;
     case 'webState': return null;
+    case 'audioPlay': { // PageAudio in Browser.swift: the app plays the sound, then says it started and ended
+      const id = b.id;
+      setTimeout(async () => { try { await page.evaluate((i) => window.__ytcAudio({ id: i, event: 'start' }), id); await sleep(60); await page.evaluate((i) => window.__ytcAudio({ id: i, event: 'end' }), id); } catch (e) { /* page gone */ } }, 10);
+      return { ok: !!b.b64 && b.b64.length > 100, duration: 0.25 };
+    }
+    case 'audioStop': return null;
     default: return PASSED.has(b.kind) ? H.native(page, b) : null;
   }
 }
@@ -243,7 +249,7 @@ async function newContext(browser) {
 
   // ---- 9. what the page's script asked of the app; the keys ----
   const kinds = [...new Set(sent.map((b) => b.kind))];
-  const allowed = new Set(['storageAll', 'storageSet', 'keychainGet', 'nativeFetch', 'resource', 'webState', ...PASSED]);
+  const allowed = new Set(['storageAll', 'storageSet', 'keychainGet', 'nativeFetch', 'resource', 'webState', 'audioPlay', 'audioStop', ...PASSED]);
   ok('the script asks the app only for what it may have (no vocabulary file, no saving of keys, no app pages)', kinds.every((k) => allowed.has(k)) && !kinds.includes('vocabFile') && !kinds.includes('keychainSet') && !kinds.includes('openPage') && !kinds.includes('speech'), JSON.stringify(kinds));
   ok('...its requests go only to the AI service, its files are only the dictionary and the word list', sent.filter((b) => b.kind === 'nativeFetch').every((b) => /^https:\/\/api\.anthropic\.com\//.test(b.url)) && sent.filter((b) => b.kind === 'resource').every((b) => FILES.has(b.path)) && sent.filter((b) => b.kind === 'storageSet').every((b) => Object.keys(JSON.parse(b.json)).every((k) => WRITE_KEYS.includes(k))), JSON.stringify([...new Set(sent.filter((b) => b.kind === 'storageSet').flatMap((b) => Object.keys(JSON.parse(b.json))))]));
   const leak = await page.evaluate(() => document.documentElement.outerHTML);
@@ -281,7 +287,56 @@ async function newContext(browser) {
   ok('...the tapped word is kept as learning', stores.local.drVocab.words.lugubrious === 'learning');
   await fp.close();
 
+  // ---- 12. the tutor's real voice (Microsoft): made by the service, PLAYED BY THE APP, not by an audio element of the page ----
+  stores.local.drExtras = extras({ fakeVoice: false, voice: 'azure', azureRegion: 'eastus' });
+  stores.local.drSettings = { learnerLevel: 'B2' };
+  keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key', azure: 'azure-test-key' });
+  const vp = await ctx.newPage();
+  vp.on('pageerror', (e) => console.log('PAGE ERROR (voice)', String(e.message || e).slice(0, 300)));
+  await vp.goto(SITE + '/');
+  await vp.evaluate(() => { window.madeAudio = 0; const A = window.Audio; window.Audio = function (...a) { window.madeAudio++; return new A(...a); }; });
+  await vp.addScriptTag({ content: bundle });
+  await until(() => vp.evaluate(() => CSS.highlights.has('iknow-hard')), 20000);
+  const sentVoice = sent.length;
+  const vb = await vp.evaluate(() => { const n = document.querySelector('#p2').firstChild; const i = n.data.indexOf('lugubrious'); const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + 10); const b = r.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; });
+  await vp.touchscreen.tap(vb[0], vb[1]);
+  const played = await until(() => { const a = sent.slice(sentVoice).filter((b) => b.kind === 'audioPlay'); return a.length >= 2 ? a : null; }, 20000);
+  const tts = sent.slice(sentVoice).filter((b) => b.kind === 'nativeFetch' && /tts\.speech\.microsoft\.com/.test(b.url));
+  ok('the Microsoft voice says the explanation: the sound is made by the service (through the app) and played by the app, sentence after sentence', !!played && tts.length >= 2 && played.every((b) => b.b64.length > 100 && b.rate > 0) && (await vp.evaluate(() => window.madeAudio)) === 0 && !sent.slice(sentVoice).some((b) => b.kind === 'speak'), JSON.stringify({ played: played && played.length, tts: tts.length, pageAudio: await vp.evaluate(() => window.madeAudio) }));
+  ok('...the page itself still asked no service', ctx.hits.length === 0, JSON.stringify(ctx.hits.slice(0, 2)));
+  await vp.close();
+
   await ctx.close();
+
+  // ---- 13. the browser (or the reader) comes in front: the video and its tutor go quiet, with no "you paused" explanation ----
+  Object.assign(stores.local, {
+    drExtras: { capWords: 100, stopPhrasesOn: true, capPhrases: 100, capSentences: 0, phoneSet: true, view: 'listening', levelAsk: false, levelMode: false, tutorOn: true, fakeVoice: true, explainOnStop: true, panel: true, band: 'auto', talkAfterExplain: false, migrated: 9, stopGapSec: 0, callEngine: 'claude', talkSilenceSec: 0, voiceMode: false, aiSentences: false, zhLines: false },
+    drSettings: { learnerLevel: 'B2', listen: { commandWindowMs: 2500, pauseAfterExplainMs: 800, wordRepeats: 1, repeatWindowWords: 500, autoExplainWords: false, autoExplainPhrases: false, lastSecondsWindow: 20 } },
+    drVocab: { words: { meticulous: 'known', ephemeral: 'known', gregarious: 'known' }, marked: {} },
+  });
+  keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key' });
+  const app = await H.newAppContext(browser, 'iPhone 13', { device: 'phone' });
+  const yt = await app.newPage();
+  yt.on('pageerror', (e) => console.log('PAGE ERROR (video)', String(e.message || e).slice(0, 300)));
+  await yt.goto('https://m.youtube.com/watch?v=iosbrowse01');
+  await yt.addScriptTag({ content: H.source(H.ytScripts) });
+  const ydbg = () => yt.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
+  await until(async () => { const d = await ydbg(); return d && d.sentences === 10; }, 30000);
+  await yt.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 16.5; return v.play(); });
+  const playing = await until(() => yt.evaluate(() => { const v = document.querySelector('video'); return !v.paused && v.currentTime > 17; }), 15000);
+  const paused0 = apiLog.filter((r) => /The learner just paused the video/.test(r.user)).length;
+  // (what AppModel.coverOpened runs in the YouTube window)
+  const hush = /let js = "(\(function\(\)\{var d=window\.__ytcDream[^\n]*?;0)"/.exec(rs);
+  const done = hush ? await yt.evaluate(hush[1].replace(/;0$/, ';window.__ytcDream.action("hush")')) : null;
+  await sleep(1500);
+  const after = await yt.evaluate(() => { const v = document.querySelector('video'); return { paused: v.paused, t: v.currentTime }; });
+  ok('when the browser or the reader opens, the video stops and nothing is explained ("hush", not "you paused")', !!playing && !!hush && done === true && after.paused && apiLog.filter((r) => /The learner just paused the video/.test(r.user)).length === paused0, JSON.stringify({ playing, done, after, hush: !!hush }));
+  await yt.evaluate((js) => (0, eval)(js), hush[1]);
+  await sleep(1200);
+  ok('...and asked again while it is quiet, the video does not start by itself', (await yt.evaluate(() => document.querySelector('video').paused)) === true);
+  await yt.close();
+  await app.close();
+
   await browser.close();
   site.close();
   api.close();
