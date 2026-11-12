@@ -22,6 +22,8 @@ struct ContentView: View {
                 // Home, Paste link and App settings are the last buttons of the bottom bar.
                 WebHost(webView: model.youtube)
                     .ignoresSafeArea(.container, edges: compactFull ? .all : [])
+                    // (My tutor's pages; on the web view, which is always there: the bar is not, in full screen)
+                    .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
                 if !hideBar { tutorBar }
             }
             if hideBar { sideRail.padding(.trailing, 6) }
@@ -116,8 +118,6 @@ struct ContentView: View {
             .padding(.vertical, 4)
         }
         .background(Color(.secondarySystemBackground))
-        // (its own view: two sheets on one view do not work on every iOS)
-        .sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) }
     }
 
     /// a button of the bar: a symbol with a word under it. `big`: the main ones (at least 60 pt wide and 48 high; an

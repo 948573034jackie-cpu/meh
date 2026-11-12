@@ -606,7 +606,7 @@ export async function saveTestResult(shown: TestGroups, knownKeys: ReadonlySet<s
   }
   await area().set({ [K.vocab]: v });
   await updateLevel((m) => ({ ...m, tests: [...m.tests, { date: today, source, scores, level: est.label }], currentLevel: `about ${est.label}`, log: { ...m.log, ...log } }));
-  await patchSettings({ learnerLevel: est.cefr });
+  // (3.8: the learner's level is their own slider, 0-100; a word test no longer moves it. It still adds its words.)
   return est;
 }
 

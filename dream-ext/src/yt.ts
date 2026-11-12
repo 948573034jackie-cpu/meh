@@ -1124,7 +1124,7 @@ class Session {
       const entries = await store.getEntries();
       const dict = this.dict, zipf = this.zipf, mine = myLevel();
       const r = dailyReview({
-        words: vocab.words, entries, knownAfter: extras.knownAfter ?? 7, now, myLevel: mine,
+        words: vocab.words, entries, knownAfter: extras.knownAfter ?? 7, now, myLevel: mine, statusAt: (lemma) => levelMeta.log?.[lemma]?.date,
         numberOf: (lemma) => wordNumber(zipf(lemma), null, dict.lookup(lemma)?.entry.level ?? null),
       });
       for (const lemma of r.nowKnown) { this.controller?.markKnown(lemma); await this.changeStatus(lemma, 'known'); }
@@ -1525,8 +1525,19 @@ class Session {
       ev.preventDefault(); ev.stopImmediatePropagation();
       this.oneTapExplain();
     };
+    // (a finger: YouTube's player may stop the click of a touch, so a short, still touch counts by itself)
+    let vDown: { x: number; y: number; at: number } | null = null;
+    const onVideoDown = (ev: TouchEvent) => { const t = ev.touches[0]; vDown = t ? { x: t.clientX, y: t.clientY, at: Date.now() } : null; };
+    const onVideoUp = (ev: TouchEvent) => {
+      const d = vDown, t = ev.changedTouches[0];
+      vDown = null;
+      if (!d || !t || Date.now() - d.at > 500 || Math.hypot(t.clientX - d.x, t.clientY - d.y) > 12) return;
+      onVideoTap(ev);
+    };
     window.addEventListener('click', onVideoTap, true);
-    this.offs.push(() => window.removeEventListener('click', onVideoTap, true));
+    window.addEventListener('touchstart', onVideoDown, { capture: true, passive: true });
+    window.addEventListener('touchend', onVideoUp, true);
+    this.offs.push(() => { window.removeEventListener('click', onVideoTap, true); window.removeEventListener('touchstart', onVideoDown, true); window.removeEventListener('touchend', onVideoUp, true); });
     // where you are is kept at once when the video stops or the app goes away (not only every 5 s while it plays),
     // so a paused video, or the app closed, opens there next time; never the time of an advert
     const onStopped = () => { if (!window.__ytcApi?.isAd() && v.currentTime > 0) this.keepSpot(v); };
@@ -4072,7 +4083,7 @@ class Session {
     this.panel?.host.remove();
     this.band?.host.remove();
     this.stage?.host.remove();
-    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-fullcard');
+    document.documentElement.classList.remove('dr-panel', 'dr-panel-under', 'dr-band', 'dr-hide-cc', 'dr-cc-off', 'dr-stage', 'dr-fullcard', 'dr-split-r', 'dr-split-b');
     applyPageLook(false);
   }
 
@@ -4288,6 +4299,8 @@ function wantedMode(): Mode | null { return extras.tutorOn ? 'tutor' : (window a
 // ---------------------------------------------------------------------------------------------------------------
 let fullManual: boolean | null = null;
 let fullWasLand: boolean | null = null;
+/** when a full-screen button was pressed (the phone may turn right after it: that turn must not undo the press) */
+let fullToggledAt = 0;
 const wantFull = (): boolean => TOUCH && location.pathname === '/watch' && (fullManual ?? (innerWidth > innerHeight && (extras.fullOnTurn ?? !IPAD)));
 function postLayout(): void {
   try {
@@ -4299,7 +4312,7 @@ function applyFull(): void {
   if (!TOUCH) return;
   const land = innerWidth > innerHeight;
   // (the device was turned: the choice by hand is over, the turn decides again)
-  if (fullWasLand !== null && fullWasLand !== land) fullManual = null;
+  if (fullWasLand !== null && fullWasLand !== land && Date.now() - fullToggledAt > 1500) fullManual = null;
   fullWasLand = land;
   if (location.pathname !== '/watch') fullManual = null;
   const on = wantFull();
@@ -4313,6 +4326,7 @@ function applyFull(): void {
 function toggleFull(): boolean {
   if (!TOUCH || location.pathname !== '/watch') return false;
   fullManual = !wantFull();
+  fullToggledAt = Date.now();
   applyFull();
   return true;
 }
@@ -4323,12 +4337,33 @@ function wireFull(): void {
   // YouTube's own full-screen button: our full screen instead (its own would open Apple's player, without the tutor)
   const onTap = (ev: Event) => {
     if (location.pathname !== '/watch') return;
-    const hit = ev.composedPath().some((n) => n instanceof Element && (n.matches('.ytp-fullscreen-button, .fullscreen-icon, .ytmFullscreenButtonHost, button[aria-label*="ull screen" i], button[aria-label*="ullscreen" i]')));
+    const FS = '.ytp-fullscreen-button, .fullscreen-icon, .ytmFullscreenButtonHost, button[aria-label*="ull screen" i], button[aria-label*="ullscreen" i]';
+    let hit = ev.composedPath().some((n) => n instanceof Element && n.matches(FS));
+    if (!hit) {
+      // (the tutor's subtitle line can lie over that corner of the video: a touch ON the button's place is the
+      // button's, whatever is drawn over it)
+      const t = (ev as TouchEvent).changedTouches?.[0];
+      const x = t ? t.clientX : (ev as MouseEvent).clientX, y = t ? t.clientY : (ev as MouseEvent).clientY;
+      if (typeof x === 'number' && typeof y === 'number' && (x || y)) {
+        hit = Array.from(document.querySelectorAll<HTMLElement>(FS)).some((b) => {
+          const r = b.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && getComputedStyle(b).visibility !== 'hidden' && x >= r.left - 4 && x <= r.right + 4 && y >= r.top - 4 && y <= r.bottom + 4;
+        });
+      }
+    }
     if (!hit) return;
     ev.preventDefault(); ev.stopImmediatePropagation();
-    if (ev.type === 'click') toggleFull();
+    // (a finger: iOS makes no click after a touchend that was stopped, so the touch itself switches; a click that
+    // still follows it within a moment is the same press)
+    if (ev.type === 'click' && Date.now() - fullTouchAt < 700) return;
+    if (ev.type === 'touchend') fullTouchAt = Date.now();
+    toggleFull();
   };
+  let fullTouchAt = 0;
   for (const type of ['click', 'touchend'] as const) window.addEventListener(type, onTap, true);
+  // (a new page: the app is told at once whether the video is full screen, so its bar is never left hidden)
+  applyFull();
+  postLayout();
   // (the page's own script asked for Apple's player: page-hooks.js stopped it and tells us)
   document.addEventListener('ytc-fs-request', () => { if (!document.documentElement.classList.contains('dr-full')) { fullManual = true; applyFull(); } });
   document.documentElement.dataset.ytcTutor = '1';

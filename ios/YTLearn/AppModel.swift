@@ -404,7 +404,11 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         if webView === youtube { speech.stop() }
     }
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { navLog("commit", webView) }
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        navLog("commit", webView)
+        // (a whole new page is not full screen until it says so: the bar is never left hidden on the home page)
+        if webView === youtube, pageFull { pageFull = false }
+    }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { navLog("finish", webView) }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { navLog("fail", webView, error) }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { navLog("failProvisional", webView, error) }

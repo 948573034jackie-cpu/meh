@@ -67,6 +67,17 @@ const act = (page, id) => page.evaluate((i) => window.__ytcDream.action(i), id);
     await page.evaluate(() => document.querySelector('.ytp-fullscreen-button').click());
     const fb2 = await until(async () => { const f = await fullOf(page); return !f.full ? f : null; }, 3000, 50);
     ok('...the same button again: back', !!fb2, JSON.stringify(fb2));
+    // the same with a FINGER (a real touch: iOS makes no click after a touch that was stopped, so the touch itself must switch)
+    const fsBox = await page.evaluate(() => { const r = document.querySelector('.ytp-fullscreen-button').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    await page.touchscreen.tap(fsBox.x, fsBox.y);
+    const ft = await until(async () => { const f = await fullOf(page); return covers(f) ? f : null; }, 3000, 50);
+    await sleep(900); // (a click that follows the touch must not switch it back)
+    const ftStill = await fullOf(page);
+    ok('YouTube\'s full-screen button touched with a finger: full screen, once (the click after the touch does not undo it)', !!ft && covers(ftStill) && ftStill.nativeFs === 0, JSON.stringify({ ft, ftStill }));
+    const fsBox2 = await page.evaluate(() => { const r = document.querySelector('.ytp-fullscreen-button').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+    await page.touchscreen.tap(fsBox2.x, fsBox2.y);
+    ok('...touched again: back', !!(await until(async () => { const f = await fullOf(page); return !f.full ? f : null; }, 3000, 50)), JSON.stringify(await fullOf(page)));
+    await sleep(900);
     // the page's own script asks for Apple's player directly: stopped, ours instead
     const hooked = await page.evaluate(() => {
       const v = document.querySelector('video');

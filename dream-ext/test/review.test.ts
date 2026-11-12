@@ -17,7 +17,7 @@ describe('the daily word review (no AI)', () => {
       entries: {
         meticulous: { lemma: 'meticulous', timesExplained: 7, lastSeenAt: iso(1) },
         gregarious: { lemma: 'gregarious', timesExplained: 3, lastSeenAt: iso(1) },
-        ephemeral: { lemma: 'ephemeral', timesExplained: 7, lastSeenAt: iso(120) },
+        ephemeral: { lemma: 'ephemeral', timesExplained: 3, lastSeenAt: iso(120) },
         lucid: { lemma: 'lucid', timesExplained: 2, lastSeenAt: iso(10) },
       },
       knownAfter: 7, now, numberOf: () => 60, myLevel: 56,
@@ -27,6 +27,18 @@ describe('the daily word review (no AI)', () => {
     // (a word known without any explanation, "table", never goes back by itself)
     expect(r.known).toBe(3);
     expect(r.learning).toBe(2);
+  });
+  it('the two rules never undo each other: a word explained 7 times never goes back; an "I know" said lately counts as met', () => {
+    const base = { knownAfter: 7, now, numberOf: () => null, myLevel: 56 };
+    // explained 7 times, last time 200 days ago: known for good
+    expect(dailyReview({ ...base, words: { a: 'known' }, entries: { a: { lemma: 'a', timesExplained: 7, lastSeenAt: iso(200) } } }).backToLearn).toEqual([]);
+    // explained twice 200 days ago, but "I know" was said yesterday (the status is from yesterday): not stale
+    expect(dailyReview({ ...base, words: { b: 'known' }, entries: { b: { lemma: 'b', timesExplained: 2, lastSeenAt: iso(200) } }, statusAt: () => iso(1) }).backToLearn).toEqual([]);
+    // ...and with the status as old as the explanation: back to learn; the day after (status "learning" from today) nothing more
+    expect(dailyReview({ ...base, words: { b: 'known' }, entries: { b: { lemma: 'b', timesExplained: 2, lastSeenAt: iso(200) } }, statusAt: () => iso(200) }).backToLearn).toEqual(['b']);
+    const next = dailyReview({ ...base, words: { b: 'learning' }, entries: { b: { lemma: 'b', timesExplained: 2, lastSeenAt: iso(200) } }, statusAt: () => iso(0) });
+    expect(next.nowKnown).toEqual([]);
+    expect(next.backToLearn).toEqual([]);
   });
   it('"known after" 0 = never by itself; at most a few words go back per day', () => {
     const words: Record<string, 'known' | 'learning'> = { a: 'learning' };

@@ -51,10 +51,25 @@ describe('the 1,000-word rule, counted across videos', () => {
     expect(readHeard({ n: 50, asked: { a: 10, b: 99, c: 'q' } })).toEqual({ n: 50, asked: { a: 10 } });
     const h = new HeardCounter({ n: 5000, asked: { old: 100, fresh: 4800 } });
     expect(h.state(1000).asked).toEqual({ fresh: 4800 });
-    // the phone heard 5,000 words (explained "fresh" 200 words ago); the iPad 3,000 (explained "pad" 50 words ago)
+    // the phone heard 5,000 words (explained "fresh" 200 words ago); a copy that is NOT ahead comes in as it is
     const m = mergeHeard({ n: 5000, asked: { fresh: 4800 } }, { n: 3000, asked: { pad: 2950, fresh: 1000 } });
     expect(m.n).toBe(5000);
     expect(m.asked.fresh).toBe(4800);
-    expect(m.asked.pad).toBe(4950);
+    expect(m.asked.pad).toBe(2950);
+    // a copy that IS ahead: this device's words move up with the counter (still "200 words ago")
+    const up = mergeHeard({ n: 5000, asked: { fresh: 4800 } }, { n: 8000, asked: { pad: 7900 } });
+    expect(up).toEqual({ n: 8000, asked: { fresh: 7800, pad: 7900 } });
+  });
+  it('reading this device\'s OWN older copy back never makes an old explanation new (the rule must not become "never again")', () => {
+    // "foo" explained at 5,000 and written to the shared file; 300 words later the file is read back and merged
+    let mine: { n: number; asked: Record<string, number> } = { n: 5300, asked: { foo: 5000 } };
+    const file = { n: 5000, asked: { foo: 5000 } };
+    for (let i = 0; i < 5; i++) { mine = mergeHeard(mine, file); mine = { n: mine.n + 300, asked: mine.asked }; }
+    expect(mine.asked.foo).toBe(5000);
+    const h = new HeardCounter(mine);
+    expect(h.total).toBe(6800);
+    expect(h.lately('foo', 0, 1000)).toBe(false);   // 1,800 words ago: it may be explained again
+    // very old words are dropped at a merge
+    expect(mergeHeard({ n: 50000, asked: { old: 100, now: 49990 } }, { n: 1, asked: {} }).asked).toEqual({ now: 49990 });
   });
 });

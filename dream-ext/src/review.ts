@@ -17,6 +17,8 @@ export interface ReviewInput {
   /** explained this many times = known (0 = never by itself) */
   knownAfter: number;
   now: Date;
+  /** the day a word got the status it has now ("I know" said today = met today), when the list knows it */
+  statusAt?: (lemma: string) => string | undefined;
   /** a word's number, 0 (easiest) … 100 (hardest); null = it has none */
   numberOf: (lemma: string) => number | null;
   myLevel: number;
@@ -69,9 +71,13 @@ export function dailyReview(i: ReviewInput): ReviewResult {
     if (lemma.startsWith('sentence: ')) continue;
     const e = i.entries[lemma];
     if (st === 'learning' && e && i.knownAfter > 0 && e.timesExplained >= i.knownAfter) nowKnown.push(lemma);
-    if (st === 'known' && e && e.timesExplained > 0 && e.lastSeenAt) {
-      const at = Date.parse(e.lastSeenAt);
-      if (Number.isFinite(at) && i.now.getTime() - at > staleMs) stale.push({ lemma, at });
+    // (back to learn: known through a FEW explanations and not met for long. A word explained often enough to be
+    // known for good never goes back: the two rules must not undo each other day after day. "Met" is its last
+    // explanation or the day it got its status, whichever is newer: an "I know" said at a stop counts.)
+    if (st === 'known' && e && e.timesExplained > 0 && !(i.knownAfter > 0 && e.timesExplained >= i.knownAfter) && e.lastSeenAt) {
+      const seen = Date.parse(e.lastSeenAt), set = Date.parse(i.statusAt?.(lemma) ?? '');
+      const at = Math.max(Number.isFinite(seen) ? seen : 0, Number.isFinite(set) ? set : 0);
+      if (at > 0 && i.now.getTime() - at > staleMs) stale.push({ lemma, at });
     }
   }
   stale.sort((a, b) => a.at - b.at);

@@ -20,16 +20,24 @@ export function readHeard(raw: unknown): HeardState {
   return { n, asked };
 }
 
-/** two devices' states -> one: the bigger counter; a word's newest explanation, measured as "how many words ago" */
-export function mergeHeard(a: HeardState, b: HeardState): HeardState {
-  const n = Math.max(a.n, b.n);
+/**
+ * This device's state (`mine`) and another copy (`other`: another device's, or this device's own older copy read back
+ * from the shared file) -> one. The counter is the bigger one. When the other copy is AHEAD, this device's words move
+ * up with the counter (each keeps how many words ago it was explained). A copy that is not ahead is taken as it is:
+ * its values are never moved up, so reading this device's own older copy back can never make an old explanation look
+ * new (that would turn "not again within 1,000 words" into "never again"). Words explained long ago are dropped.
+ */
+export function mergeHeard(mine: HeardState, other: HeardState): HeardState {
+  const n = Math.max(mine.n, other.n);
+  const lift = n - mine.n;
   const asked: Record<string, number> = {};
-  for (const [s, src] of [[a, a.n], [b, b.n]] as [HeardState, number][]) for (const [k, v] of Object.entries(s.asked)) {
-    const ago = src - v, at = n - ago;
-    if (asked[k] === undefined || at > asked[k]) asked[k] = at;
-  }
+  for (const [k, v] of Object.entries(mine.asked)) asked[k] = v + lift;
+  for (const [k, v] of Object.entries(other.asked)) { const at = Math.min(v, n); if (asked[k] === undefined || at > asked[k]) asked[k] = at; }
+  for (const k of Object.keys(asked)) if (n - asked[k] >= MERGE_KEEP) delete asked[k];
   return { n, asked };
 }
+/** explained more than this many words ago: no longer kept (far beyond any "not again within N words") */
+const MERGE_KEEP = 20000;
 
 export class HeardCounter {
   private n: number;
