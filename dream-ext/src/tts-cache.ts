@@ -11,6 +11,8 @@ export const CACHE_MAX_CHARS = 80;
 
 let opening: Promise<IDBDatabase> | null = null;
 function db(): Promise<IDBDatabase> {
+  // (the app's browser runs on other people's web pages: nothing of ours is ever kept in a site's own database)
+  if ((globalThis as { __drLightBg?: boolean }).__drLightBg) return Promise.reject(new Error('no sound cache on a web page'));
   if (!opening) {
     opening = new Promise<IDBDatabase>((resolve, reject) => {
       const r = indexedDB.open(DB, 1);

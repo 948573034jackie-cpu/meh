@@ -4038,6 +4038,8 @@ class Session {
       return true;
     }
     if (id === 'pageAuto') { this.togglePageAuto(); return true; }
+    // (the app's reader or browser comes in front: the video and the tutor go quiet, with no "you paused" explanation)
+    if (id === 'hush') { const v = video(); if (!this.playback) return false; if ((v && !v.paused) || this.controller?.busy || this.flow || this.talk || this.cmdWin) this.stopAll(); return true; }
     if (id === 'vocab') { void chrome.runtime.sendMessage({ type: 'dream-open', page: 'vocab' }); return true; }
     if (id === 'quick') {
       const el = this.stageVisible() ? this.stage?.el : this.panel?.el;

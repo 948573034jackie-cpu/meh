@@ -33,6 +33,8 @@ struct ContentView: View {
         .persistentSystemOverlays(compactFull ? .hidden : .automatic)
         .sheet(isPresented: $showSettings) { SettingsView(model: model) }
         .background(translatorHost)
+        .background(AppCovers(model: model))        // the reader and the browser, full screen
+        .onOpenURL { model.openLink($0) }           // "Open this link in I Know": iknow://open?url=…
     }
 
     /// free mode's translation (Apple's Translation, iOS 18): an invisible view keeps its session open
@@ -105,6 +107,8 @@ struct ContentView: View {
                     tutorButton("quick", "slider.horizontal.3", "Settings")
                 }
                 appButton("house", "Home") { model.goHome() }
+                appButton("book", "Read") { model.showReader = true }
+                appButton("safari", "Browser") { model.showBrowser = true }
                 appButton("link", "Paste link") { model.pasteLink() }
                 appButton("gearshape", "App settings") { showSettings = true }
             }

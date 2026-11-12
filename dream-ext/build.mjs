@@ -16,6 +16,8 @@ const entries = [
   ['src/options.ts', 'options.js'],
   ['src/vocab-page.ts', 'vocab-page.js'],
   ['src/reader.ts', 'reader.js'],
+  // the tutor on any web page: the browser of the iPhone / iPad app (its own private script world)
+  ['src/web.ts', 'dream-web.js'],
 ].filter(([src]) => fs.existsSync(path.join(root, src)));
 
 // The build's stamp comes from the sources themselves: the same sources give exactly the same files (the build server

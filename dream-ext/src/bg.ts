@@ -636,4 +636,5 @@ export function installDreamBackground(): void {
   });
 }
 
-if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect) installDreamBackground();
+// (the app's browser has its own small background, web-bg.ts: only the AI and the voice, no vocabulary file, nothing at start)
+if (typeof chrome !== 'undefined' && chrome.runtime?.onConnect && !(globalThis as { __drLightBg?: boolean }).__drLightBg) installDreamBackground();
