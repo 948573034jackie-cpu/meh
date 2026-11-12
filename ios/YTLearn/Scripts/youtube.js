@@ -36,11 +36,12 @@
   }
 
   // what we learn about the video on the way: its length (to check the transcript) and its real title
-  let meta = { id: null, length: 0, title: '', author: '' };
+  let meta = { id: null, length: 0, title: '', author: '', description: '' };
   function noteMeta(pr) {
     const d = pr && pr.videoDetails;
     if (!d || (d.videoId && d.videoId !== videoId())) return;
-    meta = { id: videoId(), length: Number(d.lengthSeconds) || meta.length || 0, title: d.title || meta.title, author: d.author || meta.author };
+    meta = { id: videoId(), length: Number(d.lengthSeconds) || meta.length || 0, title: d.title || meta.title, author: d.author || meta.author,
+      description: String(d.shortDescription || (meta.id === videoId() ? meta.description : '') || '').slice(0, 600) };
   }
   function videoLength() {
     if (meta.id === videoId() && meta.length) return meta.length;
@@ -345,7 +346,7 @@
       if (obj && typeof obj === 'object') return obj;
     }
   }
-  // Every video in a search answer (WEB, MWEB or newer shapes): [{ id, title, channel, lengthSeconds?, thumb? }]
+  // Every video in a search answer (WEB, MWEB or newer shapes): [{ id, title, channel, lengthSeconds?, thumb?, views?, age? }]
   function finderVideos(data, max) {
     max = max || 12;
     const out = [], seen = new Set();
@@ -355,8 +356,12 @@
     const add = (v) => {
       if (!v.id || !/^[\w-]{11}$/.test(v.id) || seen.has(v.id) || out.length >= max) return;
       seen.add(v.id);
-      out.push({ id: v.id, title: (v.title || '').trim(), channel: (v.channel || '').trim(),
-        lengthSeconds: v.lengthSeconds, thumb: v.thumb || 'https://i.ytimg.com/vi/' + v.id + '/mqdefault.jpg' });
+      const o = { id: v.id, title: (v.title || '').trim(), channel: (v.channel || '').trim(),
+        lengthSeconds: v.lengthSeconds, thumb: v.thumb || 'https://i.ytimg.com/vi/' + v.id + '/mqdefault.jpg' };
+      // ("1.2M views", "3 years ago": only when the search answer has them)
+      if (v.views && /\d/.test(v.views)) o.views = String(v.views).trim().slice(0, 30);
+      if (v.age && /\bago\b/i.test(v.age)) o.age = String(v.age).trim().slice(0, 30);
+      out.push(o);
     };
     const isLive = (r) => /"(LIVE|BADGE_STYLE_TYPE_LIVE_NOW|UPCOMING)"/.test(JSON.stringify([r.badges || [], r.thumbnailOverlays || [], r.upcomingEventData ? 'UPCOMING' : ''])) && !r.lengthText;
     (function walk(o, depth) {
@@ -365,7 +370,8 @@
       const r = o.videoRenderer || o.videoWithContextRenderer || o.compactVideoRenderer || o.gridVideoRenderer;
       if (r && r.videoId) {
         if (!isLive(r)) add({ id: r.videoId, title: text(r.title) || text(r.headline), channel: text(r.ownerText) || text(r.shortBylineText) || text(r.longBylineText),
-          lengthSeconds: clock(text(r.lengthText)), thumb: thumbOf(r.thumbnail && r.thumbnail.thumbnails) });
+          lengthSeconds: clock(text(r.lengthText)), thumb: thumbOf(r.thumbnail && r.thumbnail.thumbnails),
+          views: text(r.shortViewCountText) || text(r.viewCountText), age: text(r.publishedTimeText) });
         return;
       }
       const l = o.lockupViewModel;
@@ -376,7 +382,10 @@
         const img = (((l.contentImage || {}).thumbnailViewModel || {}).image || {}).sources;
         const s = JSON.stringify(l.contentImage || {});
         const len = /"text":"((?:\d+:)?\d+:\d{2})"/.exec(s);
-        add({ id: l.contentId, title: text(md.title), channel: parts.length ? text(parts[0].text) : '', lengthSeconds: len ? clock(len[1]) : undefined, thumb: thumbOf(img) });
+        const more = [];
+        for (const row of rows.slice(1)) for (const part of (row.metadataParts || [])) more.push(text(part.text));
+        add({ id: l.contentId, title: text(md.title), channel: parts.length ? text(parts[0].text) : '', lengthSeconds: len ? clock(len[1]) : undefined, thumb: thumbOf(img),
+          views: more.find((x) => /\bviews?\b/i.test(x)), age: more.find((x) => /\bago\b/i.test(x)) });
         return;
       }
       for (const k of Object.keys(o)) walk(o[k], depth + 1);
@@ -440,6 +449,9 @@
     searchVideos: (q) => searchVideos(q),
     cuesFor: (id) => cuesFor(id),
     videosFromInitialData: (data, max) => { try { return finderVideos(data, max); } catch (e) { return []; } },
+    // lyrics mode: the first lines of the video's description and its length (to find the real song)
+    description: () => (meta.id === videoId() ? meta.description : ''),
+    videoLength: () => videoLength(),
   };
 
   window.__ytcDebug = {

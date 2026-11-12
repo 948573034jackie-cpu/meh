@@ -1,44 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseFinderReply, buildFinderPrompt, fallbackQueries, mergeHits, type FoundVideo } from '../src/finder';
 
-describe('parseFinderReply', () => {
-  it('strict JSON', () => {
-    expect(parseFinderReply('{"queries":[{"q":"music theory explained","why":"You are a musician."},{"q":"english for musicians","why":"Words for your work."}]}'))
-      .toEqual([{ q: 'music theory explained', why: 'You are a musician.' }, { q: 'english for musicians', why: 'Words for your work.' }]);
-  });
-  it('code fences, extra text, other key names, a bare list', () => {
-    expect(parseFinderReply('Sure!\n```json\n{"queries":[{"query":"jazz piano lesson","reason":"You play."}]}\n```')).toEqual([{ q: 'jazz piano lesson', why: 'You play.' }]);
-    expect(parseFinderReply('["a b", "c d", "a b"]')).toEqual([{ q: 'a b', why: '' }, { q: 'c d', why: '' }]);
-  });
-  it('a cut-off answer keeps the complete pairs; at most 5; junk = []', () => {
-    expect(parseFinderReply('{"queries":[{"q":"one","why":"x \\"y\\""},{"q":"two","why":"z"},{"q":"thr')).toEqual([{ q: 'one', why: 'x "y"' }, { q: 'two', why: 'z' }]);
-    const many = JSON.stringify({ queries: Array.from({ length: 8 }, (_, i) => ({ q: `q${i}`, why: '' })) });
-    expect(parseFinderReply(many)).toHaveLength(5);
-    expect(parseFinderReply('no idea')).toEqual([]);
-    expect(parseFinderReply('')).toEqual([]);
-  });
-});
-
-describe('finder prompt and merging', () => {
-  it('the prompt carries what was said, the level and the filter', () => {
-    const p = buildFinderPrompt('I am a musician and I want to talk with clients', 'about lower B2 for reading', 'any');
-    expect(p.user).toContain('musician');
-    expect(p.user).toContain('about B2');
-    expect(p.user).toMatch(/level B2/);
-    expect(p.system).toMatch(/JSON only/);
-    expect(buildFinderPrompt('', 'B2', 'A2').user).toMatch(/easy English/);
-    expect(fallbackQueries('  jazz   piano ', 'A1')[0].q).toBe('easy English jazz piano');
-    expect(fallbackQueries('', 'any')[0].q).toBe('English conversation');
-  });
-  it('hits of several searches take turns, without repeats, keeping the reason', () => {
-    const v = (id: string): FoundVideo => ({ id, title: id, channel: '' });
-    const out = mergeHits([[v('a'), v('b'), v('c')], [v('b'), v('d')], []], [{ q: '1', why: 'w1' }, { q: '2', why: 'w2' }, { q: '3', why: 'w3' }], 4);
-    expect(out.map((x) => x.id)).toEqual(['a', 'b', 'd', 'c']);
-    expect(out.map((x) => x.why)).toEqual(['w1', 'w2', 'w2', 'w1']); // (b came first from the second search)
-  });
-});
+// (the finder's own parts, the searches, the ranking, the list and the playlist: test/finder-rank.test.ts)
 
 // youtube.js is a content script (no import): run its pure finder part on its own
 const src = fs.readFileSync(path.resolve(__dirname, '../../youtube-to-claude/youtube.js'), 'utf8');

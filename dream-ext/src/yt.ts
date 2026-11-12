@@ -39,6 +39,7 @@ import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book
 import type { Lyrics } from './lyrics';
 import { VideoEngine } from './video-engine';
 import { openFinder, finderIsOpen, type FoundVideo, type FinderLevel } from './finder';
+import { installFinderPlaylist, finderNext, finderPrev, learnerLevelOf } from './finder-list';
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf, gunzipVia } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
@@ -3831,10 +3832,12 @@ function openVideoFinder(): boolean {
     buildSentences: (cues) => api.buildSentences(cues),
     getDictionary,
     getZipf,
-    learnerLevel: () => levelMeta.currentLevel || settings.learnerLevel || 'B1',
-    knownWords: () => (lemma: string) => vocab.words[lemma] === 'known',
+    // (the tutor off or no key: no AI at all, the first 10 in YouTube's order)
+    aiOn: async () => { if (!extras.tutorOn) return false; const k = await store.getKeys().catch(() => ({} as store.Keys)); return !!(k.anthropic || k.openai); },
+    myLevel: () => learnerLevelOf(extras, settings.learnerLevel),
+    textSize: () => (TOUCH ? clamp(extras.phoneSizePx || 21, 14, 30) : 16),
+    currentId: () => (location.pathname === '/watch' ? api.videoId() : null),
     speech: () => (W.SpeechRecognition ?? W.webkitSpeechRecognition ?? null) as never,
-    open: (id) => { location.href = `/watch?v=${encodeURIComponent(id)}`; },
     cache: { get: (id) => store.getVideoLevel<FinderLevel>(id), set: (id, lv) => store.setVideoLevel(id, lv) },
     micBusy: (on) => { finderMic = on; },
     onClose: () => { finderMic = false; },
@@ -4042,11 +4045,22 @@ async function boot(): Promise<void> {
       if (id === 'tutor') { if (location.pathname !== '/watch') return false; void setTutor(!extras.tutorOn); return true; }
       if (id === 'check') { window.__ytcApi?.showReport?.(); return !!window.__ytcApi?.showReport; }
       if (id === 'find') return openVideoFinder();
+      // (the playlist of "Find a video": the next / the video before, in the order the list shows)
+      if (id === 'findNext') return finderNext();
+      if (id === 'findPrev') return finderPrev();
       if (id === 'oneButton' && !session) { void store.patchExtras({ oneButton: false }); return true; }
       if (id === 'sleep') { if (!session) return false; const m = sleepMinutes() > 30 ? 0 : sleepMinutes() > 0 ? 60 : 30; setSleep(m); return true; }
       return session ? session.action(id) : false;
     },
   };
+  // "Find a video" is a playlist: when a video of the list ends, the next one opens by itself (finder-list.ts)
+  installFinderPlaylist({
+    currentId: () => (location.pathname === '/watch' ? window.__ytcApi?.videoId() ?? null : null),
+    isAd: () => !!window.__ytcApi?.isAd(),
+    myLevel: () => learnerLevelOf(extras, settings.learnerLevel),
+    open: (id) => { location.assign(`/watch?v=${encodeURIComponent(id)}`); },
+    busy: () => !!session && session.diag().state === 'explaining',
+  });
   const bar = document.getElementById('yt2c-bar');
   if (bar) window.__ytcDream.decorateBar(bar);
   chrome.storage.onChanged.addListener((ch, area) => {
