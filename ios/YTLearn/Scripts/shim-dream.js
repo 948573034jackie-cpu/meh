@@ -108,7 +108,7 @@
   };
 
   // ---- fetch: the AI / voice services and the app's own files go through Swift ----
-  const API = /^https:\/\/(api\.anthropic\.com|api\.openai\.com|api\.elevenlabs\.io|lrclib\.net|api\.github\.com|gist\.githubusercontent\.com|[a-z0-9-]+\.tts\.speech\.microsoft\.com)\//i;
+  const API = /^https:\/\/(api\.anthropic\.com|api\.openai\.com|api\.elevenlabs\.io|lrclib\.net|api\.lyrics\.ovh|api\.github\.com|gist\.githubusercontent\.com|[a-z0-9-]+\.tts\.speech\.microsoft\.com)\//i;
   const APP = /^ytlearn:\/\/app\/(.*)$/;
   function toB64(bytes) {
     let s = '';
