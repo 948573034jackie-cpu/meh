@@ -3,9 +3,10 @@
  * moved: paragraphs come from blank lines, lines inside a paragraph are joined, and a word broken over two lines
  * ("exam-" + "ple") is joined back. The sentences and words are found by Dream Read's segmenter.
  */
-import type { Book, Position } from '@core/model';
-import { assembleParagraphs, computeStats } from '@core/import/text';
-import { createSegmenter } from '@core/segment';
+import type { Book, Chapter, Position } from '@core/model';
+import { assembleParagraphs, computeStats, textToBook } from '@core/import/text';
+import { createSegmenter, type Segmenter } from '@core/segment';
+import type { RawBook, RawChapter } from './epub';
 
 /** Lines -> paragraphs: a blank line (or a form feed) ends one. */
 export function paragraphsOf(text: string): string[] {
@@ -25,6 +26,32 @@ export function textBook(id: string, title: string, text: string, kind: 'pdf' | 
   if (!paragraphs.length) throw new Error('No readable text was found in it.');
   const chapters = [{ index: 0, title: '', paragraphs }];
   return { id, title, source: { kind, importedAt: new Date().toISOString() }, chapters, names: [], stats: computeStats(chapters) };
+}
+
+/** A pasted text or a PDF's text as a book of one chapter: every paragraph as it is. */
+export function rawFromPlain(title: string, text: string): RawBook {
+  return { title, author: '', chapters: [{ title: '', blocks: paragraphsOf(text).map((t) => ({ kind: 'p' as const, text: t })) }] };
+}
+
+/**
+ * A text or Markdown FILE as a book: headings ("# One", "Chapter 2") become its chapters (Dream Read's own text
+ * importer). The title is the file's name unless the text names one.
+ */
+export async function rawFromTextFile(title: string, text: string): Promise<RawBook> {
+  const b = await textToBook(title, text, { segmenter: createSegmenter(), id: 'x' });
+  return { title: b.title, author: b.author ?? '', chapters: b.chapters.map((c) => ({ title: c.title, blocks: c.paragraphs.map((p) => ({ kind: p.kind, text: p.text })) })) };
+}
+
+/** One stored chapter as sentences and words (done when the chapter is opened, not for the whole book at once). */
+export function chapterOf(raw: RawChapter, index: number, segmenter: Segmenter): Chapter {
+  return { index, title: raw.title, paragraphs: assembleParagraphs(raw.blocks, segmenter) };
+}
+
+/** the letters of the chapter's paragraphs before this paragraph (for "how far in the book") */
+export function charsBefore(ch: Pick<Chapter, 'paragraphs'>, paragraph: number): number {
+  let n = 0;
+  for (const p of ch.paragraphs) { if (p.index >= paragraph) break; n += p.text.length; }
+  return n;
 }
 
 export function orderOf(book: Pick<Book, 'chapters'>): Position[] {
