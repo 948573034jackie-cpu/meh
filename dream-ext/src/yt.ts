@@ -41,6 +41,7 @@ import { lyricsNote } from './lyrics';
 import { findSongLyrics, usePastedLyrics, lyricSentences } from './lyrics-find';
 import { openPasteBox } from './lyrics-paste';
 import { decorateLyricsPage } from './lyrics-page';
+import { askSongNotes, loadSongNotes, saveSongNotes, dropSongNotes, songContext, notesByLine, noteIsEnough, type SongNotes } from './lyrics-notes';
 import { VideoEngine } from './video-engine';
 import { openFinder, finderIsOpen, type FoundVideo, type FinderLevel } from './finder';
 import { installFinderPlaylist, finderNext, finderPrev, learnerLevelOf } from './finder-list';
@@ -568,6 +569,8 @@ class Session {
   /** lyrics mode: the song's lyrics (null = the video's subtitles), and what is known about the song */
   private lyrics: Lyrics | null = null;
   private song: string | null = null;
+  /** lyrics mode: the song's story, its parts and the notes on its lines (written once per song by the AI) */
+  private songData: SongNotes | null = null;
   private songIntroOn = false;
   /**
    * Lyrics mode, before the song plays: what the song is about, its background story, and how listeners understand
@@ -577,7 +580,10 @@ class Session {
     const lyr = this.lyrics, vb = this.vb;
     if (!lyr || !vb || this.disposed) return;
     const id = this.cacheId();
-    this.song = await store.getSong(id).catch(() => null);
+    // (the song's story, its parts and the notes on its lines: one AI request per song, kept with it; lyrics-notes.ts)
+    this.songData = await loadSongNotes(id, lyr.lines.length);
+    this.song = this.songData?.about || null;
+    if (this.songData) this.lyricsPage();
     const v = video();
     const wasPlaying = !!v && !v.paused;
     if (v && !v.paused) { this.engine.markOwn('pause'); v.pause(); this.playback?.pause(); }
@@ -586,12 +592,13 @@ class Session {
     // (anything that starts the video meanwhile is held until the introduction is over or "Play the song")
     const hold = () => { const vv = video(); if (this.songIntroOn && vv && !vv.paused) { this.engine.markOwn('pause'); vv.pause(); } };
     const holdTimer = setInterval(() => { if (!box.isConnected || this.disposed) { clearInterval(holdTimer); this.songIntroOn = false; } else hold(); }, 250);
-    if (!this.song) {
+    if (!this.songData) {
       if (!this.ai() || (!this.keys.anthropic && !this.keys.openai)) { this.songIntroOn = false; box.remove(); if (wasPlaying) void v?.play(); return; }
       const level = levelMeta.currentLevel || settings.learnerLevel || 'B2';
       try {
-        this.song = (await complete({ system: songSystem(level), user: `The song: "${lyr.title}" by ${lyr.artist}${lyr.album ? `, from the album "${lyr.album}"` : ''}.\n\nIts lyrics:\n${lyr.lines.map((l) => l.text).join('\n')}`, maxTokens: 1100 })).trim();
-        if (this.song) void store.setSong(id, this.song).catch(() => undefined);
+        this.songData = await askSongNotes(lyr, level, complete);
+        this.song = this.songData?.about || null;
+        if (this.songData) { void saveSongNotes(id, this.songData); this.lyricsPage(); }
         // (the explanations of this song now know about it: written again with it)
         this.analysis?.dispose();
         this.analysis = null;
@@ -600,6 +607,8 @@ class Session {
     }
     if (this.disposed) return;
     const text = this.song ?? '';
+    // (no answer that can be used: no introduction, the song is as it was)
+    if (!text) { this.songIntroOn = false; clearInterval(holdTimer); box.remove(); if (wasPlaying) void video()?.play().catch(() => undefined); return; }
     const p = box.querySelector('.songtext');
     if (p) p.textContent = text;
     // said by the tutor's voice; "Play the song" (or the end of it) starts the song
@@ -624,7 +633,8 @@ class Session {
       textSize: TOUCH ? clamp(extras.phoneSizePx || 21, 14, 30) : 16,
       use: async (text) => {
         const lyr = await usePastedLyrics({ videoId: this.videoId, text, ...ask, duration: video()?.duration || 0 });
-        if (lyr) window.__ytcDream?.reload?.();
+        // (the notes were written for the other lyrics)
+        if (lyr) { await dropSongNotes(`${this.videoId}~lyrics`); window.__ytcDream?.reload?.(); }
         return !!lyr;
       },
     });
@@ -632,7 +642,8 @@ class Session {
   /** lyrics mode: this module's parts of the page (lyrics-page.ts), after the lines were drawn */
   private lyricsPage(): void {
     if (extras.view !== 'lyrics' || !this.stage) return;
-    decorateLyricsPage(this.stage.el, { lyrics: this.lyrics, paste: () => this.pasteLyrics() });
+    const keys = this.lyrics && this.vb && this.vb.order.length === this.lyrics.lines.length ? this.vb.order.map((p) => sentenceKey(p)) : undefined;
+    decorateLyricsPage(this.stage.el, { lyrics: this.lyrics, notes: this.songData, keys, paste: () => this.pasteLyrics(), say: (text) => this.sayLyricNote(text) });
   }
   private showSongBox(title: string, text: string): HTMLElement {
     const root = this.stage?.el ?? document.body;
@@ -895,6 +906,8 @@ class Session {
       if (f.focus && sc) { const j = sc.items.indexOf(f.focus); if (j >= 0) planned.set(sc.lemmas[j], here); }
       out.push({ id: stopId(text, f.focus), index, text, items: sc?.items ?? [], focus: f.focus, kind: f.kind });
     });
+    // (lyrics mode: a whole line that has its own note needs no written explanation: the note is read at its stop)
+    if (this.songData) return out.filter((s) => s.focus || !this.lyricNote(this.vb!.order[s.index]));
     return out;
   }
 
@@ -903,7 +916,36 @@ class Session {
   /** the video's id for its saved things (a lyrics book has its own) */
   cacheId(): string { return this.lyrics ? `${this.videoId}~lyrics` : this.videoId; }
   /** lyrics mode: what is known about the song, for the explanations */
-  songNotes(): string | undefined { return this.song ?? undefined; }
+  songNotes(pos?: Position | null): string | undefined { return this.songData ? songContext(this.songData, this.lyrics, pos === undefined ? undefined : this.lyricLine(pos)) : this.song ?? undefined; }
+  /** lyrics mode: which line of the lyrics (from 0) a sentence of the page is; -1 = none */
+  private lyricLine(pos: Position | null | undefined): number {
+    if (!pos || !this.lyrics || !this.vb || this.vb.order.length !== this.lyrics.lines.length) return -1;
+    const k = sentenceKey(pos);
+    return this.vb.order.findIndex((p) => sentenceKey(p) === k);
+  }
+  /** lyrics mode: the note of this line, when it has one that explains it well enough to be read at its stop */
+  private lyricNote(pos: Position | null | undefined): string | undefined {
+    const i = this.songData ? this.lyricLine(pos) : -1;
+    const note = i >= 0 ? notesByLine(this.songData, this.lyrics).get(i) : undefined;
+    return noteIsEnough(note) ? note : undefined;
+  }
+  /** lyrics mode: a line's note is read by the tutor's voice (the song waits, and goes on after it) */
+  private sayLyricNote(text: string): { cancel(): void } | null {
+    if (!this.ai() || !this.tts || this.inStop || this.controller?.busy || this.talk || this.flow || this.songIntroOn) return null;
+    const v = video();
+    const was = !!v && !v.paused;
+    if (v && was) { this.engine.markOwn('pause'); v.pause(); this.playback?.pause(); }
+    const h = this.tts.speak(text, { voiceId: this.voiceId, rate: settings.voice.rate, volume: this.volumeOf('teacher') });
+    let over = false;
+    const back = () => {
+      if (over) return;
+      over = true;
+      const vv = video();
+      if (was && !this.disposed && vv && vv.paused && this.vb) { this.engine.resumeHere = true; void vv.play().catch(() => undefined); this.playback?.play(this.vb.positionAt(vv.currentTime) ?? undefined); }
+    };
+    void h.done.then(back, back);
+    return { cancel: () => { h.cancel(); back(); } };
+  }
 
   /** the explanations ahead of the learner: written once, saved with the video */
   private planAnalysis(): void {
@@ -1085,7 +1127,7 @@ class Session {
     const sc = req.position ? this.scores.get(sentenceKey(req.position)) : undefined;
     const known = new Set<string>();
     if (req.position && this.vb && this.dict) for (const t of getSentence(this.vb.book, req.position)?.sentence.tokens ?? []) if (t.kind === 'word' && vocab.words[this.dict.lemmaOf(t.text)] === 'known') known.add(t.text.toLowerCase());
-    const levelRule: LevelRule = { items: req.kind === 'sentence' ? sc?.items ?? [] : [req.target], known: [...known], level: levelMeta.currentLevel || settings.learnerLevel, way: settings.ai.activeStyle, length: teachLength(), song: this.songNotes() };
+    const levelRule: LevelRule = { items: req.kind === 'sentence' ? sc?.items ?? [] : [req.target], known: [...known], level: levelMeta.currentLevel || settings.learnerLevel, way: settings.ai.activeStyle, length: teachLength(), song: this.songNotes(req.position ?? null) };
     return { ...req, levelRule } as RuleRequest;
   }
 
@@ -1127,6 +1169,9 @@ class Session {
         const guard = this.levelOn() && req.kind !== 'question' ? new RuleGuard((req as RuleRequest).levelRule ? { sentence: req.sentence, items: req.kind === 'sentence' ? [] : [req.target] } : {}) : null;
         const onDelta = guard ? (full: string) => onDelta0(guard.push(full)) : onDelta0;
         const checked = <T extends { done: Promise<{ text: string; usage: { usd: number; dailyUsd: number; monthlyUsd: number } }>; cancel(): void }>(job: T) => (guard ? { done: job.done.then((res) => { const text = guard.finish(res.text); this.ruleRejects += guard.rejected; return { ...res, text }; }), cancel: () => job.cancel() } : job);
+        // (lyrics mode: a stop for a whole line that has its own note = the note is read; no AI request)
+        const lineNote = req.kind === 'sentence' && req.target === req.sentence && !req.again && !req.question ? this.lyricNote(req.position) : undefined;
+        if (lineNote) { onDelta0(`${lineNote} `); return { done: Promise.resolve({ text: lineNote, usage: { usd: 0, dailyUsd: 0, monthlyUsd: 0 } }), cancel: () => undefined }; }
         // (Level Check) the explanation was written once, ahead of the stop: no AI call here
         const analysis = this.analysis;
         if (analysis && (req.kind === 'word' || req.kind === 'phrase' || (req.kind === 'sentence' && req.target === req.sentence)) && (req as RuleRequest).levelRule && !req.again) {
@@ -3831,14 +3876,6 @@ function commandIn(text: string): ReturnType<typeof detectCommand> {
 }
 
 /** "bye bye", or "bye" (also heard as "by", "buy", "goodbye", "ok bye") said alone: the tutor goes */
-/** lyrics mode: the song introduction (once per song, before it plays) */
-function songSystem(level: string): string {
-  return `You are a music teacher and an English teacher. Your student is a musician from China who learns English through songs; their English level is about ${level}. Before the song plays, you tell them about it, out loud, in easy English, like a friend who knows the song well.
-Say, in this order, as plain flowing speech: what the song is about, in two or three sentences; its background story (who made it, when, why, what was happening in their life or in the world); then how listeners understand it: the main images, the slang and the references, the lines people talk about most and what they mean, and the deeper meaning.
-Only facts you are sure of. When you are not sure, say "people say" or leave it out. Never invent dates, names or stories.
-No titles, labels, numbers, lists or markdown; never say what you will do next. Quote at most a few words of the lyrics at a time. About 220 to 340 words. Write only English.`;
-}
-
 /** the finder's voice note is listening (the tutor's microphone waits) */
 let finderMic = false;
 /** "Find me a video" (the Find button, on any YouTube page): talk or type what you want to learn; videos at your level */

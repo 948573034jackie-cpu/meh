@@ -386,6 +386,8 @@ class Finder {
     this.statusNote = note;
     this.listStatus();
     if (fresh) this.$<HTMLElement>('.scroll').scrollTop = 0;
+    // (the list of before: the video that plays now is on the screen)
+    else { const id = this.nowId(); const el = id && list.playing === id ? this.rows.get(id) : null; try { el?.scrollIntoView({ block: 'center' }); } catch { /* an old engine */ } }
     this.pump();
   }
 
