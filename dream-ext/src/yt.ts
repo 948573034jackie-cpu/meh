@@ -37,6 +37,10 @@ import { renderChapter, renderSentence, restyleLemma } from '../vendor/renderer/
 import { hintText } from '../vendor/renderer/hints';
 import { buildVideoBook, type VideoBook, type TimedSentence } from './video-book';
 import type { Lyrics } from './lyrics';
+import { lyricsNote } from './lyrics';
+import { findSongLyrics, usePastedLyrics, lyricSentences } from './lyrics-find';
+import { openPasteBox } from './lyrics-paste';
+import { decorateLyricsPage } from './lyrics-page';
 import { VideoEngine } from './video-engine';
 import { openFinder, finderIsOpen, type FoundVideo, type FinderLevel } from './finder';
 import { installFinderPlaylist, finderNext, finderPrev, learnerLevelOf } from './finder-list';
@@ -507,17 +511,14 @@ class Session {
     } catch (e) { this.setStatus(`Could not start: ${(e as Error).message}`, true); this.bookReady(false); return; }
     if (this.disposed) return;
     let sentences = info.cues.length ? window.__ytcApi!.buildSentences(info.cues, { human: !!info.human }) : [];
-    // lyrics mode: the song's lyrics are the page (timed by LRCLIB when it can; the subtitles stay when none is found)
+    // lyrics mode: the song's lyrics are the page (found once per video and kept: lyrics-find.ts; the subtitles stay when none is found)
     if (extras.view === 'lyrics') {
       this.setStatus('Finding the lyrics…');
-      const v = video();
-      const r = await chrome.runtime.sendMessage({ type: 'dream-lyrics', title: info.title || document.title.replace(/ - YouTube$/, ''), channel: info.channel ?? '', duration: v?.duration || 0 }).catch(() => null) as { ok?: boolean; lyrics?: Lyrics | null } | null;
+      this.lyricsAsk = { title: info.title || document.title.replace(/ - YouTube$/, ''), channel: info.channel ?? '', captions: sentences };
+      const found = await findSongLyrics({ videoId: this.videoId, ...this.lyricsAsk, duration: video()?.duration || 0, tutorOn: this.ai(), complete, alive: () => !this.disposed });
       if (this.disposed) return;
-      if (r?.lyrics?.lines.length) {
-        this.lyrics = r.lyrics;
-        let verse = -1;
-        sentences = r.lyrics.lines.map((l) => { const s: TimedSentence = { start: l.start, end: l.end, text: l.text, words: null, para: l.verse !== verse }; verse = l.verse; return s; });
-      } else this.toast('No lyrics found for this song: its subtitles are shown instead.', 6000);
+      if (found.lyrics) { this.lyrics = found.lyrics; sentences = lyricSentences(found.lyrics); }
+      else { this.toast('No lyrics found for this song: its subtitles are shown. You can paste the lyrics (the button is at the top of the page).', 8000); if (!sentences.length) this.pasteLyrics(); }
     }
     if (!sentences.length) {
       this.setStatus('No subtitles could be read for this video. Turn on CC in the player, or load a subtitle file (.srt / .vtt) in the extension window.', true);
@@ -550,7 +551,7 @@ class Session {
     this.followTimer = setInterval(() => this.follow(), 60);
     // tests only (the silent test voice is on): what the tutor is doing, readable from the page
     if (E2E()) { const t = setInterval(() => { if (this.disposed) clearInterval(t); else document.documentElement.dataset.drDebug = JSON.stringify(this.debug()); }, 150); }
-    this.setStatus(this.readyText(info.source));
+    this.setStatus(this.readyText(this.lyrics ? lyricsNote(this.lyrics) : info.source));
     this.countKnown();
     this.applyView();
     await this.backWhereYouStopped();
@@ -610,6 +611,28 @@ class Session {
       spoken = h;
       void h.done.then((o) => { if (o === 'ended' && box.isConnected) start(); }, () => undefined);
     }
+  }
+  /** lyrics mode: what the lyrics were looked for with (the paste box times the learner's own lyrics with the captions) */
+  private lyricsAsk: { title: string; channel: string; captions: TimedSentence[] } | null = null;
+  /** "Paste the lyrics": the learner's own lyrics for this video, timed and kept; the page is made again with them */
+  private pasteLyrics(): void {
+    const ask = this.lyricsAsk;
+    if (!ask) return;
+    openPasteBox({
+      title: this.lyrics ? `${this.lyrics.title}${this.lyrics.artist ? ` — ${this.lyrics.artist}` : ''}` : ask.title,
+      why: this.lyrics ? '' : 'No lyrics were found for this song.',
+      textSize: TOUCH ? clamp(extras.phoneSizePx || 21, 14, 30) : 16,
+      use: async (text) => {
+        const lyr = await usePastedLyrics({ videoId: this.videoId, text, ...ask, duration: video()?.duration || 0 });
+        if (lyr) window.__ytcDream?.reload?.();
+        return !!lyr;
+      },
+    });
+  }
+  /** lyrics mode: this module's parts of the page (lyrics-page.ts), after the lines were drawn */
+  private lyricsPage(): void {
+    if (extras.view !== 'lyrics' || !this.stage) return;
+    decorateLyricsPage(this.stage.el, { lyrics: this.lyrics, paste: () => this.pasteLyrics() });
   }
   private showSongBox(title: string, text: string): HTMLElement {
     const root = this.stage?.el ?? document.body;
@@ -2868,6 +2891,7 @@ class Session {
         s.prepend(b);
       });
       for (const p of this.vb.order) { const zh = this.zh[this.zhKey(p)]; if (zh) this.paintZh(p, zh); }
+      this.lyricsPage();
       this.markPart();
     }
     if (this.cur) { const c = this.cur; this.cur = null; this.setCurrent(c); }

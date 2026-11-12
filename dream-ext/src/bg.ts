@@ -607,11 +607,19 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
     if (msg?.type === 'dream-db-write') { void writeDatabase().then(sendResponse); return true; }
     if (msg?.type === 'dream-gist-poll') { void syncGist().then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false })); return true; }
-    // lyrics mode: the song's lyrics from LRCLIB (timed when it has them)
+    // lyrics mode: the song's lyrics from LRCLIB (timed when it has them), then lyrics.ovh (plain); see lyrics.ts
     if (msg?.type === 'dream-lyrics') {
-      const m = msg as { title?: string; channel?: string; duration?: number };
-      void findLyrics(m.title ?? '', m.channel ?? '', m.duration ?? 0, async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-        .then((lyr) => sendResponse({ ok: true, lyrics: lyr }), (e: Error) => sendResponse({ ok: false, error: e.message }));
+      const m = msg as { title?: string; channel?: string; duration?: number; artist?: string; song?: string };
+      // (a service that does not answer must not hold the page: 9 seconds each)
+      const fetchJson = async (url: string): Promise<unknown> => {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 9000);
+        try { const r = await fetch(url, { signal: ctrl.signal }); reached = true; if (!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); } finally { clearTimeout(timer); }
+      };
+      // (reached: a service answered, also with "not found"; false = no internet, so "nothing found" is not kept)
+      let reached = false;
+      void baseUrls().then((b) => findLyrics(m.title ?? '', m.channel ?? '', m.duration ?? 0, fetchJson, { names: m.song ? { artist: m.artist ?? '', title: m.song } : null, base: { lrclib: (b as { lrclib?: string }).lrclib, ovh: (b as { lyricsOvh?: string }).lyricsOvh } }))
+        .then((lyr) => sendResponse({ ok: true, lyrics: lyr, reached }), (e: Error) => sendResponse({ ok: false, error: e.message }));
       return true;
     }
     if (msg?.type === 'dream-db-host') { sendResponse({ host: NATIVE_HOST, id: chrome.runtime.id }); return false; }

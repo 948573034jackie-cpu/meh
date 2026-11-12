@@ -14,7 +14,7 @@
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
     "https://api.elevenlabs.io/*", "https://*.tts.speech.microsoft.com/*",
-    "https://lrclib.net/*", "https://api.github.com/*", "https://gist.githubusercontent.com/*"
+    "https://lrclib.net/*", "https://api.lyrics.ovh/*", "https://api.github.com/*", "https://gist.githubusercontent.com/*"
   ],
   "background": {
     "service_worker": "background.js"

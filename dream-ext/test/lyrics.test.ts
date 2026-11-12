@@ -20,7 +20,9 @@ describe('lyrics mode: finding the song', () => {
     expect(l[2].verse).toBe(1);
     expect(l[0].start).toBeGreaterThan(0);
     expect(l[2].end).toBeLessThanOrEqual(120);
-    for (let i = 1; i < l.length; i++) expect(l[i].start).toBeCloseTo(l[i - 1].end, 5);
+    // (3.8: the lines of a verse follow each other; a new verse comes after a short gap)
+    expect(l[1].start).toBeCloseTo(l[0].end, 5);
+    expect(l[2].start).toBeGreaterThan(l[1].end);
   });
   it('the best hit: same title and artist, about the same length, with times', () => {
     const want = { artist: 'Adele', title: 'Hello', duration: 295 };
@@ -34,7 +36,8 @@ describe('lyrics mode: finding the song', () => {
       urls.push(url);
       return [{ id: 1, trackName: 'Hello', artistName: 'Adele', duration: 295, syncedLyrics: '[00:01.00] Hello, it\'s me\n[00:05.00] I was wondering' }];
     });
-    expect(urls[0]).toContain('lrclib.net/api/search');
+    // (3.8: LRCLIB's `get` by artist + track + length is asked first, then its search)
+    expect(urls[0]).toContain('lrclib.net/api/get?artist_name=Adele&track_name=Hello&duration=295');
     expect(lyr?.synced).toBe(true);
     expect(lyr?.lines.map((l) => l.text)).toEqual(["Hello, it's me", 'I was wondering']);
     expect(await findLyrics('Some talk show clip', '', 300, async () => [])).toBeNull();
