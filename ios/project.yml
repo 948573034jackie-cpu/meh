@@ -23,6 +23,9 @@ targets:
         UIBackgroundModes: [audio]   # the tutor keeps talking with the screen off
         UIFileSharingEnabled: true   # the vocabulary file shows in the Files app (On My iPhone ▸ YT Learn)
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleURLTypes:            # "Open this link in I Know": iknow://open?url=<the address, percent-encoded>
+          - CFBundleURLName: local.ytlearn.app.open
+            CFBundleURLSchemes: [iknow]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.ytlearn.app

@@ -12,6 +12,8 @@ cp "$SRC/youtube.js" "$DST/youtube.js"
 # My tutor (built by dream-ext/build.mjs): its background runs in the page too ("self" = the page's window)
 { echo "(function (self) {"; cat "$SRC/dream/dream-bg.js"; echo "})(window);"; } > "$DST/dream-bg.js"
 cp "$SRC/dream/dream-yt.js" "$DST/dream-yt.js"
+# the tutor on any web page (the app's browser; it runs in its own private script world, only while Explanation mode is on)
+cp "$SRC/dream/dream-web.js" "$DST/dream-web.js"
 # the files the tutor opens by address (ytlearn://app/dream/…): the dictionary and the settings / vocabulary pages
 mkdir -p "$WEB"
 for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do cp "$SRC/dream/$f" "$WEB/$f"; done

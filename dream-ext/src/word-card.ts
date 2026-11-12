@@ -26,6 +26,8 @@ export interface CardHooks {
   onButton(): void;
   /** a tap on a sentence / note card, or its × */
   onClose(): void;
+  /** the bubble came or went */
+  onBubble?(): void;
 }
 export interface CardLook { sizePx: number; look: 'day' | 'night' | 'auto' }
 
@@ -179,12 +181,15 @@ export class WordCard {
     this.bubbleEl.style.top = `${Math.max(8, top)}px`;
     this.bubbleRun = run;
     this.bubbleTimer = setTimeout(() => this.hideBubble(), ms);
+    this.hooks.onBubble?.();
   }
 
   hideBubble(): void {
     if (this.bubbleTimer) { clearTimeout(this.bubbleTimer); this.bubbleTimer = null; }
     this.bubbleRun = null;
+    if (this.bubbleEl.hidden) return;
     this.bubbleEl.hidden = true;
+    this.hooks.onBubble?.();
   }
 
   get bubbleOpen(): boolean { return !this.bubbleEl.hidden; }

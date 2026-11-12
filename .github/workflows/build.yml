@@ -59,7 +59,7 @@ jobs:
         run: |
           APP=build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app
           ls "$APP" | head -30
-          for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
+          for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt dream-web; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
           for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes

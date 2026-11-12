@@ -16,6 +16,12 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
     @Published var vocabStatus = ""      // the last save of the vocabulary file, in words
+    @Published var showReader = false    // the reader (books, PDFs, texts), full screen: ReaderScreen.swift
+    @Published var showBrowser = false   // the browser inside the app, full screen: Browser.swift
+    /// other windows of the app that want to know what was saved (the reader, the browser's tabs)
+    var storageListeners: [([String: Any], String, WKWebView?) -> Void] = []
+    private(set) lazy var reader = ReaderHost(app: self)
+    private(set) lazy var browser = BrowserModel(app: self)
 
     let youtube: WKWebView
     static let world = WKContentWorld.world(name: "ytc")
@@ -321,6 +327,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private func sendSpeech(_ event: [String: Any]) {
+        if showBrowser { browser.heard(event); return }   // the browser is in front: only its page hears "hello" / "stop"
+        if showReader { return }                           // the reader is in front: the video's tutor hears nothing
         let json = AppModel.jsonString(event)
         youtube.evaluateJavaScript("window.__ytcSpeech && window.__ytcSpeech(\(json))", in: nil, in: AppModel.world, completionHandler: nil)
     }
@@ -454,6 +462,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if obj.isEmpty { return }
         var targets: [(WKWebView, WKContentWorld)] = [(youtube, AppModel.world)]
         if sheetOpen { targets.append((sheet, .page)) }
+        for tell in storageListeners { tell(obj, area, web) }   // the reader, the browser's tabs
         for (view, world) in targets where view !== web {
             view.callAsyncJavaScript("window.__ytcStorageChanged && window.__ytcStorageChanged(obj, area)",
                                      arguments: ["obj": obj, "area": area], in: nil, in: world, completionHandler: nil)
