@@ -160,12 +160,12 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   let badId = false; try { execFileSync(path.resolve(__dirname, '../youtube-to-claude/native-host/install.sh'), ['nonsense'], { env: { ...process.env, HOME: home }, stdio: 'pipe' }); } catch (e) { badId = true; }
   ok('...and refuses something that is not an extension id', badId);
 
-  await sw.evaluate(() => chrome.storage.local.set({
+  await sw.evaluate((PORT) => chrome.storage.local.set({
     drKeys: { anthropic: 'sk-ant-test-key' }, voiceOn: false,
     drExtras: { tutorOn: true, fakeVoice: true, migrated: 1, capWords: 100, stopPhrasesOn: true, capPhrases: 100, capSentences: 0 }, // (every hard word and phrase: 100%; everything else as it comes for a new learner)
     drTestBaseUrls: { anthropic: `http://localhost:${PORT}` },
     drSettings: { learnerLevel: 'B2', ai: { hintsModel: 'claude-haiku-5-5' } },
-  }));
+  }), PORT);
 
   // ---- the starting data ----
   const seeded = await until(async () => { const m = await store('drLevel'); return m && m.seeded >= 2 ? m : null; }, 20000);
