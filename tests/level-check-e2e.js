@@ -348,7 +348,7 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR2).find((r) => /does not know \W*dinner/.test(r.user)), 8000);
   await until(async () => (await dbg()).state === 'playing', 20000, 100);
   const tNow = await yt.evaluate(() => document.querySelector('video').currentTime);
-  ok('a tap on a word in another sentence does not move the video: it goes on where it was', tNow >= lineNow * SEC - 0.5, `t=${tNow.toFixed(1)}, the sentence starts at ${lineNow * SEC}`);
+  ok('a tap on a word in another sentence does not move the video: it goes on where it was', tNow >= lineNow * SEC - 0.5, `t=${tNow.toFixed(1)}, the sentence starts at ${lineNow * SEC} · trail: ${JSON.stringify(((await dbg()) || {}).trail || []).slice(-900)}`);
   // "Explain 30 s" is the learner's own: the cheap model too
   await yt.evaluate(() => { const b = document.getElementById('dr-panel-host').shadowRoot.querySelector('[data-act=last]') || document.getElementById('dr-stage-host').shadowRoot.querySelector('[data-act=last]'); b && b.click(); });
   const passage = await until(() => apiLog.find((r) => r.kind === 'passage'), 25000);

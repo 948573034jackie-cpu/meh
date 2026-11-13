@@ -241,7 +241,8 @@ async function newContext(browser) {
   await stopWhenBusy('button');
   const quiet2 = await until(async () => { const d = await dbg(); return d && !d.busy; }, 3000);
   await sleep(500);
-  ok('the Explain button: one request; a second tap while the tutor talks = stop (no new request)', screens().length === s0 + 2 && !!quiet2 && apiLog.length === a0 + 2, JSON.stringify({ screens: screens().length - s0, api: apiLog.length - a0 }));
+  const d2 = await dbg();
+  ok('the Explain button: one request; a second tap while the tutor talks = stop (no new request)', screens().length === s0 + 2 && !!quiet2 && apiLog.length === a0 + 2, JSON.stringify({ screens: screens().length - s0, api: apiLog.length - a0, card: d2 && d2.card, busy: d2 && d2.busy, spoken: d2 && d2.spoken && d2.spoken.slice(-3), view: await page.evaluate(() => [innerWidth, innerHeight, scrollY]), rect: d2 && d2.cardRect }));
 
   // ---- 8. the article for the reader ----
   const art = await page.evaluate(() => window.__iknowWeb.article());

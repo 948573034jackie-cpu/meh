@@ -369,7 +369,8 @@ const api = H.startServer();
     return { scrolls: getComputedStyle(page).overflowY, size: getComputedStyle(page).fontSize, pg: (r.querySelector('.pager .pg') || {}).textContent, pager: getComputedStyle(r.querySelector('.pager')).display,
       onPage: wr ? wr.left >= pr.left - 1 && wr.right <= pr.right + 1 : null, tx: inner.style.transform, bg: getComputedStyle(r.querySelector('.stage')).backgroundColor, scrollTop: page.scrollTop };
   });
-  const r1 = await readLook();
+  // (the pages are laid out again for the new size a moment after the mode changes: the page with the sentence follows)
+  const r1 = (await until(async () => { const x = await readLook(); return x.onPage === true ? x : null; }, 2500, 100)) || await readLook();
   ok('the Mode button: Reading mode, pages like a book: the text does not scroll, a light page, "page / pages" under it', !!rd && r1.scrolls === 'hidden' && r1.pager !== 'none' && new RegExp('^\\d+ / ' + rd.stage.pages + '$').test(r1.pg) && r1.bg === 'rgb(246, 241, 229)', JSON.stringify({ r1, st: rd && rd.stage }));
   ok('...the sentence being read is on the page shown', r1.onPage === true, JSON.stringify(r1));
   // (› on the last page cannot turn: then ‹)

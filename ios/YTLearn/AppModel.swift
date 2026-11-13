@@ -220,26 +220,28 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             guard let self = self else { return }
             let ytTest = """
             const out = { url: location.href };
+            // (every step has a time limit: one step that hangs, e.g. on YouTube's sign-in page, must not keep the report away)
+            const within = (p, ms, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(what + ': no answer in ' + ms / 1000 + ' s')), ms))]);
             const v = document.querySelector('video');
             out.hasVideo = !!v;
             out.hasChromeShim = !!(window.chrome && window.chrome.__ytc);
             out.viewport = [window.innerWidth, window.innerHeight];
             out.pageText = (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 240);
             try {
-              const html = await (await fetch(location.href, { credentials: 'include' })).text();
+              const html = await within(fetch(location.href, { credentials: 'include' }).then(r => r.text()), 15000, 'page');
               const pr = window.YTC.extractPlayerResponse(html);
               out.htmlLength = html.length;
               out.playability = pr && pr.playabilityStatus ? { status: pr.playabilityStatus.status, reason: pr.playabilityStatus.reason } : null;
               out.captionTracks = pr && pr.captions && pr.captions.playerCaptionsTracklistRenderer ? (pr.captions.playerCaptionsTracklistRenderer.captionTracks || []).length : 0;
             } catch (e) { out.htmlError = String(e); }
-            try { out.transcript = await window.__ytcDebug.load(); } catch (e) { out.transcriptError = String(e); }
+            try { out.transcript = await within(window.__ytcDebug.load(), 25000, 'subtitles'); } catch (e) { out.transcriptError = String(e); }
             // My tutor: loaded, its dictionary from the app, its background answers through the in-page port and messages
             out.tutor = { loaded: !!window.__ytcDream, buttons: typeof (window.__ytcDream && window.__ytcDream.action) };
-            try { out.tutor.dictionaryBytes = (await (await fetch(chrome.runtime.getURL('dream/dict.json.gz'))).arrayBuffer()).byteLength; } catch (e) { out.tutor.dictionaryError = String(e); }
-            try { out.tutor.keyTest = await chrome.runtime.sendMessage({ type: 'dream-test-key', provider: 'anthropic' }); } catch (e) { out.tutor.keyTestError = String(e); }
+            try { out.tutor.dictionaryBytes = (await within(fetch(chrome.runtime.getURL('dream/dict.json.gz')).then(r => r.arrayBuffer()), 15000, 'dictionary')).byteLength; } catch (e) { out.tutor.dictionaryError = String(e); }
+            try { out.tutor.keyTest = await within(chrome.runtime.sendMessage({ type: 'dream-test-key', provider: 'anthropic' }), 10000, 'key test'); } catch (e) { out.tutor.keyTestError = String(e); }
             try { out.tutor.voices = speechSynthesis.getVoices().length; } catch (e) { out.tutor.voicesError = String(e); }
             try { out.tutor.diag = window.__ytcDream && window.__ytcDream.diag(); } catch (e) { out.tutor.diagError = String(e); }
-            try { out.tutor.vocabFile = await chrome.runtime.sendMessage({ type: 'dream-db-write' }); } catch (e) { out.tutor.vocabFileError = String(e); }
+            try { out.tutor.vocabFile = await within(chrome.runtime.sendMessage({ type: 'dream-db-write' }), 15000, 'vocabulary file'); } catch (e) { out.tutor.vocabFileError = String(e); }
             if (v) {
               v.muted = true;
               try { await Promise.race([v.play(), new Promise(r => setTimeout(r, 5000))]); } catch (e) { out.playError = String(e); }
