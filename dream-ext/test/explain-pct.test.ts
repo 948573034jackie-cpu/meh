@@ -51,6 +51,15 @@ describe('I Know 3.9: my level (A1–C2) and how much to explain (0–100 %)', (
     const few = keepHardest(list, 10, n, (l) => l === 'easyish');
     expect(few.flatMap((s) => s.lemmas).sort()).toEqual(['easyish', 'hardest', 'slang']);
   });
+  it('a share for each kind: all the words, half of the phrases, no sentence', () => {
+    const mixed = keepHardest(list, { word: 100, phrase: 50, sentence: 0 }, n, () => false);
+    expect(mixed.flatMap((s) => s.lemmas).sort()).toEqual(['easyish', 'hard', 'hardest', 'mid', 'slang']);
+    expect(mixed.some((s) => s.hard)).toBe(false);
+    // (words at 0 %: not even one I am still learning; the phrases stay)
+    const noWords = keepHardest(list, { word: 0, phrase: 100, sentence: 100 }, n, (l) => l === 'easyish');
+    expect(noWords.flatMap((s) => s.lemmas).sort()).toEqual(['idiom', 'slang']);
+    expect(noWords.filter((s) => s.hard).length).toBe(2);
+  });
   it('the same word twice in a video is in or out both times', () => {
     const twice = [sc(0, [['mid', 'word']]), sc(1, [['hard', 'word']]), sc(2, [['mid', 'word']]), sc(3, [['hardest', 'word']])];
     const half = keepHardest(twice, 50, n, () => false);

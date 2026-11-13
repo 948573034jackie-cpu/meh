@@ -125,7 +125,8 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
   await p2.evaluate(() => { document.querySelector('video').currentTime = 15.6; });
   const nTr2 = nativeLog.filter((l) => l.kind === 'translate').length;
   const swin2 = await until(async () => { const d = await dbg2(); return d && d.window && d.window.kind === 'sentence' ? d : null; }, 20000, 60);
-  const sc2 = await p2.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card.full'); return c && !c.hidden ? (c.querySelector('.zh') || {}).textContent || '' : null; });
+  // (the card is drawn a moment after the window opens: the first look may be too early)
+  const sc2 = await until(() => p2.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card.full'); return c && !c.hidden ? (c.querySelector('.zh') || {}).textContent || '' : null; }), 1500, 40);
   ok('the same sentence another time: its translation at once, from what was kept (Translation not asked again)', !!swin2 && /这是测试译文/.test(sc2 || '') && nativeLog.filter((l) => l.kind === 'translate').length === nTr2, JSON.stringify({ sc2, asked: nativeLog.filter((l) => l.kind === 'translate').length - nTr2 }));
   await until(async () => { const d = await dbg2(); return d && !d.window && d.state === 'playing'; }, 10000, 100);
   ok('with keys saved, free mode still asks nothing: no AI, no Microsoft voice (the iOS voice)', diag2.mode === 'free' && diag2.voice === 'mac' && apiLog.length === nApi2 && !ctx2.pageHits.length, JSON.stringify({ voice: diag2.voice, asked: apiLog.slice(nApi2).map((r) => r.kind) }));

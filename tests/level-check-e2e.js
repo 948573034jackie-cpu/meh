@@ -233,9 +233,9 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const counter = () => yt.evaluate(() => (document.getElementById('dr-stop-counter') || {}).textContent || '');
   const firstStop = await until(async () => { const d = await dbg(); return d && d.level.stops >= 1 ? d : null; }, 30000, 100);
   ok('the first stop comes', !!firstStop, JSON.stringify(await dbg()).slice(0, 300));
-  // a stop for a hard word: the word 3 times, then the window waits ("Do you know …?")
+  // a stop for a hard word: the word ONCE (3.10; three times come after the explanation), then the window waits
   const win1 = await until(async () => { const d = await dbg(); return d && d.window && d.window.phase === 'before' ? d : null; }, 15000, 50);
-  ok('a hard word stops the video: "ephemeral" is said 3 times, then the window waits for "I know"', win1 && win1.window.target === 'ephemeral' && win1.window.kind === 'word' && win1.spoken.filter((s) => s === 'ephemeral').length === 3 && win1.level.byKind.word === 1, JSON.stringify(win1 && { w: win1.window, spoken: win1.spoken.slice(-4), by: win1.level.byKind }));
+  ok('a hard word stops the video: "ephemeral" is said once, then the window waits for "I know"', win1 && win1.window.target === 'ephemeral' && win1.window.kind === 'word' && win1.spoken.filter((s) => s === 'ephemeral').length === 1 && win1.level.byKind.word === 1, JSON.stringify(win1 && { w: win1.window, spoken: win1.spoken.slice(-4), by: win1.level.byKind }));
   const cardZh = await yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const c = r?.querySelector('.card'); return c && !c.hidden ? c.querySelector('.word')?.textContent : null; });
   ok('the page jumped to the stop\'s sentence and the word\'s card is open', cardZh === 'ephemeral' && win1 && win1.cur && String(await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent)).includes(LINES[5]), JSON.stringify({ cardZh, cur: await yt.evaluate(() => document.getElementById('dr-stage-host').shadowRoot.querySelector('.s.cur')?.textContent) }));
   const onPage = () => yt.evaluate(() => { const r = document.getElementById('dr-stage-host')?.shadowRoot; const say = r?.querySelector('.dock .say'); return say ? { text: say.textContent, head: !!say.querySelector('b') } : null; });

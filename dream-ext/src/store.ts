@@ -87,6 +87,13 @@ export interface YtExtras {
   myLevel?: number;
   /** how much of what is at my level or above is explained by itself, % (0 = nothing, 100 = everything; lower = only the hardest) */
   explainPct?: number;
+  /** the same for each kind by itself (3.10): words, phrases, whole sentences; not set = explainPct */
+  pctWords?: number;
+  pctPhrases?: number;
+  pctSentences?: number;
+  /** a word (or phrase) at a stop is said this many times before its explanation (1) / a word this many times after it (3) */
+  sayBefore?: number;
+  sayAfter?: number;
   /** Level Check stops for hard WORDS: on / off, and their share of the sentences in % */
   stopItemsOn: boolean;
   capWords: number;

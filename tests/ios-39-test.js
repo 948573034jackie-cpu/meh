@@ -62,8 +62,8 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     ok('...then the Microsoft voice list is on the first page too, with a Test button (the warning is gone)', !!q2 && q2.voices >= 1 && !q2.warn && q2.test && (await dbg()).voice === 'azure', JSON.stringify(q2 || await dbg().then((d) => d && d.voice)));
     // how much to explain: 100 % = all three hard words of this video, 50 % = the two hardest, 10 % = one, 0 = none
     const chosenAt = async (pct) => {
-      await inQuick(page, (q, v) => { const lv = q.querySelector('input[data-name="explainPct"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, pct);
-      await until(() => stores.local.drExtras.explainPct === pct, 4000);
+      await inQuick(page, (q, v) => { const lv = q.querySelector('input[data-name="pctWords"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, pct);
+      await until(() => stores.local.drExtras.pctWords === pct, 4000);
       await sleep(250);
       const d = await dbg();
       return d && d.level ? d.level.chosen : null;
@@ -71,6 +71,23 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     const all = (await dbg()).level.chosen;
     const c50 = await chosenAt(50), c10 = await chosenAt(10), c0 = await chosenAt(0), c100 = await chosenAt(100);
     ok('how much to explain: 100 % = every hard thing of the video, 50 % = the harder half, 10 % = only the hardest, 0 = nothing', all === 3 && c100 === 3 && c50 === 2 && c10 === 1 && c0 === 0, JSON.stringify({ all, c100, c50, c10, c0 }));
+    // 3.10: Words, Phrases and Sentences each have their switch and their own "how much"; a kind that is off is not marked
+    const rows = await inQuick(page, (q) => ['pctWords', 'pctPhrases', 'pctSentences'].map((n) => { const i = q.querySelector(`section.first input[type=range][data-name="${n}"]`); return i ? { v: i.value, sw: !!i.closest('label').querySelector('.seg'), off: i.disabled } : null; }));
+    ok('Settings: Words, Phrases and Sentences each have On / Off and their own slider 0 to 100 %', rows.every((r) => r && r.sw && !r.off) && rows.map((r) => r.v).join(' ') === '100 100 100', JSON.stringify(rows));
+    await inQuick(page, (q, v) => { const lv = q.querySelector('input[data-name="pctPhrases"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, 40);
+    const p40 = await until(() => stores.local.drExtras.pctPhrases === 40 && stores.local.drExtras.pctWords === 100, 4000);
+    const marks = () => page.evaluate(() => { const h = document.getElementById('dr-stage-host'); const w = h.shadowRoot.querySelector('.page .w.hl-unknown, .page .w.hl-learning'); return { hlw: h.dataset.hlw, hlp: h.dataset.hlp, hls: h.dataset.hls, word: w ? w.textContent : null, bg: w ? getComputedStyle(w).backgroundColor : null }; });
+    const m1 = await marks();
+    await inQuick(page, (q) => q.querySelector('.seg[data-name="stopItemsOn"] button[data-v="off"]').click());
+    const m2 = await until(async () => { const m = await marks(); return m.hlw === '0' ? m : null; }, 4000);
+    await inQuick(page, (q) => q.querySelector('.seg[data-name="stopPhrasesOn"] button[data-v="off"]').click());
+    const m3 = await until(async () => { const m = await marks(); return m.hlp === '0' ? m : null; }, 4000);
+    const offRow = await inQuick(page, (q) => q.querySelector('input[data-name="pctWords"]').disabled);
+    ok('...phrases at 40 % is kept by itself; Words off: the hard words are no longer marked in the text (and its slider rests); Phrases off: the phrases neither',
+      !!p40 && m1.hlw === '1' && !!m1.word && m1.bg !== 'rgba(0, 0, 0, 0)' && !!m2 && m2.bg === 'rgba(0, 0, 0, 0)' && !!m3 && m3.hls === '1' && offRow === true, JSON.stringify({ m1, m2, m3, offRow }));
+    await inQuick(page, (q) => q.querySelector('.seg[data-name="stopItemsOn"] button[data-v="on"]').click());
+    await inQuick(page, (q) => q.querySelector('.seg[data-name="stopPhrasesOn"] button[data-v="on"]').click());
+    await until(() => stores.local.drExtras.stopItemsOn === true && stores.local.drExtras.stopPhrasesOn === true, 4000);
     // my level: C2 = none of these words is at my level or above... (they stay for a learner at B2)
     await inQuick(page, (q) => q.querySelector('.seg[data-name="learnerLevel"] button[data-v="C2"]').click());
     const atC2 = await until(async () => { const d = await dbg(); return stores.local.drSettings.learnerLevel === 'C2' && d && d.level && d.level.cefr === 'C2' ? d.level : null; }, 5000);
@@ -82,8 +99,8 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
 
   // ---- 2. the big card: one meaning; it stays for the explanation and the word again; gone when the sentence plays ----
   {
-    // (the word is said 3 times before and after, so "the word again" lasts long enough to be seen)
-    const { ctx, page, dbg, ready } = await open(browser, 'ios39000002', {}, undefined, { wordRepeats: 3 });
+    // (3.10: the word is said ONCE before the explanation and THREE times after it, then the sentence once)
+    const { ctx, page, dbg, ready } = await open(browser, 'ios39000002', {});
     await page.evaluate(() => {
       const r = document.getElementById('dr-stage-host').shadowRoot;
       window.__log = [];
@@ -107,6 +124,9 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     ok('...it stays on the screen while the tutor explains', explaining.length > 0 && explaining.every((s) => s.card === 'meticulous'), JSON.stringify(explaining.filter((s) => !s.card).slice(0, 2)));
     ok('...and while the word is said again (the video still stopped)', wordAgain.some((s) => !s.playing && s.card === 'meticulous'), JSON.stringify(wordAgain.slice(0, 3).map((s) => ({ c: s.card, p: s.playing }))));
     ok('...it closes when the sentence starts to play again, and never shows while the video plays', wordAgain.some((s) => s.playing) && part.filter((s) => s.playing).every((s) => !s.card), JSON.stringify(part.filter((s) => s.playing && s.card).slice(0, 2)));
+    { const sp = done ? done.spoken : []; const i1 = sp.findIndex((x) => /This part is the hard one|It means something simple/.test(x)); const i2 = sp.map((x) => /It means something simple/.test(x)).lastIndexOf(true);
+      const before = sp.slice(0, i1).filter((x) => x === 'meticulous').length, after = sp.slice(i2 + 1).filter((x) => x === 'meticulous').length;
+      ok('the word is said once, then the explanation, then the word three times (then the sentence plays once from the video)', i1 > 0 && before === 1 && after === 3, JSON.stringify(sp.slice(0, 12))); }
     ok('...after the stop the page is as before (the listening page, no card, the video playing)', !!done && !done.card && !(await page.evaluate(() => document.documentElement.classList.contains('dr-fullcard'))), JSON.stringify(done && done.card));
     await ctx.close();
   }
@@ -189,6 +209,8 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     const l2 = await until(async () => { const l = await look(); return l.look === 'night' ? l : null; }, 3000);
     await inQuick(page, (q) => q.querySelector('.seg[data-name="view"] button[data-v="reading"]').click());
     const l3 = await until(async () => { const l = await look(); return l.view === 'read' ? l : null; }, 5000);
+    { const rd = await page.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const pg = r.querySelector('.stage .page'), para = r.querySelector('.stage .page .para'), w = r.querySelector('.stage .page .w'); return { ws: parseFloat(getComputedStyle(pg).wordSpacing), side: parseFloat(getComputedStyle(para).paddingLeft), wpad: parseFloat(getComputedStyle(w).paddingLeft), top: parseFloat(getComputedStyle(pg).paddingTop) }; });
+      ok('Reading (3.10): the words stand a little closer and the text uses more of the screen (14 pt at the sides, 10 at the top)', rd.ws < 0 && rd.wpad === 0 && rd.side <= 14 && rd.top <= 10, JSON.stringify(rd)); }
     ok('"Night" by hand: dark whatever the device says, and the same in Reading mode', !!l2 && dark(l2.bg) && stores.local.drExtras.readLook === 'night' && !!l3 && l3.look === 'night' && dark(l3.bg), JSON.stringify({ l2, l3: l3 || await look() }));
     await ctx.close();
   }
@@ -204,7 +226,7 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     await page.evaluate(() => { const v = document.querySelector('video'); v.currentTime = 2; return v.play(); });
     await sleep(9000);
     const v = await page.evaluate(() => { const x = document.querySelector('video'); return { paused: x.paused, t: x.currentTime }; });
-    ok('...the video plays like on a normal page: no stop at "meticulous", it just goes on', !v.paused && v.t > 9.5, JSON.stringify(v));
+    ok('...the video plays like on a normal page: no stop at "meticulous", it just goes on', !v.paused && v.t > 8.5, JSON.stringify(v));
     await page.evaluate(() => window.__ytcDream.action('tutor'));
     const on = await until(() => page.evaluate(() => { const d = window.__ytcDream.diag(); return d && d.mode === 'tutor' && document.documentElement.dataset.ytcTutor === '1' && !!document.getElementById('dr-stage-host'); }), 15000);
     ok('...turned on again: the tutor is back on the same video', !!on && stores.local.drExtras.tutorOn === true);

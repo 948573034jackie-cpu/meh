@@ -105,6 +105,9 @@ export interface ListenDeps {
   onStopTarget?: (t: { kind: ExplainKind; target: string; lemma?: string } | null) => void;
   /** (direct stop) the explanation is over: the word is said again now (the app closes its card) */
   onWordAgain?: () => void;
+  /** (Level Check) how many times a word or phrase is said BEFORE its explanation / a word AFTER it (unset: listen.wordRepeats for both) */
+  sayBefore?: () => number;
+  sayAfter?: () => number;
   /** (YouTube) how long the window after an explanation stays open, ms (default: commandWindowMs) */
   afterWindowMs?: () => number;
   /** (YouTube) the quiet moment after a question the style asks ([PAUSE]), ms */
@@ -409,7 +412,7 @@ export class ListenController {
           this.deps.onStopTarget?.({ kind: it.kind, target: it.target, lemma: it.lemma });
           this.last = { kind: it.kind, target: it.target, pos, dict: null, lemma: it.lemma };
           this.earlyAnswer = false;
-          const said = await this.sayTarget(it.target, it.lemma, Math.max(0, this.deps.settings().listen.wordRepeats));
+          const said = await this.sayTarget(it.target, it.lemma, this.timesBefore());
           const early = this.earlyAnswer;
           this.earlyAnswer = false;
           if (over()) break;
@@ -427,7 +430,7 @@ export class ListenController {
           const res = await this.runExplanation(asked.kind, asked.target, pos, cur.text, null, [{ type: 'ai' }, { type: 'pause', ms: 250 }], asked.lemma);
           if (res === 'done' && !over()) {
             this.deps.onWordAgain?.();
-            const again = await this.sayTarget(asked.target, asked.lemma, asked.kind === 'word' ? Math.max(0, this.deps.settings().listen.wordRepeats) : 1);
+            const again = await this.sayTarget(asked.target, asked.lemma, asked.kind === 'word' ? this.timesAfter() : 1);
             if (again === 'done' && !over()) await this.sayTarget(cur.text, lemma, 1);
           }
         }
@@ -494,6 +497,9 @@ export class ListenController {
     this.playback.play(pos);
     return 'stop';
   }
+
+  private timesBefore(): number { return Math.max(0, Math.round(this.deps.sayBefore?.() ?? this.deps.settings().listen.wordRepeats)); }
+  private timesAfter(): number { return Math.max(0, Math.round(this.deps.sayAfter?.() ?? this.deps.settings().listen.wordRepeats)); }
 
   /** Says the word or phrase `times` times with the reading voice (slowly); 'skipped' when it was cancelled. */
   private async sayTarget(target: string, lemma: string | undefined, times: number): Promise<'done' | 'skipped'> {
@@ -690,7 +696,7 @@ export class ListenController {
     // stop; the app closes its card first. Then the reading goes on where it was, when it was playing.)
     if (res === 'done' && this.deps.directStop?.() && !question && (kind === 'word' || kind === 'phrase') && !this.disposed) {
       this.deps.onWordAgain?.();
-      const again = await this.sayTarget(target, lemma, kind === 'word' ? Math.max(0, s.listen.wordRepeats) : 1);
+      const again = await this.sayTarget(target, lemma, kind === 'word' ? this.timesAfter() : 1);
       if (again === 'skipped') res = 'skipped';
       else if (cur?.text && cur.text !== target && !this.disposed) { if ((await this.sayTarget(cur.text, lemma, 1)) === 'skipped') res = 'skipped'; }
     }

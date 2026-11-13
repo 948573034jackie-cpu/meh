@@ -112,10 +112,11 @@ async function init(): Promise<void> {
   lv.value = S.learnerLevel;
   lv.addEventListener('change', () => { void saveX({ myLevel: cefrToLevel(lv.value), levelAuto: false }); void save({ learnerLevel: lv.value as Settings['learnerLevel'] }); });
   const pc = $<HTMLInputElement>('explainPct');
-  pc.value = String(clampPct(X.explainPct ?? DEFAULT_EXPLAIN_PCT));
+  // (one slider here moves all three kinds; Settings on the video has one for words, phrases and sentences each)
+  pc.value = String(clampPct(X.pctWords ?? X.explainPct ?? DEFAULT_EXPLAIN_PCT));
   $('explainPctNow').textContent = pc.value;
   pc.addEventListener('input', () => { $('explainPctNow').textContent = pc.value; });
-  pc.addEventListener('change', () => void saveX({ explainPct: clampPct(Number(pc.value)) }));
+  pc.addEventListener('change', () => { const n = clampPct(Number(pc.value)); void saveX({ explainPct: n, pctWords: n, pctPhrases: n, pctSentences: n }); });
 
   // ---- stops
   bindCheck('autoExplainWords', () => S.listen.autoExplainWords, (b) => save({ listen: { ...S.listen, autoExplainWords: b } }));

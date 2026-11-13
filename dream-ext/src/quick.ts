@@ -112,7 +112,11 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   ].filter(Boolean).join('\n      ');
   const callVoiceRow = now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '';
   const LEVELS: [string, string][] = [['A1', 'A1'], ['A2', 'A2'], ['B1', 'B1'], ['B2', 'B2'], ['C1', 'C1'], ['C2', 'C2']];
-  const pct = clampPct(x.explainPct ?? DEFAULT_EXPLAIN_PCT);
+  const pctAll = clampPct(x.explainPct ?? DEFAULT_EXPLAIN_PCT);
+  const pcts = { word: clampPct(x.pctWords ?? pctAll), phrase: clampPct(x.pctPhrases ?? pctAll), sentence: clampPct(x.pctSentences ?? pctAll) };
+  /** one kind (words, phrases, sentences): its switch, and how much of it is explained */
+  const kindRow = (sw: string, name: string, label: string, on: boolean, pct: number) => `<label class="col lvl kind"><span>Explain <b>${label}</b> ${onOff(sw, on)} <output class="lvl-n">${pct}%</output></span>
+        <input type="range" class="wide" data-name="${name}" min="0" max="100" step="5" value="${pct}"${on ? '' : ' disabled'} aria-label="How much of the ${label.toLowerCase()} to explain, 0 nothing to 100 everything"></label>`;
   const needKey = !keys.anthropic && !keys.openai;
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
@@ -120,10 +124,10 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Tutor volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')}</label>
       ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 17, 42, 1, 'px')} <span class="muted">every page, the subtitles on the video and the card: one size</span></label>` : ''}
       <label>My level ${seg('learnerLevel', s.learnerLevel, LEVELS as [Settings['learnerLevel'], string][])}</label>
-      <label class="col lvl"><span>How much to explain <output class="lvl-n">${pct}%</output> <span class="muted">0 = nothing · 100 = everything</span></span>
-        <input type="range" class="wide" data-name="explainPct" min="0" max="100" step="5" value="${pct}" aria-label="How much to explain, 0 nothing to 100 everything"></label>
-      <label>Explain ${onOff3('stopItemsOn', 'Words', x.stopItemsOn !== false)} ${onOff3('stopPhrasesOn', 'Phrases', x.stopPhrasesOn !== false)} ${onOff3('stopHardOn', 'Sentences', x.stopHardOn !== false)}</label>
-      <p class="muted">Nothing below your level is explained by itself, and nothing you know. Of what is at your level or above, the tutor explains the hardest ${pct}% (100 = all of it, a low number = only the hardest). A switch off = that kind is never explained by itself. A tap on any word still explains it.</p>
+      ${kindRow('stopItemsOn', 'pctWords', 'Words', x.stopItemsOn !== false, pcts.word)}
+      ${kindRow('stopPhrasesOn', 'pctPhrases', 'Phrases', x.stopPhrasesOn !== false, pcts.phrase)}
+      ${kindRow('stopHardOn', 'pctSentences', 'Sentences', x.stopHardOn !== false, pcts.sentence)}
+      <p class="muted">For each kind: On / Off, and how much to explain: 100 % = everything at your level or above, a low number = only the hardest, 0 = nothing. Nothing below your level is explained by itself, and nothing you know. A kind that is off is not marked in the text either. A tap on any word still explains it.</p>
       <label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>
       <label>Look ${seg('readLook', x.readLook === 'day' || x.readLook === 'night' ? x.readLook : 'auto', [['auto', 'Auto'], ['day', '☀️ Day'], ['night', '🌙 Night']])} <span class="muted">every mode the same · Auto = as your ${ctx.phone ? 'iPhone' : 'computer'} is set</span></label>
       <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
@@ -141,6 +145,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <details class="adv main"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
     <section><h4>My tutor stops</h4>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
+      <label>At a stop: say the word ${num('sayBefore', x.sayBefore ?? 1, 0, 10)} time before the explanation and ${num('sayAfter', x.sayAfter ?? 3, 0, 10)} times after it <span class="muted">then the sentence once</span></label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
       ${ctx.phone ? `<label>Free mode: seconds to look at the card ${slider('freeWindow', x.freeWindowSec ?? 7, 3, 20, 1, ' s')} <span class="muted">(My tutor off: no AI; one tap = I know)</span></label>` : ''}
       <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
@@ -202,7 +207,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>AI <select data-name="model">${CLAUDE_MODELS.map(([v, l]) => `<option value="anthropic:${v}"${s.ai.provider === 'anthropic' && s.ai.anthropicModel === v ? ' selected' : ''}>${l}</option>`).join('')}<option value="openai:${esc(s.ai.openaiModel)}"${s.ai.provider === 'openai' ? ' selected' : ''}>OpenAI ${esc(s.ai.openaiModel)}</option></select></label>
       ${wayRows}
       <label class="col">My teacher's instructions <span class="muted">(write anything: how to teach, the personality)</span><textarea data-name="teacher" rows="9">${esc(x.teacher)}</textarea><span><button type="button" data-act="teacher-reset">Use my rules again</button></span></label>
-      <label>Say the word before ${num('wordRepeats', s.listen.wordRepeats, 0, 10)} after ${num('wordAfter', shape.wordAfter, 0, 20)} times · play the sentence after a word ${num('sentenceAfterWord', shape.sentenceAfterWord, 0, 3)} · a sentence before ${num('sentenceBefore', shape.sentenceBefore, 0, 3)} after ${num('sentenceAfter', shape.sentenceAfter, 0, 3)}</label>
+      <label>Without Level Check: say the word before ${num('wordRepeats', s.listen.wordRepeats, 0, 10)} after ${num('wordAfter', shape.wordAfter, 0, 20)} times · play the sentence after a word ${num('sentenceAfterWord', shape.sentenceAfterWord, 0, 3)} · a sentence before ${num('sentenceBefore', shape.sentenceBefore, 0, 3)} after ${num('sentenceAfter', shape.sentenceAfter, 0, 3)}</label>
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
     <section><h4>Shortcuts <span class="muted">(click one, then press the new keys)</span></h4>
@@ -363,13 +368,9 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (out && t instanceof HTMLInputElement && t.type === 'range') out.textContent = `${t.value}${out.textContent?.replace(/^[\d.]+/, '') ?? ''}`;
     const n = Number(t.value);
     if (name === 'playLine') later(() => void store.patchExtras({ playLine: n }));
-    else if (name === 'explainPct') {
-      // how much of what is at my level or above is explained: 0 = nothing, 100 = everything, lower = only the hardest
-      const pc = clampPct(n);
-      const o = el.querySelector<HTMLElement>('.lvl-n');
-      if (o) o.textContent = `${pc}%`;
-      later(() => void store.patchExtras({ explainPct: pc }), 300);
-    }
+    // how much of each kind (at my level or above) is explained: 0 = nothing, 100 = everything, lower = only the hardest
+    else if (name === 'pctWords' || name === 'pctPhrases' || name === 'pctSentences') { const pc = clampPct(n); later(() => void store.patchExtras({ [name]: pc }), 300); }
+    else if ((name === 'sayBefore' || name === 'sayAfter') && t.value !== '') later(() => void store.patchExtras({ [name]: Math.max(0, Math.min(10, Math.round(n))) }), 400);
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);
     else if (name === 'freeWindow') later(() => void store.patchExtras({ freeWindowSec: n }), 200);

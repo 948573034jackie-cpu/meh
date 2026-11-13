@@ -193,20 +193,22 @@ export function selectStopsByLevel(scores: readonly SentenceScore[], on: StopCap
  * `numberOf`: how hard a word or phrase is (0–100); `always`: one the learner is still learning stays whatever the
  * share (but not at 0: 0 explains nothing). The same word is in or out for the whole video.
  */
-export function keepHardest(scores: readonly SentenceScore[], pct: number, numberOf: (lemma: string, kind: ItemKind) => number, always: (lemma: string) => boolean): SentenceScore[] {
-  if (pct >= 100) return [...scores];
-  if (pct <= 0) return scores.map((s) => ({ ...s, score: 0, items: [], lemmas: [], kinds: [], hard: false, kind: 'sentence' as StopKind }));
+export function keepHardest(scores: readonly SentenceScore[], share: number | StopCaps, numberOf: (lemma: string, kind: ItemKind) => number, always: (lemma: string) => boolean): SentenceScore[] {
+  // (one share for all three kinds, or one each: { word, phrase, sentence } in %)
+  const pcts: StopCaps = typeof share === 'number' ? { word: share, phrase: share, sentence: share } : share;
+  if (pcts.word >= 100 && pcts.phrase >= 100 && pcts.sentence >= 100) return [...scores];
+  if (pcts.word <= 0 && pcts.phrase <= 0 && pcts.sentence <= 0) return scores.map((s) => ({ ...s, score: 0, items: [], lemmas: [], kinds: [], hard: false, kind: 'sentence' as StopKind }));
   const keep = new Set<string>();
   for (const kind of ['word', 'phrase'] as const) {
     const seen = new Map<string, number>();
     for (const s of scores) s.lemmas.forEach((l, i) => { if (s.kinds[i] === kind && !seen.has(l) && !always(l)) seen.set(l, numberOf(l, kind)); });
     const list = [...seen.entries()].map(([lemma, n], at) => ({ lemma, n, at })).sort((a, b) => b.n - a.n || a.at - b.at);
-    for (const x of list.slice(0, shareOf(list.length, pct))) keep.add(`${kind}:${x.lemma}`);
+    for (const x of list.slice(0, shareOf(list.length, pcts[kind]))) keep.add(`${kind}:${x.lemma}`);
   }
   const hard = scores.filter((s) => s.hard).sort((a, b) => b.score - a.score || a.index - b.index);
-  const hardKeep = new Set(hard.slice(0, shareOf(hard.length, pct)).map((s) => s.key));
+  const hardKeep = new Set(hard.slice(0, shareOf(hard.length, pcts.sentence)).map((s) => s.key));
   return scores.map((s) => {
-    const idx = s.lemmas.map((l, i) => i).filter((i) => always(s.lemmas[i]) || keep.has(`${s.kinds[i]}:${s.lemmas[i]}`));
+    const idx = s.lemmas.map((l, i) => i).filter((i) => pcts[s.kinds[i]] > 0 && (always(s.lemmas[i]) || keep.has(`${s.kinds[i]}:${s.lemmas[i]}`)));
     const kinds = idx.map((i) => s.kinds[i]);
     return { ...s, items: idx.map((i) => s.items[i]), lemmas: idx.map((i) => s.lemmas[i]), kinds, hard: s.hard && hardKeep.has(s.key), kind: stopKindOf(kinds) };
   });

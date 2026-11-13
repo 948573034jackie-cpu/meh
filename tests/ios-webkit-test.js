@@ -189,15 +189,15 @@ const api = H.startServer();
   const quick = await act('quick') === true && await yt.evaluate(() => {
     const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick');
     if (!q || q.hidden) return null;
-    const first = q.querySelector('section.first'), adv = q.querySelector('details.adv.main'), keysBox = q.querySelector('details.adv.keys'), lv = q.querySelector('input[data-name="explainPct"]'), seg = first.querySelector('.seg[data-name="learnerLevel"]');
+    const first = q.querySelector('section.first'), adv = q.querySelector('details.adv.main'), keysBox = q.querySelector('details.adv.keys'), lv = q.querySelector('input[data-name="pctWords"]'), seg = first.querySelector('.seg[data-name="learnerLevel"]');
     const r = lv.getBoundingClientRect(), b = q.querySelector('.q-body').getBoundingClientRect();
     return { first: first.textContent, adv: adv.textContent, advOpen: adv.open, pct: { min: lv.min, max: lv.max, value: lv.value, wide: r.width >= b.width * 0.85, h: r.height, inFirst: first.contains(lv) },
       levels: Array.from(seg.querySelectorAll('button')).map((x) => x.textContent).join(' '), levelOn: (seg.querySelector('button.on') || {}).textContent,
       keys: keysBox ? Array.from(keysBox.querySelectorAll('input[data-key]')).map((i) => i.dataset.key).join(' ') : null, keysInAdv: adv.querySelectorAll('input[data-key]').length, keysOpen: keysBox && keysBox.open,
-      switches: ['stopItemsOn', 'stopPhrasesOn', 'stopHardOn'].map((n) => !!first.querySelector(`.seg[data-name="${n}"]`)), old: q.querySelectorAll('[data-name="capWords"], [data-name="capPhrases"], [data-name="capSentences"], input[data-name="myLevel"]').length };
+      switches: ['stopItemsOn', 'stopPhrasesOn', 'stopHardOn'].map((n) => !!first.querySelector(`.seg[data-name="${n}"]`)), sliders: ['pctWords', 'pctPhrases', 'pctSentences'].map((n) => (first.querySelector(`input[type=range][data-name="${n}"]`) || {}).value).join(' '), old: q.querySelectorAll('[data-name="capWords"], [data-name="capPhrases"], [data-name="capSentences"], input[data-name="myLevel"], input[data-name="explainPct"]').length };
   });
-  ok('⚙ opens the settings over the book: the first page is short: the tutor\'s volume, ONE text size, my level A1 to C2, how much to explain (0 to 100 %), the three switches (Words, Phrases, Sentences), Explain 10 / 20 / 30 s, the mode, the voice',
-    !!quick && /Tutor volume/.test(quick.first) && /Text size/.test(quick.first) && /My level/.test(quick.first) && quick.levels === 'A1 A2 B1 B2 C1 C2' && quick.levelOn === 'B2' && /How much to explain/.test(quick.first) && /0 = nothing · 100 = everything/.test(quick.first)
+  ok('⚙ opens the settings over the book: the first page is short: the tutor\'s volume, ONE text size, my level A1 to C2, for Words, Phrases and Sentences each a switch and how much to explain (0 to 100 %), Explain 10 / 20 / 30 s, the mode, the voice',
+    !!quick && /Tutor volume/.test(quick.first) && /Text size/.test(quick.first) && /My level/.test(quick.first) && quick.levels === 'A1 A2 B1 B2 C1 C2' && quick.levelOn === 'B2' && /100 % = everything at your level or above/.test(quick.first) && quick.sliders === '100 100 100'
     && quick.pct.min === '0' && quick.pct.max === '100' && quick.pct.value === '100' && quick.pct.wide && quick.pct.h >= 44 && quick.pct.inFirst
     && quick.switches.every(Boolean) && /Words/.test(quick.first) && /Phrases/.test(quick.first) && /Sentences/.test(quick.first) && /10 s/.test(quick.first) && /30 s/.test(quick.first) && /Mode/.test(quick.first) && /Tutor's voice/.test(quick.first) && quick.old === 0, JSON.stringify(quick && { pct: quick.pct, levels: quick.levels, on: quick.levelOn, sw: quick.switches, old: quick.old, first: quick.first.slice(0, 200) }));
   ok('...the rest is under "Advanced" (closed at first): explanations, letters, the play line, the sleep timer, the microphone; the keys have their own box, "API keys", not inside Advanced',
@@ -211,11 +211,11 @@ const api = H.startServer();
   await tapLevel('B2');
   await until(() => stores.local.drExtras.myLevel === 50 && stores.local.drSettings.learnerLevel === 'B2', 4000);
   // how much to explain: saved at once
-  const setPct = (n) => yt.evaluate((v) => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="explainPct"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, n);
+  const setPct = (n) => yt.evaluate((v) => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="pctWords"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, n);
   await setPct(30);
-  ok('...how much to explain, 30 %: saved at once', !!(await until(() => stores.local.drExtras && stores.local.drExtras.explainPct === 30, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.explainPct));
+  ok('...how much of the words to explain, 30 %: saved at once', !!(await until(() => stores.local.drExtras && stores.local.drExtras.pctWords === 30, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.pctWords));
   await setPct(100);
-  await until(() => stores.local.drExtras.explainPct === 100, 4000);
+  await until(() => stores.local.drExtras.pctWords === 100, 4000);
   // sentences off: saved at once
   await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="off"]').click(); });
   ok('...whole sentences can be turned off', !!(await until(() => stores.local.drExtras && stores.local.drExtras.stopHardOn === false, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.stopHardOn));
@@ -367,7 +367,7 @@ const api = H.startServer();
   // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
   await lv.evaluate(() => window.__ytcDream.action('check'));
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
-  ok('the Check button shows the report: the app, just talk, the microphone, my level and the three switches', rep && /I Know app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /my level B2 \(50\) · explain 100% · words on · phrases on · sentences on/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
+  ok('the Check button shows the report: the app, just talk, the microphone, my level and the three switches', rep && /I Know app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /my level B2 \(50\) · explain words 100% · phrases 100% · sentences 100%/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
   // ---- Reading mode: pages like an e-reader (big letters, so this short video makes two pages or more) ----
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, phoneSizePx: 40 } })));

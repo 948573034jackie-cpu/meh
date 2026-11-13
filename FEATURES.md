@@ -234,6 +234,15 @@ Keys: Claude (explanations) and/or OpenAI (the voice, the live call, or everythi
   sentence, else asked in real time, once (`zhHere` / `askHere`); the card closes when the sentence plays again, for
   the big and the small card alike.
 
+## 7e. I Know 3.10 (14 Nov 2026)
+
+- **A stop**: the word once (`sayBefore`), the explanation, the word three times (`sayAfter`), the sentence once from
+  the video; the card closes when the sentence starts.
+- **How much to explain, per kind**: `pctWords`, `pctPhrases`, `pctSentences` (0–100 %), each with its switch;
+  `keepHardest` takes a share per kind.
+- **No marks for a kind that is off** (or at 0 %): `data-hlw` / `data-hlp` / `data-hls` on the hosts, rules in `dream.css`.
+- **Reading**: `word-spacing: -0.07em`, no padding on words, less padding at the top and sides.
+
 ## 8. Downloads
 
 https://github.com/948573034jackie-cpu/meh/releases/tag/claudesnap-latest

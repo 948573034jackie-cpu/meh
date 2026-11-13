@@ -699,7 +699,7 @@ class Session {
 
   private readyText(src?: string | null): string {
     const n = this.vb?.order.length ?? 0;
-    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · your level ${settings.learnerLevel}: explains the hardest ${explainPct()}% of what is at your level or above${this.ai() ? '' : ' · free mode (no AI)'}`;
+    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · your level ${settings.learnerLevel}: explains the hardest of what is at your level or above (${explainText()})${this.ai() ? '' : ' · free mode (no AI)'}`;
   }
 
   private buildBook(sentences: TimedSentence[], title?: string, channel?: string): void {
@@ -1087,7 +1087,7 @@ class Session {
         return true;
       },
     });
-    const kept = keepHardest(all, explainPct(), (lemma, kind) => numbers.get(`${kind}:${lemma}`) ?? 0, (lemma) => atStart[lemma] === 'learning');
+    const kept = keepHardest(all, explainPcts(), (lemma, kind) => numbers.get(`${kind}:${lemma}`) ?? 0, (lemma) => atStart[lemma] === 'learning');
     // (what is known by now, or set aside, goes out; nothing comes in)
     const gone = (l: string) => vocab.words[l] === 'known' || vocab.words[l] === 'ignored' || done.has(phraseSig(this.dict!, l));
     const list = kept.map((sc) => {
@@ -1313,6 +1313,9 @@ class Session {
       // (after the explanation the word is said again. The card stays for that, the big one of a stop and the small
       // one of a tapped word alike: it closes when the sentence starts to play again (the learner's rule of 13 Nov))
       onWordAgain: () => undefined,
+      // (the learner's rule of 14 Nov: the word once, the explanation, the word three times, the sentence once)
+      sayBefore: () => clamp(extras.sayBefore ?? 1, 0, 10),
+      sayAfter: () => clamp(extras.sayAfter ?? 3, 0, 10),
       // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
       afterWindowMs: () => (talkAfter() ? (settings.listen.commandWindowMs || 5000) : 1500),
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
@@ -3059,6 +3062,8 @@ class Session {
       h.style.setProperty('--text-weight', String(clamp(extras.textWeight || 400, 200, 800)));
       // (ONE look for every mode: day, night, or as the device is set)
       h.dataset.look = store.lookOf(extras);
+      // (a kind that is switched off, or at 0 %, is not marked in the text either)
+      { const p = explainPcts(); h.dataset.hlw = extras.stopItemsOn === false || p.word <= 0 ? '0' : '1'; h.dataset.hlp = extras.stopPhrasesOn === false || p.phrase <= 0 ? '0' : '1'; h.dataset.hls = extras.stopHardOn === false || p.sentence <= 0 ? '0' : '1'; }
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${stageSize()}px`);
       h.style.setProperty('--read-size', `${TOUCH ? stageSize() : clamp(extras.readSizePx || 22, 12, 60)}px`);
@@ -4097,7 +4102,7 @@ class Session {
       if (this.cur) this.setCurrent(this.cur);
     }
     if (prev.playLine !== extras.playLine) { this.padPage(); this.scrollToCur(true); }
-    if (prev.myLevel !== extras.myLevel || prev.explainPct !== extras.explainPct || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
+    if (prev.myLevel !== extras.myLevel || prev.explainPct !== extras.explainPct || prev.pctWords !== extras.pctWords || prev.pctPhrases !== extras.pctPhrases || prev.pctSentences !== extras.pctSentences || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
 
     this.renderHead();
     this.renderStageTop();
@@ -4213,7 +4218,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `my level ${settings.learnerLevel} (${myLevel()}) · explain ${explainPct()}% · words ${extras.stopItemsOn === false ? 'off' : 'on'} · phrases ${extras.stopPhrasesOn === false ? 'off' : 'on'} · sentences ${extras.stopHardOn === false ? 'off' : 'on'}`, wordsHeard: this.wordsHeard.total, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `my level ${settings.learnerLevel} (${myLevel()}) · explain ${explainText()}`, wordsHeard: this.wordsHeard.total, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -4258,7 +4263,7 @@ class Session {
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { page: this.readPage + 1, pages: this.readPages, shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       phone: TOUCH, device: DEVICE, lay: lay(), sleep: sleepMinutes(), asleep,
-      level: { mine: myLevel(), cefr: settings.learnerLevel, pct: explainPct(), why: Object.fromEntries([...this.stopped].map((k) => [k, (this.scores.get(k)?.items ?? []).join('+') + (this.scores.get(k)?.hard ? ' (hard sentence)' : '')])), byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
+      level: { mine: myLevel(), cefr: settings.learnerLevel, pct: explainPcts(), why: Object.fromEntries([...this.stopped].map((k) => [k, (this.scores.get(k)?.items ?? []).join('+') + (this.scores.get(k)?.hard ? ' (hard sentence)' : '')])), byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
@@ -4340,7 +4345,16 @@ const CEFR_ORDER = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 /** MY LEVEL, 0 (easiest) … 100 (hardest): the slider's number (before it was ever moved: the old A1–C2 level as a number) */
 const myLevel = (): number => myLevelOf(extras, settings.learnerLevel);
 /** how much of what is at my level or above is explained by itself, % */
-const explainPct = (): number => clampPct(extras.explainPct ?? DEFAULT_EXPLAIN_PCT);
+const explainPcts = (): StopCaps => {
+  const all = clampPct(extras.explainPct ?? DEFAULT_EXPLAIN_PCT);
+  return { word: clampPct(extras.pctWords ?? all), phrase: clampPct(extras.pctPhrases ?? all), sentence: clampPct(extras.pctSentences ?? all) };
+};
+/** "words 100% · phrases 50% · sentences off" (a kind switched off, or at 0 %, is off) */
+const explainText = (): string => {
+  const p = explainPcts();
+  const one = (name: string, on: boolean | undefined, n: number) => `${name} ${on === false || n <= 0 ? 'off' : `${n}%`}`;
+  return `${one('words', extras.stopItemsOn, p.word)} · ${one('phrases', extras.stopPhrasesOn, p.phrase)} · ${one('sentences', extras.stopHardOn, p.sentence)}`;
+};
 /** "hi bro" (also heard as "hey bro", "high bro", "hi bruh") = the voice call */
 const HI_BRO = /\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/i;
 const VOICE_HELP = 'Voice on: “hello” = explain the last part · “hi bro” = call the tutor · “I know” · “stop” · “play” · “bye” = the tutor goes, the video plays.';
