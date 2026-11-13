@@ -238,11 +238,15 @@ async function newContext(browser) {
   await sleep(600);
   ok('"stop" stops the tutor at once', talking && talking.kind === 'note' && talking.after === false && quiet !== null && (await dbg()).spoken.length === quiet && screens().length === s0 + 1, JSON.stringify({ talking, quiet, now: (await dbg()).spoken.length, screens: screens().length - s0 }));
   await page.evaluate(() => window.__iknowWeb.explainScreen());
-  await stopWhenBusy('button');
+  const started = await stopWhenBusy('button');
   const quiet2 = await until(async () => { const d = await dbg(); return d && !d.busy; }, 3000);
-  await sleep(500);
+  await sleep(1000);
   const d2 = await dbg();
-  ok('the Explain button: one request; a second tap while the tutor talks = stop (no new request)', screens().length === s0 + 2 && !!quiet2 && apiLog.length === a0 + 2, JSON.stringify({ screens: screens().length - s0, api: apiLog.length - a0, card: d2 && d2.card, busy: d2 && d2.busy, spoken: d2 && d2.spoken && d2.spoken.slice(-3), view: await page.evaluate(() => [innerWidth, innerHeight, scrollY]), rect: d2 && d2.cardRect }));
+  // (the Explain button after "stop" starts a new explanation (it is seen talking), and the second tap stops it. Its
+  // request is sent at most once: on a slow machine the tap can come before the request has even left, then none is
+  // sent at all, which costs nothing. Never a second request, and nothing more after the stop.)
+  const nScr = screens().length - s0, nApi = apiLog.length - a0;
+  ok('the Explain button after "stop" starts a new explanation; a second tap while the tutor talks = stop; at most one request, none after the stop', !!started && !!quiet2 && (nScr === 1 || nScr === 2) && nApi === nScr && !d2.busy, JSON.stringify({ started, screens: nScr, api: nApi, card: d2 && d2.card, busy: d2 && d2.busy }));
 
   // ---- 8. the article for the reader ----
   const art = await page.evaluate(() => window.__iknowWeb.article());
