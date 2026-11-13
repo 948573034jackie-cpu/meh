@@ -154,7 +154,7 @@ const epub = (extra = {}) => Buffer.from(zipSync(Object.fromEntries(Object.entri
   const reopened = await until(() => rd.evaluate(() => (document.body.dataset.sentences && !document.getElementById('reader').hidden && scrollY > 500 ? document.getElementById('title').textContent : null)), 15000);
   ok('after a reload (the app was closed and opened) the book that was open opens again by itself, where it was', /My Story/.test(String(reopened)), String(reopened));
   await rd.tap('#back');
-  const shelf = await until(() => rd.evaluate(() => { const b = document.querySelector('#shelf .book'); return b ? { n: document.querySelectorAll('#shelf .book').length, text: b.innerText, h: b.querySelector('.go').getBoundingClientRect().height, rm: b.querySelector('.rm').getBoundingClientRect().height } : null; }), 8000);
+  const shelf = await until(() => rd.evaluate(() => { const b = document.querySelector('#shelf .book'); return b && b.querySelector('.go').getBoundingClientRect().height > 0 ? { n: document.querySelectorAll('#shelf .book').length, text: b.innerText, h: b.querySelector('.go').getBoundingClientRect().height, rm: b.querySelector('.rm').getBoundingClientRect().height } : null; }), 8000);
   ok('after a reload the library lists the book with its title and how far it was read', shelf && shelf.n === 1 && /My Story/.test(shelf.text) && /(\d+)% read/.test(shelf.text) && Number(/(\d+)% read/.exec(shelf.text)[1]) > 40, JSON.stringify(shelf));
   ok('...its row and its Remove button are big enough', shelf && shelf.h >= 60 && shelf.rm >= 44, JSON.stringify(shelf));
   await rd.tap('#shelf .book .go');
