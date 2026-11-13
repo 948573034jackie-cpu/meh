@@ -31,7 +31,11 @@ export class TutorSay {
   /** `appPlays`: a cloud voice's sound is played by the app itself, not by the page (the app's browser: see native-audio.ts) */
   constructor(private onBusy: (busy: boolean) => void = () => undefined, private appPlays = false) {}
 
-  get busy(): boolean { return this.active > 0; }
+  /** talking now: something was started and not stopped since (a stopped one may still be winding down: it is not
+   *  "talking" any more, so the next tap on Explain starts a new explanation instead of stopping again) */
+  get busy(): boolean { return this.active > 0 && this.began === this.run; }
+  /** the run of the last thing started */
+  private began = -1;
 
   /** the voice of the settings; `free` = the device's own voice only */
   async prepare(free: boolean): Promise<void> {
@@ -46,11 +50,13 @@ export class TutorSay {
     this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
   }
 
-  private begin(): number { this.active++; if (this.active === 1) this.onBusy(true); return this.run; }
+  private begin(): number { this.active++; this.began = this.run; this.onBusy(true); return this.run; }
   private end(): void { this.active = Math.max(0, this.active - 1); if (this.active === 0) { this.nowSaying = ''; this.onBusy(false); } }
 
   /** everything stops at once: the voice and the request that is still being written */
   stop(): void {
+    // (said at once: the app and the page know it is quiet now, before the stopped request has wound down)
+    if (this.busy) { this.nowSaying = ''; this.onBusy(false); }
     this.run++;
     this.job?.cancel();
     this.job = null;

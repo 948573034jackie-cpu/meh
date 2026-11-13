@@ -158,7 +158,10 @@ jobs:
         run: node tests/finder-lyrics-test.js
       - name: The reader (EPUB, text, the library, hard words, the word card), in WebKit
         if: always()
-        run: node tests/reader-test.js
+        run: |
+          # (the test makes its small e-book with the reader's own zip library)
+          (cd dream-ext && npm ci --ignore-scripts --no-audit --no-fund >/dev/null)
+          node tests/reader-test.js
       - name: The browser with Explanation mode (tap a word, a link, a selection, "hello"), in WebKit
         if: always()
         run: node tests/ios-browser-test.js
