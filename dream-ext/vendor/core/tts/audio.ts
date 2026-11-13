@@ -4,7 +4,7 @@ import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } fro
 import { ENGINE_LABELS } from './engine';
 import { estimateWordTimes } from './timing';
 import { synthesisSegments, PRIORITY, type SynthesisSegment } from './segments';
-import { bakeVolume, elementVolumeIgnored } from './gain';
+import { bakeVolume, bakeFailed, bakeOk, elementVolumeIgnored } from './gain';
 
 type Synthesize = (engine: TtsEngineId, text: string, voiceId: string, rate: number) => Promise<CloudTtsResult>;
 type ListVoices = (engine: TtsEngineId) => Promise<{ id: string; name: string; lang: string; gender?: string; quality?: string; note?: string }[]>;
@@ -26,6 +26,11 @@ export interface AudioEngineOptions {
 
 /** cloud voices cost money per character: never fetch further ahead than this */
 const CLOUD_PREFETCH = 2;
+/** how the cloud voice's clips went (the 🩺 check and tests): made again at the learner's volume and played, that
+ *  failed and the original played instead, sounds started in all */
+export const voiceStats = { baked: 0, bakeFails: 0, started: 0 };
+/** a clip made again at the learner's volume starts within this time, or the original plays instead */
+const BAKED_START_MS = 2500;
 /** decoded audio elements kept for upcoming segments */
 const PRELOAD_MAX = 8;
 
@@ -82,6 +87,8 @@ export class AudioTtsEngine implements TtsEngine {
   lastStartDelayMs: number | null = null;
   /** the last clip whose volume was put into its sound (an iPhone): the volume and the size (diagnostics and tests) */
   lastBaked: { volume: number; bytes: number } | null = null;
+  /** clips made again at the learner's volume that would not play (the original played instead) */
+  bakeFails = 0;
   private opts: AudioEngineOptions;
 
   constructor(readonly id: TtsEngineId, private synthesize: Synthesize, private voices: ListVoices, wordBoundaries: boolean, opts: AudioEngineOptions = {}) {
@@ -215,21 +222,39 @@ export class AudioTtsEngine implements TtsEngine {
         void bakeVolume(res.audio, volume, k).then((blob) => {
           if (dropped) return;
           cleanup = null;
-          if (!blob) { const src = ready ?? this.load(res); run(src.audio, src.url, false); return; }
-          if (ready) { ready.audio.src = ''; URL.revokeObjectURL(ready.url); }
+          // the clip as the voice service made it (when the new one cannot be made, or will not play)
+          const plain = () => { const src = ready ?? this.load(res); run(src.audio, src.url, false); };
+          if (!blob) { plain(); return; }
           const url = URL.createObjectURL(blob);
           const audio = new Audio(url);
           audio.preload = 'auto';
           audio.preservesPitch = true;
           this.lastBaked = { volume, bytes: blob.size };
-          run(audio, url, true);
+          // (it plays: the clip loaded ahead is not needed any more)
+          if (ready) audio.addEventListener('playing', () => { ready.audio.src = ''; URL.revokeObjectURL(ready.url); }, { once: true });
+          run(audio, url, true, () => { bakeFailed(); this.lastBaked = null; this.bakeFails++; voiceStats.bakeFails++; plain(); });
         });
         return;
       }
       const src = ready ?? this.load(res);
       run(src.audio, src.url, false);
 
-      function run(this: void, audio: HTMLAudioElement, url: string, isBaked: boolean): void {
+      /** `orElse` (a clip made again at the learner's volume): should it not start, or fail, the original plays instead */
+      function run(this: void, audio: HTMLAudioElement, url: string, isBaked: boolean, orElse?: () => void): void {
+      let startWatch: ReturnType<typeof setTimeout> | null = null;
+      let swapped = false;
+      const swap = (): boolean => {
+        if (!orElse || swapped || over || started0) return false;
+        swapped = true; over = true;
+        if (startWatch) clearTimeout(startWatch);
+        cancelAnimationFrame(raf);
+        audio.onplaying = audio.onended = audio.onerror = null;
+        audio.pause(); audio.src = ''; URL.revokeObjectURL(url);
+        cleanup = null;
+        orElse();
+        return true;
+      };
+      let started0 = false;
       audio.playbackRate = clampRate(self.liveRate);
       if (!isBaked) setVolume(audio, volume);
       // provider timings index the text it synthesized (trimmed by the main process); shift them to this text
@@ -253,6 +278,7 @@ export class AudioTtsEngine implements TtsEngine {
       const end = (o: SpeakOutcome) => {
         if (over) return;
         over = true;
+        if (startWatch) { clearTimeout(startWatch); startWatch = null; }
         cancelAnimationFrame(raf);
         audio.onplaying = audio.onended = audio.onerror = null;
         audio.pause(); audio.src = ''; URL.revokeObjectURL(url);
@@ -260,6 +286,9 @@ export class AudioTtsEngine implements TtsEngine {
       };
       cleanup = () => end('cancelled');
       audio.onplaying = () => {
+        if (!started0) { voiceStats.started++; if (isBaked) { voiceStats.baked++; bakeOk(); } }
+        started0 = true;
+        if (startWatch) { clearTimeout(startWatch); startWatch = null; }
         if (!started) { started = true; self.lastStartDelayMs = performance.now() - t0; opts.onStart?.(); }
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(tick);
@@ -269,9 +298,10 @@ export class AudioTtsEngine implements TtsEngine {
         while (timings && nextWord < timings.length) { opts.onWord?.(timings[nextWord].charIndex, timings[nextWord].charLength); nextWord++; }
         end('ended');
       };
-      audio.onerror = () => { handle.error = new Error('audio playback failed'); end('error'); };
+      audio.onerror = () => { if (swap()) return; handle.error = new Error('audio playback failed'); end('error'); };
       self.current = { audio, cancel: handle.cancel };
-      audio.play().catch((e: Error) => { if (!over) { handle.error = e; end('error'); } });
+      if (orElse) startWatch = setTimeout(() => { startWatch = null; if (!self._paused) swap(); }, BAKED_START_MS);
+      audio.play().catch((e: Error) => { if (swap()) return; if (!over) { handle.error = e; end('error'); } });
       }
     });
 

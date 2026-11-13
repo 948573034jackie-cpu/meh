@@ -1,3 +1,4 @@
+import { levelToCefr } from './level100';
 /**
  * The daily review of the whole word list: once a day, by itself, plain counting, NO AI.
  *  1. A word explained `knownAfter` times (7) is known from now on (a catch-up: normally this happens at once).
@@ -102,6 +103,7 @@ export function reviewText(r: ReviewResult, myLevel: number): string {
   const parts: string[] = [];
   if (r.nowKnown.length) parts.push(`${r.nowKnown.length} word${r.nowKnown.length === 1 ? '' : 's'} now known`);
   if (r.backToLearn.length) parts.push(`${r.backToLearn.length} not met for a long time: to review again`);
-  if (r.suggested !== null && Math.abs(r.suggested - myLevel) >= 8) parts.push(`your words say your level is about ${r.suggested} (yours is ${myLevel}; move it in Settings if you like)`);
+  // (the learner sees school levels, A1 … C2: said only when the words point at another level than theirs)
+  if (r.suggested !== null && Math.abs(r.suggested - myLevel) >= 8 && levelToCefr(r.suggested) !== levelToCefr(myLevel)) parts.push(`your words say your level is about ${levelToCefr(r.suggested)} (yours is ${levelToCefr(myLevel)}; change it in Settings if you like)`);
   return parts.length ? `Today's word review: ${parts.join(' · ')}.` : '';
 }

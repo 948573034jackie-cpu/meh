@@ -10,6 +10,7 @@ import type { PhraseHit } from '@shared/api';
 import type { WordStatus } from '@shared/settings';
 import { annotateSentence } from '@core/vocab/analysis';
 import { phraseSig, type Chance } from './level-db';
+import { shareOf } from './level100';
 
 export const MAX_STOP_RATIO = 0.5;
 /** below this nothing in the sentence is really likely to be unknown */
@@ -184,6 +185,31 @@ export function selectStopsByLevel(scores: readonly SentenceScore[], on: StopCap
     if (k === 'sentence' ? s.hard : !!k) out.add(s.key);
   }
   return out;
+}
+
+/**
+ * HOW MUCH TO EXPLAIN (0–100 %): of the words, the phrases and the hard sentences at the learner's level or above,
+ * only the hardest share stays, each kind by itself (100 = all, 50 = the harder half, 0 = nothing at all).
+ * `numberOf`: how hard a word or phrase is (0–100); `always`: one the learner is still learning stays whatever the
+ * share (but not at 0: 0 explains nothing). The same word is in or out for the whole video.
+ */
+export function keepHardest(scores: readonly SentenceScore[], pct: number, numberOf: (lemma: string, kind: ItemKind) => number, always: (lemma: string) => boolean): SentenceScore[] {
+  if (pct >= 100) return [...scores];
+  if (pct <= 0) return scores.map((s) => ({ ...s, score: 0, items: [], lemmas: [], kinds: [], hard: false, kind: 'sentence' as StopKind }));
+  const keep = new Set<string>();
+  for (const kind of ['word', 'phrase'] as const) {
+    const seen = new Map<string, number>();
+    for (const s of scores) s.lemmas.forEach((l, i) => { if (s.kinds[i] === kind && !seen.has(l) && !always(l)) seen.set(l, numberOf(l, kind)); });
+    const list = [...seen.entries()].map(([lemma, n], at) => ({ lemma, n, at })).sort((a, b) => b.n - a.n || a.at - b.at);
+    for (const x of list.slice(0, shareOf(list.length, pct))) keep.add(`${kind}:${x.lemma}`);
+  }
+  const hard = scores.filter((s) => s.hard).sort((a, b) => b.score - a.score || a.index - b.index);
+  const hardKeep = new Set(hard.slice(0, shareOf(hard.length, pct)).map((s) => s.key));
+  return scores.map((s) => {
+    const idx = s.lemmas.map((l, i) => i).filter((i) => always(s.lemmas[i]) || keep.has(`${s.kinds[i]}:${s.lemmas[i]}`));
+    const kinds = idx.map((i) => s.kinds[i]);
+    return { ...s, items: idx.map((i) => s.items[i]), lemmas: idx.map((i) => s.lemmas[i]), kinds, hard: s.hard && hardKeep.has(s.key), kind: stopKindOf(kinds) };
+  });
 }
 
 /** One more stop keeps the stops so far at half of the sentences so far, or fewer. */

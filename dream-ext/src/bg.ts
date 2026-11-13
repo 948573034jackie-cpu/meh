@@ -17,7 +17,7 @@ import type { ExplainRequest, AiErrorCode } from '@shared/api';
 import { buildPrompt, buildStyledPrompt, type PromptBundle } from '@core/ai/prompts';
 import { resolveStyle, type StyleId } from '@shared/styles';
 import type { AiProviderId, Settings } from '@shared/settings';
-import { getSettings, getKeys, getExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
+import { getSettings, getKeys, getExtras, patchExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
@@ -381,19 +381,60 @@ async function azureFail(res: Response): Promise<Error> {
   return new Error(`Microsoft voice: HTTP ${res.status} ${body}`);
 }
 
-/** The key and region work (the voice list costs nothing); `key` = a key not saved yet (is this a Microsoft key?). */
+/** the regions an Azure Speech resource can be in (the usual ones first) */
+export const AZURE_REGIONS = ['eastus', 'eastus2', 'westus', 'westus2', 'westus3', 'centralus', 'northcentralus', 'southcentralus', 'westcentralus', 'canadacentral', 'canadaeast', 'brazilsouth',
+  'westeurope', 'northeurope', 'uksouth', 'ukwest', 'francecentral', 'germanywestcentral', 'switzerlandnorth', 'switzerlandwest', 'norwayeast', 'swedencentral', 'italynorth',
+  'southeastasia', 'eastasia', 'japaneast', 'japanwest', 'koreacentral', 'australiaeast', 'centralindia', 'southindia', 'westindia', 'jioindiawest', 'uaenorth', 'qatarcentral', 'southafricanorth'];
+/**
+ * The region a key belongs to: every other region is asked for its voice list with the key (free, a few at a time);
+ * the one that answers is it. null = no region takes this key (it is not a Speech key, or it was deleted).
+ */
+export async function findAzureRegion(works: (region: string) => Promise<boolean>, skip = '', regions: readonly string[] = AZURE_REGIONS, atOnce = 6): Promise<string | null> {
+  const list = regions.filter((r) => r !== skip);
+  for (let i = 0; i < list.length; i += atOnce) {
+    const part = list.slice(i, i + atOnce);
+    const ok = await Promise.all(part.map((r) => works(r).catch(() => false)));
+    const at = ok.indexOf(true);
+    if (at >= 0) return part[at];
+  }
+  return null;
+}
+
+/**
+ * The key and region work (the voice list costs nothing); `key` = a key not saved yet (is this a Microsoft key?).
+ * A key the saved region does not take is tried in the other regions: the right one is saved by itself.
+ */
 export async function testAzure(key?: string): Promise<{ ok: boolean; message: string }> {
-  const k = key ?? (await getKeys()).azure;
+  const k = (key ?? (await getKeys()).azure ?? '').trim();
   if (!k) return { ok: false, message: 'No Microsoft key is saved yet.' };
-  const region = (await getExtras()).azureRegion;
-  try {
-    const res = await fetch(`${azureBase(region, (await baseUrls()).azure)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': k } });
-    if (!res.ok) return { ok: false, message: (await azureFail(res)).message };
-    const list = (await res.json()) as { ShortName?: string }[];
+  const region = (await getExtras()).azureRegion || 'eastus';
+  const test = (await baseUrls()).azure;
+  const list = (r: string) => fetch(`${azureBase(r, test)}/cognitiveservices/voices/list`, { headers: { 'Ocp-Apim-Subscription-Key': k } });
+  const keep = async (res: Response, r: string, found: boolean): Promise<{ ok: boolean; message: string }> => {
+    const voices = (await res.json()) as { ShortName?: string }[];
     // the voices this region really has (the list in ⚙ shows only these)
-    await chrome.storage.local.set({ drAzureVoices: list.map((v) => v.ShortName ?? '').filter(Boolean) }).catch(() => undefined);
-    return { ok: true, message: `The Microsoft voice works (${list.length} voices, region ${region}).` };
-  } catch (e) { return { ok: false, message: `Microsoft voice: ${(e as Error).message}. Check the region (for example eastus).` }; }
+    await chrome.storage.local.set({ drAzureVoices: voices.map((v) => v.ShortName ?? '').filter(Boolean) }).catch(() => undefined);
+    return { ok: true, message: found ? `The Microsoft voice works. Your key's region is ${r}: it is saved now (${voices.length} voices).` : `The Microsoft voice works (${voices.length} voices, region ${r}).` };
+  };
+  let first: Response | null = null;
+  let why = '';
+  try { first = await list(region); } catch (e) { why = (e as Error).message; }
+  if (first?.ok) return keep(first, region, false);
+  // (the free time used up, or too many requests: the key and region are right)
+  if (first && first.status !== 401 && first.status !== 404) return { ok: false, message: (await azureFail(first)).message };
+  // (the test server has one address for every region: nothing to look for)
+  // (only for the key saved as the Microsoft key: a key that is only being tried goes to one region, no further)
+  if (key === undefined && (!test || (globalThis as { __ytcFindRegion?: boolean }).__ytcFindRegion)) {
+    let hit: Response | null = null;
+    const r = await findAzureRegion(async (rg) => { const res = await list(rg); if (res.ok && !hit) hit = res; return res.ok; }, region);
+    if (r && hit) {
+      // (only a saved key moves the saved region; a key being tried is saved by the caller, then tested again)
+      await patchExtras({ azureRegion: r });
+      return keep(hit, r, true);
+    }
+  }
+  if (first) return { ok: false, message: first.status === 401 ? 'Microsoft does not take this key in any region. Copy "KEY 1" again from your Speech resource in the Azure portal (Keys and Endpoint), paste it and press Save.' : (await azureFail(first)).message };
+  return { ok: false, message: `Microsoft voice: ${why || 'no answer'}. Check the internet connection.` };
 }
 
 /** A short text (a word, a phrase) the voice said before is played again from this computer: no new characters. */

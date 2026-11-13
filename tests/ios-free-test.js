@@ -13,7 +13,7 @@ H.watchdog(6);
 const api = H.startServer();
 
 // what the app has saved: My tutor off, the old stops (Level Check off: free mode chooses its stops itself anyway)
-const extrasFree = (more = {}) => ({ tutorOn: false, levelMode: false, levelAsk: false, phoneSet: true, view: 'listening', fakeVoice: false, panel: true, band: 'auto', explainOnStop: true,
+const extrasFree = (more = {}) => ({ tutorOn: false, offMode: 'free', levelMode: false, levelAsk: false, phoneSet: true, view: 'listening', fakeVoice: false, panel: true, band: 'auto', explainOnStop: true,
   stopItemsOn: true, capWords: 100, stopPhrasesOn: false, capPhrases: 0, stopHardOn: true, capSentences: 100, stopSentences: true, stopGapSec: 0, talkAfterExplain: false, voiceMode: false, zhLines: false,
   migrated: 9, callEngine: 'claude', talkSilenceSec: 0, freeWindowSec: 3, ...more });
 // the AI's hard sentence of a video, kept from an earlier time with the tutor (free mode only reads what is saved)
@@ -25,8 +25,8 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
 
   // ---- the app's side: the bar of free mode, Apple's Translation ----
   const cv = fs.readFileSync(path.join(IOS, 'ContentView.swift'), 'utf8');
-  const free = /\} else \{\s*\/\/ free mode[^\n]*\n([\s\S]*?)appButton\("house"/.exec(cv);
-  ok('the bar of free mode: play / stop, the Video mode switches, Mode, Find (no Explain, no Call)', !!free && /tutorButton\("stop"/.test(free[1]) && /tutorButton\("band"/.test(free[1]) && /tutorButton\("pageAuto"/.test(free[1]) && /tutorButton\("mode"/.test(free[1]) && /tutorButton\("find"/.test(free[1]) && !/explainLast|"talk"/.test(free[1]) && /Free mode \(no AI\): turn My tutor on/.test(cv), free && free[1].trim().slice(0, 200));
+  const free = /if model\.freeMode \{([\s\S]*?)appButton\("house"/.exec(cv);
+  ok('the bar of free mode (when Settings asks for free mode): play / stop, the Video mode switches, Mode, Find (no Explain, no Call)', !!free && /tutorButton\("stop"/.test(free[1]) && /tutorButton\("band"/.test(free[1]) && /tutorButton\("pageAuto"/.test(free[1]) && /tutorButton\("mode"/.test(free[1]) && /tutorButton\("find"/.test(free[1]) && !/explainLast|"talk"/.test(free[1]) && /My tutor is off: turn it on/.test(cv), free && free[1].trim().slice(0, 200));
   const tr = fs.existsSync(path.join(IOS, 'Translator.swift')) ? fs.readFileSync(path.join(IOS, 'Translator.swift'), 'utf8') : '';
   const bridge = fs.readFileSync(path.join(IOS, 'Bridge.swift'), 'utf8');
   ok('Apple\'s Translation in the app: English to Chinese on the device (iOS 18), answered through the bridge, left out of older builds', /#if canImport\(Translation\) && compiler\(>=6\.0\)/.test(tr) && /\.translationTask\(/.test(tr) && /zh-Hans/.test(tr) && /case "translate":/.test(bridge) && /func translate\(/.test(H.swift) && /TranslatorHost\(translator:/.test(cv));

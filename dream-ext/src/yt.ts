@@ -52,6 +52,7 @@ import { installFinderPlaylist, finderNext, finderPrev, learnerLevelOf } from '.
 import { explain as aiExplain, complete, completeStream, getDictionary, getDictData, getZipf, gunzipVia } from './ai-client';
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
+import { voiceStats } from '@core/tts/audio';
 import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, ShortPieces, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
@@ -62,8 +63,8 @@ import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } fr
 import { renderQuick } from './quick';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
-import { scoreSentences, selectStopsByLevel, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
-import { myLevelOf, wordNumber, phraseDifficulty, harderThan, levelToCefr, clampLevel, CEFR_MID } from './level100';
+import { scoreSentences, selectStopsByLevel, keepHardest, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
+import { myLevelOf, wordNumber, phraseDifficulty, harderThan, levelToCefr, clampLevel, CEFR_MID, cefrToLevel, belowLevel, clampPct, DEFAULT_EXPLAIN_PCT } from './level100';
 import { RuleGuard, type LevelRule, type RuleRequest } from './level-rule';
 import type { TeachLength } from './teacher-text';
 import { LevelGate } from './level-gate';
@@ -698,7 +699,7 @@ class Session {
 
   private readyText(src?: string | null): string {
     const n = this.vb?.order.length ?? 0;
-    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · stops only at what is harder than your level (${myLevel()} of 100)${this.ai() ? '' : ' · free mode (no AI)'}`;
+    return `${n} sentences${this.source === 'ai' ? ' (complete, by the AI)' : this.source === 'human' ? ' (official subtitles, made by people)' : ''} · ${src ?? 'subtitles'} · your level ${settings.learnerLevel}: explains the hardest ${explainPct()}% of what is at your level or above${this.ai() ? '' : ' · free mode (no AI)'}`;
   }
 
   private buildBook(sentences: TimedSentence[], title?: string, channel?: string): void {
@@ -712,6 +713,7 @@ class Session {
     const cached = await store.getVideoHints(this.videoId).catch(() => null) as (store.VideoHints & { split?: string; sentences?: number[]; v?: number }) | null;
     if (!cached || !analysisCovers(cached.level)) return;
     this.hints = cached.hints;
+    this.hereZh = new Map(Object.entries((cached as { here?: Record<string, string> }).here ?? {}));
     this.hardLevel = cached.level;
     if (cached.v === HINTS_VERSION && cached.split === this.source) {
       this.phrases = cached.phrases as Record<string, PhraseHit[]>;
@@ -1058,29 +1060,54 @@ class Session {
   private recomputeStops(): void {
     if (!this.vb || !this.dict || !this.levelOn()) return;
     const done = this.databaseSigs((st) => st === 'known' || st === 'ignored');
-    // ONE LEVEL, 0 (easiest) … 100 (hardest): only what is HARDER than my level can stop (level100.ts); a whole
-    // sentence the analysis found hard has the number of the level it was found hard for, a little above it
+    // MY LEVEL (A1 … C2, kept as a number too: level100.ts): nothing below it can stop. A word or phrase whose school
+    // level is below mine never stops; the others only when their number is higher than my level's. A whole sentence
+    // the analysis found hard has the number of the level it was found hard for, a little above it.
+    // HOW MUCH TO EXPLAIN (0–100 %): of what is left, only the hardest share stays (keepHardest).
     const mine = myLevel();
+    const cefrMine = settings.learnerLevel;
     const zipf = this.zipf;
     const hardNumber = Math.min(98, (CEFR_MID[(this.hardLevel || settings.learnerLevel) as CefrLevel] ?? 56) + 10);
-    const list = scoreSentences({
+    const numbers = new Map<string, number>();
+    // (the share is taken of the hard things as they were WHEN THE VIDEO OPENED: a word that this video's own stops
+    // made "learning" or "known" must not move the next-hardest word into the share, or the share would creep up)
+    this.rankWords ??= { ...vocab.words };
+    this.rankDone ??= done;
+    const atStart = this.rankWords, doneAtStart = this.rankDone;
+    const all = scoreSentences({
       book: this.vb.book, order: this.vb.order, dict: this.dict, names: this.names,
-      status: (l) => vocab.words[l], phraseDone: (sig) => done.has(sig), phrases: this.phrases,
+      status: (l) => atStart[l], phraseDone: (sig) => doneAtStart.has(sig), phrases: this.phrases,
       hard: harderThan(hardNumber, mine) ? new Set(this.hardKeys.keys()) : new Set<string>(),
       chance: unknownChance(levelMeta.tests), zipf,
       harder: (kind, text, lemma, cefr) => {
-        if (kind === 'phrase') return harderThan(phraseDifficulty(cefr), mine);
-        const n = wordNumber(zipf(text), zipf(lemma), cefr);
-        return n !== null && harderThan(n, mine);
+        if (belowLevel(cefr, cefrMine)) return false;
+        const n = kind === 'phrase' ? phraseDifficulty(cefr) : wordNumber(zipf(text), zipf(lemma), cefr);
+        if (n === null || !harderThan(n, mine)) return false;
+        numbers.set(`${kind}:${lemma}`, Math.max(n, numbers.get(`${kind}:${lemma}`) ?? 0));
+        return true;
       },
+    });
+    const kept = keepHardest(all, explainPct(), (lemma, kind) => numbers.get(`${kind}:${lemma}`) ?? 0, (lemma) => atStart[lemma] === 'learning');
+    // (what is known by now, or set aside, goes out; nothing comes in)
+    const gone = (l: string) => vocab.words[l] === 'known' || vocab.words[l] === 'ignored' || done.has(phraseSig(this.dict!, l));
+    const list = kept.map((sc) => {
+      const idx = sc.lemmas.map((_, i) => i).filter((i) => !gone(sc.lemmas[i]));
+      if (idx.length === sc.lemmas.length) return sc;
+      const kinds = idx.map((i) => sc.kinds[i]);
+      return { ...sc, items: idx.map((i) => sc.items[i]), lemmas: idx.map((i) => sc.lemmas[i]), kinds, kind: stopKindOf(kinds) };
     });
     this.scores = new Map(list.map((s) => [s.key, s]));
     this.stopSet = selectStopsByLevel(list, this.caps());
     this.paintCounter();
   }
+  /** the learner's words (and the phrases known or set aside) as they were when this video opened: the share is taken of these */
+  private rankWords: Record<string, WordStatus> | null = null;
+  private rankDone: Set<string> | null = null;
   /** the school level the video's hard sentences were found for (with the analysis; '' = not known) */
   private hardLevel = '';
   levelChanged(): void { this.recomputeStops(); }
+  /** the device went dark or light (Look: Auto follows it) */
+  lookChanged(): void { this.applyLook(); }
 
   private heardSentence(pos: Position): void {
     // (the "words heard" counter: a sentence counts once; it is saved with where you are in the video)
@@ -1283,8 +1310,9 @@ class Session {
       onCommandWindow: (w) => this.onWindow(w),
       onPauseWindow: (open) => { this.windowOpen = open; },
       onStopTarget: (t) => this.onStopTarget(t),
-      // (after the explanation the word is said again: its Chinese card goes away first, the whole page is seen)
-      onWordAgain: () => this.closeCard(),
+      // (after the explanation the word is said again. The card stays for that, the big one of a stop and the small
+      // one of a tapped word alike: it closes when the sentence starts to play again (the learner's rule of 13 Nov))
+      onWordAgain: () => undefined,
       // no talk after explanations: a short moment ("I don't know" = explain again), then the video goes on
       afterWindowMs: () => (talkAfter() ? (settings.listen.commandWindowMs || 5000) : 1500),
       thinkPauseMs: () => (/^A/i.test(settings.learnerLevel) ? 3000 : 4500),
@@ -1331,6 +1359,8 @@ class Session {
   private onState(st: PlaybackState): void {
     // a stop at the end of a sentence: Playback waited for the sentence to end, the video plays on unless held here
     if (st === 'explaining') { this.engine.hold(); this.watchStop(); }
+    // (a card kept for "the word again": whatever ends the explanation without the sentence playing closes it too)
+    else if (this.cardKept && this.card) this.closeCard();
     if (st === 'playing') {
       // the reading goes on: the talk and the stop are over, the video comes back (normal mode); no card stays open
       if (this.card) this.closeCard();
@@ -2416,7 +2446,11 @@ class Session {
     if (e.status === 'done' || e.status === 'error' || e.status === 'skipped') {
       this.lastTtsEnd = Date.now();
       // (the learner's rule: after every explanation the dictionary card closes by itself)
-      if (this.card && e.kind !== 'question' && e.status !== 'skipped' && (!e.lemma || e.lemma === this.card.lemma || e.kind === 'sentence' || e.kind === 'passage') && !this.controller?.stopWindow) this.closeCard();
+      // (the big card of a stop on a word or phrase stays a little longer: the word is said again, and the card
+      // closes when the sentence starts to play; if anything goes wrong, the end of the stop closes it)
+      const staysForWord = !!this.card && this.levelOn() && e.status === 'done' && (e.kind === 'word' || e.kind === 'phrase') && e.lemma === this.card.lemma && (this.playback?.state === 'explaining' || this.playback?.state === 'paused');
+      this.cardKept = staysForWord;
+      if (this.card && !staysForWord && e.kind !== 'question' && e.status !== 'skipped' && (!e.lemma || e.lemma === this.card.lemma || e.kind === 'sentence' || e.kind === 'passage') && !this.controller?.stopWindow) this.closeCard();
       if (e.status === 'skipped' && !this.talk && this.pre && !this.flow) { this.pre.close(); this.pre = null; }
       if (this.talk && e.status === 'done') { this.talk.explanation = e.text; this.talk.live?.update(this.liveContext(this.talk.word, e.text)); this.talk.live?.setMic(true); }
     }
@@ -2609,7 +2643,7 @@ class Session {
       this.hardSentences = this.markedFrom(hard);
       this.hardLevel = settings.learnerLevel;
       this.recomputeStops();
-      await store.setVideoHints(this.cacheId(), { version: store.HINTS_VERSION, level: settings.learnerLevel, hints: this.hints, phrases: this.phrases, split: this.source, sentences: hard, v: HINTS_VERSION } as store.VideoHints);
+      await store.setVideoHints(this.cacheId(), { version: store.HINTS_VERSION, level: settings.learnerLevel, hints: Object.fromEntries(Object.entries(this.hints).filter(([l]) => !this.liveHints.has(l))), phrases: this.phrases, split: this.source, sentences: hard, v: HINTS_VERSION, here: Object.fromEntries(this.hereZh) } as store.VideoHints);
       if (!this.disposed) { this.render(); this.setStatus(`${this.statusText.split(' · AI')[0]} · AI: hard words, phrases and ${hard.length} sentences ready`); }
     } catch (e) {
       if (!this.disposed) this.setStatus(`${this.statusText} · AI meanings: ${(e as Error).message}`);
@@ -3023,7 +3057,8 @@ class Session {
       // (a phone: the subtitles on the video a little smaller, so they never cover the picture)
       h.style.setProperty('--subtitle-size', `${TOUCH ? bandPx() : clamp(settings.appearance.subtitleSizePx || 26, 16, 96)}px`);
       h.style.setProperty('--text-weight', String(clamp(extras.textWeight || 400, 200, 800)));
-      h.dataset.look = extras.readLook === 'night' ? 'night' : 'day';
+      // (ONE look for every mode: day, night, or as the device is set)
+      h.dataset.look = store.lookOf(extras);
       h.style.setProperty('--explain-size', `${clamp(settings.appearance.explainSizePx || 14, 12, 24)}px`);
       h.style.setProperty('--stage-size', `${stageSize()}px`);
       h.style.setProperty('--read-size', `${TOUCH ? stageSize() : clamp(extras.readSizePx || 22, 12, 60)}px`);
@@ -3449,8 +3484,8 @@ class Session {
     const word = text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     if (word && !/\s/.test(word)) {
       const entry = this.dict?.lookup(word)?.entry;
-      void c.explainNow('word', word, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, this.dict?.lemmaOf(word) || word.toLowerCase(), undefined, wasPlaying);
-    } else void c.explainNow('phrase', text, pos, null, text.toLowerCase(), undefined, wasPlaying);
+      this.explainByHand('word', word, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, this.dict?.lemmaOf(word) || word.toLowerCase(), wasPlaying);
+    } else this.explainByHand('phrase', text, pos, null, text.toLowerCase(), wasPlaying);
   }
 
   /** 🎤 Speak: one question by voice (Chrome writes it down into the box), sent when you stop talking */
@@ -3513,8 +3548,19 @@ class Session {
     if (this.ai() && this.controller) {
       const entry = this.dict?.lookup(target)?.entry;
       this.engine.target = pos;
-      void this.controller.explainNow('word', target, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, lemma, undefined, undefined, undefined, undefined);
+      this.explainByHand('word', target, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, lemma);
     }
+  }
+
+  /**
+   * A word or phrase asked for by hand is explained. Its card stays for "the word again" and closes when the sentence
+   * plays; should no sentence play (the word IS the sentence, the video was stopped), it closes when all is over.
+   */
+  private explainByHand(kind: 'word' | 'phrase', target: string, pos: Position, dict: { ipa: string; zh: string; level: string } | null, lemma: string, resume?: boolean, again?: boolean): void {
+    const c = this.controller;
+    if (!c) return;
+    const over = () => { if (this.cardKept && this.card?.lemma === lemma) this.closeCard(); };
+    void c.explainNow(kind, target, pos, dict as never, lemma, undefined, resume, again).then(over, over);
   }
 
   // ---- the word card ---------------------------------------------------------------------------------------------
@@ -3554,7 +3600,11 @@ class Session {
     el?.classList.add('stop-target');
     const look = this.dict?.lookup(kind === 'word' ? target : lemma) ?? (kind === 'phrase' ? this.dict?.lookupPhrase(target.split(/\s+/)) : null) ?? null;
     const entry = look?.entry;
-    const here = this.hints[lemma];
+    // (the AI's meaning in THIS sentence; another sentence's meaning shows for the moment while the AI is asked)
+    const hx = this.zhHere(pos, lemma, target, kind);
+    const here: [string, string?] | undefined = hx.sure ? [hx.zh, this.hints[lemma]?.[0] === hx.zh ? this.hints[lemma]?.[1] : undefined] : this.hints[lemma];
+    // (a computer's Level Check card shows no Chinese: nothing is asked for it)
+    if (!hx.sure && this.hints[lemma] && !(this.levelOn() && !TOUCH)) this.askHere(pos, lemma, target);
     const glosses = entry?.zh ? parseGloss(entry.zh).slice(0, here ? 1 : 2) : [];
     const level = entry?.level ?? (this.phrases[sentenceKey(pos)]?.find((p) => p.lemma === lemma)?.level as string | undefined) ?? '';
     const status = vocab.words[lemma];
@@ -3574,8 +3624,8 @@ class Session {
     cardEl.removeAttribute('aria-label');
     cardEl.ontouchstart = cardEl.ontouchend = null;
     // the AI's meaning in this very sentence, written live (when the video's hints do not have this word)
-    // (a phone: the dictionary's Chinese is enough when it has the word; the AI translates only what it does not have)
-    if (!plain && !here && (!TOUCH || !glosses.length) && this.vb && this.ai() && (this.keys.anthropic || this.keys.openai)) {
+    // (on every device: the card's Chinese is always the AI's meaning in context, the learner's rule of 13 Nov)
+    if (!plain && !here && this.vb && this.ai() && (this.keys.anthropic || this.keys.openai)) {
       const sent = getSentence(this.vb.book, pos)?.text ?? '';
       const row = cardEl.querySelector<HTMLElement>('.zh.here');
       const job = completeStream(buildWordPrompt(target, sent), (full) => { if (row && this.card?.lemma === lemma) row.innerHTML = `<span><span class="pos">here</span>${esc(full.trim())}</span>`; });
@@ -3583,6 +3633,9 @@ class Session {
         const m = parseWordMeanings(full);
         if (!m) { if (row) row.innerHTML = ''; return; }
         this.hints[lemma] = m;
+        this.liveHints.add(lemma);
+        this.hereZh.set(`${lemma}@${sentenceKey(pos)}`, m[0]);
+        this.saveHereSoon();
         if (row && this.card?.lemma === lemma) row.innerHTML = `<span><span class="pos">here</span>${esc(m[0])}${m[1] ? `<span class="pos"> · ${esc(m[1])}</span>` : ''}</span>`;
       }, () => { if (row) row.innerHTML = ''; });
     } else if (!here) cardEl.querySelector('.zh.here')?.remove();
@@ -3624,7 +3677,7 @@ class Session {
       if (act === 'close') this.closeCard();
       else if (act === 'say') { const h = this.wordOut?.speak(c.word, { voiceId: this.voiceId, rate: Math.min(settings.voice.rate, 0.9) }); void h; }
       else if (act === 'known') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); if (this.controller?.stopWindow) this.answerKnow(); this.closeCard(); }
-      else if (act === 'dontknow') { if (this.controller?.stopWindow) this.answerDontKnow(); else if (this.inStop && this.levelOn()) { this.controller?.answerEarly(); } else { void this.changeStatus(c.lemma, 'learning'); if (this.ai()) { this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } } }
+      else if (act === 'dontknow') { if (this.controller?.stopWindow) this.answerDontKnow(); else if (this.cardKept) this.answerDontKnow(); else if (this.inStop && this.levelOn()) { this.controller?.answerEarly(); } else { void this.changeStatus(c.lemma, 'learning'); if (this.ai()) { this.engine.target = c.pos; void this.controller?.explainNow(c.kind, c.word, c.pos, null, c.lemma, undefined, undefined, true); } } }
       else if (act === 'ignore') { this.controller?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'ignored'); this.closeCard(); if (this.controller?.stopWindow) this.answerGoOn(); }
       else if (act === 'zh') { void store.patchSettings({ ai: { ...settings.ai, speakChinese: !settings.ai.speakChinese } }); }
     };
@@ -3669,14 +3722,11 @@ class Session {
         zh = parts.join('<br>');
       }
     } else {
-      // a word or phrase: its meaning in this video when the analysis gave one, otherwise the dictionary's first two
-      const here = this.hints[lemma]?.[0];
-      if (here) zh = esc(here);
-      else {
-        const look = this.dict?.lookup(kind === 'word' ? target : lemma) ?? (kind === 'phrase' ? this.dict?.lookupPhrase(target.split(/\s+/)) : null) ?? null;
-        const z = look?.entry.zh;
-        if (z) zh = parseGloss(z).slice(0, 2).map((g) => esc(g.zh)).filter(Boolean).join('；');
-      }
+      // a word or phrase: ONE meaning, the AI's meaning in this sentence (zhHere); when only another sentence's
+      // meaning or the dictionary's is there, that shows for the moment and the AI is asked now
+      const h = this.zhHere(pos, lemma, target, kind);
+      zh = esc(h.zh);
+      if (!h.sure) this.askHere(pos, lemma, target);
       if (kind === 'word') ipa = (this.dict?.lookup(target) ?? this.dict?.lookup(lemma))?.entry.ipa ?? '';
     }
     cardEl.innerHTML = `<div class="word">${esc(target)}</div>${ipa ? `<div class="ipa">${esc(/^[\/\[]/.test(ipa) ? ipa : `/${ipa}/`)}</div>` : ''}${zh ? `<div class="zh here">${zh}</div>` : ''}`;
@@ -3720,6 +3770,77 @@ class Session {
     cardEl.onclick = tap;
   }
 
+  // ---- the card's Chinese: the AI's meaning of the word IN THIS SENTENCE ------------------------------------------
+  /** by word + sentence: meanings asked for in real time (the video's analysis has one meaning per word, for the
+   *  sentence the word first comes in) */
+  private hereZh = new Map<string, string>();
+  private hereAsked = new Set<string>();
+  /** words whose hint was made in real time, for the sentence of that moment (not by the video's analysis) */
+  private liveHints = new Set<string>();
+  private firstAt: Map<string, string> | null = null;
+  private firstAtOf: unknown = null;
+  /** the sentence a word first comes in (the one the video's analysis translated it for) */
+  private firstSentenceOf(lemma: string): string | undefined {
+    if (!this.vb || !this.dict) return undefined;
+    if (!this.firstAt || this.firstAtOf !== this.vb) {
+      const m = new Map<string, string>();
+      for (const pos of this.vb.order) {
+        const key = sentenceKey(pos);
+        for (const t of getSentence(this.vb.book, pos)?.sentence.tokens ?? []) { if (t.kind !== 'word') continue; const l = this.dict.lemmaOf(t.text); if (!m.has(l)) m.set(l, key); }
+      }
+      this.firstAt = m; this.firstAtOf = this.vb;
+    }
+    return this.firstAt.get(lemma);
+  }
+  /**
+   * The Chinese of a word or phrase for the card: `sure` = made by the AI for this very sentence. Not sure (the
+   * analysis translated it for another sentence, or only the dictionary has it): that is shown for the moment, and
+   * the AI is asked now for the meaning here (once per word and sentence; askHere).
+   */
+  private zhHere(pos: Position, lemma: string, target: string, kind: 'word' | 'phrase' | 'sentence'): { zh: string; sure: boolean } {
+    const key = sentenceKey(pos);
+    const asked = this.hereZh.get(`${lemma}@${key}`);
+    if (asked) return { zh: asked, sure: true };
+    if (kind === 'phrase') { const z = this.phrases[key]?.find((p) => p.lemma === lemma)?.zh; if (z) return { zh: z, sure: true }; }
+    const hint = this.hints[lemma]?.[0];
+    // (the analysis made it for the sentence the word first comes in; one made in real time was made for the sentence
+    // of that moment, which is in hereZh already)
+    if (hint && !this.liveHints.has(lemma) && (kind === 'phrase' || this.firstSentenceOf(lemma) === key)) return { zh: hint, sure: true };
+    if (hint) return { zh: hint, sure: false };
+    const look = this.dict?.lookup(kind === 'word' ? target : lemma) ?? (kind === 'phrase' ? this.dict?.lookupPhrase(target.split(/\s+/)) : null) ?? null;
+    const z = look?.entry.zh;
+    return { zh: z ? parseGloss(z).slice(0, 1).map((g) => g.zh).filter(Boolean).join('；') : '', sure: false };
+  }
+  /** the AI is asked for the meaning in this sentence (a small request, once); the card on the screen takes it */
+  private askHere(pos: Position, lemma: string, target: string): void {
+    const k = `${lemma}@${sentenceKey(pos)}`;
+    if (this.hereAsked.has(k) || !this.vb || !this.ai() || (!this.keys.anthropic && !this.keys.openai)) return;
+    this.hereAsked.add(k);
+    const sent = getSentence(this.vb.book, pos)?.text ?? '';
+    if (!sent) return;
+    void complete(buildWordPrompt(target, sent)).then((full) => {
+      const m = parseWordMeanings(full);
+      if (!m?.[0] || this.disposed) return;
+      this.hereZh.set(k, m[0]);
+      if (!this.hints[lemma]) { this.hints[lemma] = m; this.liveHints.add(lemma); }
+      this.saveHereSoon();
+      const c = this.card;
+      if (!c || c.lemma !== lemma || sentenceKey(c.pos) !== sentenceKey(pos)) return;
+      if (c.full) this.paintFullCard();
+      else { const row = this.visibleRoot()?.querySelector<HTMLElement>('.card .zh.here'); if (row) row.innerHTML = `<span><span class="pos">here</span>${esc(m[0])}</span>`; }
+    }, () => { this.hereAsked.delete(k); });
+  }
+  private hereSave: ReturnType<typeof setTimeout> | null = null;
+  /** kept with the video's analysis: the next stop at it, or the next viewing, asks nothing */
+  private saveHereSoon(): void {
+    if (this.hereSave) clearTimeout(this.hereSave);
+    this.hereSave = setTimeout(() => {
+      this.hereSave = null;
+      const id = this.cacheId();
+      void store.getVideoHints(id).then((h) => { if (h) return store.setVideoHints(id, { ...h, here: Object.fromEntries(this.hereZh) } as store.VideoHints); return undefined; }).catch(() => undefined);
+    }, 2500);
+  }
+
   /** the full card's text fits the screen: smaller, step by step, until nothing is cut (a long sentence, a turned phone) */
   private fitFullCard(): void {
     const cardEl = this.card?.full ? this.stage?.el.querySelector<HTMLElement>('.card.full') : null;
@@ -3755,7 +3876,10 @@ class Session {
     if (this.cardClose) clearTimeout(this.cardClose);
     this.cardClose = setTimeout(() => this.closeCard(), 1500);
   }
+  /** the card stays after the explanation, until the sentence plays again (or the explanation ends another way) */
+  private cardKept = false;
   private closeCard(): void {
+    this.cardKept = false;
     if (this.cardClose) { clearTimeout(this.cardClose); this.cardClose = null; }
     const was = this.card;
     this.card = null;
@@ -3937,7 +4061,7 @@ class Session {
       const t = this.vb.timingOf(this.partEnd);
       if (t) this.showStage(this.partAt(t.end - 0.01, settings.listen.lastSecondsWindow));
     }
-    if (prev.learnerLevel !== settings.learnerLevel) this.countKnown();
+    if (prev.learnerLevel !== settings.learnerLevel) { this.countKnown(); this.recomputeStops(); }
     // short / mid / long or another teacher: the explanations are written again that way
     if (prev.ai.explanationLength !== settings.ai.explanationLength || prev.ai.activeStyle !== settings.ai.activeStyle) { this.analysis?.dispose(); this.analysis = null; this.planAnalysis(); }
     if (prev.learnerLevel !== settings.learnerLevel || prev.appearance.showHints !== settings.appearance.showHints) {
@@ -3973,7 +4097,7 @@ class Session {
       if (this.cur) this.setCurrent(this.cur);
     }
     if (prev.playLine !== extras.playLine) { this.padPage(); this.scrollToCur(true); }
-    if (prev.myLevel !== extras.myLevel || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
+    if (prev.myLevel !== extras.myLevel || prev.explainPct !== extras.explainPct || prev.stopItemsOn !== extras.stopItemsOn || prev.stopPhrasesOn !== extras.stopPhrasesOn || prev.stopHardOn !== extras.stopHardOn) { this.recomputeStops(); this.planAnalysis(); }
 
     this.renderHead();
     this.renderStageTop();
@@ -4089,7 +4213,7 @@ class Session {
 
   diag(): Record<string, unknown> {
     return {
-      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `my level ${myLevel()} of 100 · words ${extras.stopItemsOn === false ? 'off' : 'on'} · phrases ${extras.stopPhrasesOn === false ? 'off' : 'on'} · sentences ${extras.stopHardOn === false ? 'off' : 'on'}`, wordsHeard: this.wordsHeard.total, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
+      mode: this.mode, sentences: this.vb?.order.length ?? 0, split: this.source, view: extras.view, voice: this.voiceKind, phone: TOUCH, device: DEVICE, lay: lay(), justTalk: !!extras.voiceMode, microphone: window.__ytcApi?.micBlocked?.() ? 'blocked' : this.wantsMic() ? `wanted (level ${extras.micLevel ?? 3})` : 'off now', micState: window.__ytcApi?.micState?.(), stops: `my level ${settings.learnerLevel} (${myLevel()}) · explain ${explainPct()}% · words ${extras.stopItemsOn === false ? 'off' : 'on'} · phrases ${extras.stopPhrasesOn === false ? 'off' : 'on'} · sentences ${extras.stopHardOn === false ? 'off' : 'on'}`, wordsHeard: this.wordsHeard.total, voiceProblem: this.lastVoiceError, dictionary: this.dict ? `loaded (unpacked by ${gunzipVia || '?'})` : 'not loaded',
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
@@ -4129,12 +4253,12 @@ class Session {
       spokenVol: (this.macRaw as unknown as { spoken?: { text: string; volume?: number }[] })?.spoken?.slice(-60).map((s) => [s.text.slice(0, 60), s.volume ?? null]) ?? null,
       callOpen: this.callOpen(),
       volume: { teacher: this.volumeOf('teacher'), word: this.volumeOf('word') },
-      cloud: cloudSpoken.slice(-30),
+      cloud: cloudSpoken.slice(-30), voiceClips: { ...voiceStats },
       hints: Object.keys(this.hints).length, phrases: Object.keys(this.phrases).length, hardSentences: this.hardSentences.map((m) => m.text),
       split: this.source, voice: this.voiceKind, view: extras.view,
       stage: stage ? { page: this.readPage + 1, pages: this.readPages, shown: this.stageVisible(), view: stage.dataset.view, part: this.partKeys ? this.partKeys.size : 0, visibleLines: Array.from(stage.querySelectorAll<HTMLElement>('.s')).filter((s) => s.offsetParent !== null).length, zhLines: stage.querySelectorAll('.zh-line').length, size: getComputedStyle(this.stage!.host).getPropertyValue('--stage-size').trim() } : null,
       phone: TOUCH, device: DEVICE, lay: lay(), sleep: sleepMinutes(), asleep,
-      level: { mine: myLevel(), why: Object.fromEntries([...this.stopped].map((k) => [k, (this.scores.get(k)?.items ?? []).join('+') + (this.scores.get(k)?.hard ? ' (hard sentence)' : '')])), byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
+      level: { mine: myLevel(), cefr: settings.learnerLevel, pct: explainPct(), why: Object.fromEntries([...this.stopped].map((k) => [k, (this.scores.get(k)?.items ?? []).join('+') + (this.scores.get(k)?.hard ? ' (hard sentence)' : '')])), byKind: { ...this.stopsBy }, caps: this.caps(), stops: this.autoStops, heard: this.heardKeys.size, chosen: this.stopSet.size, total: this.vb?.order.length ?? 0, rejected: this.ruleRejects + (this.analysis?.rejected ?? 0), gate: !!this.gate?.open, held: !!this.gateHold, aiCalls: this.analysis?.calls ?? 0, saved: this.analysis?.count ?? 0, stoppedAt: this.vb ? this.vb.order.filter((p) => this.stopped.has(sentenceKey(p))).map((p) => getSentence(this.vb!.book, p)?.text ?? '') : [] },
       talk: this.talk ? { live: this.talk.live ? this.talk.live.state : null, chat: this.talk.chat ? (this.talk.chat.thinking ? 'thinking' : this.talk.chat.speaking ? 'speaking' : 'listening') : null, log: this.talk.log.map((l) => `${l.who}: ${l.text}`), error: this.talk.error ?? null, events: this.talk.chat?.events.slice(-30) ?? null } : null,
       trail: this.trailLog.slice(-25),
       flow: this.flow ? this.flow.kind : null, quiet: this.quietUntil ? sentenceKey(this.quietUntil) : null,
@@ -4215,6 +4339,8 @@ const analysisCovers = (cachedLevel: string | undefined): boolean => {
 const CEFR_ORDER = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 /** MY LEVEL, 0 (easiest) … 100 (hardest): the slider's number (before it was ever moved: the old A1–C2 level as a number) */
 const myLevel = (): number => myLevelOf(extras, settings.learnerLevel);
+/** how much of what is at my level or above is explained by itself, % */
+const explainPct = (): number => clampPct(extras.explainPct ?? DEFAULT_EXPLAIN_PCT);
 /** "hi bro" (also heard as "hey bro", "high bro", "hi bruh") = the voice call */
 const HI_BRO = /\b(hi|hey|high)\s*(bro|bruh|brah|bra)\b/i;
 const VOICE_HELP = 'Voice on: “hello” = explain the last part · “hi bro” = call the tutor · “I know” · “stop” · “play” · “bye” = the tutor goes, the video plays.';
@@ -4290,7 +4416,9 @@ function video(): HTMLVideoElement | null {
 // which mode, which video
 // ---------------------------------------------------------------------------------------------------------------
 /** My tutor on: the tutor; off in the iPhone / iPad app: free mode (no AI); off in Chrome / Safari: nothing (as before) */
-function wantedMode(): Mode | null { return extras.tutorOn ? 'tutor' : (window as unknown as { __ytcShimYT?: unknown }).__ytcShimYT ? 'free' : null; }
+/** the tutor off = a normal YouTube page, nothing of the tutor (the learner's rule of 13 Nov); free mode (the app only:
+ *  the book of subtitles and the dictionary card, no AI) only when Settings asks for it */
+function wantedMode(): Mode | null { return extras.tutorOn ? 'tutor' : (window as unknown as { __ytcShimYT?: unknown }).__ytcShimYT && extras.offMode === 'free' ? 'free' : null; }
 
 // ---------------------------------------------------------------------------------------------------------------
 // full screen both ways (the app): the video over the whole window (class dr-full). The phone turned on its side =
@@ -4301,7 +4429,7 @@ let fullManual: boolean | null = null;
 let fullWasLand: boolean | null = null;
 /** when a full-screen button was pressed (the phone may turn right after it: that turn must not undo the press) */
 let fullToggledAt = 0;
-const wantFull = (): boolean => TOUCH && location.pathname === '/watch' && (fullManual ?? (innerWidth > innerHeight && (extras.fullOnTurn ?? !IPAD)));
+const wantFull = (): boolean => TOUCH && location.pathname === '/watch' && !!wantedMode() && (fullManual ?? (innerWidth > innerHeight && (extras.fullOnTurn ?? !IPAD)));
 function postLayout(): void {
   try {
     const h = (window as unknown as { webkit?: { messageHandlers?: { ytc?: { postMessage(o: unknown): unknown } } } }).webkit?.messageHandlers?.ytc;
@@ -4380,6 +4508,10 @@ function refresh(): void {
   if (!api) return;
   const id = location.pathname === '/watch' ? api.videoId() : null;
   const mode = wantedMode();
+  // (no tutor on this page: YouTube's own full screen is YouTube's again, see page-hooks.js)
+  document.documentElement.dataset.ytcTutor = id && mode ? '1' : '0';
+  // (the tutor turned off while the video was over the whole window: the page is YouTube's own again)
+  if (!(id && mode)) { fullManual = null; applyFull(); }
   if (!id || !mode) { session?.dispose(); session = null; paintTutorButton(); return; }
   // (another video, or the tutor turned on / off: a new session in the other mode)
   if (session && (session.videoId !== id || session.mode !== mode)) { session.dispose(); session = null; }
@@ -4478,6 +4610,11 @@ async function boot(): Promise<void> {
     if (TOUCH && raw.migrated !== undefined) p.stageOn = false;
     if (Object.keys(p).length) extras = await store.patchExtras(p);
   }
+  // 3.9, once: the level is a school level again (A1 … C2): the old slider's number becomes the start of its level
+  if ((raw.migrated ?? 0) < 5 && typeof extras.myLevel === 'number') {
+    const snapped = cefrToLevel(levelToCefr(extras.myLevel));
+    if (snapped !== extras.myLevel) extras = await store.patchExtras({ myLevel: snapped });
+  }
   if (TOUCH && raw.migrated === undefined && raw.stageOn === undefined) extras = await store.patchExtras({ stageOn: false });
   // (the school level the prompts use always follows the slider)
   if (typeof extras.myLevel === 'number' && levelToCefr(extras.myLevel) !== settings.learnerLevel) settings = await store.patchSettings({ learnerLevel: levelToCefr(extras.myLevel) as Settings['learnerLevel'] });
@@ -4520,6 +4657,8 @@ async function boot(): Promise<void> {
       if (id === 'findPrev') return finderPrev();
       if (id === 'oneButton' && !session) { void store.patchExtras({ oneButton: false }); return true; }
       if (id === 'sleep') { if (!session) return false; const m = sleepMinutes() > 30 ? 0 : sleepMinutes() > 0 ? 60 : 30; setSleep(m); return true; }
+      // (the tutor off: "Play / stop" is the page's own video, as on a normal YouTube page)
+      if (id === 'stop' && !session) { const v = video(); if (!v) return false; if (v.paused) void v.play().catch(() => undefined); else v.pause(); return true; }
       return session ? session.action(id) : false;
     },
   };
@@ -4533,6 +4672,7 @@ async function boot(): Promise<void> {
   });
   const bar = document.getElementById('yt2c-bar');
   if (bar) window.__ytcDream.decorateBar(bar);
+  try { window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => session?.lookChanged()); } catch { /* an old browser: the look follows at the next page */ }
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
     if (BACKUP_PARTS.some((k) => ch[k])) backupSoon();

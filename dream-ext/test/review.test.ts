@@ -57,7 +57,7 @@ describe('the daily word review (no AI)', () => {
     expect(s).toBeGreaterThanOrEqual(59);
     expect(s).toBeLessThan(62);
     expect(suggestLevel(known.slice(0, 5), learning, 40)).toBeNull();
-    expect(reviewText({ nowKnown: ['a'], backToLearn: [], suggested: s, known: 40, learning: 40 }, 40)).toMatch(/1 word now known .* about (59|60|61) \(yours is 40/);
+    expect(reviewText({ nowKnown: ['a'], backToLearn: [], suggested: s, known: 40, learning: 40 }, 40)).toMatch(/1 word now known .* about B2 \(yours is B1/);
     expect(reviewText({ nowKnown: [], backToLearn: [], suggested: 42, known: 40, learning: 40 }, 40)).toBe('');
   });
 });

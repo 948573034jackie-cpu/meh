@@ -213,6 +213,27 @@ Keys: Claude (explanations) and/or OpenAI (the voice, the live call, or everythi
   found by the app and shown with parts and notes**, a **reader** (EPUB, text, PDF) and a **browser** with Explanation mode.
 - Accounts with Google / Apple sign-in are NOT built: `docs/accounts-data-layout.md` has the plan for the data.
 
+## 7d. I Know 3.9 (13 Nov 2026): fixes after the first try on the phone
+
+- **Keys and voice up front.** Quick settings, first page: under "Tutor's voice" the key box of the chosen voice
+  (when its key is missing), the region, the voice list and "Test the voice". "🔑 API keys" is its own box. The app's
+  own settings (SwiftUI) have the same keys natively, with Save and "Test the Microsoft voice".
+- **The Microsoft region is found by itself** (`findAzureRegion` in `bg.ts`: the voice list of each region is asked
+  with the saved key; the one that answers is saved).
+- **The voice is never held up**: making a clip again at the learner's volume has 1.5 s; a clip that does not start
+  in 2.5 s or fails is replaced by the original, and the device is not asked again (`gain.ts`, `audio.ts`).
+- **The stop card**: one meaning (in this sentence); it stays for the explanation and the word said again, and
+  closes when the sentence plays again.
+- **My level A1–C2 + "How much to explain" 0–100 %** (`explainPct`, default 100): nothing below the level; of the
+  rest only the hardest share of words, of phrases and of hard sentences (`keepHardest` in `level-stops.ts`).
+- **Back where you stopped**: a page iOS stopped is opened again at its minute; the screen in front (video / reader
+  / browser) and the reader's open book are remembered.
+- **One look for every mode**: Settings → Look: Auto (as the device is set) / Day / Night (`readLook`, `lookOf`).
+- **Tutor off = a normal YouTube page** (no session); free mode only with Settings → Advanced → "With the tutor off".
+- **The card's Chinese is the AI's meaning in this sentence**: from the video's analysis when it was made for this
+  sentence, else asked in real time, once (`zhHere` / `askHere`); the card closes when the sentence plays again, for
+  the big and the small card alike.
+
 ## 8. Downloads
 
 https://github.com/948573034jackie-cpu/meh/releases/tag/claudesnap-latest

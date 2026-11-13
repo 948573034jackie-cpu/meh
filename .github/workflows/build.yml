@@ -155,6 +155,9 @@ jobs:
       - name: I Know 3.8 (full screen, One button mode, the tutor's volume, the iPad layout, film-like subtitles), in WebKit
         if: always()
         run: node tests/ios-38-test.js
+      - name: I Know 3.9 (the keys and the voice on the first page, my level A1-C2 and how much to explain, the card closes when the sentence plays, the voice never held up), in WebKit
+        if: always()
+        run: node tests/ios-39-test.js
       - name: Find me a video and the lyrics (one AI request per search / per song), in WebKit
         if: always()
         run: node tests/finder-lyrics-test.js

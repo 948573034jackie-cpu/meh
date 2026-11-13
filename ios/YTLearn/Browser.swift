@@ -456,8 +456,9 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate, WKUI
                     return
                 }
                 app.reader.openText(title: d["title"] as? String ?? tab.name, text: text)
+                app.coverSwitch = true
                 app.showBrowser = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { app.showReader = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { app.showReader = true; app.coverSwitch = false }
             }
         }
     }

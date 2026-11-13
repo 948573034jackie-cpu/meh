@@ -2,7 +2,7 @@
 import { resolveStyles, resolveStyle, DEFAULT_CONTEXT_RULES, DEFAULT_STYLES, KNOBS, type StyleOverride, type ExplanationStyle, type StyleId } from '@shared/styles';
 import type { Settings, AiProviderId } from '@shared/settings';
 import { WebSpeechEngine } from '@core/tts/webspeech';
-import { myLevelOf, levelToCefr, clampLevel } from './level100';
+import { cefrToLevel, clampPct, DEFAULT_EXPLAIN_PCT } from './level100';
 import * as store from './store';
 import { copyLevel } from './level-copy';
 
@@ -107,12 +107,15 @@ async function init(): Promise<void> {
   $('spent').textContent = `Spent today $${store.usdSince(usage, day).toFixed(2)}, this month $${store.usdSince(usage, month).toFixed(2)} (estimate)`;
 
   // ---- level
-  // ONE level, 0 (easiest) … 100 (hardest): the tutor stops by itself only for what is harder
-  const lv = $<HTMLInputElement>('myLevel');
-  lv.value = String(myLevelOf(X, S.learnerLevel));
-  $('myLevelNow').textContent = lv.value;
-  lv.addEventListener('input', () => { $('myLevelNow').textContent = lv.value; });
-  lv.addEventListener('change', () => { const n = clampLevel(Number(lv.value)); void saveX({ myLevel: n, levelAuto: false }); void save({ learnerLevel: levelToCefr(n) as Settings['learnerLevel'] }); });
+  // MY LEVEL (A1 … C2): nothing below it is explained by itself; and how much of the rest (the hardest share)
+  const lv = $<HTMLSelectElement>('myLevel');
+  lv.value = S.learnerLevel;
+  lv.addEventListener('change', () => { void saveX({ myLevel: cefrToLevel(lv.value), levelAuto: false }); void save({ learnerLevel: lv.value as Settings['learnerLevel'] }); });
+  const pc = $<HTMLInputElement>('explainPct');
+  pc.value = String(clampPct(X.explainPct ?? DEFAULT_EXPLAIN_PCT));
+  $('explainPctNow').textContent = pc.value;
+  pc.addEventListener('input', () => { $('explainPctNow').textContent = pc.value; });
+  pc.addEventListener('change', () => void saveX({ explainPct: clampPct(Number(pc.value)) }));
 
   // ---- stops
   bindCheck('autoExplainWords', () => S.listen.autoExplainWords, (b) => save({ listen: { ...S.listen, autoExplainWords: b } }));

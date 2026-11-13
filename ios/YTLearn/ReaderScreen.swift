@@ -138,7 +138,8 @@ extension AppModel {
     /// Back at the video: the YouTube page's listener is told that the microphone was closed (it opens it again by
     /// itself when voice mode is on).
     func coverClosed() {
-        if showReader || showBrowser { return }
+        if showReader || showBrowser || coverSwitch { return }
+        pageWanted()
         tutorVoice.stop()
         handle(kind: "speech", body: ["op": "stop"]) { _, _ in }
         youtube.evaluateJavaScript("window.__ytcSpeech && window.__ytcSpeech({ type: 'end' }); 0", in: nil, in: AppModel.world, completionHandler: nil)
@@ -154,8 +155,9 @@ extension AppModel {
         browser.open(url)
         if showBrowser { return }
         if showReader {
+            coverSwitch = true
             showReader = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.showBrowser = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.showBrowser = true; self?.coverSwitch = false }
         } else {
             showBrowser = true
         }

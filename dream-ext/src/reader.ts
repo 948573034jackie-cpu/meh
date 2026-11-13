@@ -89,7 +89,7 @@ let aiCallsByTap = 0;
 
 /** My tutor is on (off = free mode: no AI, nothing paid) */
 const tutor = (): boolean => extras?.tutorOn !== false;
-const night = (): boolean => (extras?.readLook ? extras.readLook === 'night' : !!window.matchMedia?.('(prefers-color-scheme: dark)').matches);
+const night = (): boolean => store.lookOf(extras) === 'night';
 
 function debug(): void {
   if (!extras?.fakeVoice) return;
@@ -132,9 +132,12 @@ async function paintShelf(): Promise<void> {
   document.body.dataset.books = String(list.length);
 }
 
+/** the book that is open now ('' = the library) */
+const OPEN_KEY = 'drReaderOpen';
 function showLibrary(): void {
   setPlaying(false);
   savePlaceNow();
+  void chrome.storage.local.set({ [OPEN_KEY]: '' }).catch(() => undefined);
   closeCard();
   $('reader').hidden = true;
   $('say').hidden = true;
@@ -632,6 +635,8 @@ async function openBook(id: string, fresh: boolean): Promise<void> {
   showChapter(place?.chapter ?? 0, place);
   shelf = { ...shelf, openedAt: new Date().toISOString() };
   { const s = shelf; void bookStore().then((st) => st.update(s)).catch(() => undefined); }
+  // (the book that is open: the reader opens it again, at its place, the next time the app starts)
+  void chrome.storage.local.set({ [OPEN_KEY]: id }).catch(() => undefined);
   if (!fresh || extras.levelAsk === false) return;
   const gate = new LevelGate({
     build: async () => {
@@ -708,7 +713,12 @@ window.addEventListener('scroll', () => { if (!playing) savePlaceSoon(); }, { pa
 window.addEventListener('pagehide', () => savePlaceNow());
 document.addEventListener('visibilitychange', () => { if (document.hidden) savePlaceNow(); });
 wireText();
-void paintShelf();
+// back where you stopped: the book that was open opens again, at its place (not when a text is being handed in)
+void paintShelf().then(async () => {
+  const o = await chrome.storage.local.get(OPEN_KEY).catch(() => ({} as Record<string, unknown>));
+  const id = o[OPEN_KEY];
+  if (typeof id === 'string' && id && !shelf) await openBook(id, false).catch(() => void chrome.storage.local.set({ [OPEN_KEY]: '' }));
+});
 void store.getExtras().then((x) => { extras = x; applyLook(); });
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== 'local') return;

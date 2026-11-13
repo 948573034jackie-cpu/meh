@@ -66,8 +66,12 @@ export interface YtExtras {
   sentenceButtons?: boolean;
   /** iPhone: talk through the Bluetooth headphones' own microphone (the sound is then phone-call quality) */
   headsetMic?: boolean;
-  /** Reading pages: 'day' (light) or 'night' (dark) */
-  readLook?: 'day' | 'night';
+  /** the look of every page of the tutor (Listening, Reading, Lyrics, the page in Video mode, the reader): 'day' (light),
+   *  'night' (dark) or 'auto' = as the device is set (not set yet = 'auto') */
+  readLook?: 'day' | 'night' | 'auto';
+  /** the tutor switched off: 'plain' = a normal YouTube page, nothing of the tutor (the usual); 'free' = free mode (the
+   *  book of subtitles and the dictionary card at hard words, no AI) */
+  offMode?: 'plain' | 'free';
   /** text size of the reading pages, px (each mode has its own size) */
   readSizePx: number;
   /** (old) where the playing line stayed, % from the top: playLine replaced it */
@@ -81,6 +85,8 @@ export interface YtExtras {
   /** MY LEVEL, 0 (easiest) … 100 (hardest): the tutor stops by itself only for what is harder (level100.ts);
    *  not set yet = taken from the old A1–C2 level once */
   myLevel?: number;
+  /** how much of what is at my level or above is explained by itself, % (0 = nothing, 100 = everything; lower = only the hardest) */
+  explainPct?: number;
   /** Level Check stops for hard WORDS: on / off, and their share of the sentences in % */
   stopItemsOn: boolean;
   capWords: number;
@@ -165,7 +171,12 @@ export const DEFAULT_EXTRAS: YtExtras = {
  * 2 = three stop groups (words, phrases, sentences: the old "words and phrases" share goes to both), known after 7
  *     explanations, no "stops by itself: off" left over (that row is gone), the learner's own teacher.
  */
-export const EXTRAS_VERSION = 4;
+/** the look now: the learner's choice, or the device's own (dark at night when it is set so) */
+export function lookOf(x: Pick<YtExtras, 'readLook'> | null | undefined): 'day' | 'night' {
+  if (x?.readLook === 'day' || x?.readLook === 'night') return x.readLook;
+  try { return globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'night' : 'day'; } catch { return 'day'; }
+}
+export const EXTRAS_VERSION = 5;
 export function migrateExtras(x: YtExtras): Partial<YtExtras> | null {
   if ((x.migrated ?? 0) >= EXTRAS_VERSION) return null;
   const p: Partial<YtExtras> = { migrated: EXTRAS_VERSION };

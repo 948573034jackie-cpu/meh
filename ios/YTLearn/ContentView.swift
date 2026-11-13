@@ -67,7 +67,7 @@ struct ContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(model.tutorOn ? "My tutor is on: switch to free mode" : "Free mode (no AI): turn My tutor on")
+                .accessibilityLabel(model.tutorOn ? "My tutor is on: turn it off (a normal YouTube page)" : "My tutor is off: turn it on")
                 if model.tutorOn {
                     Group {
                         tutorButton("stop", "playpause.fill", "Play / stop", big: true)
@@ -96,17 +96,23 @@ struct ContentView: View {
                         tutorButton("check", "stethoscope", "Check")
                     }
                 } else {
-                    // free mode: the video stops at hard words by itself, the card shows the dictionary (no AI)
-                    tutorButton("stop", "playpause.fill", "Play / stop", big: true)
-                    volumeButton
-                    if model.videoMode {
-                        tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off")
-                        tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off")
+                    // the tutor is off: a normal YouTube page, nothing of the tutor. One big button turns it on again.
+                    Button { model.dream("tutor") } label: { barLabel("power", "Tutor off", big: true) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("My tutor is off: turn it on")
+                    if model.freeMode {
+                        // (free mode, when Settings asks for it: the video stops at hard words, the card shows the dictionary, no AI)
+                        tutorButton("stop", "playpause.fill", "Play / stop", big: true)
+                        volumeButton
+                        if model.videoMode {
+                            tutorButton("band", "captions.bubble", model.bandOn ? "Subtitles on" : "Subtitles off")
+                            tutorButton("pageAuto", "doc.text", model.pageOn ? "Page on" : "Page off")
+                        }
+                        fullButton
+                        tutorButton("mode", "book", "Mode")
+                        tutorButton("find", "magnifyingglass", "Find video")
+                        tutorButton("quick", "slider.horizontal.3", "Settings")
                     }
-                    fullButton
-                    tutorButton("mode", "book", "Mode")
-                    tutorButton("find", "magnifyingglass", "Find video")
-                    tutorButton("quick", "slider.horizontal.3", "Settings")
                 }
                 appButton("house", "Home") { model.goHome() }
                 appButton("book", "Read") { model.showReader = true }
@@ -243,13 +249,51 @@ struct SettingsView: View {
     @Environment(\.presentationMode) private var presentation
     @State private var pickFolder = false
     @State private var pickFile = false
+    // the API keys, typed here (an empty box keeps the saved key)
+    @State private var keyText: [String: String] = [:]
+    @State private var keyEnds: [String: String] = [:]
+    @State private var region = ""
+    @State private var keyNote = ""
+    private static let keyRows: [(String, String)] = [("azure", "Microsoft voice (Azure Speech, KEY 1)"), ("anthropic", "Claude"), ("openai", "OpenAI"), ("elevenlabs", "ElevenLabs"), ("github", "GitHub token")]
+
+    private func keyField(_ name: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.footnote).foregroundColor(.secondary)
+            SecureField(keyEnds[name].map { "saved (…\($0)): paste a new one to change it" } ?? "paste your key", text: Binding(get: { keyText[name] ?? "" }, set: { keyText[name] = $0 }))
+                .textContentType(.oneTimeCode)   // (no "save this password?" question, no strong-password offer)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                .frame(minHeight: 44)
+        }
+    }
 
     var body: some View {
         NavigationView {
             Form {
                 Section(header: Text("My tutor")) {
-                    Button("All settings (API keys, voice, Level Check…)") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/options.html") }
+                    Button("All settings (voice, Level Check…)") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/options.html") }
                     Button("My Vocabulary") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/vocab.html") }
+                }
+                Section(header: Text("API keys"),
+                        footer: Text("Paste a key, then press Save the keys. An empty box keeps the key that is saved. Keys stay on this device (its Keychain). Claude explains; the Microsoft key (free) gives the natural voice. Test finds the Microsoft region by itself.")) {
+                    ForEach(SettingsView.keyRows, id: \.0) { row in keyField(row.0, row.1) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Microsoft region").font(.footnote).foregroundColor(.secondary)
+                        TextField("eastus", text: $region).autocapitalization(.none).disableAutocorrection(true).frame(minHeight: 44)
+                    }
+                    Button("Save the keys") {
+                        let n = model.saveKeys(keyText, region: region)
+                        keyText = [:]
+                        keyEnds = model.savedKeyEnds()
+                        keyNote = n > 0 ? "\(n) key\(n == 1 ? "" : "s") saved." : "Nothing new to save (the region is kept)."
+                    }
+                    .frame(minHeight: 44)
+                    Button("Test the Microsoft voice") {
+                        keyNote = "Testing…"
+                        model.testMicrosoft { text in keyNote = text; region = model.savedRegion }
+                    }
+                    .frame(minHeight: 44)
+                    if !keyNote.isEmpty { Text(keyNote).font(.footnote) }
                 }
                 Section(header: Text("My vocabulary file (one for the Mac and this phone)"),
                         footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). iCloud Drive: choose that MEH English folder. Google Drive (the Files app does not let its folders be chosen): choose the file vocabulary.json inside it. The Mac and this phone then share one database: each adds its words, nothing is lost. Without that the words stay in the app (Files ▸ On My iPhone ▸ I Know ▸ vocabulary.json).")) {
@@ -269,6 +313,7 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
+            .onAppear { keyEnds = model.savedKeyEnds(); region = model.savedRegion }
         }
         .navigationViewStyle(.stack)
         .sheet(isPresented: $pickFolder) { FolderPicker(types: [UTType.folder]) { url in model.chooseVocabFolder(url) } }

@@ -25,11 +25,36 @@ export function encodeWav(channels: readonly Float32Array[], sampleRate: number,
   return buf;
 }
 
+/**
+ * Making a clip again at another volume did not work just now (it timed out, or its sound would not play): the clip
+ * plays as it is, through the gain when that works, and the voice is never held up twice in a row. A device where it
+ * HAS worked keeps using it (one clip lost to a phone call or another app is no reason to stop). A device where it
+ * never worked rests for a minute, and after the second failure stops for good.
+ */
+let bakeBroken = false;
+let bakeWorked = false;
+let bakeFailCount = 0;
+let bakeRestUntil = 0;
+const bakeResting = (): boolean => bakeBroken || Date.now() < bakeRestUntil;
+export function bakeFailed(): void {
+  if (bakeWorked) return;
+  bakeFailCount++;
+  if (bakeFailCount >= 2) bakeBroken = true; else bakeRestUntil = Date.now() + 60_000;
+}
+/** a clip made again at the learner's volume played */
+export function bakeOk(): void { bakeWorked = true; bakeFailCount = 0; bakeRestUntil = 0; }
+export const bakeWorks = (): boolean => !bakeResting();
+/** (tests) */
+export function resetBake(): void { bakeBroken = false; bakeWorked = false; bakeFailCount = 0; bakeRestUntil = 0; baked.clear(); }
+/** a clip is made again within this time, or it plays as it is */
+export const BAKE_TIMEOUT_MS = 1500;
+
 let probed: boolean | null = null;
 /** this device ignores an audio element's volume (an iPhone / iPad); `__ytcBakeVolume` forces the answer (tests) */
 export function elementVolumeIgnored(): boolean {
   const forced = (globalThis as { __ytcBakeVolume?: boolean }).__ytcBakeVolume;
-  if (typeof forced === 'boolean') return forced;
+  if (typeof forced === 'boolean') return forced && !bakeResting();
+  if (bakeResting()) return false;
   if (probed !== null) return probed;
   try { const a = new Audio(); a.volume = 0.5; probed = Math.abs(a.volume - 0.5) > 0.01; } catch { probed = false; }
   return probed;
@@ -56,13 +81,15 @@ export function bakeVolume(audio: ArrayBuffer, volume: number, key?: string): Pr
       // (decodeAudioData takes the bytes away: it gets a copy)
       const copy = audio.slice(0);
       const buf = await new Promise<AudioBuffer>((resolve, reject) => {
+        // (a decoder that never answers must not hold the voice: after BAKE_TIMEOUT_MS the clip plays as it is)
+        setTimeout(() => reject(new Error('decoding took too long')), BAKE_TIMEOUT_MS);
         const p = ctx.decodeAudioData(copy, resolve, reject) as Promise<AudioBuffer> | undefined;
         if (p && typeof p.then === 'function') p.then(resolve, reject);
       });
       if (!buf.length) return null;
       const channels = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => buf.getChannelData(c));
       return new Blob([encodeWav(channels, buf.sampleRate, volume)], { type: 'audio/wav' });
-    } catch { return null; }
+    } catch { bakeFailed(); return null; }
   })();
   if (k) {
     baked.set(k, job);

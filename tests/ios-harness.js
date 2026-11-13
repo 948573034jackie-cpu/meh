@@ -123,6 +123,7 @@ const nativeLog = [];
 // the shared vocabulary file (iCloud Drive ▸ MEH English, written by the Mac): the app must merge it in and write it back
 let vocabShared = { version: 1, updatedAt: '2026-11-03T10:00:00.000Z', currentLevel: 'about B2 for reading', tests: [{ date: '2026-11-03', source: 'A Mac video', scores: { b2: 60, c1: 20, c2: 10 }, level: 'B2' }],
   known: [{ item: 'serendipity', date: '2026-11-03' }], stillLearning: [{ item: 'flabbergasted', date: '2026-11-03', sentence: 'I was flabbergasted by the news.' }] };
+const vocabShared0 = JSON.stringify(vocabShared);
 const vocabWrites = [];
 // Apple's Translation (Translator.swift): what it answers for a sentence; a test sets it with setTranslate(text or Error)
 let translateReply = '这是测试译文';
@@ -243,6 +244,8 @@ module.exports = {
   LINES, SEC, DUR, json3, TRACKS, tracksOf, makePr, pr, makeWav, wav, ttsWav, makeYtHtml, ytHtml,
   apiLog, nativeLog, fetchLog, stores, keychain, vocabWrites,
   get vocabShared() { return vocabShared; }, // (the stand-in replaces it on every write)
+  // (a new learner: the shared file as it was at the start, with nothing heard or learned by an earlier part of a test)
+  resetVocab: () => { vocabShared = JSON.parse(vocabShared0); },
   failAzure: (n) => { failNextAzure = n; },
   setHard: (list) => { hardReply = list; },
   setTranslate: (r) => { translateReply = r; },

@@ -6,7 +6,7 @@
 import { copyLevel } from './level-copy';
 import type { Settings } from '@shared/settings';
 import * as store from './store';
-import { myLevelOf, levelToCefr, clampLevel } from './level100';
+import { cefrToLevel, clampPct, DEFAULT_EXPLAIN_PCT } from './level100';
 import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_ACCENTS } from './voice';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { isWay, wayOf, wayStyle, bandOf } from './teaching-ways';
@@ -62,12 +62,13 @@ function slider(name: string, value: number, min: number, max: number, step: num
 /** "Advanced" is open (kept while the panel is drawn again after a change); a phone or iPad starts with it closed,
  *  the computer with it open (there the panel is a list to scroll, as before) */
 let advOpen: boolean | null = null;
+/** the "API keys" box is open (kept while the panel is drawn again) */
+let keysOpen = false;
 /** a named on / off switch: "Words [On][Off]" */
 function onOff3(name: string, label: string, on: boolean): string { return `<span class="sw">${label} ${onOff(name, on)}</span>`; }
 
 export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const { settings: s, extras: x, keys } = ctx;
-  const lvl = myLevelOf(x, s.learnerLevel);
   if (advOpen === null) advOpen = !ctx.phone;
   const sc = shortcutMap(x.shortcuts);
   const styles = resolveStyles(s.ai.styles).filter((st) => !st.hidden);
@@ -92,31 +93,52 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   };
   // the voice you really hear: a cloud voice without its key falls back to the Mac voice, so say so
   const now = ctx.voiceNow;
-  const missing = now === 'mac' ? (x.voice === 'elevenlabs' ? 'ElevenLabs' : x.voice === 'azure' ? 'Microsoft' : x.voice === 'openai' ? 'OpenAI' : '') : '';
+  const keyName = (k: store.KeyName) => (k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech), Key 1' : k === 'github' ? 'GitHub token (your words online, shared with your computer)' : 'ElevenLabs');
+  /** one key box with its own Save button (the button saves the box of its own row) */
+  const keyBox = (k: store.KeyName, label = keyName(k), hl = false) => `<label class="keyrow${hl ? ' hl' : ''}">${esc(label)} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`;
+  const regionRow = `<label>Microsoft region <input type="text" data-name="azureRegion" value="${esc(x.azureRegion ?? 'eastus')}" placeholder="eastus" style="width:140px" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"> <button type="button" data-act="test-azure">Test</button> <span class="muted">(Test finds the right region by itself)</span></label>`;
+  // the voice the learner chose needs a key that is not saved: its box is right here, under the voice buttons
+  const wants: store.KeyName | '' = x.voice === 'elevenlabs' ? 'elevenlabs' : x.voice === 'openai' ? 'openai' : x.voice === 'azure' || x.voice === 'auto' ? 'azure' : '';
+  const missing = now === 'mac' && wants ? (wants === 'azure' ? 'Microsoft' : wants === 'openai' ? 'OpenAI' : 'ElevenLabs') : '';
+  const device = ctx.phone ? 'iPhone' : 'Mac';
   const voiceRows = [
-    missing ? `<p class="warn">No ${missing} key is saved, so you hear the Mac voice now. Paste your ${missing} key below (API keys) to use the ${missing} voices.</p>` : '',
-    now === 'mac' && x.voice === 'auto' ? '<p class="warn">No Microsoft or OpenAI key is saved, so you hear the Mac voice now. Paste a free Microsoft key below (API keys) for a natural voice.</p>' : '',
+    missing ? `<p class="warn">No ${missing} key is saved, so you hear the ${device} voice now. Paste your ${missing} key here and press Save:</p>${keyBox(wants as store.KeyName, `${missing} key`, true)}${wants === 'azure' ? regionRow : ''}` : '',
     now === 'azure' ? `<label>Microsoft voice <select data-name="azureVoice">${azureOptions(x.azureVoice ?? AZURE_VOICES[0].id)}</select> <span class="muted">(★ = the best, they also say Chinese words)</span></label>
       <p class="muted az-used">Microsoft this month: counting…</p>` : '',
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
     now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
-    now === 'mac' ? (ctx.macVoices.length ? `<label>Mac voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : '<p class="muted">No English Mac voice was found.</p>') : '',
-    now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '',
+    now === 'mac' ? (ctx.macVoices.length ? `<label>${device} voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : `<p class="muted">No English ${device} voice was found.</p>`) : '',
+    `<span><button type="button" data-act="test">▶ Test the voice</button></span>`,
   ].filter(Boolean).join('\n      ');
+  const callVoiceRow = now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '';
+  const LEVELS: [string, string][] = [['A1', 'A1'], ['A2', 'A2'], ['B1', 'B1'], ['B2', 'B2'], ['C1', 'C1'], ['C2', 'C2']];
+  const pct = clampPct(x.explainPct ?? DEFAULT_EXPLAIN_PCT);
+  const needKey = !keys.anthropic && !keys.openai;
   el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)">✕</button></div>
   <div class="q-body">
     <section class="first">
       <label>Tutor volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')}</label>
       ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 17, 42, 1, 'px')} <span class="muted">every page, the subtitles on the video and the card: one size</span></label>` : ''}
-      <label class="col lvl"><span>My level <output class="lvl-n">${lvl}</output> <span class="muted">0 = easiest · 100 = hardest</span></span>
-        <input type="range" class="wide" data-name="myLevel" min="0" max="100" step="1" value="${lvl}" aria-label="My level, 0 easiest to 100 hardest"></label>
-      <label>Stop for ${onOff3('stopItemsOn', 'Words', x.stopItemsOn !== false)} ${onOff3('stopPhrasesOn', 'Phrases', x.stopPhrasesOn !== false)} ${onOff3('stopHardOn', 'Sentences', x.stopHardOn !== false)}</label>
-      <p class="muted">The tutor stops by itself only for words, phrases and sentences that are HARDER than your level. Anything at or below your level, and anything you know, never stops by itself. A switch off = that kind is never explained by itself. A tap on any word still explains it.</p>
+      <label>My level ${seg('learnerLevel', s.learnerLevel, LEVELS as [Settings['learnerLevel'], string][])}</label>
+      <label class="col lvl"><span>How much to explain <output class="lvl-n">${pct}%</output> <span class="muted">0 = nothing · 100 = everything</span></span>
+        <input type="range" class="wide" data-name="explainPct" min="0" max="100" step="5" value="${pct}" aria-label="How much to explain, 0 nothing to 100 everything"></label>
+      <label>Explain ${onOff3('stopItemsOn', 'Words', x.stopItemsOn !== false)} ${onOff3('stopPhrasesOn', 'Phrases', x.stopPhrasesOn !== false)} ${onOff3('stopHardOn', 'Sentences', x.stopHardOn !== false)}</label>
+      <p class="muted">Nothing below your level is explained by itself, and nothing you know. Of what is at your level or above, the tutor explains the hardest ${pct}% (100 = all of it, a low number = only the hardest). A switch off = that kind is never explained by itself. A tap on any word still explains it.</p>
       <label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>
+      <label>Look ${seg('readLook', x.readLook === 'day' || x.readLook === 'night' ? x.readLook : 'auto', [['auto', 'Auto'], ['day', '☀️ Day'], ['night', '🌙 Night']])} <span class="muted">every mode the same · Auto = as your ${ctx.phone ? 'iPhone' : 'computer'} is set</span></label>
       <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
       <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
+      ${voiceRows}
+      ${needKey ? `<p class="warn">No Claude key is saved: the tutor cannot explain. Paste your Claude key here and press Save:</p>${keyBox('anthropic', 'Claude key', true)}` : ''}
     </section>
-    <details class="adv"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
+    <details class="adv keys"${keysOpen ? ' open' : ''}><summary>🔑 API keys</summary>
+    <section>
+      ${(['azure', 'anthropic', 'openai', 'elevenlabs', 'github'] as const).map((k) => keyBox(k, keyName(k), k === 'azure' && !keys.azure)).join('')}
+      ${regionRow}
+      <p class="muted">Keys stay on this device (on the iPhone in its Keychain). Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice. The GitHub token (github.com → Settings → Developer settings → Fine-grained tokens, with only "Gists: Read and write") keeps your words in one private gist, shared by the phone and the computer within seconds.${ctx.gist ? ` ${esc(ctx.gist)}` : ''}</p>
+    </section>
+    </details>
+    <details class="adv main"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
     <section><h4>My tutor stops</h4>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
@@ -126,12 +148,12 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${ctx.phone ? `<label>Talk through Bluetooth headphones ${onOff('headsetMic', !!x.headsetMic)} <span class="muted">their microphone hears you (the sound becomes phone-call quality while on). Wired headphones with a microphone always work.</span></label>` : ''}
       <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">▶ Test</button></label>
       <label>The word's volume ${slider('wordVolume', x.wordVolume ?? 80, 0, 100, 1, '%')} <button type="button" data-act="test-word">▶ Test</button></label>
+      ${ctx.phone ? `<label>With the tutor off ${seg('offMode', x.offMode === 'free' ? 'free' : 'plain', [['plain', 'Normal YouTube'], ['free', 'Free mode (cards, no AI)']])}</label>` : ''}
       <label>Word test before each video ${seg('levelAsk', x.levelAsk !== false ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</label>
       <label>Just talk ${onOff('voiceMode', !!x.voiceMode)} <span class="muted">“hello” = explain the last part · “hi bro” = call the tutor · “I know” · “bye” = the tutor goes, the video plays</span></label>
     </section>
     <section><h4>What you see</h4>
       <label>Play line ${slider('playLine', x.playLine ?? 40, 0, 100, 1, '')} <span class="muted">0 = bottom, 100 = top: the sentence being played or explained stays there</span></label>
-      ${x.view === 'reading' ? `<label>Reading look ${seg('readLook', x.readLook === 'night' ? 'night' : 'day', [['day', '☀️ Day'], ['night', '🌙 Night']])}</label>` : ''}
       <p class="muted">Listening: all the subtitles, the text moves with the sound. Reading: pages like a book, the text stays, a thin line follows the word and the pages turn by themselves (‹ › or a swipe turns them). Lyrics: the song's lyrics, an introduction to the song first, and explanations about the lyrics. Video: the video. Each mode has its own text size.</p>
       ${ctx.phone ? '' : (x.view === 'reading' ? `<label>Text size (Reading) ${slider('readSize', x.readSizePx ?? 22, 12, 60, 1, 'px')}</label>` : '')}
       <label>Letters ${slider('textWeight', x.textWeight ?? 400, 200, 800, 100, '')} <span class="muted">thinner ← → bolder</span></label>
@@ -160,7 +182,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     </section>
     <section><h4>Voice</h4>
       <label>Follow the video's volume ${onOff('followVol', x.followVideoVolume !== false)} <span class="muted">(100 % = as loud as the video)</span></label>
-      ${voiceRows}
+      ${callVoiceRow}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
       <p class="muted">Auto = the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice. One hour of the tutor speaking costs about: Microsoft $0 (free about 9 hours a month, then about $0.90), OpenAI $0.90, ElevenLabs $3 or more, Mac free.</p>
@@ -183,11 +205,6 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       <label>Say the word before ${num('wordRepeats', s.listen.wordRepeats, 0, 10)} after ${num('wordAfter', shape.wordAfter, 0, 20)} times · play the sentence after a word ${num('sentenceAfterWord', shape.sentenceAfterWord, 0, 3)} · a sentence before ${num('sentenceBefore', shape.sentenceBefore, 0, 3)} after ${num('sentenceAfter', shape.sentenceAfter, 0, 3)}</label>
       <label>Commands window ${num('windowSec', Math.round((s.listen.commandWindowMs || 5000) / 1000), 2, 15)} s</label>
     </section>
-    <section><h4>API keys</h4>
-      ${(['azure', 'anthropic', 'openai', 'elevenlabs', 'github'] as const).map((k) => `<label${k === 'azure' && !keys.azure ? ' class="hl"' : ''}>${k === 'anthropic' ? 'Claude' : k === 'openai' ? 'OpenAI' : k === 'azure' ? 'Microsoft (Azure Speech) — the free voice, Key 1' : k === 'github' ? 'GitHub token (your words online, shared with your computer)' : 'ElevenLabs'} <input type="password" data-key="${k}" placeholder="${keys[k] ? `saved (…${esc(keys[k]!.slice(-4))})` : 'paste your key'}" autocomplete="off"><button type="button" data-act="save-key" data-k="${k}">Save</button></label>`).join('')}
-      <label>Microsoft region <input type="text" data-name="azureRegion" value="${esc(x.azureRegion ?? 'eastus')}" placeholder="eastus" style="width:140px" autocomplete="off"> <button type="button" data-act="test-azure">Test</button> <span class="muted">(“Location/Region” of your Speech resource)</span></label>
-      <p class="muted">Keys stay on this device (on the iPhone in its Keychain). Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice. The GitHub token (github.com → Settings → Developer settings → Fine-grained tokens, with only "Gists: Read and write") keeps your words in one private gist, shared by the phone and the computer within seconds.${ctx.gist ? ` ${esc(ctx.gist)}` : ''}</p>
-    </section>
     <section><h4>Shortcuts <span class="muted">(click one, then press the new keys)</span></h4>
       <div class="keys">${SHORTCUTS.map((a) => `<div><span>${esc(a.label)}</span><button type="button" data-sc="${a.id}">${esc(comboLabel(sc[a.id]))}</button></div>`).join('')}</div>
       <span><button type="button" data-act="sc-reset">Default shortcuts</button></span>
@@ -199,7 +216,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">📒 My Vocabulary</button><button type="button" data-act="reader">📖 Read a PDF or text</button></section>
   </div>`;
 
-  el.querySelector<HTMLDetailsElement>('details.adv')?.addEventListener('toggle', (ev) => { advOpen = (ev.target as HTMLDetailsElement).open; });
+  el.querySelector<HTMLDetailsElement>('details.adv.main')?.addEventListener('toggle', (ev) => { advOpen = (ev.target as HTMLDetailsElement).open; });
+  el.querySelector<HTMLDetailsElement>('details.adv.keys')?.addEventListener('toggle', (ev) => { keysOpen = (ev.target as HTMLDetailsElement).open; });
   // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)
   const azUsed = el.querySelector<HTMLElement>('.az-used');
   if (azUsed) void store.getUsage().then((u) => {
@@ -234,7 +252,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'fullOnTurn') void store.patchExtras({ fullOnTurn: v === 'on' });
       else if (segName === 'stopHardOn') void store.patchExtras({ stopHardOn: v === 'on' });
       else if (segName === 'stopPhrasesOn') void store.patchExtras({ stopPhrasesOn: v === 'on' });
-      else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : 'day' });
+      else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : v === 'day' ? 'day' : 'auto' });
+      else if (segName === 'offMode') void store.patchExtras({ offMode: v === 'free' ? 'free' : 'plain' });
       else if (segName === 'sentenceButtons') void store.patchExtras({ sentenceButtons: v === 'on' });
       else if (segName === 'headsetMic') void store.patchExtras({ headsetMic: v === 'on' });
       else if (segName === 'teachLength') patchAi({ explanationLength: v as Settings['ai']['explanationLength'] });
@@ -250,6 +269,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'levelAsk') void store.patchExtras({ levelAsk: v === 'on' });
       else if (segName === 'hideCc') void store.patchExtras({ hideYtCaptions: v === 'on' });
       else if (segName === 'voice') void store.patchExtras({ voice: v as store.VoiceChoice });
+      // MY LEVEL (A1 … C2): nothing below it is explained by itself; the number the rest of the tutor uses follows it
+      else if (segName === 'learnerLevel') { void store.patchExtras({ myLevel: cefrToLevel(v), levelAuto: false }); patchS(() => ({ learnerLevel: v as Settings['learnerLevel'] })); }
       else if (segName === 'speakChinese') patchAi({ speakChinese: v === 'on' });
       else if (segName === 'talkAfter') void store.patchExtras({ talkAfterExplain: v === 'on' });
       else if (segName === 'liveOn') void store.patchExtras({ liveOn: v === 'on' });
@@ -285,7 +306,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     else if (act === 'teacher-reset') void store.patchExtras({ teacher: DEFAULT_TEACHER }).then(() => ctx.toast('Your own rules are back.'));
     else if (act === 'save-key') {
       const k = b.dataset.k as store.KeyName;
-      const inp = el.querySelector<HTMLInputElement>(`input[data-key="${k}"]`);
+      // (the box in the same row as the button: a key has a box under the voice buttons and one in "API keys")
+      const inp = b.closest('label')?.querySelector<HTMLInputElement>('input[data-key]') ?? el.querySelector<HTMLInputElement>(`input[data-key="${k}"]`);
       const v = inp?.value.trim() ?? '';
       if (!v) { ctx.toast('Paste the key first.'); return; }
       // a Microsoft key pasted into another box (ElevenLabs keys start with sk_, OpenAI ones with sk-): saved as Microsoft
@@ -341,12 +363,12 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     if (out && t instanceof HTMLInputElement && t.type === 'range') out.textContent = `${t.value}${out.textContent?.replace(/^[\d.]+/, '') ?? ''}`;
     const n = Number(t.value);
     if (name === 'playLine') later(() => void store.patchExtras({ playLine: n }));
-    else if (name === 'myLevel') {
-      // ONE level, 0 (easiest) … 100 (hardest); the school level the rest of the tutor uses (the prompts) follows it
-      const lv = clampLevel(n);
+    else if (name === 'explainPct') {
+      // how much of what is at my level or above is explained: 0 = nothing, 100 = everything, lower = only the hardest
+      const pc = clampPct(n);
       const o = el.querySelector<HTMLElement>('.lvl-n');
-      if (o) o.textContent = String(lv);
-      later(() => { void store.patchExtras({ myLevel: lv, levelAuto: false }); patchS(() => ({ learnerLevel: levelToCefr(lv) as Settings['learnerLevel'] })); }, 300);
+      if (o) o.textContent = `${pc}%`;
+      later(() => void store.patchExtras({ explainPct: pc }), 300);
     }
     else if (name === 'repeatWords' && t.value !== '') later(() => void store.patchExtras({ repeatWords: Math.max(0, n) }), 500);
     else if (name === 'knownAfter' && t.value !== '') later(() => void store.patchExtras({ knownAfter: Math.max(0, n) }), 500);

@@ -189,21 +189,33 @@ const api = H.startServer();
   const quick = await act('quick') === true && await yt.evaluate(() => {
     const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick');
     if (!q || q.hidden) return null;
-    const first = q.querySelector('section.first'), adv = q.querySelector('details.adv'), lv = q.querySelector('input[data-name="myLevel"]');
+    const first = q.querySelector('section.first'), adv = q.querySelector('details.adv.main'), keysBox = q.querySelector('details.adv.keys'), lv = q.querySelector('input[data-name="explainPct"]'), seg = first.querySelector('.seg[data-name="learnerLevel"]');
     const r = lv.getBoundingClientRect(), b = q.querySelector('.q-body').getBoundingClientRect();
-    return { first: first.textContent, adv: adv.textContent, advOpen: adv.open, level: { min: lv.min, max: lv.max, value: lv.value, wide: r.width >= b.width * 0.85, h: r.height }, switches: ['stopItemsOn', 'stopPhrasesOn', 'stopHardOn'].map((n) => !!first.querySelector(`.seg[data-name="${n}"]`)), oldShares: q.querySelectorAll('[data-name="capWords"], [data-name="capPhrases"], [data-name="capSentences"], .seg[data-name="level"]').length };
+    return { first: first.textContent, adv: adv.textContent, advOpen: adv.open, pct: { min: lv.min, max: lv.max, value: lv.value, wide: r.width >= b.width * 0.85, h: r.height, inFirst: first.contains(lv) },
+      levels: Array.from(seg.querySelectorAll('button')).map((x) => x.textContent).join(' '), levelOn: (seg.querySelector('button.on') || {}).textContent,
+      keys: keysBox ? Array.from(keysBox.querySelectorAll('input[data-key]')).map((i) => i.dataset.key).join(' ') : null, keysInAdv: adv.querySelectorAll('input[data-key]').length, keysOpen: keysBox && keysBox.open,
+      switches: ['stopItemsOn', 'stopPhrasesOn', 'stopHardOn'].map((n) => !!first.querySelector(`.seg[data-name="${n}"]`)), old: q.querySelectorAll('[data-name="capWords"], [data-name="capPhrases"], [data-name="capSentences"], input[data-name="myLevel"]').length };
   });
-  ok('⚙ opens the settings over the book: the first page is short: the tutor\'s volume, ONE text size, ONE long level slider 0 to 100, the three switches (Words, Phrases, Sentences), Explain 10 / 20 / 30 s, the mode, the voice',
-    !!quick && /Tutor volume/.test(quick.first) && /Text size/.test(quick.first) && /My level/.test(quick.first) && /0 = easiest · 100 = hardest/.test(quick.first) && quick.level.min === '0' && quick.level.max === '100' && quick.level.value === '50' && quick.level.wide && quick.level.h >= 44
-    && quick.switches.every(Boolean) && /Words/.test(quick.first) && /Phrases/.test(quick.first) && /Sentences/.test(quick.first) && /10 s/.test(quick.first) && /30 s/.test(quick.first) && /Mode/.test(quick.first) && /Tutor's voice/.test(quick.first) && quick.oldShares === 0, JSON.stringify(quick && { level: quick.level, sw: quick.switches, old: quick.oldShares, first: quick.first.slice(0, 200) }));
-  ok('...everything else is under "Advanced" (closed at first): explanations, letters, the play line, the sleep timer, the microphone, the keys',
-    !!quick && quick.advOpen === false && /Explanations/.test(quick.adv) && /Mid/.test(quick.adv) && /Letters/.test(quick.adv) && /Play line/.test(quick.adv) && /Sleep timer/.test(quick.adv) && /Low/.test(quick.adv) && /High/.test(quick.adv) && /Show what the tutor says as text/.test(quick.adv) && /Word test before each video/.test(quick.adv) && /API keys/.test(quick.adv), String(quick && quick.adv).slice(0, 200));
-  // the level slider moved: saved at once, and the school level the prompts use follows it
-  await yt.evaluate(() => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="myLevel"]'); lv.value = '80'; lv.dispatchEvent(new Event('input', { bubbles: true })); });
-  const lvSaved = await until(() => stores.local.drExtras && stores.local.drExtras.myLevel === 80 && stores.local.drSettings && stores.local.drSettings.learnerLevel === 'C1', 4000);
-  ok('...the level slider moved to 80: saved at once (my level 80; the prompts speak to a C1 learner)', !!lvSaved, JSON.stringify({ my: stores.local.drExtras && stores.local.drExtras.myLevel, cefr: stores.local.drSettings && stores.local.drSettings.learnerLevel }));
-  await yt.evaluate(() => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="myLevel"]'); lv.value = '50'; lv.dispatchEvent(new Event('input', { bubbles: true })); });
+  ok('⚙ opens the settings over the book: the first page is short: the tutor\'s volume, ONE text size, my level A1 to C2, how much to explain (0 to 100 %), the three switches (Words, Phrases, Sentences), Explain 10 / 20 / 30 s, the mode, the voice',
+    !!quick && /Tutor volume/.test(quick.first) && /Text size/.test(quick.first) && /My level/.test(quick.first) && quick.levels === 'A1 A2 B1 B2 C1 C2' && quick.levelOn === 'B2' && /How much to explain/.test(quick.first) && /0 = nothing · 100 = everything/.test(quick.first)
+    && quick.pct.min === '0' && quick.pct.max === '100' && quick.pct.value === '100' && quick.pct.wide && quick.pct.h >= 44 && quick.pct.inFirst
+    && quick.switches.every(Boolean) && /Words/.test(quick.first) && /Phrases/.test(quick.first) && /Sentences/.test(quick.first) && /10 s/.test(quick.first) && /30 s/.test(quick.first) && /Mode/.test(quick.first) && /Tutor's voice/.test(quick.first) && quick.old === 0, JSON.stringify(quick && { pct: quick.pct, levels: quick.levels, on: quick.levelOn, sw: quick.switches, old: quick.old, first: quick.first.slice(0, 200) }));
+  ok('...the rest is under "Advanced" (closed at first): explanations, letters, the play line, the sleep timer, the microphone; the keys have their own box, "API keys", not inside Advanced',
+    !!quick && quick.advOpen === false && /Explanations/.test(quick.adv) && /Mid/.test(quick.adv) && /Letters/.test(quick.adv) && /Play line/.test(quick.adv) && /Sleep timer/.test(quick.adv) && /Low/.test(quick.adv) && /High/.test(quick.adv) && /Show what the tutor says as text/.test(quick.adv) && /Word test before each video/.test(quick.adv)
+    && quick.keys === 'azure anthropic openai elevenlabs github' && quick.keysInAdv === 0, JSON.stringify(quick && { keys: quick.keys, inAdv: quick.keysInAdv, adv: String(quick.adv).slice(0, 120) }));
+  // another level: saved at once (the school level and its number)
+  const tapLevel = (l) => yt.evaluate((lvl) => { document.getElementById('dr-stage-host').shadowRoot.querySelector(`.stage > .quick .seg[data-name="learnerLevel"] button[data-v="${lvl}"]`).click(); }, l);
+  await tapLevel('C1');
+  const lvSaved = await until(() => stores.local.drExtras && stores.local.drExtras.myLevel === 66 && stores.local.drSettings && stores.local.drSettings.learnerLevel === 'C1', 4000);
+  ok('...my level C1: saved at once (the tutor speaks to a C1 learner; nothing below C1 stops)', !!lvSaved, JSON.stringify({ my: stores.local.drExtras && stores.local.drExtras.myLevel, cefr: stores.local.drSettings && stores.local.drSettings.learnerLevel }));
+  await tapLevel('B2');
   await until(() => stores.local.drExtras.myLevel === 50 && stores.local.drSettings.learnerLevel === 'B2', 4000);
+  // how much to explain: saved at once
+  const setPct = (n) => yt.evaluate((v) => { const lv = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick input[data-name="explainPct"]'); lv.value = String(v); lv.dispatchEvent(new Event('input', { bubbles: true })); lv.blur(); }, n);
+  await setPct(30);
+  ok('...how much to explain, 30 %: saved at once', !!(await until(() => stores.local.drExtras && stores.local.drExtras.explainPct === 30, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.explainPct));
+  await setPct(100);
+  await until(() => stores.local.drExtras.explainPct === 100, 4000);
   // sentences off: saved at once
   await yt.evaluate(() => { const q = document.getElementById('dr-stage-host').shadowRoot.querySelector('.stage > .quick'); q.querySelector('.seg[data-name="stopHardOn"] button[data-v="off"]').click(); });
   ok('...whole sentences can be turned off', !!(await until(() => stores.local.drExtras && stores.local.drExtras.stopHardOn === false, 4000)), JSON.stringify(stores.local.drExtras && stores.local.drExtras.stopHardOn));
@@ -248,8 +260,8 @@ const api = H.startServer();
   sheet.on('pageerror', (e) => console.log('PAGE ERROR (settings)', String(e.message || e).slice(0, 300)));
   await sheet.addInitScript({ content: source(sheetScripts) });
   await sheet.goto(`http://localhost:${PAGES_PORT}/options.html`);
-  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('myLevel'); return /saved|…/i.test(m) && l && l.type === 'range' && l.max === '100' && Number(l.value) > 0 ? l.value : null; }), 12000);
-  ok('the settings page works in the sheet: it shows your level (one slider, 0 to 100; B2 starts at 50) and the saved Claude key (only its end)', shown === '50' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
+  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('myLevel'); return /saved|…/i.test(m) && l && l.tagName === 'SELECT' && l.options.length === 6 && l.value ? l.value : null; }), 12000);
+  ok('the settings page works in the sheet: it shows your level (A1 to C2) and the saved Claude key (only its end)', shown === 'B2' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
   await sheet.fill('#key-anthropic', 'sk-ant-new-key-5678');
   await sheet.click('[data-save="anthropic"]');
   const saved = await until(() => JSON.parse(keychain.drKeys || '{}').anthropic === 'sk-ant-new-key-5678', 5000);
@@ -355,7 +367,7 @@ const api = H.startServer();
   // 🩺 Check from the app's bar: the report over the book, with what the tutor is set to
   await lv.evaluate(() => window.__ytcDream.action('check'));
   const rep = await until(() => lv.evaluate(() => { const p = document.getElementById('yt2c-report-text'); return p && !/^Checking/.test(p.textContent) ? p.textContent : null; }), 8000);
-  ok('the Check button shows the report: the app, just talk, the microphone, my level and the three switches', rep && /I Know app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /my level 50 of 100 · words on · phrases on · sentences on/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
+  ok('the Check button shows the report: the app, just talk, the microphone, my level and the three switches', rep && /I Know app/.test(rep) && /justTalk/.test(rep) && /microphone/.test(rep) && /my level B2 \(50\) · explain 100% · words on · phrases on · sentences on/.test(rep), (String(rep).match(/.stops.{0,140}/) || [String(rep).slice(0, 300)])[0]);
   await lv.evaluate(() => { const p = document.getElementById('yt2c-report'); if (p) p.remove(); });
   // ---- Reading mode: pages like an e-reader (big letters, so this short video makes two pages or more) ----
   await lv.evaluate(() => chrome.storage.local.get('drExtras').then((o) => chrome.storage.local.set({ drExtras: { ...o.drExtras, phoneSizePx: 40 } })));
@@ -583,7 +595,7 @@ const api = H.startServer();
   // keeps the minute at once when the video stops or the app goes away ----
   ok('the app keeps its last YouTube page (its address watched) and opens it again at the same minute (&t=), else the home page',
     /appLastPage/.test(H.swift) && /observe\(\\\.url/.test(H.swift) && /&t=/.test(H.swift) && /willResignActiveNotification[^\n]*leaving\(\)/.test(H.swift) && /beginBackgroundTask/.test(H.swift)
-    && /withTimeInterval: 15, repeats: true/.test(H.swift) && /func start\(\)[\s\S]{0,900}lastPage\([\s\S]{0,300}goHome\(\)/.test(H.swift));
+    && /withTimeInterval: 15, repeats: true/.test(H.swift) && /func start\(\)[\s\S]{0,1200}openLastPage\(\)/.test(H.swift) && /func openLastPage[\s\S]{0,500}lastPage\([\s\S]{0,300}goHome\(\)/.test(H.swift));
   stores.local.drExtras = { ...stores.local.drExtras, view: 'listening', stopItemsOn: false, stopPhrasesOn: false, stopHardOn: false, stopSentences: false, explainOnStop: false, oneButton: false, voiceMode: false };
   const sid = 'ios00000009';
   const rs = await ctx.newPage();

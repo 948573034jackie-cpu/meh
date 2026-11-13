@@ -16,7 +16,8 @@
 </section>
 
 <section><h2>You</h2>
-  <div class="field"><label for="myLevel">My level: <b id="myLevelNow">56</b> <span class="hint" style="display:inline">(0 = easiest, 100 = hardest)</span></label><input id="myLevel" type="range" min="0" max="100" step="1" style="width:100%;height:44px"><div class="hint">The tutor stops by itself only for words, phrases and sentences that are HARDER than this level. Anything at or below it, and anything you know, never stops by itself. A tap on any word still explains it.</div></div>
+  <div class="field"><label for="myLevel">My level</label><select id="myLevel" style="height:44px;font-size:17px"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select><div class="hint">Nothing below your level is explained by itself, and nothing you know.</div></div>
+  <div class="field"><label for="explainPct">How much to explain: <b id="explainPctNow">100</b>% <span class="hint" style="display:inline">(0 = nothing, 100 = everything at your level or above; a low number = only the hardest)</span></label><input id="explainPct" type="range" min="0" max="100" step="5" style="width:100%;height:44px"></div>
 </section>
 
 <section id="level"><h2>Level Check and my vocabulary file</h2>

@@ -1,6 +1,7 @@
 # Accounts (wish 23): the data layout, ready for later
 
-Not built in 3.8. Sign in with Apple needs the learner's own Apple Developer account; the online database needs
+Not built in 3.8 or 3.9 (3.9 note: the level is a school level again, `drSettings.learnerLevel` A1–C2, with
+`drExtras.explainPct` 0–100; `my_level` below would become `level text` + `explain_pct int`). Sign in with Apple needs the learner's own Apple Developer account; the online database needs
 their own Supabase project; Google sign-in needs their own Google Cloud project. This file is the plan for the data,
 so the accounts can be added without changing how the app keeps its words.
 

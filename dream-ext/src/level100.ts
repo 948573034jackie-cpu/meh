@@ -97,3 +97,20 @@ export function fitScore(difficulty: number, myLevel: number): number {
 /** the learner's level: the slider's number; before it was ever set, the old A1–C2 level as a number */
 export const myLevelOf = (extras: { myLevel?: number } | null | undefined, cefr?: string | null): number =>
   typeof extras?.myLevel === 'number' ? clampLevel(extras.myLevel) : cefrToLevel(cefr);
+
+// ---- I Know 3.9: the learner chooses a school level again (A1 … C2) and how much to explain (0–100 %) ----
+const CEFR_LIST = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+/** the dictionary (or the analysis) gave this a school level BELOW the learner's: never explained by itself */
+export function belowLevel(cefr: string | null | undefined, mine: string | null | undefined): boolean {
+  const a = CEFR_LIST.indexOf((cefr ?? '').toUpperCase()), b = CEFR_LIST.indexOf((mine ?? '').toUpperCase());
+  return a >= 0 && b >= 0 && a < b;
+}
+/** how much of what is at the learner's level or above is explained, until the learner moves the slider: all of it
+ *  (as before 3.9); 50 % = only the harder half */
+export const DEFAULT_EXPLAIN_PCT = 100;
+export const clampPct = (n: unknown): number => {
+  const v = typeof n === 'number' ? n : parseFloat(String(n));
+  return Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : DEFAULT_EXPLAIN_PCT;
+};
+/** how many of `n` things the share keeps: 0 % = none, anything above 0 keeps at least one, 100 % = all */
+export const shareOf = (n: number, pct: number): number => (pct <= 0 || n <= 0 ? 0 : Math.min(n, Math.max(1, Math.ceil((n * clampPct(pct)) / 100 - 1e-9))));

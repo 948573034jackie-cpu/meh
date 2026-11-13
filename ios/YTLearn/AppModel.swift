@@ -8,6 +8,7 @@ import AVFoundation
 final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var toast: String?
     @Published var tutorOn = true        // My tutor is on (its buttons show in the bottom bar); off = free mode (no AI)
+    @Published var freeMode = false      // with the tutor off: free mode (drExtras.offMode "free") instead of a normal YouTube page
     @Published var oneButton = false     // One button mode: a touch on the page or the video explains the last part (the bar stays as it is)
     @Published var tutorVolume = 60      // the tutor's volume, % (drExtras.teacherVolume): the bar's Volume button
     @Published var volumeOpen = false    // the two big buttons, quieter / louder, are on the screen
@@ -22,8 +23,14 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
     @Published var vocabStatus = ""      // the last save of the vocabulary file, in words
-    @Published var showReader = false    // the reader (books, PDFs, texts), full screen: ReaderScreen.swift
-    @Published var showBrowser = false   // the browser inside the app, full screen: Browser.swift
+    @Published var showReader = false { didSet { if oldValue != showReader { screenChanged() } } }    // the reader (books, PDFs, texts), full screen: ReaderScreen.swift
+    @Published var showBrowser = false { didSet { if oldValue != showBrowser { screenChanged() } } }  // the browser inside the app, full screen: Browser.swift
+    /// iOS stopped the YouTube page while the app was away (to free memory): it is opened again where it was
+    private var pageLost = false
+    /// the reader or the browser came back in front at the start: the video's page is loaded when it is needed
+    private(set) var pageWaits = false
+    /// one cover is closing only so that the other can open (browser → reader, reader → browser): the video's page still waits
+    var coverSwitch = false
     /// other windows of the app that want to know what was saved (the reader, the browser's tabs)
     var storageListeners: [([String: Any], String, WKWebView?) -> Void] = []
     private(set) lazy var reader = ReaderHost(app: self)
@@ -73,6 +80,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         let x = Store.shared.value(area: "local", key: "drExtras") as? [String: Any] ?? [:]
         tutorOn = x["tutorOn"] as? Bool ?? true
         oneButton = x["oneButton"] as? Bool ?? false
+        freeMode = (x["offMode"] as? String) == "free"
         (bandOn, pageOn, videoMode) = AppModel.videoSwitches(x)
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
         tutorVolume = AppModel.volume(in: x)
@@ -80,6 +88,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.leaving() }
         // back in the app: the vocabulary file may have new words from the Mac
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.syncVocabulary() }
+        // back in the app: a page iOS stopped meanwhile is opened again where it was
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.backInFront() }
         youtube.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
         // (every new page, also inside YouTube's own page: the last one is opened again next time)
@@ -106,14 +116,17 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             runSelfTest()
             return
         }
-        // back where you stopped: the same page (the same video, at the same minute); the mode, the view and the
-        // switches are in My tutor's saved settings already
-        let spots = Store.shared.value(area: "local", key: "drSpots") as? [String: Any]
-        if let last = AppModel.lastPage(Store.shared.value(area: "local", key: "appLastPage"), spots: spots, now: AppModel.nowMs) {
-            youtube.load(URLRequest(url: last.url))
-            if let t = last.t { show("Back where you stopped (\(AppModel.clock(t))).") }
+        // back where you stopped: the same screen (the video, the reader or the browser) and the same page (the same
+        // video, at the same minute); the mode, the view and the switches are in My tutor's saved settings already
+        let screen = Store.shared.value(area: "local", key: "appScreen") as? String ?? "video"
+        if screen == "reader" || screen == "browser" {
+            // (the video's page stays unloaded behind it, so nothing plays there; it opens when the cover closes)
+            pageWaits = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                if screen == "reader" { self?.showReader = true } else { self?.showBrowser = true }
+            }
         } else {
-            goHome()
+            openLastPage()
         }
         timeWatch = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             if UIApplication.shared.applicationState == .active { self?.keepVideoTime() }
@@ -121,6 +134,45 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     // ---- back where you stopped ----
+    /// the last YouTube page, at its minute (the home page when there is none)
+    func openLastPage(note: Bool = true) {
+        pageLost = false
+        pageWaits = false
+        let spots = Store.shared.value(area: "local", key: "drSpots") as? [String: Any]
+        if let last = AppModel.lastPage(Store.shared.value(area: "local", key: "appLastPage"), spots: spots, now: AppModel.nowMs) {
+            youtube.load(URLRequest(url: last.url))
+            if note, let t = last.t { show("Back where you stopped (\(AppModel.clock(t))).") }
+        } else {
+            goHome()
+        }
+    }
+
+    /// which screen is in front (the video, the reader, the browser): kept, so the app opens there again
+    private func screenChanged() {
+        if !started { return }
+        let screen = showBrowser ? "browser" : showReader ? "reader" : "video"
+        if (Store.shared.value(area: "local", key: "appScreen") as? String ?? "video") == screen { return }
+        Store.shared.set(area: "local", json: AppModel.jsonString(["appScreen": screen]))
+    }
+
+    /// the app is in front again: a YouTube page that iOS stopped meanwhile (or that never loaded) opens again
+    private func backInFront() {
+        if !started || pageWaits || ProcessInfo.processInfo.arguments.contains("-selftest") { return }
+        if !(pageLost || (youtube.url == nil && !youtube.isLoading)) { return }
+        if showReader || showBrowser { pageWaits = true; return }
+        openLastPage(note: false)
+    }
+
+    /// the video's page is wanted now (the reader or the browser closed): loaded if it waited
+    func pageWanted() {
+        if pageWaits { openLastPage(note: false) }
+    }
+
+    static func isYouTube(_ host: String?) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        return host == "youtube.com" || host.hasSuffix(".youtube.com")
+    }
+
     static var nowMs: Double { Date().timeIntervalSince1970 * 1000 }
 
     /// the video of a YouTube address ("watch:abc", "shorts:abc"), or nil for any other page
@@ -134,7 +186,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// the YouTube page now (m.youtube.com only, without a time in its address) is kept at once (appLastPage, with
     /// the minute of its video while it is the same video); not through storageSet: the page does not need to know
     private func rememberPage() {
-        guard let now = youtube.url, var parts = URLComponents(url: now, resolvingAgainstBaseURL: false), parts.host == "m.youtube.com" else { return }
+        guard let now = youtube.url, var parts = URLComponents(url: now, resolvingAgainstBaseURL: false), AppModel.isYouTube(parts.host) else { return }
         parts.queryItems = parts.queryItems?.filter { !["t", "start", "pp"].contains($0.name) }
         if parts.queryItems?.isEmpty == true { parts.queryItems = nil }
         guard let url = parts.url?.absoluteString else { return }
@@ -191,7 +243,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     static func lastPage(_ saved: Any?, spots: [String: Any]?, now: Double) -> (url: URL, t: Double?)? {
         guard let page = saved as? [String: Any], let address = page["url"] as? String,
               let at = (page["at"] as? NSNumber)?.doubleValue, now - at < 60 * 86400 * 1000,
-              let url = URL(string: address), url.host == "m.youtube.com" else { return nil }
+              let url = URL(string: address), isYouTube(url.host) else { return nil }
         // (a /watch address always has its ?v=)
         guard url.path == "/watch", let key = videoKey(address) else { return (url, nil) }
         var t = (page["t"] as? NSNumber)?.doubleValue ?? 0
@@ -404,7 +456,72 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if webView === youtube { speech.stop() }
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        if webView === youtube { speech.stop() }
+        guard webView === youtube else { return }
+        speech.stop()
+        // (iOS stopped the page to free memory: an empty page would be left. The last page opens again, at its
+        // minute: now when the app is in front, else when it comes back)
+        pageLost = true
+        if UIApplication.shared.applicationState == .active { backInFront() }
+    }
+
+    // ---- the API keys, typed in the app's own settings (Keys.swift: the Keychain) ----
+    /// the last 4 letters of each saved key (to show "saved (…abcd)"), never the key
+    func savedKeyEnds() -> [String: String] {
+        var out: [String: String] = [:]
+        for (name, value) in savedKeys() { if let v = value as? String, !v.isEmpty { out[name] = String(v.suffix(4)) } }
+        return out
+    }
+    private func savedKeys() -> [String: Any] {
+        guard let text = Keys.get("drKeys"), let data = text.data(using: .utf8), let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return [:] }
+        return obj
+    }
+    var savedRegion: String { (Store.shared.value(area: "local", key: "drExtras") as? [String: Any])?["azureRegion"] as? String ?? "eastus" }
+
+    /// the boxes that are not empty are saved (an empty box keeps its key); a Microsoft key makes Microsoft the
+    /// tutor's voice. Returns how many keys were saved.
+    @discardableResult
+    func saveKeys(_ typed: [String: String], region: String) -> Int {
+        var all = savedKeys()
+        var count = 0
+        for (name, value) in typed {
+            let v = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if v.isEmpty { continue }
+            all[name] = v
+            count += 1
+        }
+        if count > 0 {
+            let text = AppModel.jsonString(all)
+            Keys.set("drKeys", text)
+            keysChanged(name: "drKeys", value: text, from: nil)
+        }
+        var extras = Store.shared.value(area: "local", key: "drExtras") as? [String: Any] ?? [:]
+        var changed = false
+        let r = AppModel.azureRegion(of: region)
+        if !r.isEmpty, (extras["azureRegion"] as? String ?? "eastus") != r { extras["azureRegion"] = r; changed = true }
+        if !(typed["azure"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (extras["voice"] as? String) != "azure" { extras["voice"] = "azure"; changed = true }
+        if changed { storageSet(area: "local", json: AppModel.jsonString(["drExtras": extras]), from: nil) }
+        return count
+    }
+
+    /// "East US", "eastus" or an endpoint like https://eastus.api.cognitive.microsoft.com/ → eastus (as store.azureRegionOf)
+    static func azureRegion(of input: String) -> String {
+        var t = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for scheme in ["https://", "http://"] where t.hasPrefix(scheme) {
+            t = String(t.dropFirst(scheme.count))
+            if let dot = t.firstIndex(of: ".") { t = String(t[..<dot]) }
+        }
+        return t.filter { ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") }
+    }
+
+    /// the saved Microsoft key is tried (My tutor's own test: it also finds the key's region); the answer in words
+    func testMicrosoft(_ done: @escaping (String) -> Void) {
+        if pageWaits || youtube.url == nil { done("Close this, open a YouTube page, then test again."); return }
+        let js = "const r = await chrome.runtime.sendMessage({ type: 'dream-test-azure' }); return (r && r.message) || 'No answer.';"
+        youtube.callAsyncJavaScript(js, arguments: [:], in: nil, in: AppModel.world) { result in
+            DispatchQueue.main.async {
+                if case .success(let value) = result, let text = value as? String { done(text) } else { done("The test could not run. Open a YouTube page first.") }
+            }
+        }
     }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         navLog("commit", webView)
@@ -453,6 +570,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if on != tutorOn { tutorOn = on }
             let one = extras["oneButton"] as? Bool ?? false
             if one != oneButton { oneButton = one }
+            let free = (extras["offMode"] as? String) == "free"
+            if free != freeMode { freeMode = free }
             let vol = AppModel.volume(in: extras)
             if vol != tutorVolume { tutorVolume = vol }
             let (band, page, video) = AppModel.videoSwitches(extras)
