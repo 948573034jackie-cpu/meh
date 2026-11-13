@@ -346,7 +346,9 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   const nR2 = apiLog.filter((r) => r.kind === 'rule').length;
   await tapWord('dinner', 'single'); // (a sentence long before this one)
   await until(() => apiLog.filter((r) => r.kind === 'rule').slice(nR2).find((r) => /does not know \W*dinner/.test(r.user)), 8000);
-  await until(async () => (await dbg()).state === 'playing', 20000, 100);
+  // (the tapped word's own sentence is played from the video on the way: "goes on" = playing again at the place
+  // where the video was, not the first moment anything plays)
+  await until(async () => (await dbg()).state === 'playing' && (await yt.evaluate(() => document.querySelector('video').currentTime)) >= lineNow * SEC - 0.5, 30000, 100);
   const tNow = await yt.evaluate(() => document.querySelector('video').currentTime);
   ok('a tap on a word in another sentence does not move the video: it goes on where it was', tNow >= lineNow * SEC - 0.5, `t=${tNow.toFixed(1)}, the sentence starts at ${lineNow * SEC} · trail: ${JSON.stringify(((await dbg()) || {}).trail || []).slice(-900)}`);
   // "Explain 30 s" is the learner's own: the cheap model too
