@@ -106,7 +106,7 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
       window.__log = [];
       setInterval(() => {
         const c = r.querySelector('.card'), d = window.__drDebug && window.__drDebug();
-        const shown = !!c && !c.hidden && c.classList.contains('full');
+        const shown = !!c && getComputedStyle(c).display !== 'none' && c.classList.contains('full');
         window.__log.push({ at: Date.now(), card: shown ? (c.querySelector('.word') || {}).textContent : '', zh: shown ? (c.querySelector('.zh') || {}).textContent || '' : '', playing: !document.querySelector('video').paused, state: d && d.state, win: d && d.window ? d.window.phase : '', said: d ? d.spoken.join(' | ') : '' });
       }, 40);
     });
@@ -127,6 +127,10 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     { const sp = done ? done.spoken : []; const i1 = sp.findIndex((x) => /This part is the hard one|It means something simple/.test(x)); const i2 = sp.map((x) => /It means something simple/.test(x)).lastIndexOf(true);
       const before = sp.slice(0, i1).filter((x) => x === 'meticulous').length, after = sp.slice(i2 + 1).filter((x) => x === 'meticulous').length;
       ok('the word is said once, then the explanation, then the word three times (then the sentence plays once from the video)', i1 > 0 && before === 1 && after === 3, JSON.stringify(sp.slice(0, 12))); }
+    // (3.11, the bug behind "the card stays": a closed big card was only MARKED hidden; a stronger style rule still
+    // drew it over the whole page. What counts is what is on the screen.)
+    { const after = await page.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const c = r.querySelector('.card'); const el = r.elementFromPoint(innerWidth / 2, innerHeight / 2); return { display: getComputedStyle(c).display, inCard: !!(el && el.closest('.card')), full: c.classList.contains('full'), under: el ? el.className : null }; });
+      ok('...the closed card is really gone from the screen (not drawn, not big any more): the page is under the finger again', after.display === 'none' && !after.inCard && !after.full, JSON.stringify(after)); }
     ok('...after the stop the page is as before (the listening page, no card, the video playing)', !!done && !done.card && !(await page.evaluate(() => document.documentElement.classList.contains('dr-fullcard'))), JSON.stringify(done && done.card));
     await ctx.close();
   }
@@ -178,7 +182,7 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     const { ctx, page, dbg, ready } = await open(browser, 'ios39000004', {}, undefined, {}, { detail: 'learning' });
     const n0 = apiLog.length;
     await until(() => page.evaluate(() => !document.querySelector('video').paused), 30000);
-    const card = () => page.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card.full'); return c && !c.hidden ? { word: (c.querySelector('.word') || {}).textContent, zh: (c.querySelector('.zh') || {}).textContent || '' } : null; });
+    const card = () => page.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card.full'); return c && getComputedStyle(c).display !== 'none' ? { word: (c.querySelector('.word') || {}).textContent, zh: (c.querySelector('.zh') || {}).textContent || '' } : null; });
     // (the first stop is "meticulous": its meaning came with the video's analysis, for this very sentence: nothing is asked)
     const c1 = await until(async () => { const c = await card(); return c && c.word === 'meticulous' ? c : null; }, 30000, 60);
     const asked1 = apiLog.slice(n0).filter((r) => r.kind === 'zhword').length;
@@ -212,6 +216,42 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
     { const rd = await page.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const pg = r.querySelector('.stage .page'), para = r.querySelector('.stage .page .para'), w = r.querySelector('.stage .page .w'); return { ws: parseFloat(getComputedStyle(pg).wordSpacing), side: parseFloat(getComputedStyle(para).paddingLeft), wpad: parseFloat(getComputedStyle(w).paddingLeft), top: parseFloat(getComputedStyle(pg).paddingTop) }; });
       ok('Reading (3.10): the words stand a little closer and the text uses more of the screen (14 pt at the sides, 10 at the top)', rd.ws < 0 && rd.wpad === 0 && rd.side <= 14 && rd.top <= 10, JSON.stringify(rd)); }
     ok('"Night" by hand: dark whatever the device says, and the same in Reading mode', !!l2 && dark(l2.bg) && stores.local.drExtras.readLook === 'night' && !!l3 && l3.look === 'night' && dark(l3.bg), JSON.stringify({ l2, l3: l3 || await look() }));
+    await ctx.close();
+  }
+
+  // ---- 3e. (3.11) the card: Big (the whole screen) for a tapped word and an explained sentence too; Small by Settings ----
+  {
+    const { ctx, page, dbg, ready } = await open(browser, 'ios39000008', { stopItemsOn: false, stopPhrasesOn: false, stopHardOn: false });
+    await until(() => page.evaluate(() => !document.querySelector('video').paused), 30000);
+    const cardNow = () => page.evaluate(() => { const c = document.getElementById('dr-stage-host').shadowRoot.querySelector('.card'); return c && getComputedStyle(c).display !== 'none' ? { full: c.classList.contains('full'), sentence: c.classList.contains('sentence'), word: (c.querySelector('.word') || {}).textContent, ipa: !!c.querySelector('.ipa'), zh: (c.querySelector('.zh') || {}).textContent || '', buttons: c.querySelectorAll('button').length } : null; });
+    // a word tapped in the text: the big card, as at a stop
+    await page.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const w = [...r.querySelectorAll('.page .w')].find((x) => x.textContent === 'meticulous'); w.scrollIntoView({ block: 'center' }); });
+    const box = await page.evaluate(() => { const r = document.getElementById('dr-stage-host').shadowRoot; const w = [...r.querySelectorAll('.page .w')].find((x) => x.textContent === 'meticulous'); const b = w.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+    await page.touchscreen.tap(Math.round(box.x), Math.round(box.y));
+    const tapped = await until(async () => { const c = await cardNow(); return c && c.word === 'meticulous' ? c : null; }, 5000, 50);
+    ok('a word tapped in the text gets the big card too (the whole screen: the word, its pronunciation, one meaning, no buttons)', !!ready && !!tapped && tapped.full && tapped.ipa && !!tapped.zh && tapped.buttons === 0, JSON.stringify(tapped || await cardNow()));
+    const gone = await until(async () => { const d = await dbg(); return !(await cardNow()) && d && d.state === 'playing' && d.spoken.filter((x) => x === 'meticulous').length >= 3 ? d : null; }, 40000, 100);
+    ok('...explained, the word three times, then the card closes by itself and the video plays on', !!gone, JSON.stringify(gone ? null : { c: await cardNow(), d: await dbg().then((d) => d && { st: d.state, sp: d.spoken.slice(-5) }) }));
+    // "Last sentence": the sentence with its translation, no pronunciation; gone when it is over
+    await page.evaluate(() => window.__ytcDream.action('explainSentence'));
+    const sc = await until(async () => { const c = await cardNow(); return c && c.sentence ? c : null; }, 15000, 50);
+    ok('"Last sentence": the big card shows the sentence and its translation (no pronunciation)', !!sc && sc.full && !sc.ipa && sc.word.split(' ').length > 3, JSON.stringify(sc || await cardNow()));
+    const sGone = await until(async () => { const d = await dbg(); return !(await cardNow()) && d && d.state === 'playing' ? d : null; }, 40000, 100);
+    ok('...after the explanation it closes by itself and the video plays on', !!sGone, JSON.stringify(sGone ? null : await cardNow()));
+    // Settings → Card: Small
+    await act(page, 'quick');
+    const seg = await inQuick(page, (q) => { const sg = q.querySelector('section.first .seg[data-name="cardSize"]'); return sg ? { opts: Array.from(sg.querySelectorAll('button')).map((b) => b.dataset.v).join(' '), on: (sg.querySelector('button.on') || {}).dataset.v } : null; });
+    await inQuick(page, (q) => q.querySelector('.seg[data-name="cardSize"] button[data-v="small"]').click());
+    await until(() => stores.local.drExtras.cardSize === 'small', 4000);
+    await act(page, 'quick');
+    // (the page follows the video: the tap is tried again if the word moved away under the finger)
+    const tapWordNow = async (word) => {
+      const box = await page.evaluate((wd) => { const r = document.getElementById('dr-stage-host').shadowRoot; const w = [...r.querySelectorAll('.page .w')].find((x) => x.textContent === wd); w.scrollIntoView({ block: 'center' }); const b = w.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; }, word);
+      await page.touchscreen.tap(Math.round(box.x), Math.round(box.y));
+    };
+    let small = null;
+    for (let i = 0; i < 4 && !small; i++) { await tapWordNow('gregarious'); small = await until(async () => { const c = await cardNow(); return c && c.word === 'gregarious' ? c : null; }, 1500, 40); }
+    ok('Settings → Card has Big (the usual) and Small; with Small a tapped word gets the small card with its buttons', !!seg && seg.opts === 'big small' && seg.on === 'big' && !!small && !small.full && small.buttons >= 3, JSON.stringify({ seg, small: small || await cardNow() }));
     await ctx.close();
   }
 

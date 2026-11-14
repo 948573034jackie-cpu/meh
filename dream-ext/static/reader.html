@@ -4,6 +4,8 @@
 body.day{--bg:#f7f4ec;--bg-elevated:#fffdf7;--bg-hover:#ece7da;--bg-sunken:#efeadd;--fg:#22201c;--fg-muted:#6b665c;--fg-faint:#8d877b;--border:rgba(0,0,0,.1);--border-strong:rgba(0,0,0,.24);
   --accent:#9a5b1e;--accent-fg:#fff;--accent-soft:rgba(154,91,30,.14);--hl-unknown:#0b57d0;--hl-learning:#c98a00;--danger:#b3261e;color-scheme:light}
 body{--read-size:21px;font-size:16px}
+/* hidden means not on the screen, whatever display a rule gives the thing (#open has display:flex) */
+[hidden]{display:none !important}
 main{padding:10px 12px 60px}
 button,input[type=file]{min-height:44px;font-size:16px}
 #open{display:flex;flex-direction:column;gap:12px;max-width:640px;margin-left:auto;margin-right:auto}

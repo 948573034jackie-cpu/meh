@@ -94,6 +94,8 @@ export interface YtExtras {
   /** a word (or phrase) at a stop is said this many times before its explanation (1) / a word this many times after it (3) */
   sayBefore?: number;
   sayAfter?: number;
+  /** a phone or iPad: the card of a word, phrase or sentence is 'big' (the whole screen; the usual) or 'small' */
+  cardSize?: 'big' | 'small';
   /** Level Check stops for hard WORDS: on / off, and their share of the sentences in % */
   stopItemsOn: boolean;
   capWords: number;

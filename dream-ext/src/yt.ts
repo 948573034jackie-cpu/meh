@@ -379,7 +379,7 @@ class Session {
   private saved = new Set<number>();
   // (`full`: the stop card over the whole screen (a touch screen); `forcedStage`: it showed the page itself (page off),
   // so the page goes again when it closes; `openedAt`: a tap right after it opened is not "I know")
-  private card: { lemma: string; word: string; pos: Position; token: number; kind: 'word' | 'phrase' | 'sentence'; entryId: number | null; full: boolean; forcedStage: boolean; openedAt: number } | null = null;
+  private card: { lemma: string; word: string; pos: Position; token: number; kind: 'word' | 'phrase' | 'sentence'; entryId: number | null; full: boolean; forcedStage: boolean; openedAt: number; stop: boolean } | null = null;
   private cardTouchAt = 0;
   private cardClose: ReturnType<typeof setTimeout> | null = null;
   private followTimer: ReturnType<typeof setInterval> | null = null;
@@ -1313,6 +1313,8 @@ class Session {
       // (after the explanation the word is said again. The card stays for that, the big one of a stop and the small
       // one of a tapped word alike: it closes when the sentence starts to play again (the learner's rule of 13 Nov))
       onWordAgain: () => undefined,
+      // (the word was said three times: the card closes NOW, before the sentence plays again (the learner's rule of 14 Nov))
+      onSentenceAgain: () => { if (this.card) this.closeCard(); },
       // (the learner's rule of 14 Nov: the word once, the explanation, the word three times, the sentence once)
       sayBefore: () => clamp(extras.sayBefore ?? 1, 0, 10),
       sayAfter: () => clamp(extras.sayAfter ?? 3, 0, 10),
@@ -1743,7 +1745,10 @@ class Session {
       // script has no sentence steps, so they are played here)
       if (this.levelOn()) await this.replayPart([pos], flow);
       if (flow.abort || this.flow !== flow) return;
+      // (the big card: the sentence and its translation, no pronunciation; it closes before the sentence plays again)
+      if (TOUCH && cardBig()) this.openCard(pos, -1, sentenceLemma(s.text), s.text, 'sentence', null);
       await c.explainNow('sentence', s.text, pos, null, sentenceLemma(s.text), undefined, false);
+      if (this.card?.kind === 'sentence' && sentenceKey(this.card.pos) === sentenceKey(pos)) this.closeCard();
       if (flow.abort || this.flow !== flow) return;
       if (talkAfter() && !(flow as { bye?: boolean }).bye) await this.talkUntilGoOn(pos, undefined, this.lastExplanation());
       if (flow.abort || this.flow !== flow) return;
@@ -2508,7 +2513,7 @@ class Session {
     // (Level Check: a stop always ends with its sentence from the video; "I know" = no explanation, so it is played now)
     // (the stop is over: the card closes at once, before the sentence plays again)
     // (the full card: closed a moment later, so the next word of the same stop changes it in place, without a flash)
-    if (!t) { this.inStop = false; if (this.levelOn()) this.engine.replayUnlessHeard(); if (this.card?.full) this.closeCardLater(); else this.closeCard(); return; }
+    if (!t) { this.inStop = false; if (this.levelOn()) this.engine.replayUnlessHeard(); if (this.card?.stop) { if (this.card.full) this.closeCardLater(); else this.closeCard(); } return; }
     this.inStop = true;
     const pos = this.playback?.position ?? this.cur;
     if (pos && this.levelOn()) this.countStop(pos);
@@ -3489,8 +3494,14 @@ class Session {
     const word = text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     if (word && !/\s/.test(word)) {
       const entry = this.dict?.lookup(word)?.entry;
-      this.explainByHand('word', word, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, this.dict?.lemmaOf(word) || word.toLowerCase(), wasPlaying);
-    } else this.explainByHand('phrase', text, pos, null, text.toLowerCase(), wasPlaying);
+      const lemma = this.dict?.lemmaOf(word) || word.toLowerCase();
+      // (a touch screen with the big card: what was selected gets its card too: the word, or the phrase with its translation)
+      if (TOUCH && cardBig()) this.openCard(pos, -1, lemma, word, 'word', null);
+      this.explainByHand('word', word, pos, entry ? { ipa: entry.ipa, zh: entry.zh.split('\n')[0], level: entry.level } : null, lemma, wasPlaying);
+    } else {
+      if (TOUCH && cardBig()) this.openCard(pos, -1, text.toLowerCase(), text, 'phrase', null);
+      this.explainByHand('phrase', text, pos, null, text.toLowerCase(), wasPlaying);
+    }
   }
 
   /** 🎤 Speak: one question by voice (Chrome writes it down into the box), sent when you stop talking */
@@ -3564,7 +3575,9 @@ class Session {
   private explainByHand(kind: 'word' | 'phrase', target: string, pos: Position, dict: { ipa: string; zh: string; level: string } | null, lemma: string, resume?: boolean, again?: boolean): void {
     const c = this.controller;
     if (!c) return;
-    const over = () => { if (this.cardKept && this.card?.lemma === lemma) this.closeCard(); };
+    // (also when it was cut short, "bye", with the video stopped: a big card must never stay over the page; not when a
+    // newer explanation of the same word has taken over)
+    const over = () => { if (this.card?.lemma === lemma && (this.cardKept || this.card.full) && !c.busy) this.closeCard(); };
     void c.explainNow(kind, target, pos, dict as never, lemma, undefined, resume, again).then(over, over);
   }
 
@@ -3586,13 +3599,17 @@ class Session {
 
   private openCard(pos: Position, token: number, lemma: string, target: string, kind: 'word' | 'phrase' | 'sentence', entryId: number | null, anchor?: HTMLElement, opts?: { full?: boolean }): void {
     if (this.cardClose) { clearTimeout(this.cardClose); this.cardClose = null; }
-    // (the full card is only for a stop on a touch screen; a tapped word keeps the small card)
-    const full = TOUCH && !!opts?.full;
+    // (Settings → Card: Big = the whole screen, for a stop and for what the learner taps or selects alike; Small =
+    // the small card everywhere. A computer always has the small card.)
+    // (`opts.full` now only says: a STOP opened this card. Free mode, with no AI: a word tapped by hand keeps the
+    // small card, which has its own buttons and closes by its own ✕; a stop there has the big one.)
+    const byStop = !!opts?.full;
+    const full = TOUCH && cardBig() && (this.ai() || byStop);
     const prev = this.card;
     // (page off: the full card shows the page under it, as its background; it goes again when the card closes)
     let forcedStage = !!(full && prev?.full && prev.forcedStage);
     if (full && !this.stageVisible() && this.stage) { this.showStage(undefined, true); forcedStage = this.stageVisible(); }
-    this.card = { lemma, word: target, pos, token, kind, entryId, full, forcedStage, openedAt: Date.now() };
+    this.card = { lemma, word: target, pos, token, kind, entryId, full, forcedStage, openedAt: Date.now(), stop: byStop };
     if (full) return this.paintFullCard();
     if (prev?.full) { this.stage?.el.classList.remove('fullcard'); document.documentElement.classList.remove('dr-fullcard'); }
     if (kind === 'sentence') return;
@@ -3862,7 +3879,11 @@ class Session {
     const c = this.card;
     if (!c?.full || Date.now() - c.openedAt < 450) return;
     this.trail(`full card: I know (${c.word.slice(0, 40)})`);
-    this.answerKnow();
+    const ctl = this.controller;
+    // (the stop's or the running explanation's own word: the stop takes the answer. Any other card, e.g. a word tapped
+    // by hand long after the last stop: THIS word is known, and the video stays as it is.)
+    if (ctl && ctl.lastExplained?.lemma === c.lemma && (this.inStop || ctl.busy || ctl.stopWindow)) this.answerKnow();
+    else { ctl?.markKnown(c.lemma); void this.changeStatus(c.lemma, 'known'); }
     if (this.card === c) this.closeCard();
   }
 
@@ -3891,7 +3912,8 @@ class Session {
     for (const r of [this.panel?.el, this.band?.el, this.stage?.el]) {
       if (!r) continue;
       const c = r.querySelector<HTMLElement>('.card');
-      if (c) c.hidden = true;
+      // (a closed card is nothing: not big, no tap of its own, no text left in it)
+      if (c) { c.hidden = true; c.classList.remove('full', 'sentence', 'one'); c.ontouchstart = c.ontouchend = null; c.onclick = null; c.removeAttribute('role'); c.removeAttribute('aria-label'); }
       r.querySelectorAll('.stop-target').forEach((e) => e.classList.remove('stop-target'));
     }
     this.stage?.el.classList.remove('fullcard');
@@ -4345,6 +4367,8 @@ const CEFR_ORDER = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 /** MY LEVEL, 0 (easiest) … 100 (hardest): the slider's number (before it was ever moved: the old A1–C2 level as a number) */
 const myLevel = (): number => myLevelOf(extras, settings.learnerLevel);
 /** how much of what is at my level or above is explained by itself, % */
+/** a phone or iPad shows the big card (the whole screen) unless Settings says Small */
+const cardBig = (): boolean => extras.cardSize !== 'small';
 const explainPcts = (): StopCaps => {
   const all = clampPct(extras.explainPct ?? DEFAULT_EXPLAIN_PCT);
   return { word: clampPct(extras.pctWords ?? all), phrase: clampPct(extras.pctPhrases ?? all), sentence: clampPct(extras.pctSentences ?? all) };

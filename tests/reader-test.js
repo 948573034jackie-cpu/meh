@@ -152,6 +152,9 @@ const epub = (extra = {}) => Buffer.from(zipSync(Object.fromEntries(Object.entri
   dbg = dbgOf(rd);
   // (3.9: the book that was open opens again by itself, at its place; "Library" goes back to the list)
   const reopened = await until(() => rd.evaluate(() => (document.body.dataset.sentences && !document.getElementById('reader').hidden && scrollY > 500 ? document.getElementById('title').textContent : null)), 15000);
+  // (3.11: "hidden" must mean not on the screen: the "open a book" box had display:flex and stayed drawn above the book)
+  { const od = await rd.evaluate(() => ({ open: getComputedStyle(document.getElementById('open')).display, reader: getComputedStyle(document.getElementById('reader')).display }));
+    ok('while a book is open the "open a book" box is really gone from the page (not only marked hidden)', od.open === 'none' && od.reader !== 'none', JSON.stringify(od)); }
   ok('after a reload (the app was closed and opened) the book that was open opens again by itself, where it was', /My Story/.test(String(reopened)), String(reopened));
   await rd.tap('#back');
   const shelf = await until(() => rd.evaluate(() => { const b = document.querySelector('#shelf .book'); return b && b.querySelector('.go').getBoundingClientRect().height > 0 ? { n: document.querySelectorAll('#shelf .book').length, text: b.innerText, h: b.querySelector('.go').getBoundingClientRect().height, rm: b.querySelector('.rm').getBoundingClientRect().height } : null; }), 8000);

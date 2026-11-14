@@ -129,6 +129,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${kindRow('stopHardOn', 'pctSentences', 'Sentences', x.stopHardOn !== false, pcts.sentence)}
       <p class="muted">For each kind: On / Off, and how much to explain: 100 % = everything at your level or above, a low number = only the hardest, 0 = nothing. Nothing below your level is explained by itself, and nothing you know. A kind that is off is not marked in the text either. A tap on any word still explains it.</p>
       <label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>
+      ${ctx.phone ? `<label>Card ${seg('cardSize', x.cardSize === 'small' ? 'small' : 'big', [['big', 'Big (whole screen)'], ['small', 'Small']])} <span class="muted">the word, phrase or sentence with its translation; it closes by itself before the sentence plays again</span></label>` : ''}
       <label>Look ${seg('readLook', x.readLook === 'day' || x.readLook === 'night' ? x.readLook : 'auto', [['auto', 'Auto'], ['day', '☀️ Day'], ['night', '🌙 Night']])} <span class="muted">every mode the same · Auto = as your ${ctx.phone ? 'iPhone' : 'computer'} is set</span></label>
       <label>Mode ${seg('view', x.view, [['listening', '🎧 Listening'], ['reading', '📖 Reading'], ['lyrics', '🎵 Lyrics'], ['normal', '🎬 Video']])}</label>
       <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
@@ -258,6 +259,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       else if (segName === 'stopHardOn') void store.patchExtras({ stopHardOn: v === 'on' });
       else if (segName === 'stopPhrasesOn') void store.patchExtras({ stopPhrasesOn: v === 'on' });
       else if (segName === 'readLook') void store.patchExtras({ readLook: v === 'night' ? 'night' : v === 'day' ? 'day' : 'auto' });
+      else if (segName === 'cardSize') void store.patchExtras({ cardSize: v === 'small' ? 'small' : 'big' });
       else if (segName === 'offMode') void store.patchExtras({ offMode: v === 'free' ? 'free' : 'plain' });
       else if (segName === 'sentenceButtons') void store.patchExtras({ sentenceButtons: v === 'on' });
       else if (segName === 'headsetMic') void store.patchExtras({ headsetMic: v === 'on' });

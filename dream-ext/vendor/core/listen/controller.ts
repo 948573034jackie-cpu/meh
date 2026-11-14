@@ -105,6 +105,8 @@ export interface ListenDeps {
   onStopTarget?: (t: { kind: ExplainKind; target: string; lemma?: string } | null) => void;
   /** (direct stop) the explanation is over: the word is said again now (the app closes its card) */
   onWordAgain?: () => void;
+  /** (Level Check) the word was said again after its explanation; the sentence plays next: the app closes the card now */
+  onSentenceAgain?: () => void;
   /** (Level Check) how many times a word or phrase is said BEFORE its explanation / a word AFTER it (unset: listen.wordRepeats for both) */
   sayBefore?: () => number;
   sayAfter?: () => number;
@@ -431,7 +433,7 @@ export class ListenController {
           if (res === 'done' && !over()) {
             this.deps.onWordAgain?.();
             const again = await this.sayTarget(asked.target, asked.lemma, asked.kind === 'word' ? this.timesAfter() : 1);
-            if (again === 'done' && !over()) await this.sayTarget(cur.text, lemma, 1);
+            if (again === 'done' && !over()) { this.deps.onSentenceAgain?.(); await this.sayTarget(cur.text, lemma, 1); }
           }
         }
       } else {
@@ -698,7 +700,7 @@ export class ListenController {
       this.deps.onWordAgain?.();
       const again = await this.sayTarget(target, lemma, kind === 'word' ? this.timesAfter() : 1);
       if (again === 'skipped') res = 'skipped';
-      else if (cur?.text && cur.text !== target && !this.disposed) { if ((await this.sayTarget(cur.text, lemma, 1)) === 'skipped') res = 'skipped'; }
+      else if (cur?.text && cur.text !== target && !this.disposed) { this.deps.onSentenceAgain?.(); if ((await this.sayTarget(cur.text, lemma, 1)) === 'skipped') res = 'skipped'; }
     }
     // (Level Check: a word tapped anywhere does not move the reading: it goes on where it was)
     const readOn = this.deps.directStop?.() ? resumeAt : kind === 'word' || kind === 'phrase' || kind === 'sentence' ? nextPosition(this.deps.book, pos) ?? pos : pos;

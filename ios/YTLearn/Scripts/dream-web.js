@@ -229,7 +229,7 @@ ${l}`);try{let S=d==="anthropic"?await jI(m,p,I,t,e):await DI(m,p,I,t,e),$=await
   border-radius:18px;padding:14px 16px 12px;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
   background:var(--bg);color:var(--fg);box-shadow:0 6px 28px rgba(0,0,0,.35);border:1px solid var(--line);cursor:pointer;
   font-size:calc(var(--size) * 1px);line-height:1.4;touch-action:manipulation;-webkit-user-select:none;user-select:none}
-.card[hidden],.bubble[hidden]{display:none}
+.card[hidden],.bubble[hidden]{display:none !important}
 .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-right:44px}
 .word{font-size:1.5em;font-weight:700;letter-spacing:.01em;word-break:break-word}
 .card.sentence .word,.card.note .word{font-size:1em;font-weight:600;color:var(--muted)}

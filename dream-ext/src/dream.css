@@ -85,7 +85,10 @@ input, textarea, select { font: inherit; color: var(--fg); background: var(--bg-
 
 /* ---- the word card ---- */
 .card { position: absolute; z-index: 40; width: 300px; max-width: calc(100% - 16px); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow); padding: 11px 13px; display: flex; flex-direction: column; gap: 7px; font-family: var(--font-sans); font-size: 13.5px; color: var(--fg); animation: card-in 140ms ease-out; pointer-events: auto; text-align: left; }
-.card[hidden] { display: none; }
+/* (hidden means NOT ON THE SCREEN, whatever other rule gives the thing a display of its own. The big card has
+   `display: flex` from a stronger rule: without !important a closed big card stayed over the whole page.) */
+[hidden] { display: none !important; }
+.card[hidden] { display: none !important; }
 @keyframes card-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .card .hw { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .card .hw .word { font-size: 20px; font-weight: 700; font-family: var(--font-serif); }
