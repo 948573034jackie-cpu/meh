@@ -251,7 +251,7 @@ const TEXT = PARAS.join('\n\n');
   await p.evaluate(() => document.getElementById('rd').classList.remove('plain'));
   await sleep(700);
   const row = await p.evaluate(() => { const xs = [...document.querySelector('.transport').children].map((e) => { const r = e.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), e.id, Math.round(r.height)]; }); return { xs, w: innerWidth, overlap: xs.some((x, i) => i > 0 && x[0] < xs[i - 1][1]) }; });
-  ok('a narrow phone (320 wide): the row of the player fits: speed, back, play, on, voice, none cut and none over another', row.xs.length === 5 && row.xs.every((x) => x[0] >= 0 && x[1] <= row.w && x[3] >= 44) && !row.overlap, JSON.stringify(row));
+  ok('a narrow phone (320 wide): the row of the player fits: speed, back, play, on, voice, none cut and none over another', row.xs.length === 5 && row.xs.every((x) => x[0] >= 0 && x[1] <= row.w && x[3] >= 44 && x[1] - x[0] >= 44) && row.xs[4][1] - row.xs[4][0] >= 62 && !row.overlap, JSON.stringify(row));
   await p.setViewportSize(vp);
   await sleep(500);
   await p.evaluate(() => { document.getElementById('b-tutor').click(); });
@@ -292,7 +292,7 @@ const TEXT = PARAS.join('\n\n');
   const stays = await seen(p, 'card');
   await p.touchscreen.tap(195, 300);
   const offGone = await until(async () => { const d = await dbg(); return !d.card ? d : null; }, 3000, 40);
-  ok('the tutor off: a tapped word still gets its card (the dictionary, no AI), it stays until I tap it, and one tap takes it away, really', !!offCard && stays.display !== 'none' && !!offGone && (await seen(p, 'card')).display === 'none' && apiLog.length === rule0 && (stores.local.drVocab.words || {}).street === 'known' && !offGone.playing, JSON.stringify({ card: offCard && offCard.card, stays: stays.display, gone: !!offGone, ai: apiLog.length - rule0, word: (stores.local.drVocab.words || {}).street }));
+  ok('the tutor off: a tapped word still gets its card (the dictionary, no AI), it stays until I tap it, and one tap takes it away, really', !!offCard && stays.display !== 'none' && !!offGone && (await seen(p, 'card')).display === 'none' && apiLog.length === rule0 && (stores.local.drVocab.words || {}).street === 'learning' && !offGone.playing, JSON.stringify({ card: offCard && offCard.card, stays: stays.display, gone: !!offGone, ai: apiLog.length - rule0, word: (stores.local.drVocab.words || {}).street }));
   ok('no error on the page in the whole run', pageErrors.length === 0, pageErrors.join(' | ').slice(0, 400));
   }
 

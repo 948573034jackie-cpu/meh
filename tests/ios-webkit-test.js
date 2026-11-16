@@ -260,7 +260,7 @@ const api = H.startServer();
   sheet.on('pageerror', (e) => console.log('PAGE ERROR (settings)', String(e.message || e).slice(0, 300)));
   await sheet.addInitScript({ content: source(sheetScripts) });
   await sheet.goto(`http://localhost:${PAGES_PORT}/options.html`);
-  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('myLevel'); return /saved|…/i.test(m) && l && l.tagName === 'SELECT' && l.options.length === 6 && l.value ? l.value : null; }), 12000);
+  const shown = await until(() => sheet.evaluate(() => { const m = document.body.innerText; const l = document.getElementById('myLevel'); return /saved|…/i.test(m) && l && l.tagName === 'SELECT' && l.options.length === 6 && l.value === 'B2' ? l.value : null; }), 15000);   // (the list shows A1 until the saved level is read: wait for the saved one)
   ok('the settings page works in the sheet: it shows your level (A1 to C2) and the saved Claude key (only its end)', shown === 'B2' && !(await sheet.evaluate(() => document.body.innerText.includes('sk-ant-test-key'))), String(shown));
   await sheet.fill('#key-anthropic', 'sk-ant-new-key-5678');
   await sheet.click('[data-save="anthropic"]');

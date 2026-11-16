@@ -104,7 +104,8 @@ html[data-marks="0"] .w.hard,html[data-marks="0"] .w.learning{text-decoration:no
 .transport{display:flex;align-items:center;justify-content:center;gap:8px}
 .transport .chip{min-width:62px;min-height:44px;padding:0 12px;border-radius:22px;border:1px solid var(--bk-line);font:600 14px/1 var(--ui);color:var(--bk-fg);display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;max-width:118px;overflow:hidden;text-overflow:ellipsis}
 .transport .chip{flex:none}
-.transport #t-voice{display:block;line-height:42px;min-width:0;flex:0 1 96px}
+.transport #t-voice{display:block;line-height:42px;min-width:62px;flex:0 1 96px}
+@media (max-width:340px){#bar{padding-left:calc(var(--sl) + 10px);padding-right:calc(var(--sr) + 10px)}.transport{gap:4px}.transport .step{width:44px;height:44px}.transport .playbtn{width:58px;height:58px}.transport .chip{min-width:54px;padding:0 8px;font-size:13px}.transport #t-voice{min-width:70px;flex-basis:84px}}
 .transport .step{flex:none;width:48px;height:48px;border-radius:24px;display:grid;place-items:center;color:var(--bk-fg)}
 .transport .playbtn{flex:none}
 .transport .step:active,.transport .chip:active{background:var(--bk-soft)}
@@ -120,14 +121,14 @@ html[data-marks="0"] .w.hard,html[data-marks="0"] .w.learning{text-decoration:no
 #rd[data-chapters="1"] .where{display:none}
 
 /* ---------- the big card: the word, how it sounds, what it means here ---------- */
-#card{position:absolute;inset:0;z-index:80;background:var(--bk-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:3vh;padding:calc(var(--top) + 28px) 26px calc(var(--bot) + 64px);overflow:hidden}
-#card .word{font:700 clamp(40px,13vw,112px)/1.08 ui-serif,Georgia,serif;overflow-wrap:anywhere;max-width:100%}
-#card .ipa{font:400 clamp(17px,5vw,34px)/1.2 var(--ui);color:var(--bk-muted)}
-#card .zh{font:500 clamp(26px,8.5vw,64px)/1.3 var(--zh);max-width:100%;overflow-wrap:anywhere}
+#card{position:absolute;inset:0;z-index:80;background:var(--bk-bg);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:3vh;padding:calc(var(--top) + 28px) calc(var(--sr) + 26px) calc(var(--bot) + 64px) calc(var(--sl) + 26px);overflow:hidden}
+#card .word{font:700 clamp(34px,min(13vw,20vh),112px)/1.08 ui-serif,Georgia,serif;overflow-wrap:anywhere;max-width:100%}
+#card .ipa{font:400 clamp(16px,min(5vw,8vh),34px)/1.2 var(--ui);color:var(--bk-muted)}
+#card .zh{font:500 clamp(22px,min(8.5vw,12vh),64px)/1.3 var(--zh);max-width:100%;overflow-wrap:anywhere}
 #card.sentence .word{font-size:clamp(21px,6vw,44px);font-weight:600;line-height:1.35;max-height:42vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
 #card.sentence .zh{font-size:clamp(18px,4.8vw,34px);color:var(--bk-muted);max-height:26vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
 #card.sentence{justify-content:safe center;gap:2vh}
-#card .said{font:400 15px/1.5 var(--ui);color:var(--bk-muted);max-width:34em;max-height:22vh;overflow:auto}
+#card .said{font:400 15px/1.5 var(--ui);color:var(--bk-muted);max-width:34em;max-height:22vh;min-height:3em;flex:none;overflow:auto}
 #card .hint{position:absolute;left:0;right:0;bottom:calc(var(--bot) + 26px);font:500 12px/1 var(--ui);letter-spacing:.14em;text-transform:uppercase;color:var(--bk-faint)}
 #card .wait{position:absolute;left:0;bottom:0;height:3px;background:var(--bk-accent);width:100%;transform-origin:left center;transform:scaleX(0)}
 #card .wait.run{animation:wait linear forwards}

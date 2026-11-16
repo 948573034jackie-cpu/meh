@@ -421,13 +421,16 @@ function readFromThisPage(): void {
 }
 function turn(dir: 1 | -1): void {
   if (!stored) return;
-  if (playing && ((dir > 0 && page < pages - 1) || (dir < 0 && page > 0))) { goPage(page + dir); readFromThisPage(); return; }
-  if (dir > 0) {
-    if (page < pages - 1) goPage(page + 1);
-    else if (chapter < stored.chapters.length - 1) { const was = playing; setPlaying(false); showChapter(chapter + 1, null); if (was) setPlaying(true); }
-    else toast('The end of the book.');
-  } else if (page > 0) goPage(page - 1);
-  else if (chapter > 0) { setPlaying(false); showChapter(chapter - 1, null, true); }
+  const inside = (dir > 0 && page < pages - 1) || (dir < 0 && page > 0);
+  if (!inside && (dir > 0 ? chapter >= stored.chapters.length - 1 : chapter <= 0)) { if (dir > 0) toast('The end of the book.'); return; }
+  const was = reading();
+  // (a word asked by hand was holding the reading: the page turn lets it go)
+  if (held) setPlaying(false);
+  if (playing && inside) { goPage(page + dir); readFromThisPage(); return; }
+  if (inside) goPage(page + dir);
+  else { setPlaying(false); showChapter(chapter + dir, null, dir < 0); }
+  // (the book was being read: it goes on from the page that is shown now)
+  if (was && !playing) setPlaying(true);
 }
 function paintFoot(): void {
   $('foot-l').textContent = pages > 1 ? `${page + 1} / ${pages}` : '';
@@ -556,12 +559,15 @@ interface StopNow { items: { kind: 'word' | 'phrase'; target: string; lemma: str
 /** does the reading stop after this sentence, and for what (nothing is changed by asking) */
 function stopFor(pos: Position): StopNow | null {
   const key = sentenceKey(pos);
-  if (!tutorOn() || !hasAi() || !stopSet.has(key) || stopped.has(key)) return null;
+  // (the tutor off: the book is read like any audiobook, no stop by itself)
+  if (!tutorOn() || !stopSet.has(key) || stopped.has(key)) return null;
   const sc = scores.get(key);
   if (!sc) return null;
   const c = caps(), here = wordsBefore[idxOf(pos)] ?? 0, win = extras.repeatWords ?? 1000;
   const items = sc.lemmas.map((lemma, i) => ({ kind: sc.kinds[i], target: sc.items[i], lemma }))
     .filter((it) => c[it.kind] > 0 && vocab.words[it.lemma] !== 'known' && vocab.words[it.lemma] !== 'ignored' && !heard.lately(it.lemma, here, win));
+  // (no key: only the dictionary can answer, so only words stop the reading: their card, the word once, a moment to say "I know")
+  if (!hasAi()) { const words = items.filter((it) => it.kind === 'word'); return words.length ? { items: words, sentence: false } : null; }
   const sentenceStop = kindWith(sc, c) === 'sentence';
   if (!items.length && !sentenceStop) return null;
   return { items, sentence: !items.length };
@@ -638,7 +644,7 @@ function askHere(kind: CardKind, target: string, lemma: string, pos: Position): 
 
 // ---- the card ------------------------------------------------------------------------------------------------------
 type CardKind = 'word' | 'phrase' | 'sentence';
-interface CardNow { kind: CardKind; target: string; lemma: string; pos: Position; openedAt: number; big: boolean; said: string }
+interface CardNow { kind: CardKind; target: string; lemma: string; pos: Position; openedAt: number; big: boolean; said: string; /** only looked up by hand, nothing explains it: a tap closes it */ only: boolean }
 let cardNow: CardNow | null = null;
 /** the 5 seconds after the word was said: a tap = I know */
 let answer: ((a: 'know' | 'timeout') => void) | null = null;
@@ -664,14 +670,15 @@ function paintCard(): void {
   const said = el.querySelector<HTMLElement>('.said')!;
   said.textContent = c.said; said.hidden = !(c.said && (extras.showSay || !c.big));
   el.classList.toggle('sentence', c.kind !== 'word');
+  if (c.big) el.querySelector<HTMLElement>('.hint')!.textContent = c.only ? 'Tap anywhere to close' : 'Tap anywhere = I know';
   if (!c.big) el.querySelector<HTMLElement>('[data-a="explain"]')!.hidden = !(tutorOn() && hasAi());
   el.hidden = false;
   (c.big ? $('small') : $('card')).hidden = true;
   if (!z.sure) askHere(c.kind, c.target, c.lemma, c.pos);
   debug();
 }
-function openCard(kind: CardKind, target: string, lemma: string, pos: Position): void {
-  cardNow = { kind, target, lemma, pos, openedAt: Date.now(), big: cardBig(), said: '' };
+function openCard(kind: CardKind, target: string, lemma: string, pos: Position, only = false): void {
+  cardNow = { kind, target, lemma, pos, openedAt: Date.now(), big: cardBig(), said: '', only };
   paintCard();
 }
 function closeCard(): void {
@@ -706,10 +713,11 @@ function waitAnswer(ms: number): Promise<'know' | 'timeout'> {
 function cardKnow(): void {
   const c = cardNow;
   if (!c || Date.now() - c.openedAt < 450) return;
+  // (a word that was only looked up, with no tutor behind it: the tap closes its card. It stays a word I am learning.)
+  if (c.only) { dropCard(); return; }
   verdict = 'know';
   if (answer) { answer('know'); return; }
   cancelSpeech();
-  // (nothing runs for this card: the tutor is off, or no key is saved. The tap itself is the answer.)
   if (!teaching) knowCard(c);
 }
 function knowCard(c: CardNow): void {
@@ -783,7 +791,7 @@ async function teachFlow(me: number, kind: CardKind, target: string, lemma: stri
   const alive = () => me === flowId && o.ok();
   const sentence = textOf(pos);
   const known = () => { if (kind !== 'sentence') markKnownNow(lemma, target); else void store.setWordStatus(lemma, 'known', { word: target.slice(0, 80) }).catch(() => undefined); closeCard(); return 'known' as const; };
-  openCard(kind, target, lemma, pos);
+  openCard(kind, target, lemma, pos, !o.wait && (!tutorOn() || !hasAi()));
   if (kind !== 'sentence' && !vocab.words[lemma]) { vocab.words[lemma] = 'learning'; void store.setWordStatus(lemma, 'learning', { word: target, sentence }).catch(() => undefined); recompute(); }
   if (kind !== 'sentence') { heard.ask(lemma, wordsBefore[idxOf(pos)] ?? 0); saveHeardSoon(); }
   const times = async (n: number): Promise<boolean> => {
@@ -890,6 +898,7 @@ function setPlaying(on: boolean): void {
     void readOn();
     setTimeout(() => { if (playing && !sheetOpen()) setChrome(false); }, 1400);
   } else {
+    if (playing && order[index]) anchorPos = order[index];
     playing = false; loop++; flowId++;
     const a = answer; answer = null; a?.('timeout');
     cancelSpeech();
@@ -910,6 +919,7 @@ function stepSentence(dir: 1 | -1): void {
   index = clamp(index + dir, 0, order.length - 1);
   markCurrent(order[index]);
   if (was) { playing = true; void readOn(); }
+  else { anchorPos = order[index]; savePlaceSoon(); }
   paintPlay();
 }
 
@@ -978,8 +988,8 @@ function wirePage(): void {
     const edge = x < strip ? -1 : x > w - strip ? 1 : 0;
     // (the bars are showing: a tap on the page sends them away, nothing else)
     if (chromeOn() && !playing) { setChrome(false); return; }
-    if (edge) { turn(edge as 1 | -1); return; }
-    const word = target?.closest<HTMLElement>('#flow .w[data-lemma]');
+    const word = target?.closest<HTMLElement>('#flow .w[data-lemma]') ?? null;
+    if (edge && (look.tapEdges || !word)) { turn(edge as 1 | -1); return; }
     if (word) { tappedWord(word); return; }
     // (beside the text: the left third goes back, the right third goes on, the middle calls the bars)
     if (x < w * 0.28) turn(-1); else if (x > w * 0.72) turn(1); else setChrome(!chromeOn());
@@ -1127,7 +1137,7 @@ function tutorSheet(): void {
     <p class="note">Keys stay on this device (in its Keychain). Claude explains; the Microsoft key (free) gives the natural voice.</p>
     ${inApp() ? '<button class="big" data-a="app-settings">My word file, and more settings</button>' : ''}`, true);
   const again = () => { if (sheetKind === 'tutor') { const top = body.scrollTop; tutorSheet(); $('sheet-body').scrollTop = top; } };
-  const afterVoice = async () => { cancelSpeech(); await prepareVoice(); again(); };
+  const afterVoice = async () => { const was = reading(); if (was) setPlaying(false); else cancelSpeech(); await prepareVoice(); again(); if (was && !playing && shelf) setPlaying(true); };
   body.oninput = (ev) => {
     const t = ev.target as HTMLInputElement;
     const name = t.dataset.name;
@@ -1156,7 +1166,7 @@ function tutorSheet(): void {
     else if (group === 'cardSize') void patchX({ cardSize: v === 'small' ? 'small' : 'big' }).then(again);
     else if (group === 'showSay') void patchX({ showSay: v === 'on' }).then(again);
     else if (group === 'voice') void patchX({ voice: v as store.VoiceChoice }).then(afterVoice);
-    else if (b.dataset.a === 'test-voice') { cancelSpeech(); void say('Hello! I am your English tutor. Let us read this book together.'); }
+    else if (b.dataset.a === 'test-voice') { if (reading()) setPlaying(false); else cancelSpeech(); void say('Hello! I am your English tutor. Let us read this book together.'); }
     else if (b.dataset.a === 'test-azure') void (chrome.runtime.sendMessage({ type: 'dream-test-azure' }) as Promise<{ ok: boolean; message: string } | undefined>).then(async (r) => { toast(r?.message ?? 'No answer.', 7000); extras = await store.getExtras(); await afterVoice(); }, () => toast('No answer.'));
     else if (b.dataset.a === 'save-key') {
       const k = b.dataset.k as store.KeyName;
