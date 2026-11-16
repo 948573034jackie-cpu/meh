@@ -180,7 +180,9 @@ const PDF_SENTENCES = ['My friend was very meticulous about her work, and she ch
   ok('the phone\'s words from the shared file are in: known and still learning', !!vocab0 && vocab0.words.serendipity === 'known' && vocab0.words.flabbergast === 'learning', JSON.stringify(vocab0 && { s: vocab0.words.serendipity, f: vocab0.words.flabbergast }));
   const mergedDoc = readDoc(icloudFile);
   ok('the iCloud Drive copy now has both devices\' words (the starting data too), the sentence, and all 3 tests', !!mergedDoc && mergedDoc.known.some((k) => k.item === 'serendipity') && mergedDoc.known.some((k) => k.item === 'familiar') && mergedDoc.stillLearning.some((l) => l.item === 'flabbergasted' && /flabbergasted/.test(l.sentence)) && mergedDoc.tests.length === 3, JSON.stringify(mergedDoc && { k: mergedDoc.known.length, l: mergedDoc.stillLearning.length, t: mergedDoc.tests.length }));
-  ok('the Mac file, the iCloud copy and the Google Drive copy are the same merged document', JSON.stringify(readDoc()) === JSON.stringify(mergedDoc) && JSON.stringify(readDoc(driveFile)) === JSON.stringify(mergedDoc));
+  // (the three copies are written one after another: wait until the last one is written)
+  const same = await until(() => { const m = readDoc(icloudFile), a = readDoc(), b = readDoc(driveFile); return m && JSON.stringify(a) === JSON.stringify(m) && JSON.stringify(b) === JSON.stringify(m); }, 8000);
+  ok('the Mac file, the iCloud copy and the Google Drive copy are the same merged document', !!same);
   ok('the file status knows the iCloud copy', !!(await store('drDbStatus') || {}).icloudOk, JSON.stringify(await store('drDbStatus')));
 
   // ---- 1. a video: the Level Check screen before it plays ----
