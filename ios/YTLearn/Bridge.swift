@@ -80,6 +80,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
             model.openPage(body["url"] as? String ?? "")
             reply(nil, nil)
         // ---- the page says how it is laid out now (the video over the whole window or not) ----
+        // ---- I Know Book: the page asks for the app's own settings (the word file, the keys) ----
+        case "appSettings":
+            model.showAppSettings = true
+            reply(nil, nil)
         case "layout":
             let full = body["full"] as? Bool ?? false
             if web === model.youtube, model.pageFull != full { model.pageFull = full }

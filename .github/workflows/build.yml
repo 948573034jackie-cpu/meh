@@ -61,7 +61,7 @@ jobs:
           ls "$APP" | head -30
           for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt dream-web page-hooks; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
-          for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js book.html book.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch|ShortVersion" || true
           # (the app's name under its icon: "I Know")
@@ -100,6 +100,39 @@ jobs:
             if [ -n "$CR" ]; then head -c 6000 "$CR"; else echo "(none)"; fi
             xcrun simctl shutdown "$UDID" || true
           done
+      - name: I Know Book (the second app, the same code): compile it, start it in the simulators with its sample story
+        continue-on-error: true   # (a busy simulator must not keep the apps from being packed; the log and the pictures are read)
+        working-directory: ios
+        shell: bash
+        run: |
+          xcodebuild -project YTLearn.xcodeproj -scheme IKnowBook -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' -configuration Debug \
+            -derivedDataPath build-sim-book CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build-sim-book.log | tail -25
+          APP=build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app
+          plutil -p "$APP/Info.plist" | grep -E "DisplayName|ShortVersion|BundleIdentifier" || true
+          for f in book.html book.js dict.json.gz zipf.json.gz; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          mkdir -p ../shots
+          for KIND in "iPhone 1" "iPad"; do
+            UDID=$(xcrun simctl list devices available | grep -F "$KIND" | tail -1 | grep -oE "[0-9A-F-]{36}")
+            echo "=================== simulator for '$KIND': $UDID"
+            [ -z "$UDID" ] && { echo "NO SIMULATOR FOUND for $KIND"; continue; }
+            xcrun simctl boot "$UDID" || true
+            xcrun simctl bootstatus "$UDID" -b
+            xcrun simctl install "$UDID" "$APP"
+            for TRY in 1 2 3; do xcrun simctl launch "$UDID" local.ytlearn.book -demo && break; sleep 20; done
+            DATA=$(xcrun simctl get_app_container "$UDID" local.ytlearn.book data || true)
+            for W in $(seq 1 30); do [ -f "$DATA/Documents/selftest-book.json" ] && break; sleep 3; done
+            sleep 3
+            xcrun simctl io "$UDID" screenshot "../shots/book-$(echo "$KIND" | tr -cd 'A-Za-z0-9').png" || true
+            echo "----- what the page says about itself ($KIND) -----"
+            cat "$DATA/Documents/selftest-book.json" || echo "NO REPORT WRITTEN"
+            echo
+            echo "----- is the app still running? (a line here = yes) -----"
+            xcrun simctl spawn "$UDID" launchctl list | grep -i ytlearn.book || echo "NOT RUNNING: the app closed by itself"
+            CR=$(ls -t ~/Library/Logs/DiagnosticReports/*IKnowBook* 2>/dev/null | head -1 || true)
+            if [ -n "$CR" ]; then echo "----- crash report -----"; head -c 5000 "$CR"; fi
+            xcrun simctl shutdown "$UDID" || true
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -117,13 +150,23 @@ jobs:
           cp -R build-dev/Build/Products/Release-iphoneos/YTLearn.app Payload/
           zip -qr YTLearn-unsigned.ipa Payload
           ls -la YTLearn-unsigned.ipa
-          rm -rf Payload build-sim build-dev *.log
+          rm -rf Payload
+          # I Know Book: the second app
+          xcodebuild -project YTLearn.xcodeproj -scheme IKnowBook -sdk iphoneos \
+            -destination 'generic/platform=iOS' -configuration Release \
+            -derivedDataPath build-dev-book CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" build 2>&1 | tail -20
+          mkdir -p Payload
+          cp -R build-dev-book/Build/Products/Release-iphoneos/IKnowBook.app Payload/
+          zip -qr IKnowBook-unsigned.ipa Payload
+          ls -la IKnowBook-unsigned.ipa
+          rm -rf Payload build-sim build-sim-book build-dev build-dev-book *.log
           cd .. && zip -qr ios/YTLearn-Xcode-project.zip ios -x "ios/*.ipa" -x "ios/*.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: ios
           path: |
             ios/YTLearn-unsigned.ipa
+            ios/IKnowBook-unsigned.ipa
             ios/YTLearn-Xcode-project.zip
 
   # (the Safari extension app, YT Safari, is no longer built: only the app itself, YT Learn, is wanted)
@@ -167,6 +210,9 @@ jobs:
           # (the test makes its small e-book with the reader's own zip library)
           (cd dream-ext && npm ci --ignore-scripts --no-audit --no-fund >/dev/null)
           node tests/reader-test.js
+      - name: I Know Book (the library, the pages, the text settings, the cards, listening with the stops), in WebKit
+        if: always()
+        run: node tests/book-test.js
       - name: The browser with Explanation mode (tap a word, a link, a selection, "hello"), in WebKit
         if: always()
         run: node tests/ios-browser-test.js
@@ -240,7 +286,7 @@ jobs:
           gh release delete "$TAG" --yes --cleanup-tag || true
           gh release create "$TAG" \
             dl/mac-app/ClaudeSnap.zip ClaudeSnap-Chrome.zip YouTube-to-Claude.zip \
-            dl/ios/YTLearn-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
+            dl/ios/YTLearn-unsigned.ipa dl/ios/IKnowBook-unsigned.ipa dl/ios/YTLearn-Xcode-project.zip \
             --title "ClaudeSnap downloads" \
-            --notes "Mac app, Chrome extensions, and the iPhone/iPad app (I Know)." \
+            --notes "Mac app, Chrome extensions, and the iPhone/iPad apps (I Know, I Know Book)." \
             --target "${{ github.sha }}"

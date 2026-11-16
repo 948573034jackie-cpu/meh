@@ -34,6 +34,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// other windows of the app that want to know what was saved (the reader, the browser's tabs)
     var storageListeners: [([String: Any], String, WKWebView?) -> Void] = []
     private(set) lazy var reader = ReaderHost(app: self)
+    /// I Know Book (the app's other form: only books): its one page, and the app's own settings sheet asked for by that page
+    private(set) lazy var bookHost = BookHost(app: self)
+    @Published var showAppSettings = false
     private(set) lazy var browser = BrowserModel(app: self)
 
     let youtube: WKWebView
@@ -397,8 +400,13 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// the tutor reads the shared file (new words from the Mac), merges it with its own words and writes it back
     func syncVocabulary() {
-        youtube.evaluateJavaScript("window.chrome && chrome.runtime && chrome.runtime.sendMessage({ type: 'dream-db-write' }).catch(function () {}); 0",
-                                   in: nil, in: AppModel.world, completionHandler: nil)
+        let js = "window.chrome && chrome.runtime && chrome.runtime.sendMessage({ type: 'dream-db-write' }).catch(function () {}); 0"
+        #if BOOK
+        // (I Know Book has no YouTube page: its own page writes the word file)
+        if bookHost.ready { bookHost.web.evaluateJavaScript(js, in: nil, in: .page, completionHandler: nil) }
+        #else
+        youtube.evaluateJavaScript(js, in: nil, in: AppModel.world, completionHandler: nil)
+        #endif
     }
 
     private func sendSpeech(_ event: [String: Any]) {
@@ -515,13 +523,23 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// the saved Microsoft key is tried (My tutor's own test: it also finds the key's region); the answer in words
     func testMicrosoft(_ done: @escaping (String) -> Void) {
-        if pageWaits || youtube.url == nil { done("Close this, open a YouTube page, then test again."); return }
         let js = "const r = await chrome.runtime.sendMessage({ type: 'dream-test-azure' }); return (r && r.message) || 'No answer.';"
+        #if BOOK
+        // (I Know Book: the test runs in the book page itself)
+        if !bookHost.ready { done("The app is still starting. Try again in a moment."); return }
+        bookHost.web.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
+            DispatchQueue.main.async {
+                if case .success(let value) = result, let text = value as? String { done(text) } else { done("The test could not run. Close this and try again.") }
+            }
+        }
+        #else
+        if pageWaits || youtube.url == nil { done("Close this, open a YouTube page, then test again."); return }
         youtube.callAsyncJavaScript(js, arguments: [:], in: nil, in: AppModel.world) { result in
             DispatchQueue.main.async {
                 if case .success(let value) = result, let text = value as? String { done(text) } else { done("The test could not run. Open a YouTube page first.") }
             }
         }
+        #endif
     }
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         navLog("commit", webView)

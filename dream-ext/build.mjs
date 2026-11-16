@@ -16,6 +16,8 @@ const entries = [
   ['src/options.ts', 'options.js'],
   ['src/vocab-page.ts', 'vocab-page.js'],
   ['src/reader.ts', 'reader.js'],
+  // I Know Book: the reading and listening app (its own page, book.html)
+  ['src/book.ts', 'book.js'],
   // the tutor on any web page: the browser of the iPhone / iPad app (its own private script world)
   ['src/web.ts', 'dream-web.js'],
 ].filter(([src]) => fs.existsSync(path.join(root, src)));
