@@ -100,7 +100,7 @@ jobs:
             if [ -n "$CR" ]; then head -c 6000 "$CR"; else echo "(none)"; fi
             xcrun simctl shutdown "$UDID" || true
           done
-      - name: I Know Book (the second app, the same code): compile it, start it in the simulators with its sample story
+      - name: "I Know Book (the second app, the same code), compiled and started in the simulators with its sample story"
         continue-on-error: true   # (a busy simulator must not keep the apps from being packed; the log and the pictures are read)
         working-directory: ios
         shell: bash
