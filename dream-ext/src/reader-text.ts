@@ -2,6 +2,7 @@
  * The reading mode's text: a PDF, a text file or pasted text as a book of sentences. Nothing is rewritten, cut or
  * moved: paragraphs come from blank lines, lines inside a paragraph are joined, and a word broken over two lines
  * ("exam-" + "ple") is joined back. The sentences and words are found by Dream Read's segmenter.
+ * (A PDF's text comes from pdf-text.ts: there the page numbers and the running heads of the pages are dropped.)
  */
 import type { Book, Chapter, Position } from '@core/model';
 import { assembleParagraphs, computeStats, textToBook } from '@core/import/text';
@@ -60,62 +61,5 @@ export function orderOf(book: Pick<Book, 'chapters'>): Position[] {
   return out;
 }
 
-interface PdfTextItem { str: string; hasEOL?: boolean; transform: number[]; height?: number }
-/**
- * The lines of a PDF page's text items -> plain text: a bigger gap between two lines is a new paragraph. A page's end
- * is no paragraph's end: the sentence goes on on the next page unless the line had ended it.
- */
-export function pagesToText(pages: readonly (readonly PdfTextItem[])[]): string {
-  const paras: string[] = [];
-  let cur: string[] = [];
-  const flush = () => { if (cur.length) paras.push(cur.join('\n')); cur = []; };
-  for (const items of pages) {
-    let line = '';
-    let lastY: number | null = null, gap = 0;
-    const endLine = (y: number | null) => {
-      const t = line.trim();
-      line = '';
-      if (!t) return;
-      if (y !== null && lastY !== null) {
-        const d = Math.abs(lastY - y);
-        // (the normal distance between lines is the smallest seen so far on the page)
-        if (gap === 0 || d < gap) gap = d;
-        if (gap > 0 && d > gap * 1.5) flush();
-      }
-      cur.push(t);
-      if (y !== null) lastY = y;
-    };
-    let y: number | null = null;
-    for (const it of items) {
-      const iy = it.transform[5];
-      if (y !== null && Math.abs(iy - y) > 2 && line.trim()) endLine(y);
-      y = iy;
-      line += it.str;
-      if (it.hasEOL) { endLine(y); }
-    }
-    endLine(y);
-    // (a sentence that ended with the page: its paragraph too)
-    if (cur.length && /[.!?]["”’)]?$/.test(cur[cur.length - 1])) flush();
-  }
-  flush();
-  return paras.join('\n\n');
-}
-
-export async function pdfToText(bytes: ArrayBuffer): Promise<string> {
-  // (pdf.js does its work in this page, not in a worker of its own: a worker file may not load inside the iPhone apps)
-  // (pdf.js uses Promise.withResolvers, which Safari has only from iOS 17.4)
-  const P = Promise as unknown as { withResolvers?: () => unknown };
-  if (!P.withResolvers) P.withResolvers = () => { let resolve!: (v: unknown) => void, reject!: (e: unknown) => void; const promise = new Promise((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
-  await import('pdfjs-dist/build/pdf.worker.mjs');
-  const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
-  const pages: PdfTextItem[][] = [];
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const c = await page.getTextContent();
-    pages.push((c.items as (PdfTextItem | { type: string })[]).filter((x): x is PdfTextItem => 'str' in x));
-    page.cleanup();
-  }
-  await doc.destroy();
-  return pagesToText(pages);
-}
+// (a PDF's text: pdf-text.ts; the older reader page and the tests take it from here)
+export { pagesToText, pdfToText } from './pdf-text';

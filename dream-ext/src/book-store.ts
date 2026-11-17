@@ -19,12 +19,17 @@ export interface ShelfBook {
   place: BookPlace;
   /** how far, 0 … 100 */
   percent: number;
+  /** set when the text was cut into light parts (book-split.ts): its version. The kept AI work of a part is named with it. */
+  split?: number;
 }
 export interface StoredText { id: string; chapters: RawChapter[] }
 
 export interface BookStore {
   list(): Promise<ShelfBook[]>;
+  /** is this book in the library (its text is not read for the answer) */
+  has(id: string): Promise<boolean>;
   get(id: string): Promise<{ shelf: ShelfBook; text: StoredText } | null>;
+  /** a new book, or a stored one written again (its text was cut into lighter parts) */
   add(shelf: ShelfBook, text: StoredText): Promise<void>;
   update(shelf: ShelfBook): Promise<void>;
   remove(id: string): Promise<void>;
@@ -74,6 +79,7 @@ const finished = (tx: IDBTransaction): Promise<void> => new Promise((resolve, re
 function idbStore(db: IDBDatabase): BookStore {
   return {
     list: async () => sortShelf(await done(db.transaction(SHELF).objectStore(SHELF).getAll() as IDBRequest<ShelfBook[]>)),
+    has: async (id) => (await done(db.transaction(SHELF).objectStore(SHELF).getKey(id))) !== undefined,
     get: async (id) => {
       const tx = db.transaction([SHELF, TEXTS]);
       const [shelf, text] = await Promise.all([done(tx.objectStore(SHELF).get(id) as IDBRequest<ShelfBook | undefined>), done(tx.objectStore(TEXTS).get(id) as IDBRequest<StoredText | undefined>)]);
@@ -92,6 +98,7 @@ function chromeStore(): BookStore {
   const shelf = async (): Promise<Record<string, ShelfBook>> => ({ ...(((await area().get(SHELF_KEY))[SHELF_KEY] as Record<string, ShelfBook> | undefined) ?? {}) });
   return {
     list: async () => sortShelf(Object.values(await shelf())),
+    has: async (id) => !!(await shelf())[id],
     get: async (id) => {
       const s = (await shelf())[id];
       const t = (await area().get(TEXT_KEY(id)))[TEXT_KEY(id)] as StoredText | undefined;

@@ -142,6 +142,8 @@ export class WebSpeechEngine implements TtsEngine {
     };
     const handle: SpeakHandle = {
       done,
+      // (set by the caller: each word the voice tells, see the 'boundary' event below)
+      onBoundary: null,
       cancel: () => {
         if (job.finished) return;
         job.finish('cancelled');
@@ -220,7 +222,9 @@ export class WebSpeechEngine implements TtsEngine {
         lastActivity = Date.now();
         if (e.charIndex < lastIndex) return; // guard against engines that shuffle ranges
         lastIndex = e.charIndex;
-        opts.onWord?.(e.charIndex, e.charLength ?? wordLengthAt(text, e.charIndex));
+        const length = e.charLength || wordLengthAt(text, e.charIndex); // (some iPhone voices send no length)
+        opts.onWord?.(e.charIndex, length);
+        handle.onBoundary?.(e.charIndex, length);
       };
       u.onend = () => job.finish('ended');
       u.onerror = (e) => {

@@ -5,6 +5,13 @@
  */
 export interface CachedSound { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
+/**
+ * What the background answers when Microsoft's free limit is full for the moment (bg.ts azureTurn). It is here because
+ * both sides read it: the background says it, and the page's voice (voice.ts) knows by it that this sentence goes to
+ * the device voice at once, with no second try.
+ */
+export const AZURE_BUSY = 'Microsoft is busy (free keys allow 19 requests a minute)';
+
 const DB = 'dreamVoice', STORE = 'sounds', MAX = 3000;
 /** only short texts are worth keeping (an explanation is new every time) */
 export const CACHE_MAX_CHARS = 80;

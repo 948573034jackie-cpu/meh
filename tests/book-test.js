@@ -2,19 +2,28 @@
 //  the library, opening a text, pages (tap, swipe, the place kept over a restart), the text settings (size, font,
 //  colours, spacing: the same sentence stays on the page), a tapped word (the big card, the explanation, the word three
 //  times, the card gone, nothing plays by itself), "I know", listening with the stop of I Know, the tutor's settings.
+//  Version 1.1, speed: a book of 600,000 letters is kept in light parts (an old stored book is cut when it opens, the
+//  place kept); a tap on a word -> the card painted, a tap on the card -> the card gone, a page turn: each timed in the
+//  page (performance.now() and two animation frames); taps that were lost before (the bars showing, a slow tap, a
+//  long press that selects the word, the small card open, the card's first half second).
 // What counts is what is REALLY on the screen (computed style, elementFromPoint), never only a hidden flag.
 // Run ios/sync-scripts.sh first. The fake AI and the app's bridge are in tests/ios-harness.js.
 const fs = require('fs'); const path = require('path'); const http = require('http');
 const H = require('./ios-harness');
 const { pw, IOS, MIME, ok, until, sleep, source, sheetScripts, stores, keychain, apiLog } = H;
 const PORT = +process.env.BOOK_PAGES_PORT || 8817;
-H.watchdog(7);
+H.watchdog(9);
 const api = H.startServer();
 
 const HARD = 'My friend was very meticulous about her work.';
 const FILL = (i) => `This is easy sentence number ${i} of the story. The children played in the garden after school. We had some bread and a cup of tea.`;
 const PARAS = [`The morning was quiet and the street was empty. ${HARD} She walked to the shop and bought some bread.`, 'It was a lugubrious moment of joy. My uncle is a gregarious man who loves big parties.', ...Array.from({ length: 30 }, (_, i) => FILL(i + 1))];
 const TEXT = PARAS.join('\n\n');
+// a big book: about 600,000 letters (300 pages). Every paragraph and sentence says which one it is.
+const NOUNS = ['garden', 'kitchen', 'market', 'village', 'teacher', 'flower', 'mountain', 'summer', 'winter', 'letter', 'music', 'river', 'window', 'evening', 'brother', 'sister', 'doctor', 'farmer', 'bridge', 'forest', 'island', 'castle', 'candle', 'basket', 'button', 'pocket', 'ticket', 'blanket', 'pillow', 'mirror'];
+const bigPara = (i) => `Paragraph ${i} begins here. ${Array.from({ length: 8 }, (_, k) => `In part ${i} line ${k + 1} the ${NOUNS[(i + k) % NOUNS.length]} was near the ${NOUNS[(i * 7 + k * 3 + 1) % NOUNS.length]} and the old ${NOUNS[(i * 3 + k * 5 + 2) % NOUNS.length]}.`).join(' ')}`;
+const BIG_PARAS = Array.from({ length: 1040 }, (_, i) => bigPara(i));
+const BIG = BIG_PARAS.join('\n\n');
 
 (async () => {
   const browser = await pw.webkit.launch();
@@ -154,7 +163,7 @@ const TEXT = PARAS.join('\n\n');
   const nBefore = apiLog.filter((r) => /These rules are absolute/.test(r.sys)).length;
   await tapWord(p, 'lugubrious');
   await until(async () => { const d = await dbg(); return d.card && d.card.word === 'lugubrious' ? d : null; }, 5000, 40);
-  await sleep(470);
+  // (1.1: the card takes a tap from its first moment: no wait before this tap)
   await p.touchscreen.tap(195, 600);
   const known = await until(async () => { const d = await dbg(); return !d.card && (stores.local.drVocab.words || {}).lugubrious === 'known' ? d : null; }, 5000, 60);
   await sleep(700);
@@ -294,6 +303,222 @@ const TEXT = PARAS.join('\n\n');
   const offGone = await until(async () => { const d = await dbg(); return !d.card ? d : null; }, 3000, 40);
   ok('the tutor off: a tapped word still gets its card (the dictionary, no AI), it stays until I tap it, and one tap takes it away, really', !!offCard && stays.display !== 'none' && !!offGone && (await seen(p, 'card')).display === 'none' && apiLog.length === rule0 && (stores.local.drVocab.words || {}).street === 'learning' && !offGone.playing, JSON.stringify({ card: offCard && offCard.card, stays: stays.display, gone: !!offGone, ai: apiLog.length - rule0, word: (stores.local.drVocab.words || {}).street }));
   ok('no error on the page in the whole run', pageErrors.length === 0, pageErrors.join(' | ').slice(0, 400));
+  }
+
+  // ---- 11. version 1.1, speed: light parts, and taps that answer at once ----
+  {
+  const errs1 = pageErrors.length;
+  await p.evaluate(() => { document.getElementById('b-tutor').click(); });
+  await p.evaluate(() => document.querySelector('#sheet-body .opts[data-name="tutorOn"] button[data-v="on"]').click());
+  await until(() => stores.local.drExtras.tutorOn === true, 3000);
+  await sleep(400);
+  await p.evaluate(() => document.getElementById('veil').click());
+  // what is in the app's store for a book: the letters of each part, its titles, the shelf row
+  const inStore = (id) => p.evaluate((bookId) => new Promise((res) => { const r = indexedDB.open('iknowBooks', 1); r.onerror = () => res(null); r.onsuccess = () => { const db = r.result; const tx = db.transaction(['shelf', 'texts']); const a = tx.objectStore('shelf').get(bookId), b = tx.objectStore('texts').get(bookId); tx.oncomplete = () => { db.close(); const t = b.result; res(t ? { shelf: a.result || null, sizes: t.chapters.map((c) => c.blocks.reduce((n, x) => n + x.text.length, 0)), titles: t.chapters.map((c) => c.title), longest: Math.max(...t.chapters.map((c) => Math.max(...c.blocks.map((x) => x.text.length)))), first: t.chapters.map((c) => c.blocks[0].text.slice(0, 24)) } : null); }; }; }), id);
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+
+  // a big book, added now: cut into light parts as it comes in
+  const tAdd = Date.now();
+  await p.evaluate(([t, x]) => window.__iknowBook.openText(t, x, ''), ['Big Book', BIG]);
+  const bigOpen = await until(async () => { const d = await dbg(); return d && d.open && d.chapters > 20 && d.sentences > 20 ? d : null; }, 30000, 40);
+  const addMs = Date.now() - tAdd;
+  const bigStore = bigOpen ? await inStore(bigOpen.open) : null;
+  const letters = sum(BIG_PARAS.map((x) => x.length));
+  ok(`a big book (${letters} letters, about 300 pages) is kept in light parts: about 14,000 letters each, none over 20,000, and every letter is there`,
+    !!bigStore && bigStore.sizes.length > 30 && Math.max(...bigStore.sizes) <= 20000 && Math.min(...bigStore.sizes) > 2500 && sum(bigStore.sizes) === letters && bigStore.shelf.split === 2 && bigStore.shelf.chapterChars.length === bigStore.sizes.length,
+    JSON.stringify(bigStore && { parts: bigStore.sizes.length, biggest: Math.max(...bigStore.sizes), smallest: Math.min(...bigStore.sizes), letters: sum(bigStore.sizes), addMs }));
+  const sel0 = await p.evaluate(() => { const s = document.getElementById('chapters'); return { n: s.options.length, a: s.options[0].textContent, b: s.options[1].textContent, shown: getComputedStyle(document.querySelector('.where')).display !== 'none' }; });
+  ok('...the list of parts says "Part 2 of N"; the part on the page is small (a few hundred sentences, not the whole book)', !!bigStore && sel0.n === bigStore.sizes.length && sel0.a === `Part 1 of ${sel0.n}` && sel0.b === `Part 2 of ${sel0.n}` && bigOpen.sentences < 400 && /~2#0$/.test(bigOpen.ai), JSON.stringify({ sel0, sentences: bigOpen && bigOpen.sentences, pages: bigOpen && bigOpen.pages, ai: bigOpen && bigOpen.ai }));
+
+  // the meter: from the end of a touch (before the app sees it) to the second animation frame after it = it is painted
+  await p.evaluate(() => {
+    window.__runs = [];
+    window.addEventListener('touchend', () => {
+      const t0 = performance.now();
+      const flow = document.getElementById('flow');
+      const was = new DOMMatrix(getComputedStyle(flow).transform).m41;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const card = document.getElementById('card');
+        const top = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+        window.__runs.push({ ms: Math.round((performance.now() - t0) * 10) / 10, card: getComputedStyle(card).display !== 'none' && card.getBoundingClientRect().height > 600, onTop: !!(top && card.contains(top)), under: top ? (top.closest('#page') ? 'page' : top.id || top.className) : '', word: card.querySelector('.word').textContent, was, now: new DOMMatrix(getComputedStyle(flow).transform).m41, goal: flow.style.transform });
+      }));
+    }, true);
+  });
+  const runs = () => p.evaluate(() => window.__runs.length);
+  const lastRun = async (n) => { await until(async () => (await runs()) > n, 3000, 20); return p.evaluate(() => window.__runs[window.__runs.length - 1]); };
+  // a word on the page that I never touched, in the middle of the screen
+  const freshWord = (skip = []) => p.evaluate(([known, no]) => { const pg = document.getElementById('page').getBoundingClientRect(); const e = [...document.querySelectorAll('#flow .w')].find((x) => { const t = x.textContent; if (!/^[a-z]{5,}$/.test(t) || known.includes(t) || no.includes(t) || x.classList.contains('hard') || x.classList.contains('learning')) return false; const r = x.getBoundingClientRect(); return r.left >= 30 && r.right <= innerWidth - 30 && r.top > pg.top + 150 && r.bottom < pg.bottom - 220; }); if (!e) return null; const r = e.getBoundingClientRect(); return { word: e.textContent, x: r.left + r.width / 2, y: r.top + r.height / 2 }; }, [Object.keys(stores.local.drVocab.words || {}), skip]);
+  await until(async () => !(await dbg()).chrome, 6000);
+  await sleep(300);
+
+  // tap a word -> the card painted; tap the card -> the card gone. Three words, each one new to me (the slow path before).
+  const heavy0 = (await dbg()).heavy;
+  const opened = [], closed = [];
+  for (let i = 0; i < 3; i++) {
+    const w = await freshWord();
+    if (!w) break;
+    let n = await runs();
+    await p.touchscreen.tap(w.x, w.y);
+    const a = await lastRun(n);
+    opened.push({ word: w.word, ms: a.ms, ok: a.card && a.onTop && a.word === w.word });
+    // (the third one: tapped while the tutor is in the middle of saying it, where the card used to wait 350 ms)
+    if (i === 2) await until(async () => { const d = await dbg(); return d.spoken.filter((x) => x === w.word).length >= 1 ? d : null; }, 5000, 20);
+    n = await runs();
+    await p.touchscreen.tap(195, 520);
+    const b = await lastRun(n);
+    closed.push({ word: w.word, ms: b.ms, ok: !b.card && !b.onTop && b.under === 'page' });
+    await until(() => (stores.local.drVocab.words || {})[w.word] === 'known', 4000, 40);
+  }
+  ok(`a tap on a word of the big book: its card is painted in ${opened.map((x) => x.ms).join(' / ')} ms (limit 150)`, opened.length === 3 && opened.every((x) => x.ok && x.ms < 150), JSON.stringify(opened));
+  ok(`a tap on the card: the card is gone, the page is back, in ${closed.map((x) => x.ms).join(' / ')} ms (limit 150)`, closed.length === 3 && closed.every((x) => x.ok && x.ms < 150), JSON.stringify(closed));
+  ok('...and the words are known in my list a moment later (written after the card is gone), their marks stay off', opened.length === 3 && opened.every((x) => (stores.local.drVocab.words || {})[x.word] === 'known') && (await p.evaluate((ws) => [...document.querySelectorAll('#flow .w')].filter((x) => ws.includes(x.textContent)).every((x) => !x.classList.contains('learning') && !x.classList.contains('hard')), opened.map((x) => x.word))), JSON.stringify(opened.map((x) => [x.word, (stores.local.drVocab.words || {})[x.word]])));
+  await sleep(500);
+  const quietNow = await dbg();
+  ok('...and none of these taps started a pass over the whole part (the page\'s own writes to my word list come back and cost nothing)', heavy0 >= 1 && quietNow.heavy === heavy0, JSON.stringify({ before: heavy0, after: quietNow.heavy }));
+  await sleep(700);
+  ok('...and the tutor is silent after "I know" (nothing more is said)', !quietNow.card && (await dbg()).spoken.length === quietNow.spoken.length && !quietNow.playing, JSON.stringify(quietNow.spoken.slice(-3)));
+
+  // a page turn: the slide has started by the second frame
+  const turns = [];
+  for (let i = 0; i < 3; i++) {
+    const before = (await dbg()).page;
+    const n = await runs();
+    await p.touchscreen.tap(p.viewportSize().width - 6, 380);
+    const r = await lastRun(n);
+    const d = await until(async () => { const x = await dbg(); return x.page === before + 1 ? x : null; }, 2000, 20);
+    turns.push({ ms: r.ms, ok: !!d && r.goal !== '' && r.now !== r.was && /translate3d\(-\d+px/.test(r.goal), moved: Math.round(r.was - r.now) });
+    await sleep(380);
+  }
+  const shiftVar = await p.evaluate(() => ({ html: document.documentElement.style.getPropertyValue('--shift') + document.documentElement.style.getPropertyValue('--col'), flow: document.getElementById('flow').style.transform, col: document.getElementById('flow').style.columnWidth, blur: [...document.querySelectorAll('.chrome, #mini, #caption, #card, #small')].map((e) => getComputedStyle(e).backdropFilter || getComputedStyle(e).webkitBackdropFilter || 'none').join(' '), touch: ['rd', 'card', 'small', 'sheet'].map((id) => getComputedStyle(document.getElementById(id)).touchAction).join(' ') }));
+  ok(`a page turn of the big book starts in ${turns.map((x) => x.ms).join(' / ')} ms (limit 100): the page is already sliding at the second frame`, turns.length === 3 && turns.every((x) => x.ok && x.ms < 100), JSON.stringify(turns));
+  ok('...the page is moved on the text block itself (no variable on <html>), nothing is blurred behind the bars or the cards, and a tap is not held back for a second tap', shiftVar.html === '' && /translate3d/.test(shiftVar.flow) && /px$/.test(shiftVar.col) && /^(none ?)+$/.test(shiftVar.blur) && shiftVar.touch === 'manipulation manipulation manipulation manipulation', JSON.stringify(shiftVar));
+
+  // the turn into the next part, and the text size on a big book
+  const part0 = await dbg();
+  const cross = await p.evaluate(() => new Promise((res) => { const d0 = JSON.parse(document.documentElement.dataset.drDebug); const sel = document.getElementById('chapters'); sel.value = String(d0.chapter + 1); const t0 = performance.now(); sel.dispatchEvent(new Event('change', { bubbles: true })); requestAnimationFrame(() => requestAnimationFrame(() => { const d = JSON.parse(document.documentElement.dataset.drDebug); const f = [...document.querySelectorAll('#flow .s')].find((x) => { const r = x.getClientRects()[0]; return r && r.left >= 0 && r.left < innerWidth; }); res({ ms: Math.round(performance.now() - t0), chapter: d.chapter, first: f ? f.textContent.slice(0, 22) : '', sentences: d.sentences }); })); }));
+  ok(`the next part of the big book is on the page in ${cross.ms} ms (limit 400)`, cross.chapter === part0.chapter + 1 && /^Paragraph \d+ begins/.test(cross.first) && cross.ms < 400, JSON.stringify(cross));
+  await p.evaluate(() => document.getElementById('b-look').click());
+  const sized = await p.evaluate(() => new Promise((res) => { const flow = document.getElementById('flow'); const pages0 = JSON.parse(document.documentElement.dataset.drDebug).pages; const i = document.querySelector('#sheet-body input[data-name="size"]'); const t0 = performance.now(); let steps = 0; const step = (v) => { i.value = String(v); i.dispatchEvent(new Event('input', { bubbles: true })); steps++; }; step(19); step(20); step(21); step(22); const out = i.parentElement.querySelector('output').textContent; const at0 = getComputedStyle(flow).fontSize; const tick = () => { const d = JSON.parse(document.documentElement.dataset.drDebug); if (getComputedStyle(flow).fontSize === '22px' && d.pages > pages0) res({ ms: Math.round(performance.now() - t0), out, at0, pages: [pages0, d.pages], steps }); else if (performance.now() - t0 > 3000) res({ ms: -1, out, at0, pages: [pages0, d.pages] }); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); }));
+  ok(`the text size slider on the big book: the number follows the finger at once, the page follows within a moment (${sized.ms} ms for four steps, one layout; limit 600)`, sized.out === '22' && sized.at0 === '18px' && sized.ms > 100 && sized.ms < 600, JSON.stringify(sized));
+  await p.evaluate(() => document.querySelector('#sheet-body [data-a="reset"]').click());
+  await sleep(300);
+  await p.evaluate(() => document.getElementById('veil').click());
+
+  // taps that were lost before
+  await p.evaluate(() => document.getElementById('rd').classList.remove('plain'));
+  await sleep(400);
+  const wBars = await freshWord();
+  let n1 = await runs();
+  await p.touchscreen.tap(wBars.x, wBars.y);
+  const rBars = await lastRun(n1);
+  const barsAfter = await p.evaluate(() => ({ plain: document.getElementById('rd').classList.contains('plain') }));
+  ok('the bars are showing and I tap a word: the bars go AND the word opens, in the same tap (before: that tap only sent the bars away)', rBars.card && rBars.onTop && rBars.word === wBars.word && barsAfter.plain && rBars.ms < 150, JSON.stringify({ rBars, barsAfter }));
+  // (a long, slow press on the card counts too: 900 ms, moved 12 px)
+  const slowCard = await p.evaluate(async () => { const c = document.getElementById('card'); const ev = (type, x, y, live) => { const e = new Event(type, { bubbles: true, cancelable: true }); Object.defineProperty(e, 'touches', { value: live ? [{ clientX: x, clientY: y }] : [] }); Object.defineProperty(e, 'changedTouches', { value: [{ clientX: x, clientY: y }] }); return e; }; c.dispatchEvent(ev('touchstart', 190, 500, true)); await new Promise((r) => setTimeout(r, 900)); c.dispatchEvent(ev('touchend', 198, 509, false)); await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); return getComputedStyle(c).display; });
+  ok('a slow press on the card (0.9 s, the finger moved a little) is "I know" too: the card is gone', slowCard === 'none' && !(await dbg()).card, slowCard);
+  await sleep(300);
+  // (a slow tap on a word: 600 ms, moved 11 px)
+  const wSlow = await freshWord();
+  const slowTap = await p.evaluate(async (w) => { const el = document.elementFromPoint(w.x, w.y); const ev = (type, x, y, live) => { const e = new Event(type, { bubbles: true, cancelable: true }); Object.defineProperty(e, 'touches', { value: live ? [{ clientX: x, clientY: y }] : [] }); Object.defineProperty(e, 'changedTouches', { value: [{ clientX: x, clientY: y }] }); return e; }; el.dispatchEvent(ev('touchstart', w.x, w.y, true)); await new Promise((r) => setTimeout(r, 600)); const end = ev('touchend', w.x + 8, w.y + 8, false); el.dispatchEvent(end); await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); const c = document.getElementById('card'); return { shown: getComputedStyle(c).display !== 'none', word: c.querySelector('.word').textContent, prevented: end.defaultPrevented }; }, wSlow);
+  ok('a slow tap on a word (0.6 s, the finger moved a little) opens it; the page took the touch, so no click follows it', slowTap.shown && slowTap.word === wSlow.word && slowTap.prevented, JSON.stringify({ slowTap, word: wSlow.word }));
+  await p.touchscreen.tap(195, 520);
+  await until(async () => !(await dbg()).card, 3000, 30);
+  await sleep(300);
+  // (a long press selects the word: that is a tap on it)
+  const wSel = await freshWord();
+  const tSel = Date.now();
+  await p.evaluate((w) => { const el = document.elementFromPoint(w.x, w.y); const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }, wSel);
+  const selCard = await until(async () => { const d = await dbg(); return d.card && d.card.word === wSel.word ? d : null; }, 2500, 25);
+  const selMs = Date.now() - tSel;
+  ok(`a long press that selects one word opens that word (${selMs} ms after the selection; before: nothing, and the next tap was lost)`, !!selCard && selMs < 900 && (await p.evaluate(() => getSelection().toString())) === '' && (await seen(p, 'card')).onTop, JSON.stringify({ card: selCard && selCard.card, selMs }));
+  await p.touchscreen.tap(195, 520);
+  await until(async () => !(await dbg()).card, 3000, 30);
+  await sleep(300);
+  // (a selection left on the page does not block the next tap)
+  const wA = await freshWord();
+  const wB = await freshWord([wA.word]);
+  const left = await p.evaluate(async ([a, b]) => { const ea = document.elementFromPoint(a.x, a.y), eb = document.elementFromPoint(b.x, b.y); const r = document.createRange(); r.selectNodeContents(ea); const s = getSelection(); s.removeAllRanges(); s.addRange(r); const ev = (type, live) => { const e = new Event(type, { bubbles: true, cancelable: true }); Object.defineProperty(e, 'touches', { value: live ? [{ clientX: b.x, clientY: b.y }] : [] }); Object.defineProperty(e, 'changedTouches', { value: [{ clientX: b.x, clientY: b.y }] }); return e; }; eb.dispatchEvent(ev('touchstart', true)); eb.dispatchEvent(ev('touchend', false)); await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); const c = document.getElementById('card'); const first = c.querySelector('.word').textContent; await new Promise((res) => setTimeout(res, 500)); return { shown: getComputedStyle(c).display !== 'none', first, later: c.querySelector('.word').textContent, sel: getSelection().toString() }; }, [wA, wB]);
+  ok('a selection left on the page does not block the next tap: the tapped word opens (and not the selected one a moment later)', left.shown && left.first === wB.word && left.later === wB.word && left.sel === '', JSON.stringify({ left, a: wA.word, b: wB.word }));
+  await p.touchscreen.tap(195, 520);
+  await until(async () => !(await dbg()).card, 3000, 30);
+  await sleep(300);
+  // (a few words selected: the phrase is asked a moment after, not 0.9 s later)
+  const tPh = Date.now();
+  const phrase = await p.evaluate(() => { const pg = document.getElementById('page').getBoundingClientRect(); const s = [...document.querySelectorAll('#flow .s')].find((x) => { const r = x.getClientRects()[0]; return r && r.left >= 0 && r.left < innerWidth && r.top > pg.top + 100 && x.querySelectorAll('.w').length >= 8; }); const ws = s.querySelectorAll('.w'); const r = document.createRange(); r.setStartBefore(ws[3]); r.setEndAfter(ws[5]); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); return sel.toString(); });
+  const phCard = await until(async () => { const d = await dbg(); return d.card && d.card.word === phrase ? d : null; }, 2500, 25);
+  const phMs = Date.now() - tPh;
+  ok(`a few selected words open as a phrase ${phMs} ms after the selection (before: 900 ms and more)`, !!phCard && phCard.card.kind === 'sentence' && phrase.split(' ').length === 3 && phMs < 800, JSON.stringify({ phrase, card: phCard && phCard.card, phMs }));
+  await p.touchscreen.tap(195, 520);
+  await until(async () => !(await dbg()).card, 3000, 30);
+  await sleep(300);
+  // (the finger that selected the words lifts: asked in that moment, no wait at all)
+  const lift = await p.evaluate(async () => { const pg = document.getElementById('page').getBoundingClientRect(); const s = [...document.querySelectorAll('#flow .s')].filter((x) => { const r = x.getClientRects()[0]; return r && r.left >= 0 && r.left < innerWidth && r.top > pg.top + 100 && x.querySelectorAll('.w').length >= 10; })[1]; const ws = s.querySelectorAll('.w'); const b = ws[6].getBoundingClientRect(); const ev = (type, live) => { const e = new Event(type, { bubbles: true, cancelable: true }); Object.defineProperty(e, 'touches', { value: live ? [{ clientX: b.left + 4, clientY: b.top + 6 }] : [] }); Object.defineProperty(e, 'changedTouches', { value: [{ clientX: b.left + 60, clientY: b.top + 6 }] }); return e; }; ws[6].dispatchEvent(ev('touchstart', true)); await new Promise((res) => setTimeout(res, 700)); const r = document.createRange(); r.setStartBefore(ws[6]); r.setEndAfter(ws[8]); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); const phrase = sel.toString(); const t0 = performance.now(); ws[6].dispatchEvent(ev('touchend', false)); await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); const c = document.getElementById('card'); return { ms: Math.round(performance.now() - t0), shown: getComputedStyle(c).display !== 'none', word: c.querySelector('.word').textContent, phrase, page: JSON.parse(document.documentElement.dataset.drDebug).page, sel: getSelection().toString() }; });
+  const pageNow = (await dbg()).page;
+  ok(`...and when the finger that selected them lifts, they are asked in that moment (${lift.ms} ms; the long sideways move is no page turn)`, lift.shown && lift.word === lift.phrase && lift.phrase.split(' ').length === 3 && lift.ms < 150 && lift.sel === '' && lift.page === pageNow, JSON.stringify(lift));
+  await p.touchscreen.tap(195, 520);
+  await until(async () => !(await dbg()).card, 3000, 30);
+  // (the small card is open and I tap another word: that word opens in the same tap)
+  await p.evaluate(() => { document.getElementById('b-tutor').click(); });
+  await p.evaluate(() => document.querySelector('#sheet-body .opts[data-name="cardSize"] button[data-v="small"]').click());
+  await until(() => stores.local.drExtras.cardSize === 'small', 3000);
+  await p.evaluate(() => document.getElementById('veil').click());
+  await barsOff(p);
+  const s1 = await freshWord();
+  await p.touchscreen.tap(s1.x, s1.y);
+  const small1 = await until(async () => { const d = await dbg(); return d.card && !d.card.big && d.card.word === s1.word ? d : null; }, 3000, 25);
+  const s2 = await freshWord([s1.word]);
+  await p.touchscreen.tap(s2.x, s2.y);
+  await p.evaluate(() => new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))));
+  const small2 = await p.evaluate(() => { const s = document.getElementById('small'); return { shown: getComputedStyle(s).display !== 'none' && s.getBoundingClientRect().height > 80, word: s.querySelector('.word').textContent }; });
+  ok('the small card is open and I tap another word: that word\'s card is there in the same tap (before: the tap only closed the card)', !!small1 && small2.shown && small2.word === s2.word && s2.word !== s1.word, JSON.stringify({ first: s1.word, second: s2.word, small2 }));
+  // (the small card's "I know": gone at once)
+  const smallKnow = await p.evaluate(() => new Promise((res) => { const s = document.getElementById('small'); const t0 = performance.now(); s.querySelector('[data-a="know"]').click(); requestAnimationFrame(() => requestAnimationFrame(() => res({ ms: Math.round(performance.now() - t0), display: getComputedStyle(s).display }))); }));
+  ok(`the small card's "I know": the card is gone in ${smallKnow.ms} ms (limit 150), the word is known`, smallKnow.display === 'none' && smallKnow.ms < 150 && (await until(() => (stores.local.drVocab.words || {})[s2.word] === 'known', 4000, 40)) === true, JSON.stringify(smallKnow));
+  await p.evaluate(() => { document.getElementById('b-tutor').click(); });
+  await p.evaluate(() => document.querySelector('#sheet-body .opts[data-name="cardSize"] button[data-v="big"]').click());
+  await until(() => stores.local.drExtras.cardSize === 'big', 3000);
+  await p.evaluate(() => document.getElementById('veil').click());
+
+  // Listening, "I know" at a stop: the card goes in the tap, the book reads on
+  await p.evaluate(() => window.__iknowBook.openText('Know Stop', 'The morning was quiet and the street was empty. Phones are ephemeral in every city now. We had some bread and a cup of tea. The dog ran home. The day came to its end.', ''));
+  await until(async () => { const d = await dbg(); return d && d.open && d.sentences === 5 ? d : null; }, 20000);
+  await p.evaluate(() => { window.__runs = []; });
+  await p.evaluate(() => window.__iknowBook.play(true));
+  const stopWait = await until(async () => { const d = await dbg(); return d.card && d.card.big && d.card.word === 'ephemeral' && d.waiting ? d : null; }, 20000, 30);
+  const nStop = await runs();
+  await p.touchscreen.tap(195, 520);
+  const rStop = await lastRun(nStop);
+  const readOn = await until(async () => { const d = await dbg(); return d.spoken.some((x) => /cup of tea/.test(x)) ? d : null; }, 8000, 40);
+  ok(`Listening, a tap on the card at a stop = I know: the card is gone in ${rStop.ms} ms (limit 150), nothing is explained, and the book reads on`, !!stopWait && !rStop.card && rStop.under === 'page' && rStop.ms < 150 && !!readOn && readOn.playing && readOn.spoken.filter((x) => x === 'ephemeral').length === 1 && !readOn.spoken.some((x) => /means/.test(x) && /phemeral/.test(x)) && (await until(() => (stores.local.drVocab.words || {}).ephemeral === 'known', 4000, 40)) === true, JSON.stringify({ stop: stopWait && stopWait.card, rStop, said: readOn && readOn.spoken.slice(-4) }));
+  await p.evaluate(() => window.__iknowBook.play(false));
+  await sleep(300);
+
+  // a book stored the old way (version 1.0: a whole PDF as ONE chapter), written straight into the store
+  const OLD_ID = 'text-0ldway000000001';
+  const oldChars = sum(BIG_PARAS.map((x) => x.length));
+  await p.evaluate(() => window.__iknowBook.library());
+  await until(() => p.evaluate(() => getComputedStyle(document.getElementById('lib')).display !== 'none'), 4000);
+  const wrote = await p.evaluate(([id, paras, chars]) => new Promise((res) => { const r = indexedDB.open('iknowBooks', 1); r.onerror = () => res('no db'); r.onsuccess = () => { const db = r.result; const tx = db.transaction(['shelf', 'texts'], 'readwrite'); const now = new Date(Date.now() + 60000).toISOString(); tx.objectStore('shelf').put({ id, title: 'Old Heavy Book', author: '', kind: 'pdf', addedAt: now, openedAt: now, chapterChars: [chars], chapterTitles: [''], place: { chapter: 0, paragraph: 612, sentence: 2 }, percent: 59 }); tx.objectStore('texts').put({ id, chapters: [{ title: '', blocks: paras.map((text) => ({ kind: 'p', text })) }] }); tx.oncomplete = () => { db.close(); res('ok'); }; tx.onerror = () => res('failed'); }; }), [OLD_ID, BIG_PARAS, oldChars]);
+  const oldBefore = await inStore(OLD_ID);
+  await p.close();
+  stores.local.bkOpen = OLD_ID;
+  const tOld = Date.now();
+  p = await open(); dbg = dbgOf(p);
+  const oldOpen = await until(async () => { const d = await dbg(); return d && d.open === OLD_ID && d.sentences > 20 ? d : null; }, 30000, 40);
+  const oldMs = Date.now() - tOld;
+  const oldAfter = await inStore(OLD_ID);
+  const want = 'In part 612 line 2 the';
+  const here = await p.evaluate(() => [...document.querySelectorAll('#flow .s')].filter((x) => { const r = x.getClientRects()[0]; return r && r.left >= 0 && r.left < innerWidth; }).map((x) => x.textContent.slice(0, 22)));
+  ok('a book stored the old way (one chapter of 600,000 letters) is cut into light parts when it opens, and stored again that way',
+    wrote === 'ok' && !!oldBefore && oldBefore.sizes.length === 1 && oldBefore.sizes[0] === oldChars && !!oldOpen && oldOpen.chapters > 30 && !!oldAfter && oldAfter.sizes.length === oldOpen.chapters && Math.max(...oldAfter.sizes) <= 20000 && sum(oldAfter.sizes) === oldChars && oldAfter.shelf.split === 2 && /~2#\d+$/.test(oldOpen.ai),
+    JSON.stringify({ wrote, before: oldBefore && oldBefore.sizes.length, after: oldAfter && { parts: oldAfter.sizes.length, biggest: Math.max(...oldAfter.sizes) }, ai: oldOpen && oldOpen.ai, openMs: oldMs }));
+  ok('...and I am still at the same paragraph and sentence (paragraph 612, its third sentence), now in a part of its own', !!oldOpen && oldOpen.chapter > 20 && here.includes(want) && oldOpen.place.chapter === oldOpen.chapter && oldOpen.place.sentence === 2 && oldAfter.shelf.place.chapter === oldOpen.chapter && (await p.evaluate(() => getComputedStyle(document.getElementById('busy')).display)) === 'none',
+    JSON.stringify({ chapter: oldOpen && oldOpen.chapter, place: oldOpen && oldOpen.place, stored: oldAfter && oldAfter.shelf.place, here: here.slice(0, 4) }));
+  await p.close();
+  p = await open(); dbg = dbgOf(p);
+  const oldAgain = await until(async () => { const d = await dbg(); return d && d.open === OLD_ID && d.sentences > 20 ? d : null; }, 30000, 40);
+  ok('...opened once more: it is not cut a second time, and the place is the same', !!oldAgain && oldAgain.chapters === oldOpen.chapters && oldAgain.chapter === oldOpen.chapter && (await onPage(p, 'In part 612 line 2')) && JSON.stringify((await inStore(OLD_ID)).sizes) === JSON.stringify(oldAfter.sizes), JSON.stringify({ chapter: oldAgain && oldAgain.chapter, chapters: oldAgain && oldAgain.chapters }));
+  ok('no error on the page in the speed checks', pageErrors.length === errs1, pageErrors.slice(errs1).join(' | ').slice(0, 400));
   }
 
   // ---- 10. the app itself ----

@@ -24,8 +24,37 @@ export const WAY_LINES: Record<string, string> = {
   'way-why': 'Teaching way: after the easy meaning, say in one short sentence why the speaker chose these words here and not easier ones.',
   'way-echo': 'Teaching way: after the easy meaning, give one short, easy example sentence with it that the learner can say after you.',
 };
-/** levelCheap: the rest of what the learner asks for with Level Check on ("Explain 30 s"): the same cheap model */
-export type RuleRequest = ExplainRequest & { levelRule?: LevelRule; levelCheap?: boolean };
+/**
+ * levelCheap: the rest of what the learner asks for with Level Check on ("Explain 30 s"): the same cheap model.
+ * fromBook: the request comes from I Know Book (a book being read or read aloud, no video): the "explain the last N
+ * seconds" request (kind 'passage') gets the book's wording, BOOK_PART_PROMPT. It is its own field, not part of
+ * levelRule, so it works with or without a rule.
+ */
+export type RuleRequest = ExplainRequest & { levelRule?: LevelRule; levelCheap?: boolean; fromBook?: boolean };
+
+/**
+ * "Explain what I just read / heard" in a book: the same steps as the YouTube tutor's part prompt (teacher-text.ts
+ * PART_PROMPT), without the paused video, and without telling the tutor that the learner hears the sentences from
+ * the video (in a book the tutor's own voice says them).
+ */
+export const BOOK_PART_PROMPT = `The learner is reading a book, or listening to it read aloud, and asked for help. This is the part of the book the learner just read / heard, in complete sentences (about {{seconds}} seconds):
+{{part}}
+
+First, in two or three short sentences of very easy English that a {{level}} learner understands, say what this part says: what it is about and what is happening at this point of the book. Then go through it sentence by sentence, in order. For each sentence, first say the original sentence exactly as it is in the book, on its own and inside quotation marks. Then break it down: take it part by part, say each part exactly as it is, and explain it in very easy English (a hard word or phrase: what it means here). Then say what the whole sentence means in one short easy sentence. Then the next sentence the same way, until every sentence is explained. Nothing else: no scene, no summary at the end, no praise. Be short and simple. Never use headings, titles, numbers, lists or labels, and never say what you will do next.`;
+
+/**
+ * The two things the tutor always does (teacher-text.ts ALWAYS_RULES), in a book's words: the original words are the
+ * book's, and nothing says that the learner hears a sentence "from the video itself".
+ */
+export const BOOK_ALWAYS_RULES = `Always do these two things.
+First, before you explain anything, say the original words from the book exactly as they are, so the learner hears what you are talking about: the whole sentence for a sentence, and for a word or phrase the sentence it is in (when it is not in the book, just say the word itself and go on to explain it). Write a whole original sentence on its own, exactly as it is in the book and inside quotation marks, with nothing else in that sentence. When you break a sentence into pieces, say each piece exactly as it is in the sentence before you explain it.
+Second, what the learner says comes from speech recognition, and they may pronounce words wrongly. Never comment on their pronunciation and never ask them to repeat. Work out from this part of the book what they meant. If they used a wrong word, say the correct word or sentence once, naturally, then answer in this exact context.`;
+
+/** The part prompt of a 'passage' request, filled in: the book's wording with `fromBook`, else `videoPrompt` (PART_PROMPT). */
+export function partPromptFor(req: { target: string; seconds?: number; fromBook?: boolean }, videoPrompt: string): string {
+  // (a function as the replacement: a "$" in the book's text is text, not a pattern)
+  return (req.fromBook === true ? BOOK_PART_PROMPT : videoPrompt).replace('{{part}}', () => req.target).replace('{{seconds}}', String(req.seconds ?? 30));
+}
 
 /**
  * The rule of every Level Check explanation. With the learner's own teacher (the default) it is their own rules

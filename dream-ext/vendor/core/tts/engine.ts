@@ -20,7 +20,12 @@ export interface SpeakOptions {
   onStart?: () => void;
   /** charIndex/charLength index into the spoken text (UTF-16 units) */
   onWord?: (charIndex: number, charLength: number) => void;
+  /** the caller follows the words (the line under the spoken word): it reads SpeakHandle.words / clock / onBoundary */
+  timings?: boolean;
 }
+
+/** one spoken word: seconds from the start of the sound, and its place in the spoken text (UTF-16 units, end not included) */
+export interface WordTime { start: number; end: number; charStart: number; charEnd: number }
 
 export type SpeakOutcome = 'ended' | 'cancelled' | 'error';
 
@@ -29,6 +34,17 @@ export interface SpeakHandle {
   done: Promise<SpeakOutcome>;
   error?: Error;
   cancel(): void;
+  /**
+   * optional (engines that play a sound file): seconds played `t` and the length of the clip `d`, in the clip's own
+   * time (the speed slider does not change it); null while no clip of this speech is loaded. `lead` / `tail` =
+   * seconds of silence at the start and end of the clip, when they were measured (an iPhone, where the clip is decoded).
+   * A text spoken in several pieces (`segment`): the piece playing now.
+   */
+  clock?(): { t: number; d: number; lead?: number; tail?: number } | null;
+  /** optional: the exact times of the words when the voice service gives them, else null (then they are estimated from clock().d) */
+  words?: Promise<WordTime[] | null>;
+  /** optional, set by the caller: a voice that tells its words as it says them (the device voice) calls it for each one */
+  onBoundary?: ((charIndex: number, charLength: number) => void) | null;
 }
 
 /**
@@ -44,14 +60,18 @@ export interface TtsEngine {
   readonly wordBoundaries: boolean;
   listVoices(): Promise<TtsVoice[]>;
   speak(text: string, opts: SpeakOptions): SpeakHandle;
-  /** optional: synthesize ahead of time so the next sentence starts without delay */
-  prefetch?(text: string, voiceId: string, rate: number): void;
+  /**
+   * optional: one text made ready ahead of time without playing it (fetched, its sound loaded, and on an iPhone made
+   * at the learner's volume), so that speaking it later starts at once. `volume` (0..1) = the volume it will be said
+   * at; not given = the volume of the last speak().
+   */
+  prefetch?(text: string, voiceId: string, rate: number, volume?: number): void;
   /**
    * optional, preferred over prefetch: the sentences after the one being spoken, nearest first (up to about a
    * minute of speech). Each call replaces the previous list; the engine decides how far to go (cloud voices cost
    * money, the local voice reads ahead as far as the CPU allows) and pre-decodes the next one.
    */
-  readAhead?(texts: string[], voiceId: string, rate: number): void;
+  readAhead?(texts: string[], voiceId: string, rate: number, volume?: number): void;
   /** optional: playback paused or stopped, drop the read-ahead */
   stopReadAhead?(): void;
   pause(): void;

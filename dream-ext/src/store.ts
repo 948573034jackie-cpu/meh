@@ -160,6 +160,10 @@ export interface YtExtras {
   analysisModel: string;
   /** free mode (the app with My tutor off: no AI): how long the stop card waits for a tap, in seconds (3-20) */
   freeWindowSec: number;
+  /** the Microsoft key is a paid one: the free plan's limit of 19 voice requests a minute is not kept (bg.ts azureTurn) */
+  azurePaid: boolean;
+  /** I Know Book: the thin line under the word the voice is saying */
+  followWord: boolean;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
 }
@@ -171,7 +175,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   voice: 'auto', openaiVoice: 'marin', elevenVoice: 'JBFqnCBsd6RMkjVDRZzb', azureVoice: 'en-GB-AdaMultilingualNeural', azureRegion: 'eastus', talkAfterExplain: false, talkSilenceSec: 3, liveOn: true, liveModel: 'gpt-realtime-2.1', micLevel: 3, view: 'normal', followAt: 42, playLine: 40, phoneSizePx: 21, readSizePx: 22, showSay: false,
   stopItemsOn: true, capWords: 35, stopPhrasesOn: true, capPhrases: 15, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 7, phoneSet: false,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
-  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '', freeWindowSec: 7,
+  teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '', freeWindowSec: 7, azurePaid: false, followWord: true,
 };
 
 /**

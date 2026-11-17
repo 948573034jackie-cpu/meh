@@ -168,7 +168,8 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
   // ---- 2b. the share does not creep: at 10 % one hard word of this video is explained, and it stays one ----
   {
     const { ctx, page, dbg, ready } = await open(browser, 'ios39000007', { explainPct: 10 });
-    const c0 = ready && ready.level ? ready.level.chosen : null;
+    // (the stops are chosen a moment after the page is ready: wait for the number, do not read it too early)
+    const c0 = (await until(async () => { const d = await dbg(); return d && d.level && d.level.chosen >= 1 ? d.level.chosen : null; }, 8000, 100)) ?? (ready && ready.level ? ready.level.chosen : null);
     await until(() => page.evaluate(() => !document.querySelector('video').paused), 30000);
     // (to the end of the last hard sentence, 28 s, whatever stops on the way)
     const end = await until(async () => { const t = await page.evaluate(() => document.querySelector('video').currentTime); const d = await dbg(); return t > 33 && d && d.state === 'playing' ? d : null; }, 90000, 200);

@@ -45,7 +45,7 @@ export function bakeFailed(): void {
 export function bakeOk(): void { bakeWorked = true; bakeFailCount = 0; bakeRestUntil = 0; }
 export const bakeWorks = (): boolean => !bakeResting();
 /** (tests) */
-export function resetBake(): void { bakeBroken = false; bakeWorked = false; bakeFailCount = 0; bakeRestUntil = 0; baked.clear(); }
+export function resetBake(): void { bakeBroken = false; bakeWorked = false; bakeFailCount = 0; bakeRestUntil = 0; baked.clear(); bounds.clear(); }
 /** a clip is made again within this time, or it plays as it is */
 export const BAKE_TIMEOUT_MS = 1500;
 
@@ -62,6 +62,25 @@ export function elementVolumeIgnored(): boolean {
 
 type OfflineCtor = new (channels: number, length: number, sampleRate: number) => OfflineAudioContext;
 const baked = new Map<string, Promise<Blob | null>>();
+
+/**
+ * Where the voice starts and ends in a decoded clip: the seconds of silence before the first sound and after the last
+ * one (a voice service puts some at both ends). The word times of a voice that gives none are estimated between them.
+ */
+export function speechBounds(samples: Float32Array, sampleRate: number): { lead: number; tail: number } {
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) { const a = Math.abs(samples[i]); if (a > peak) peak = a; }
+  // (quieter than this is the room, not the voice)
+  const floor = Math.max(0.004, peak * 0.04);
+  let first = 0, last = samples.length - 1;
+  while (first < samples.length && Math.abs(samples[first]) < floor) first++;
+  if (first >= samples.length || !(sampleRate > 0)) return { lead: 0, tail: 0 };
+  while (last > first && Math.abs(samples[last]) < floor) last--;
+  return { lead: first / sampleRate, tail: (samples.length - 1 - last) / sampleRate };
+}
+const bounds = new Map<string, { lead: number; tail: number }>();
+/** the silence at the start and end of the clip named `key`, measured when it was decoded (bakeVolume); null = not measured */
+export const speechOf = (key: string): { lead: number; tail: number } | null => bounds.get(key) ?? null;
 
 /**
  * The clip at this volume (0..1) as a WAV blob, or null when it cannot be decoded here (then it plays as it is: never
@@ -88,6 +107,8 @@ export function bakeVolume(audio: ArrayBuffer, volume: number, key?: string): Pr
       });
       if (!buf.length) return null;
       const channels = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => buf.getChannelData(c));
+      // (the clip is decoded here anyway: where its speech starts and ends is kept for the line under the spoken word)
+      if (key && channels[0]) { bounds.set(key, speechBounds(channels[0], buf.sampleRate)); while (bounds.size > 40) bounds.delete(bounds.keys().next().value as string); }
       return new Blob([encodeWav(channels, buf.sampleRate, volume)], { type: 'audio/wav' });
     } catch { bakeFailed(); return null; }
   })();

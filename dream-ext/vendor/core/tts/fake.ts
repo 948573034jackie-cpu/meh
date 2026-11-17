@@ -4,6 +4,8 @@ import { estimateWordTimes } from './timing';
 /**
  * Deterministic engine for tests and for CI machines without voices: "speaks" by emitting word
  * boundaries on a timer. `msPerChar` controls speed (0 makes everything finish on the next tick).
+ * Its handle has the made-up timing too: clock() (seconds since it started, and the whole length), the exact `words`,
+ * and onBoundary for each word, so a test can check the line under the spoken word.
  */
 export class FakeTtsEngine implements TtsEngine {
   readonly id = 'webspeech' as const;
@@ -27,12 +29,18 @@ export class FakeTtsEngine implements TtsEngine {
     const timers: ReturnType<typeof setTimeout>[] = [];
     let finished = false;
     const finish = (o: SpeakOutcome) => { if (finished) return; finished = true; timers.forEach((t) => { clearTimeout(t); this.timers.delete(t); }); this.active = this.active.filter((h) => h !== handle); resolve(o); };
-    const handle: SpeakHandle = { done, cancel: () => finish('cancelled') };
     const durationMs = Math.max(1, text.length * this.msPerChar / Math.max(0.1, opts.rate));
-    const words = estimateWordTimes(text, durationMs / 1000);
+    const total = durationMs / 1000;
+    const words = estimateWordTimes(text, total);
+    let startedAt: number | null = null;
+    const handle: SpeakHandle = {
+      done, cancel: () => finish('cancelled'), onBoundary: null,
+      words: Promise.resolve(words.map((w, i) => ({ start: w.at, end: i + 1 < words.length ? words[i + 1].at : total, charStart: w.charIndex, charEnd: w.charIndex + w.charLength }))),
+      clock: () => (finished ? null : { t: startedAt === null ? 0 : Math.min(total, (Date.now() - startedAt) / 1000), d: total }),
+    };
     const at = (ms: number, fn: () => void) => { const t = setTimeout(() => { this.timers.delete(t); if (!finished) fn(); }, ms); timers.push(t); this.timers.add(t); };
-    at(0, () => opts.onStart?.());
-    for (const w of words) at(w.at * 1000, () => opts.onWord?.(w.charIndex, w.charLength));
+    at(0, () => { startedAt = Date.now(); opts.onStart?.(); });
+    for (const w of words) at(w.at * 1000, () => { opts.onWord?.(w.charIndex, w.charLength); handle.onBoundary?.(w.charIndex, w.charLength); });
     at(durationMs, () => finish('ended'));
     this.active.push(handle);
     return handle;

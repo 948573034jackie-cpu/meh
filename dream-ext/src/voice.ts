@@ -6,10 +6,11 @@
  * the sentence being taught, the real sentence is played from the video instead of a synthetic voice.
  */
 import { AudioTtsEngine } from '@core/tts/audio';
-import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from '@core/tts/engine';
+import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome, WordTime } from '@core/tts/engine';
 import type { CloudTtsResult } from '@shared/api';
 import type { VoiceChoice } from './store';
 import type { Position } from '@core/model';
+import { AZURE_BUSY } from './tts-cache';
 
 export const OPENAI_VOICES: { id: string; name: string }[] = [
   { id: 'marin', name: 'Marin (most natural)' }, { id: 'cedar', name: 'Cedar (most natural)' },
@@ -73,13 +74,31 @@ function fromBase64(b64: string): ArrayBuffer {
   return out.buffer;
 }
 
+/**
+ * What a page may ask of the cloud voice beyond the usual (I Know Book asks for both, BOOK_VOICE; the YouTube tutor
+ * for neither, so nothing changes there):
+ * `light`: Microsoft sends 24 kHz / 96 kbit mp3 instead of 48 kHz / 192 kbit, a quarter of the bytes (an iPhone
+ * plays the clip at 24 kHz anyway);
+ * `fast`: ElevenLabs uses its fast model (eleven_flash_v2_5), whatever the quality setting says.
+ */
+export interface CloudOptions { light?: boolean; fast?: boolean }
+export const BOOK_VOICE: CloudOptions = { light: true, fast: true };
+
+/** the voice service is full for the moment (Microsoft's free limit): `code` 'busy' */
+export const isBusy = (e: unknown): boolean => (e as { code?: string } | null | undefined)?.code === 'busy';
+/** what VoiceWithBackup tells the page (onTrouble) when a sentence went to the device voice for that reason */
+export const BUSY_NOTE = `${AZURE_BUSY}: the iPhone voice read this sentence`;
+
 /** A cloud voice; `lang` 'zh' asks the voice to speak Mandarin (the Chinese meanings). */
-export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 'zh'): AudioTtsEngine {
+export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 'zh', o: CloudOptions = {}): AudioTtsEngine {
   const synth = async (_engine: unknown, text: string, voiceId: string): Promise<CloudTtsResult> => {
     cloudSpoken.push(text);
     if (cloudSpoken.length > 400) cloudSpoken.splice(0, 200);
-    const r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang })) as { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string } | undefined;
-    if (!r || r.error || r.b64 === undefined) throw new Error(r?.error ?? 'The voice service did not answer.');
+    const r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang, ...(o.light ? { light: true } : {}), ...(o.fast ? { fast: true } : {}) })) as { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string } | undefined;
+    if (!r || r.error || r.b64 === undefined) {
+      const busy = r?.code === 'busy' || !!r?.error?.startsWith(AZURE_BUSY);
+      throw Object.assign(new Error(r?.error ?? 'The voice service did not answer.'), busy ? { code: 'busy' } : {});
+    }
     return { audio: fromBase64(r.b64), mime: r.mime ?? 'audio/mpeg', timings: r.timings ?? null, durationSec: null };
   };
   const list = async () => (id === 'openai' ? OPENAI_VOICES : id === 'azure' ? AZURE_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
@@ -91,8 +110,11 @@ export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 
 /**
  * The voice actually used: 'auto' = Microsoft (free) when its key is saved, else OpenAI with its key; a cloud voice
  * without its key = the Mac voice.
+ * `o.noOpenAi` (I Know Book): 'auto' never picks OpenAI (its voice models end on 6 Jan 2027): Microsoft, else
+ * ElevenLabs, else the device voice. OpenAI chosen by name still works while it lasts.
  */
-export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string }): 'mac' | 'openai' | 'elevenlabs' | 'azure' {
+export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string }, o: { noOpenAi?: boolean } = {}): 'mac' | 'openai' | 'elevenlabs' | 'azure' {
+  if (choice === 'auto' && o.noOpenAi) return keys.azure ? 'azure' : keys.elevenlabs ? 'elevenlabs' : 'mac';
   if (choice === 'auto') return keys.azure ? 'azure' : keys.openai ? 'openai' : 'mac';
   if (choice === 'azure') return keys.azure ? 'azure' : 'mac';
   if (choice === 'openai') return keys.openai ? 'openai' : 'mac';
@@ -105,6 +127,10 @@ export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; eleve
  * after `startTimeoutMs`) is tried once more; if that fails too, only that sentence is said by the Mac voice and the
  * good voice is used again for the next one. Three failed sentences in a row = the Mac voice for one minute, then the
  * good voice again (it never stays on the Mac voice for the rest of the video). `onTrouble` tells the learner.
+ * A sentence the service has no room for just now (Microsoft's free limit, an error with `code` 'busy') is not tried
+ * again and is no failure of the good voice: the Mac voice says it at once, and `onTrouble` gets BUSY_NOTE (an error
+ * with `code` 'busy'), at most once a minute.
+ * The handle follows the voice that speaks: clock() and `words` of the try that is heard, onBoundary from the Mac voice.
  */
 export class VoiceWithBackup implements TtsEngine {
   readonly id: TtsEngine['id'];
@@ -120,6 +146,8 @@ export class VoiceWithBackup implements TtsEngine {
   private stops = 0;
   /** the last reason the good voice failed (for the 🩺 check) */
   lastError: string | null = null;
+  /** when the learner was last told that the service is busy (ms) */
+  private busyTold = -Infinity;
   constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onTrouble: (e: Error, cooling: boolean) => void, private startTimeoutMs = 12_000, private now: () => number = () => Date.now()) {
     this.id = primary.id; this.kind = primary.kind; this.label = primary.label; this.costNote = primary.costNote; this.wordBoundaries = primary.wordBoundaries;
   }
@@ -138,11 +166,30 @@ export class VoiceWithBackup implements TtsEngine {
     let inner: SpeakHandle | null = null;
     const stopsAtStart = this.stops;
     const gone = () => cancelled || this.stops !== stopsAtStart;
-    const handle: SpeakHandle = { done: Promise.resolve('ended' as SpeakOutcome), cancel: () => { cancelled = true; inner?.cancel(); } };
+    const handle: SpeakHandle = { done: Promise.resolve('ended' as SpeakOutcome), cancel: () => { cancelled = true; inner?.cancel(); }, clock: () => inner?.clock?.() ?? null, onBoundary: null };
+    // the word times of the try that is heard: told once, as soon as they are known (null = this voice gives none)
+    let tellWords!: (w: WordTime[] | null) => void;
+    handle.words = new Promise<WordTime[] | null>((r) => { tellWords = r; });
+    /** `h` is the voice now: its word events reach the caller; its word times are told (`now`: whatever they are) */
+    const follow = (h: SpeakHandle, now: boolean): void => {
+      h.onBoundary = (i, l) => handle.onBoundary?.(i, l);
+      void (h.words ?? Promise.resolve(null)).then((w) => { if (inner === h && (w || now)) tellWords(w); }, () => undefined);
+    };
+    const viaBackup = async (): Promise<SpeakOutcome> => {
+      const b = this.viaBackup(text, opts);
+      inner = b;
+      follow(b, true);
+      const o = await b.done;
+      if (b.error) handle.error = b.error;
+      return o;
+    };
     const attempt = (n: number): Promise<SpeakOutcome> => {
       let started = false, timedOut = false;
-      const h = this.primary.speak(text, { ...opts, onStart: () => { started = true; opts.onStart?.(); } });
+      let cur: SpeakHandle | null = null;
+      const h = this.primary.speak(text, { ...opts, onStart: () => { started = true; if (cur) follow(cur, true); opts.onStart?.(); } });
+      cur = h;
       inner = h;
+      follow(h, started);
       // (while the learner has paused the teacher no sound is expected: the clock waits)
       const watch = (): ReturnType<typeof setTimeout> => setTimeout(() => {
         if (started || gone()) return;
@@ -156,6 +203,13 @@ export class VoiceWithBackup implements TtsEngine {
         if (gone()) return 'cancelled';
         if (o === 'ended') { this.fails = 0; return o; }
         if (o === 'cancelled' && !timedOut) return o;
+        // no room at the service just now: a second try would wait in the same line, so this sentence goes to the
+        // Mac voice at once; it is no failure of the good voice (the limit frees by itself)
+        if (!timedOut && isBusy(h.error)) {
+          this.lastError = BUSY_NOTE;
+          if (this.now() - this.busyTold >= 60_000) { this.busyTold = this.now(); this.onTrouble(Object.assign(new Error(BUSY_NOTE), { code: 'busy' }), false); }
+          return viaBackup();
+        }
         this.lastError = timedOut ? 'no sound came in time' : h.error?.message ?? 'the voice failed';
         // once more (most failures are a short hiccup)
         if (n === 0) { await new Promise((r) => setTimeout(r, 400)); if (gone()) return 'cancelled'; return attempt(1); }
@@ -163,18 +217,16 @@ export class VoiceWithBackup implements TtsEngine {
         const cooling = this.fails >= 3;
         if (cooling) { this.coolUntil = this.now() + 60_000; this.fails = 0; }
         this.onTrouble(new Error(this.lastError), cooling);
-        const b = this.viaBackup(text, opts);
-        inner = b;
-        const o2 = await b.done;
-        if (b.error) handle.error = b.error;
-        return o2;
+        return viaBackup();
       });
     };
     handle.done = attempt(0);
+    // (never left open: a speech that ends without word times has none)
+    void handle.done.then(() => tellWords(null));
     return handle;
   }
-  prefetch(text: string, voiceId: string, rate: number): void { if (!this.failed) this.primary.prefetch?.(text, voiceId, rate); }
-  readAhead(texts: string[], voiceId: string, rate: number): void { if (!this.failed) this.primary.readAhead?.(texts, voiceId, rate); }
+  prefetch(text: string, voiceId: string, rate: number, volume?: number): void { if (!this.failed) this.primary.prefetch?.(text, voiceId, rate, volume); }
+  readAhead(texts: string[], voiceId: string, rate: number, volume?: number): void { if (!this.failed) this.primary.readAhead?.(texts, voiceId, rate, volume); }
   stopReadAhead(): void { this.primary.stopReadAhead?.(); }
   pause(): void { this.primary.pause(); this.backup.pause(); }
   resume(): void { this.primary.resume(); this.backup.resume(); }
@@ -204,8 +256,9 @@ export class WithVolume implements TtsEngine {
     if (this.onSpeak) { const end = () => this.onSpeak?.(); this.onSpeak(text); void h.done.then(end, end); }
     return h;
   }
-  prefetch(text: string, voiceId: string, rate: number): void { this.inner().prefetch?.(text, voiceId, rate); }
-  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner().readAhead?.(texts, voiceId, rate); }
+  // (what is made ahead is made at the slider's volume: on an iPhone the volume is in the sound itself)
+  prefetch(text: string, voiceId: string, rate: number): void { this.inner().prefetch?.(text, voiceId, rate, this.volume()); }
+  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner().readAhead?.(texts, voiceId, rate, this.volume()); }
   stopReadAhead(): void { this.inner().stopReadAhead?.(); }
   pause(): void { this.inner().pause(); }
   resume(): void { this.inner().resume(); }
@@ -251,8 +304,8 @@ export class ShortPieces implements TtsEngine {
     })();
     return handle;
   }
-  prefetch(text: string, voiceId: string, rate: number): void { this.inner.prefetch?.(text, voiceId, rate); }
-  readAhead(texts: string[], voiceId: string, rate: number): void { this.inner.readAhead?.(texts, voiceId, rate); }
+  prefetch(text: string, voiceId: string, rate: number, volume?: number): void { this.inner.prefetch?.(text, voiceId, rate, volume); }
+  readAhead(texts: string[], voiceId: string, rate: number, volume?: number): void { this.inner.readAhead?.(texts, voiceId, rate, volume); }
   stopReadAhead(): void { this.inner.stopReadAhead?.(); }
   pause(): void { this.inner.pause(); }
   resume(): void { this.inner.resume(); }
@@ -299,7 +352,7 @@ export class SentenceFromVideo implements TtsEngine {
     const h = this.video.speak(text, { ...opts, onWord: undefined });
     return { done: h.done.then((o) => { this.video.hold(); if (o === 'ended') this.video.markTeacherPlayed(); return o; }), cancel: () => h.cancel(), get error() { return h.error; } };
   }
-  prefetch(text: string, voiceId: string, rate: number): void { if (!this.isTaughtSentence(text)) this.voice().prefetch?.(text, voiceId, rate); }
+  prefetch(text: string, voiceId: string, rate: number, volume?: number): void { if (!this.isTaughtSentence(text)) this.voice().prefetch?.(text, voiceId, rate, volume); }
   stopReadAhead(): void { this.voice().stopReadAhead?.(); }
   pause(): void { this.voice().pause(); }
   resume(): void { this.voice().resume(); }
@@ -345,7 +398,7 @@ export class QuotesFromVideo implements TtsEngine {
   }
   /** the quote playing from the video now (only that is stopped by cancelAll: the video itself is not paused) */
   private quoting: SpeakHandle | null = null;
-  prefetch(text: string, voiceId: string, rate: number): void { if (!this.find(text)) this.voice().prefetch?.(text, voiceId, rate); }
+  prefetch(text: string, voiceId: string, rate: number, volume?: number): void { if (!this.find(text)) this.voice().prefetch?.(text, voiceId, rate, volume); }
   stopReadAhead(): void { this.voice().stopReadAhead?.(); }
   pause(): void { this.voice().pause(); }
   resume(): void { this.voice().resume(); }

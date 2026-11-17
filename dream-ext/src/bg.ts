@@ -7,7 +7,9 @@
  *   -> { type: 'explain', req }                       <- { type: 'delta', text } ... { type: 'done', text, usage } | { type: 'error', message, code }
  *   -> { type: 'complete', prompt, stream? }          <- ({ type: 'delta', text } ...) { type: 'done', text } | { type: 'error', ... }   (hints model)
  * Closing the port cancels the request.
- * One-off messages: 'dream-tts' (a sentence in the OpenAI / ElevenLabs voice), 'dream-live-sdp' (connects the live
+ * One-off messages: 'dream-tts' (a sentence in the Microsoft / OpenAI / ElevenLabs voice: { engine, text, voice, lang,
+ * light?, fast? } -> { b64, mime, timings } | { error, code? }; code 'busy' = Microsoft's free limit is full for the
+ * moment, the page says the sentence with the device voice), 'dream-live-sdp' (connects the live
  * voice call: the page's WebRTC offer goes to OpenAI's /v1/realtime/calls with the key, the answer comes back),
  * 'dream-usage' (the live call's cost), 'dream-test-key', 'dream-open'.
  */
@@ -23,10 +25,11 @@ import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
 import { installLevelDb, writeDatabase, syncGist, currentDoc, NATIVE_HOST } from './level-db-bg';
 import { levelSummary } from './level-db';
-import { buildRulePrompt, type RuleRequest } from './level-rule';
+import { buildRulePrompt, partPromptFor, BOOK_ALWAYS_RULES, type RuleRequest } from './level-rule';
 import { splitByScript } from '@core/listen/script';
 import { getLevel, updateLevel } from './store';
-import { getSound, putSound, CACHE_MAX_CHARS } from './tts-cache';
+import { getSound, putSound, CACHE_MAX_CHARS, AZURE_BUSY } from './tts-cache';
+import { wordsFromAlignment, type Alignment } from './word-times';
 import { findLyrics } from './lyrics';
 
 /** Approximate list prices in USD per million tokens (input, output, cache read); copied from Dream Read src/main/ai.ts. */
@@ -101,27 +104,48 @@ export function pickProvider(s: Settings, keys: Keys): { provider: AiProviderId;
   return { provider, model: provider === 'anthropic' ? s.ai.anthropicModel : s.ai.openaiModel };
 }
 
-/** The learner's own teacher instructions go into the system prompt (cached with it). */
-async function withTeacher(prompt: PromptBundle, styleId?: string): Promise<PromptBundle> {
+/**
+ * The learner's own teacher instructions go into the system prompt (cached with it). `book`: the request comes from
+ * I Know Book (RuleRequest.fromBook): the rules that are always there speak of the book, not of a video.
+ */
+async function withTeacher(prompt: PromptBundle, styleId?: string, book = false): Promise<PromptBundle> {
   const t = (await getExtras()).teacher?.trim();
-  if (!t) return { ...prompt, system: `${prompt.system}\n\n${ALWAYS_RULES}` };
+  const always = book ? BOOK_ALWAYS_RULES : ALWAYS_RULES;
+  if (!t) return { ...prompt, system: `${prompt.system}\n\n${always}` };
   // one of the seven teaching ways (other than the learner's own Picture It) decides the steps; the rules keep the tone
   const way = isWay(styleId) && styleId !== 'way-picture'
     ? '\nThe learner chose a different teaching way for this explanation. Where these instructions and the teaching way in the task disagree about the steps, follow the teaching way in the task; keep everything else.'
     : '';
-  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}${way}\n\n${ALWAYS_RULES}` };
+  return { ...prompt, system: `${prompt.system}\n\nThe learner's own instructions for you, their teacher. Follow them in every answer:\n${t}${way}\n\n${always}` };
+}
+
+/**
+ * Claude Haiku 5.5 thinks before it answers unless it is told not to (adaptive thinking is on by default, and the
+ * first word waits for it). For the short answers of the tutor it is turned off, which that model takes at effort
+ * low / medium / high. NOT for Opus 5.5, Sonnet 5.5 or Fable: there `thinking: disabled` is refused (HTTP 400).
+ */
+export const thinkingOff = (model: string): boolean => /^claude-haiku-5/.test(model);
+/** tokens over the answer's own length when the model does not think (the prompt keeps the length; this is only a stop) */
+const NO_THINKING_ROOM = 200;
+
+/** The request of one answer (an explanation, a meaning, the analysis of a part): streamAnthropic sends exactly this. */
+export function anthropicParams(model: string, prompt: PromptBundle) {
+  const off = thinkingOff(model);
+  return {
+    model,
+    // (+ room for the model's own thinking: the prompt keeps the answer's length; a tight limit can leave it empty.
+    // A model that does not think needs no such room, only a small margin)
+    max_tokens: prompt.maxTokens + (off ? NO_THINKING_ROOM : 1000),
+    system: [{ type: 'text' as const, text: prompt.system, cache_control: { type: 'ephemeral' as const } }],
+    messages: [{ role: 'user' as const, content: prompt.user }],
+    output_config: { effort: 'low' as const },
+    ...(off ? { thinking: { type: 'disabled' as const } } : {}),
+  };
 }
 
 async function streamAnthropic(apiKey: string, model: string, prompt: PromptBundle, signal: AbortSignal, onText: (t: string) => void): Promise<StreamResult> {
   const client = new Anthropic({ apiKey, maxRetries: 1, timeout: 60_000, dangerouslyAllowBrowser: true, ...((await baseUrls()).anthropic ? { baseURL: (await baseUrls()).anthropic } : {}) });
-  const params = {
-    model,
-    // (+ room for the model's own thinking: the prompt keeps the answer's length; a tight limit can leave it empty)
-    max_tokens: prompt.maxTokens + 1000,
-    system: [{ type: 'text' as const, text: prompt.system, cache_control: { type: 'ephemeral' as const } }],
-    messages: [{ role: 'user' as const, content: prompt.user }],
-    output_config: { effort: 'low' as const },
-  };
+  const params = anthropicParams(model, prompt);
   // Opus 5.5 / Sonnet 5.5 / Fable: opt into server-side refusal fallbacks so a rare safety decline still yields an answer.
   const wantsFallback = /^claude-(opus-5-5|sonnet-5-5|fable)/.test(model);
   let final: Anthropic.Message | Anthropic.Beta.BetaMessage;
@@ -214,12 +238,13 @@ export async function runExplain(req: ExplainRequest, signal: AbortSignal, onDel
   const monthly = usdSince(await getUsage(), periodStarts().month);
   if (s.ai.monthlyStopUsd > 0 && monthly >= s.ai.monthlyStopUsd) throw Object.assign(new Error(`Monthly AI budget of $${s.ai.monthlyStopUsd} reached. Raise it in the Dream Tutor settings to continue.`), { code: 'budget' });
   // (YouTube) "you stopped the video": the part just heard, taught as a whole with the learner's rules
-  const partPrompt = part && style ? { ...style, sentencePrompt: PART_PROMPT.replace('{{part}}', req.target).replace('{{seconds}}', String((req as ExplainRequest & { seconds?: number }).seconds ?? 30)), maxTokens: Math.max(style.maxTokens, 900) } : null;
+  // (I Know Book, `fromBook`: the part of the book just read / heard, in the book's words: level-rule.ts)
+  const partPrompt = part && style ? { ...style, sentencePrompt: partPromptFor(req as RuleRequest & { seconds?: number }, PART_PROMPT), maxTokens: Math.max(style.maxTokens, 900) } : null;
   // (Level Check) the hard rule of the explanations at a stop: it replaces the styles and teacher instructions
   const rule = (req as RuleRequest).levelRule;
   const prompt = rule && styled ? buildRulePrompt(req as RuleRequest) : await withTeacher(style
     ? buildStyledPrompt(partPrompt ? { ...req, kind: 'sentence' } : req, { style: partPrompt ?? style, contextRules: s.ai.contextRules, level: s.learnerLevel, native: 'Chinese' })
-    : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }), part ? undefined : style?.id);
+    : buildPrompt(req, { level: s.learnerLevel, instructions: s.ai.instructions, length: s.ai.explanationLength }), part ? undefined : style?.id, (req as RuleRequest).fromBook === true);
   // (lyrics mode, Explain N s and questions: the song's context goes with them too)
   if (song && !(rule && styled)) prompt.system = `${prompt.system}\n\nThis is a SONG. Explain it like a music teacher who knows this song well: what the lines mean in the song, the images, slang, references and feelings, and how listeners understand them. What is known about the song:\n${song}`;
   try {
@@ -250,7 +275,8 @@ export async function runCompletion(prompt: PromptBundle, signal: AbortSignal, o
   try {
     const onText = onDelta ?? ((): void => undefined);
     // background jobs: room for the model's own thinking (a tight limit can leave the answer empty; only what is
-    // written is paid for)
+    // written is paid for). The floor stays for a model that does not think too: it is only a stop, and the jobs'
+    // own limits were chosen with it there
     const roomy = { ...prompt, maxTokens: Math.max(prompt.maxTokens, 1500) };
     const r = provider === 'anthropic' ? await streamAnthropic(key, model, roomy, signal, onText) : await streamOpenAI(key, model, roomy, signal, onText);
     const u = await record(provider, model, r);
@@ -303,7 +329,8 @@ export async function runChat(system: string, messages: ChatTurn[], signal: Abor
 }
 
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
-interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure'; text: string; voice: string; lang?: 'en' | 'zh' }
+/** `light`: Microsoft's smaller sound (AZURE_LIGHT); `fast`: ElevenLabs' fast model whatever the quality setting (voice.ts CloudOptions) */
+interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure'; text: string; voice: string; lang?: 'en' | 'zh'; light?: boolean; fast?: boolean }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
@@ -331,31 +358,39 @@ export function azureSsml(text: string, voice: string, lang: 'en' | 'zh' = 'en',
   return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${locale}"><voice name="${xmlEsc(voice)}">${body}</voice></speak>`;
 }
 
-/** Azure's free plan (F0) takes 20 voice requests a minute: the requests wait their turn instead of failing. */
-const azureSent: number[] = [];
-let azureLine: Promise<void> = Promise.resolve();
+/**
+ * Azure's free plan (F0) takes 20 voice requests a minute: the requests wait their turn instead of failing.
+ * `maxWaitMs`: a request that would wait longer than this for its turn is refused at once (an error with `code`
+ * 'busy' and the message AZURE_BUSY) and takes no turn: the page says that sentence with the device voice.
+ */
+const azureSent: number[] = []; // when each request of the last minute went, and when the waiting ones will go
 export const AZURE_PER_MINUTE = 19;
-export function azureTurn(): Promise<void> {
-  const mine = azureLine.then(async () => {
-    for (;;) {
-      const now = Date.now();
-      while (azureSent.length && now - azureSent[0] >= 60_000) azureSent.shift();
-      if (azureSent.length < AZURE_PER_MINUTE) { azureSent.push(now); return; }
-      await new Promise((r) => setTimeout(r, 60_000 - (now - azureSent[0]) + 50));
-    }
-  });
-  azureLine = mine.catch(() => undefined);
-  return mine;
+/** a sentence is due now: it waits this long for its turn at most (the voice path; azureTurn() itself waits as long as it takes) */
+export const AZURE_MAX_WAIT_MS = 1500;
+export function azureTurn(maxWaitMs = Infinity): Promise<void> {
+  const now = Date.now();
+  while (azureSent.length && now - azureSent[0] >= 60_000) azureSent.shift();
+  // my turn: now, or when the request 19 before me is a minute old
+  const at = azureSent.length < AZURE_PER_MINUTE ? now : Math.max(now, azureSent[azureSent.length - AZURE_PER_MINUTE] + 60_050);
+  if (at - now > maxWaitMs) return Promise.reject(Object.assign(new Error(AZURE_BUSY), { code: 'busy' }));
+  azureSent.push(at);
+  return at <= now ? Promise.resolve() : new Promise((r) => setTimeout(r, at - now));
 }
+/** (tests) */
+export function resetAzureTurns(): void { azureSent.length = 0; }
 
-async function azureSpeak(key: string, base: string, ssml: string): Promise<Response> {
+/** the sound Microsoft is asked for: the full one, and the light one (24 kHz, a quarter of the bytes: `light`) */
+export const AZURE_FULL = 'audio-48khz-192kbitrate-mono-mp3', AZURE_LIGHT = 'audio-24khz-96kbitrate-mono-mp3';
+
+/** `maxWaitMs`: see azureTurn; null = no limit of our own (a paid key, extras.azurePaid) */
+async function azureSpeak(key: string, base: string, ssml: string, o: { light?: boolean; maxWaitMs?: number | null } = {}): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
-    await azureTurn();
+    if (o.maxWaitMs !== null) await azureTurn(o.maxWaitMs ?? AZURE_MAX_WAIT_MS);
     let res: Response;
     try {
       res = await fetch(`${base}/cognitiveservices/v1`, {
         method: 'POST',
-        headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-48khz-192kbitrate-mono-mp3' },
+        headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': o.light ? AZURE_LIGHT : AZURE_FULL },
         body: ssml,
       });
     } catch {
@@ -442,13 +477,25 @@ export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   const text = a.text.trim();
   if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };
   if (text.length > CACHE_MAX_CHARS || typeof indexedDB === 'undefined') return synthesizeNow(a);
-  const best = a.engine === 'elevenlabs' ? (await getExtras()).elevenQuality !== 'fast' : true;
-  const key = `${a.engine}|${a.voice}|${a.lang ?? 'en'}|${best ? 'best' : 'fast'}|${text}`;
-  const kept = await getSound(key);
+  const key = soundKey(a, text, a.engine === 'elevenlabs' ? (await getExtras()).elevenQuality : 'best');
+  // (the light sound is asked for: the full one kept from before does as well, and costs nothing)
+  const kept = await getSound(key) ?? (a.engine === 'azure' && a.light ? await getSound(soundKey({ ...a, light: false }, text, 'best')) : null);
   if (kept) return kept;
   const made = await synthesizeNow(a);
   if (made.b64) void putSound(key, made);
   return made;
+}
+
+/** ElevenLabs: the model of a request ('best' = Multilingual v2, the most natural; `fast` or the 'fast' setting = Flash v2.5) */
+export const elevenModel = (a: { fast?: boolean }, quality: 'best' | 'fast' | undefined): 'eleven_multilingual_v2' | 'eleven_flash_v2_5' => (a.fast || quality === 'fast' ? 'eleven_flash_v2_5' : 'eleven_multilingual_v2');
+/** the name a short sound is kept under: the service, the voice, the language, the kind of sound, the text */
+export function soundKey(a: Pick<TtsAsk, 'engine' | 'voice' | 'lang' | 'light' | 'fast'>, text: string, quality: 'best' | 'fast' | undefined): string {
+  const kind = a.engine === 'azure' ? (a.light ? 'light' : 'best') : a.engine === 'elevenlabs' && elevenModel(a, quality) === 'eleven_flash_v2_5' ? 'fast' : 'best';
+  return `${a.engine}|${a.voice}|${a.lang ?? 'en'}|${kind}|${text}`;
+}
+/** The body of one ElevenLabs request: the model by name, a warm and steady delivery. */
+export function elevenBody(text: string, model: string): { text: string; model_id: string; voice_settings: { stability: number; similarity_boost: number; style: number; use_speaker_boost: boolean } } {
+  return { text, model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.1, use_speaker_boost: true } };
 }
 
 async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
@@ -458,11 +505,14 @@ async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
   const urls = await baseUrls();
   if (a.engine === 'azure') {
     if (!keys.azure) throw new Error('Add your Microsoft (Azure Speech) key in ⚙ → API keys to use the Microsoft voice.');
-    const base = azureBase((await getExtras()).azureRegion, urls.azure);
+    const x = await getExtras();
+    const base = azureBase(x.azureRegion, urls.azure);
     const voice = a.voice || 'en-GB-AdaMultilingualNeural';
-    let res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang));
+    // (a free key: at most 19 requests a minute, and no sentence waits long for its turn; a paid key has no such limit)
+    const how = { light: a.light, maxWaitMs: x.azurePaid ? null : AZURE_MAX_WAIT_MS };
+    let res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang), how);
     // a voice that does not take <lang> (not multilingual): the plain text
-    if (res.status === 400 && /[\u3400-\u9FFF]/.test(text)) res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang, false));
+    if (res.status === 400 && /[\u3400-\u9FFF]/.test(text)) res = await azureSpeak(keys.azure, base, azureSsml(text, voice, a.lang, false), how);
     if (!res.ok) throw await azureFail(res);
     const audio = await res.arrayBuffer();
     // free up to 500,000 characters a month (F0); after that $15 per million (a Standard resource)
@@ -485,16 +535,24 @@ async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
   }
   if (!keys.elevenlabs) throw new Error('Add your ElevenLabs API key (Dream Tutor settings) to use the ElevenLabs voice.');
   const base = urls.elevenlabs ?? 'https://api.elevenlabs.io';
-  // the most natural model by default (or the fast, cheaper one), full quality sound, a warm and steady delivery
-  const best = (await getExtras()).elevenQuality !== 'fast';
+  // the most natural model by default (or the fast, cheaper one: the setting, or a page that asks for it), full
+  // quality sound, a warm and steady delivery. The sound comes with the time of every letter (with-timestamps).
+  const model = elevenModel(a, (await getExtras()).elevenQuality);
+  const best = model !== 'eleven_flash_v2_5';
   const res = await fetch(`${base}/v1/text-to-speech/${encodeURIComponent(a.voice || 'JBFqnCBsd6RMkjVDRZzb')}/with-timestamps?output_format=mp3_44100_128`, {
     method: 'POST', headers: { 'xi-api-key': keys.elevenlabs, 'content-type': 'application/json' },
-    body: JSON.stringify({ text, model_id: best ? 'eleven_multilingual_v2' : 'eleven_flash_v2_5', voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0.1, use_speaker_boost: true } }),
+    body: JSON.stringify(elevenBody(text, model)),
   });
   if (!res.ok) throw new Error(res.status === 401 ? 'ElevenLabs rejected the key. Check it in the Dream Tutor settings.' : `ElevenLabs voice: HTTP ${res.status} ${(await res.text()).slice(0, 160)}`);
-  const data = (await res.json()) as { audio_base64: string; alignment?: { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] } | null };
+  const data = (await res.json()) as { audio_base64: string; alignment?: Alignment | null };
   void addUsage({ date: new Date().toISOString(), provider: 'openai', model: best ? 'elevenlabs-multilingual-v2' : 'elevenlabs-flash', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: text.length * (best ? 0.0001 : 0.00005) }).catch(() => undefined);
-  return { b64: data.audio_base64, mime: 'audio/mpeg', timings: data.alignment ? charAlignmentToWords(data.alignment) : null };
+  return { b64: data.audio_base64, mime: 'audio/mpeg', timings: data.alignment ? alignmentTimings(text, data.alignment) : null };
+}
+
+/** ElevenLabs letter times -> the times of the words of `text` (word-times.ts), in the shape the voice's answer and the sound cache keep */
+export function alignmentTimings(text: string, a: Alignment): TtsAnswer['timings'] {
+  const words = wordsFromAlignment(text, a);
+  return words.length ? words.map((w) => ({ start: w.start, end: w.end, charIndex: w.charStart, charLength: w.charEnd - w.charStart })) : null;
 }
 
 /** ElevenLabs character times -> word timings (Dream Read src/main/tts.ts). */
@@ -642,7 +700,7 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
     if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
-    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
+    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error & { code?: string }) => sendResponse({ error: e.message, ...(e.code ? { code: e.code } : {}) })); return true; }
     if (msg?.type === 'dream-test-azure') { void testAzure((msg as { key?: string }).key).then(sendResponse); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }

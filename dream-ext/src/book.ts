@@ -33,7 +33,8 @@ import { RuleGuard, type RuleRequest } from './level-rule';
 import { buildHardSentencesPrompt, parseHardSentences } from './hard-sentences';
 import { rawFromPlain, rawFromTextFile, chapterOf, charsBefore, pdfToText } from './reader-text';
 import { parseEpub, type RawBook, type RawChapter } from './epub';
-import { bookStore, shelfOf, percentOf, sortShelf, type ShelfBook, type StoredText } from './book-store';
+import { bookStore, shelfOf, percentOf, sortShelf, charsOf, type ShelfBook, type StoredText } from './book-store';
+import { splitChapters, needsSplit, wasCut, recut, partTitle, blockOfParagraph, readLetters, storedLetter, SPLIT_VERSION } from './book-split';
 import { markOf, cardOf } from './word-level';
 import { myLevelOf, cefrToLevel, wordNumber, phraseDifficulty, harderThan, belowLevel, clampPct, DEFAULT_EXPLAIN_PCT, CEFR_MID } from './level100';
 import { HeardCounter, readHeard } from './heard';
@@ -46,8 +47,24 @@ import { SAMPLE_TITLE, SAMPLE_AUTHOR, SAMPLE_TEXT } from './book-sample';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const segmenter = createSegmenter();
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+
+/**
+ * After the next frame is on the screen: work that must never sit between a tap and what the tap shows (a write to
+ * the store, a pass over the whole part). In the order it was asked. A hidden page gets no frames: it is done all the same.
+ */
+const laterQ: (() => void)[] = [];
+let laterGen = 0, laterSet = false;
+function runLater(): void { laterSet = false; for (const f of laterQ.splice(0)) { try { f(); } catch { /* the next one still runs */ } } }
+function afterPaint(fn: () => void): void {
+  laterQ.push(fn);
+  if (laterSet) return;
+  laterSet = true;
+  const my = ++laterGen;
+  const run = () => { if (my === laterGen && laterSet) runLater(); };
+  requestAnimationFrame(() => setTimeout(run, 0));
+  setTimeout(run, 80);
+}
 
 // ---- quiet line icons ------------------------------------------------------------------------------------------
 const ic = (d: string, fill = false) => `<svg class="ic" viewBox="0 0 24 24"${fill ? ' style="fill:currentColor;stroke:none"' : ''}>${d}</svg>`;
@@ -109,6 +126,8 @@ let heard = new HeardCounter();
 // what is hard in this chapter
 let phrases: Record<string, PhraseHit[]> = {};
 let hardSet = new Set<string>();
+/** the part's hard sentences as the heavy pass left them (rescore); `scores` and `stopSet` are these without what I know now */
+let kept: SentenceScore[] = [];
 let scores = new Map<string, SentenceScore>();
 let stopSet = new Set<string>();
 let rankWords: Record<string, WordStatus> | null = null;
@@ -144,25 +163,33 @@ function debug(): void {
       : shown(sm) ? { big: false, kind: 'word', word: sm.querySelector('.word')!.textContent, zh: sm.querySelector('.zh')!.textContent, ipa: sm.querySelector('.ipa')!.textContent } : null,
     marks: { hard: document.querySelectorAll('#flow .w.hard').length, learning: document.querySelectorAll('#flow .w.learning').length },
     look: { theme: themeOf(look, systemDark()).id, size: look.size, font: look.font }, chrome: !$('rd').classList.contains('plain'), waiting: !!answer,
+    ai: shelf && book ? aiId() : '', split: shelf?.split ?? 0, heavy,
   });
 }
 
 // ---- the look ----------------------------------------------------------------------------------------------------
+/** what of the look moves the text (a colour does not: the page is not measured again for it) */
+let lookShape = '';
 function applyLook(relayout = true): void {
   const root = document.documentElement;
   const theme = themeOf(look, systemDark());
-  for (const [k, v] of Object.entries({ ...paletteOf(theme), ...textVars(look) })) root.style.setProperty(k, v);
-  root.dataset.align = look.align;
-  root.dataset.dark = theme.dark ? '1' : '0';
-  root.dataset.marks = extras.stopItemsOn === false ? '0' : '1';
+  // (only what changed is written: a value written again would have every word of the page styled again)
+  for (const [k, v] of Object.entries({ ...paletteOf(theme), ...textVars(look) })) if (root.style.getPropertyValue(k) !== v) root.style.setProperty(k, v);
+  for (const [k, v] of Object.entries({ align: look.align, dark: theme.dark ? '1' : '0', marks: extras.stopItemsOn === false ? '0' : '1' })) if (root.dataset[k] !== v) root.dataset[k] = v;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme.bg);
-  if (relayout && shelf) layout(true);
+  const shape = JSON.stringify({ ...look, theme: '', bg: '', fg: '', tapEdges: false });
+  const moved = shape !== lookShape;
+  lookShape = shape;
+  if (relayout && shelf && moved) layout(true);
   debug();
 }
 let lookSave: ReturnType<typeof setTimeout> | null = null;
-function setLook(patch: Partial<Look>): void {
+let lookSoon: ReturnType<typeof setTimeout> | null = null;
+/** `soon`: a slider is being moved: the page follows within 150 ms (one layout, not one for every step of the slider) */
+function setLook(patch: Partial<Look>, soon = false): void {
   look = readLook({ ...look, ...patch });
-  applyLook();
+  if (soon) lookSoon ??= setTimeout(() => { lookSoon = null; applyLook(); }, 150);
+  else { if (lookSoon) { clearTimeout(lookSoon); lookSoon = null; } applyLook(); }
   if (lookSave) clearTimeout(lookSave);
   lookSave = setTimeout(() => { lookSave = null; void chrome.storage.local.set({ [LOOK_KEY]: look }).catch(() => undefined); }, 300);
 }
@@ -203,28 +230,24 @@ function showLibrary(): void {
   $('rd').hidden = true; $('caption').hidden = true;
   $('lib').hidden = false;
   shelf = null; stored = null;
+  clearFlow();
   delete document.body.dataset.sentences;
   void paintLibrary();
 }
 
 const hex = async (data: BufferSource): Promise<string> => [...new Uint8Array(await crypto.subtle.digest('SHA-256', data))].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('');
-/** very long chapters are cut into parts of about 250 paragraphs: a page of the book turns fast, whatever the file */
-function partsOf(chapters: RawChapter[]): RawChapter[] {
-  const out: RawChapter[] = [];
-  for (const c of chapters) {
-    if (c.blocks.length <= 320) { out.push(c); continue; }
-    const n = Math.ceil(c.blocks.length / 250);
-    for (let i = 0; i < n; i++) out.push({ title: `${c.title || 'Part'} (${i + 1} of ${n})`, blocks: c.blocks.slice(i * 250, (i + 1) * 250) });
-  }
-  return out;
-}
 async function addBook(id: string, kind: ShelfBook['kind'], raw: RawBook, then: 'read' | 'listen' = 'read'): Promise<void> {
-  const chapters = partsOf(raw.chapters.filter((c) => c.blocks.some((b) => b.text.trim())));
+  const whole = raw.chapters.filter((c) => c.blocks.some((b) => b.text.trim()));
+  // (long paragraphs and long chapters are cut into light parts: a page turns and a tap answers fast, whatever the file)
+  const chapters = splitChapters(whole);
   if (!chapters.length) throw new Error('No readable text was found in it.');
   const st = await bookStore();
-  const had = await st.get(id).catch(() => null);
-  if (!had) await st.add(shelfOf(id, kind, { ...raw, chapters }), { id, chapters });
-  await openBook(id, then);
+  if (await st.has(id).catch(() => false)) { const had = await st.get(id).catch(() => null); if (had) { await openBook(id, then, had); return; } }
+  const fresh: ShelfBook = { ...shelfOf(id, kind, { ...raw, chapters }), ...(wasCut(whole, chapters) ? { split: SPLIT_VERSION } : {}) };
+  const text: StoredText = { id, chapters };
+  await st.add(fresh, text);
+  // (the text is in hand: it is not read back from the store)
+  await openBook(id, then, { shelf: fresh, text });
 }
 async function openFile(f: File): Promise<void> {
   const msg = $('lib-msg');
@@ -254,11 +277,37 @@ async function openPasted(title: string, text: string, author = ''): Promise<voi
 }
 
 // ---- a book opens ------------------------------------------------------------------------------------------------
-async function openBook(id: string, then: 'read' | 'listen' | 'same' = 'same'): Promise<void> {
-  const got = await (await bookStore()).get(id);
+/** the sentences of one stored paragraph (where each starts, in the letters the reader has) */
+const sentencesIn = (b: RawChapter['blocks'][number]) => chapterOf({ title: '', blocks: [b] }, 0, segmenter).paragraphs[0]?.sentences ?? [];
+/**
+ * A book stored the old, heavy way (a whole PDF as one chapter) is cut into light parts when it is opened, and stored
+ * again. The reader's place goes with it by letter count: the same sentence is on the page.
+ */
+async function lighter(got: { shelf: ShelfBook; text: StoredText }): Promise<{ shelf: ShelfBook; text: StoredText }> {
+  // (the "Opening…" line is on the screen before the work starts)
+  await new Promise<void>((r) => afterPaint(r));
+  const old = got.text.chapters, at = got.shelf.place;
+  const oldBlock = old[at.chapter]?.blocks[blockOfParagraph(old[at.chapter], at.paragraph)];
+  const start = at.sentence > 0 && oldBlock ? storedLetter(oldBlock.text, sentencesIn(oldBlock)[at.sentence]?.start ?? 0) : 0;
+  const now = recut(old, at, start);
+  if (!wasCut(old, now.chapters)) return got;
+  const ch = now.chapters[now.place.chapter];
+  const block = ch?.blocks[blockOfParagraph(ch, now.place.paragraph)];
+  let sentence = 0;
+  if (block && now.place.within > 0) { const letter = readLetters(block.text, now.place.within); sentencesIn(block).forEach((x, i) => { if (x.start <= letter) sentence = i; }); }
+  const fresh: ShelfBook = { ...got.shelf, chapterChars: now.chapters.map(charsOf), chapterTitles: now.chapters.map((c) => c.title), place: { chapter: now.place.chapter, paragraph: now.place.paragraph, sentence }, split: SPLIT_VERSION };
+  const text: StoredText = { ...got.text, chapters: now.chapters };
+  await (await bookStore()).add(fresh, text).catch(() => undefined);
+  // (the meanings kept for this book were named by the old places)
+  void chrome.storage.local.remove(`bkHere:${fresh.id}`).catch(() => undefined);
+  return { shelf: fresh, text };
+}
+async function openBook(id: string, then: 'read' | 'listen' | 'same' = 'same', given?: { shelf: ShelfBook; text: StoredText }): Promise<void> {
+  let got = given ?? await (await bookStore()).get(id);
   if (!got) throw new Error('This book is not in the library any more.');
   busy('Opening…');
   try {
+    if (needsSplit(got.text.chapters)) got = await lighter(got);
     shelf = got.shelf; stored = got.text;
     dict ??= await getDictionary();
     zipf = await getZipf();
@@ -271,6 +320,8 @@ async function openBook(id: string, then: 'read' | 'listen' | 'same' = 'same'): 
     };
     cut.clear(); names = new Set(); rankWords = null; rankDone = null;
     await prepareVoice();
+    // (the book before leaves the page first; the page is measured again once it is on the screen)
+    clearFlow(); pageW = 0;
     $('lib').hidden = true;
     $('rd').hidden = false;
     $('ttl').textContent = shelf.title; $('head-t').textContent = shelf.title;
@@ -289,11 +340,29 @@ async function openBook(id: string, then: 'read' | 'listen' | 'same' = 'same'): 
 }
 
 // ---- the chapter on the page ---------------------------------------------------------------------------------------
+/** the sentences of the part on the page (in the order of `order`) and its words by lemma: found once, when it is drawn */
+let sEls: HTMLElement[] = [];
+let wEls = new Map<string, HTMLElement[]>();
+/** where each sentence of the part is in `order` */
+let keyIdx = new Map<string, number>();
+let curEl: HTMLElement | null = null, picked: HTMLElement | null = null;
+const markCtx = () => ({ dict, zipf, words: vocab.words, myLevel: myLevelOf(extras, settings.learnerLevel), names });
+function clearFlow(): void { $('flow').textContent = ''; sEls = []; wEls = new Map(); firstOf.clear(); curEl = null; picked = null; }
 function render(): void {
   const ch = book.chapters[chapter];
   const parts: string[] = [];
   const many = (stored?.chapters.length ?? 1) > 1;
-  if (many && ch.title && !/^\s*$/.test(ch.title)) parts.push(`<p class="chap">${esc(ch.title)}</p>`);
+  // (a long chapter is kept in parts: its title stands over the first one only, the text goes on without a break)
+  const title = partTitle(ch.title);
+  if (many && title.part === 1 && title.base.trim()) parts.push(`<p class="chap">${esc(title.base)}</p>`);
+  // (the quiet marks are written with the text; a word that comes again is looked up once)
+  const ctx = markCtx();
+  const seen = new Map<string, string>();
+  const word = (t: string): string => {
+    let w = seen.get(t);
+    if (w === undefined) { const m = markOf(t, ctx); w = `<span class="w${m ? ` ${m}` : ''}" data-lemma="${esc(dict.lemmaOf(t))}">${esc(t)}</span>`; seen.set(t, w); }
+    return w;
+  };
   for (const para of ch.paragraphs) {
     let html = '', cursor = 0;
     for (const s of para.sentences) {
@@ -302,7 +371,7 @@ function render(): void {
       let at = s.start;
       for (const t of s.tokens) {
         html += esc(para.text.slice(at, t.start));
-        html += t.kind === 'word' ? `<span class="w" data-lemma="${esc(dict.lemmaOf(t.text))}">${esc(t.text)}</span>` : esc(t.text);
+        html += t.kind === 'word' ? word(t.text) : esc(t.text);
         at = t.end;
       }
       html += `${esc(para.text.slice(at, s.end))}</span>`;
@@ -310,27 +379,50 @@ function render(): void {
     }
     parts.push(`<p${para.kind !== 'p' ? ` class="${para.kind}"` : ''}>${html}${esc(para.text.slice(cursor))}</p>`);
   }
-  $('flow').innerHTML = parts.join('');
+  const flow = $('flow');
+  flow.innerHTML = parts.join('');
+  sEls = [...flow.querySelectorAll<HTMLElement>('.s')];
+  wEls = new Map(); firstOf.clear(); curEl = null; picked = null;
+  for (const el of flow.querySelectorAll<HTMLElement>('.w')) { const l = el.dataset.lemma ?? ''; const list = wEls.get(l); if (list) list.push(el); else wEls.set(l, [el]); }
 }
 
+/** a part's sentences and words are found (once; kept while the book is open) */
+function cutChapter(c: number): void {
+  if (!stored || cut.has(c) || !stored.chapters[c]) return;
+  book.chapters[c] = chapterOf(stored.chapters[c], c, segmenter);
+  cut.add(c);
+  for (const n of detectNames({ chapters: [book.chapters[c]] }, dict)) names.add(n);
+}
+let warm: ReturnType<typeof setTimeout> | null = null;
+/** the next part is made ready while this one is read: the page turn into it is as fast as any other */
+function warmNext(): void {
+  if (warm) clearTimeout(warm);
+  const id = shelf?.id, next = chapter + 1;
+  warm = setTimeout(() => { warm = null; if (shelf?.id === id && !cardNow) cutChapter(next); }, 700);
+}
 function showChapter(c: number, place: { paragraph: number; sentence: number } | null, atEnd = false): void {
   if (!stored) return;
   closeCard();
   chapter = clamp(c, 0, stored.chapters.length - 1);
-  if (!cut.has(chapter)) {
-    book.chapters[chapter] = chapterOf(stored.chapters[chapter], chapter, segmenter);
-    cut.add(chapter);
-    for (const n of detectNames({ chapters: [book.chapters[chapter]] }, dict)) names.add(n);
-  }
-  order = []; wordsBefore = [];
+  cutChapter(chapter);
+  order = []; wordsBefore = []; keyIdx = new Map();
   let w = 0;
-  for (const p of book.chapters[chapter].paragraphs) for (const s of p.sentences) { order.push({ chapter, paragraph: p.index, sentence: s.index }); wordsBefore.push(w); w += s.tokens.filter((t) => t.kind === 'word').length; }
+  for (const p of book.chapters[chapter].paragraphs) for (const s of p.sentences) {
+    const pos = { chapter, paragraph: p.index, sentence: s.index };
+    keyIdx.set(sentenceKey(pos), order.length);
+    order.push(pos); wordsBefore.push(w); w += s.tokens.filter((t) => t.kind === 'word').length;
+  }
   phrases = {}; hardSet = new Set(); aiStarted = null;
   stops = 0; heardKeys.clear(); stopped.clear(); rankWords = null; rankDone = null;
-  const at = place ? order.findIndex((p) => p.paragraph === place.paragraph && p.sentence === place.sentence) : -1;
+  // (the sentence I was at; when it is not there any more, the start of its paragraph)
+  const at = place ? keyIdx.get(sentenceKey({ chapter, paragraph: place.paragraph, sentence: place.sentence })) ?? keyIdx.get(sentenceKey({ chapter, paragraph: place.paragraph, sentence: 0 })) ?? -1 : -1;
   index = Math.max(0, at);
+  // (the column is set before the text is put in: the part is laid out once)
+  measure();
   render();
-  recompute();
+  // (which sentences stop the reading is worked out after the page is on the screen, or when the reading asks)
+  kept = []; scores = new Map(); stopSet = new Set(); sigs.clear();
+  rescoreSoon();
   paintChapters();
   document.body.dataset.sentences = String(order.length);
   document.body.dataset.chapter = String(chapter);
@@ -340,6 +432,7 @@ function showChapter(c: number, place: { paragraph: number; sentence: number } |
   else if (at > 0) { const el = sentenceEl(order[at]); goPage(el ? pageOf(el) : 0, false, false); anchorPos = order[at]; }
   else goPage(0, false);
   if (mode === 'listen' && tutorOn()) void startAi();
+  warmNext();
 }
 function paintChapters(): void {
   const n = stored?.chapters.length ?? 0;
@@ -347,7 +440,9 @@ function paintChapters(): void {
   if (sel.options.length !== n || sel.dataset.book !== (shelf?.id ?? '')) {
     sel.dataset.book = shelf?.id ?? '';
     sel.textContent = '';
-    stored!.chapters.forEach((c, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = n > 1 ? `${i + 1}. ${c.title || `Chapter ${i + 1}`}`.slice(0, 60) : (shelf?.title ?? '').slice(0, 60); sel.append(o); });
+    // (a part of a long chapter: the chapter's real title and "Part 2 of 7")
+    const name = (c: RawChapter, i: number): string => { const t = partTitle(c.title); return t.of > 1 ? `${t.base ? `${t.base.slice(0, 40)} · ` : ''}Part ${t.part} of ${t.of}` : `${i + 1}. ${c.title || `Chapter ${i + 1}`}`.slice(0, 60); };
+    stored!.chapters.forEach((c, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = n > 1 ? name(c, i) : (shelf?.title ?? '').slice(0, 60); sel.append(o); });
   }
   sel.value = String(chapter);
   $<HTMLButtonElement>('c-prev').disabled = chapter <= 0;
@@ -360,41 +455,53 @@ let page = 0, pages = 1, pageW = 0;
 /** the sentence the reader is at: it stays on the page when the text is laid out again (a new size, a turned screen).
  *  Set when the reader turns a page; laying out again does not move it, however often the settings change. */
 let anchorPos: Position | null = null;
-const sentenceEl = (pos: Position) => document.querySelector<HTMLElement>(`#flow .s[data-key="${sentenceKey(pos)}"]`);
+const sentenceEl = (pos: Position): HTMLElement | null => sEls[keyIdx.get(sentenceKey(pos)) ?? -1] ?? null;
 /** the page an element starts on */
 function pageOf(el: HTMLElement): number {
   const f = $('flow').getBoundingClientRect();
   const r = el.getClientRects()[0] ?? el.getBoundingClientRect();
-  return clamp(Math.floor((r.left - f.left + 2) / pageW), 0, pages - 1);
+  return clamp(Math.floor((r.left - f.left + 2) / (pageW || 1)), 0, pages - 1);
 }
 /** the first sentence that starts on the page now (or the one that runs into it) */
 const firstOnPage = (): number => firstOnPageOf(page);
+/** (found once for a page, until the text is laid out again) */
+const firstOf = new Map<number, number>();
 function firstOnPageOf(pg: number): number {
-  const els = document.querySelectorAll<HTMLElement>('#flow .s');
+  const had = firstOf.get(pg);
+  if (had !== undefined) return had;
+  const els = sEls;
   let lo = 0, hi = els.length - 1, ans = els.length - 1;
   while (lo <= hi) { const mid = (lo + hi) >> 1; if (pageOf(els[mid]) >= pg) { ans = mid; hi = mid - 1; } else lo = mid + 1; }
-  return clamp(ans, 0, Math.max(0, order.length - 1));
+  const first = clamp(ans, 0, Math.max(0, order.length - 1));
+  firstOf.set(pg, first);
+  return first;
+}
+/**
+ * The column of text, written on #flow itself (a variable on <html> would have every word of the page styled again).
+ * `read`: the screen may have changed, its width is read again.
+ */
+function measure(read = false): void {
+  if (read || !pageW) pageW = $('page').clientWidth;
+  const flow = $('flow');
+  // (an iPad: a column of about 34 em in the middle, never a line across the whole screen)
+  const col = Math.max(120, Math.min(pageW - 2 * look.margin, Math.round(look.size * 34)));
+  const w = `${col}px`, gap = `${Math.max(0, pageW - col)}px`;
+  if (flow.style.columnWidth !== w) { flow.style.width = w; flow.style.columnWidth = w; }
+  if (flow.style.columnGap !== gap) flow.style.columnGap = gap;
 }
 /** the page is measured again (the size, the margins, the screen changed); `keep`: stay at the same sentence */
-function layout(keep: boolean): void {
+function layout(keep: boolean, read = false): void {
   if (!shelf) return;
   const anchor = keep && order.length ? (playing ? order[index] : anchorPos ?? order[firstOnPage()]) : null;
-  const pg = $('page'), flow = $('flow');
-  const W = pg.clientWidth;
-  // (an iPad: a column of about 34 em in the middle, never a line across the whole screen)
-  const col = Math.max(120, Math.min(W - 2 * look.margin, Math.round(look.size * 34)));
-  const root = document.documentElement.style;
-  root.setProperty('--col', `${col}px`);
-  root.setProperty('--gap', `${W - col}px`);
-  pageW = W;
-  flow.classList.add('jump');
-  root.setProperty('--shift', '0px');
-  // (the width of all the columns: the last child's right edge tells how many pages there are)
+  measure(read);
+  firstOf.clear();
+  const flow = $('flow');
+  // (the width of all the columns: the last child's right edge tells how many pages there are. This is the one layout.)
   const last = flow.lastElementChild as HTMLElement | null;
   const f = flow.getBoundingClientRect();
   const rects = last?.getClientRects();
   const right = rects?.length ? rects[rects.length - 1].right : f.right;
-  pages = Math.max(1, Math.ceil((right - f.left - 1) / W));
+  pages = pageW > 0 ? Math.max(1, Math.ceil((right - f.left - 1) / pageW)) : 1;
   const el = anchor ? sentenceEl(anchor) : null;
   goPage(el ? pageOf(el) : Math.min(page, pages - 1), false, false);
   if (anchor && !anchorPos) anchorPos = anchor;
@@ -404,7 +511,8 @@ function goPage(n: number, animate = true, moved = true): void {
   if (moved) anchorPos = order.length ? order[firstOnPageOf(page)] : null;
   const flow = $('flow');
   flow.classList.toggle('jump', !animate);
-  document.documentElement.style.setProperty('--shift', `${-page * pageW}px`);
+  // (the shift is written on #flow itself: only it moves, no word is styled again)
+  flow.style.transform = `translate3d(${-page * pageW}px,0,0)`;
   if (!animate) { void flow.offsetWidth; flow.classList.remove('jump'); }
   paintFoot();
   if (!playing) savePlaceSoon();
@@ -438,8 +546,10 @@ function paintFoot(): void {
 }
 function percentNow(): number {
   if (!shelf || !stored || !order.length) return shelf?.percent ?? 0;
-  const pos = order[playing ? index : firstOnPage()];
+  // (the place a page turn has just found: the text is not measured again for the small line)
+  const pos = playing ? order[index] : anchorPos ?? order[firstOnPage()];
   const ch = book.chapters[chapter];
+  if (!pos) return shelf.percent;
   if (chapter === stored.chapters.length - 1 && page === pages - 1 && pages > 1) return 100;
   return percentOf(shelf.chapterChars, chapter, charsBefore(ch, pos.paragraph) + (ch.paragraphs[pos.paragraph]?.sentences[pos.sentence]?.start ?? 0));
 }
@@ -510,17 +620,56 @@ function say(text: string, slower = false): Promise<boolean> {
   speaking = h;
   return h.done.then((o) => { if (speaking === h) speaking = null; return o === 'ended'; }, () => false);
 }
-function cancelSpeech(): void { speaking?.cancel(); explaining?.cancel(); tts?.cancelAll(); }
+/** a pause in what the tutor says; whatever stops the voice (a tap on the card, a new word, Pause) ends it at once */
+let napEnd: (() => void) | null = null;
+function nap(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(t); if (napEnd === done) napEnd = null; resolve(); };
+    const t = setTimeout(done, ms);
+    napEnd = done;
+  });
+}
+function cancelSpeech(): void { speaking?.cancel(); explaining?.cancel(); tts?.cancelAll(); napEnd?.(); }
 const textOf = (pos: Position): string => getSentence(book, pos)?.text ?? '';
-const idxOf = (pos: Position): number => order.findIndex((p) => p.paragraph === pos.paragraph && p.sentence === pos.sentence);
+const idxOf = (pos: Position): number => keyIdx.get(sentenceKey(pos)) ?? -1;
 
 // ---- what is hard: my level, how much of each kind, my own words (the same rule as I Know) ------------------------
-function recompute(): void {
-  if (!order.length || !dict) return;
+// Two passes. rescore() is the heavy one (every word of the part goes through the dictionary): only when the part, my
+// level, the "how much" or the switches change, and after the frame. restatus() is the light one, for a tap: one word's
+// status changed, so the stops lose what I know now and only THAT word's marks in the text are set again.
+let needScore = false, scoreAsked = false, marksOld = false;
+/** how often the heavy pass ran (for the tests: a tap must not start one) */
+let heavy = 0;
+/** the heavy pass is wanted: it runs after the frame (or sooner, when the reading needs the stops). `marks`: all the marks too */
+function rescoreSoon(marks = false): void {
+  needScore = true;
+  if (marks) marksOld = true;
+  if (scoreAsked) return;
+  scoreAsked = true;
+  afterPaint(() => { scoreAsked = false; scoresNow(); });
+}
+function scoresNow(): void {
+  if (!needScore || !shelf) return;
+  rescore();
+  if (marksOld) { marksOld = false; remark(null); }
+  debug();
+}
+/** the phrases I know now, by their words (the vocabulary is read once, not for every sentence) */
+let doneNow = new Set<string>();
+const sigs = new Map<string, string>();
+const sigOf = (l: string): string => { let g = sigs.get(l); if (g === undefined) { g = phraseSig(dict, l); sigs.set(l, g); } return g; };
+function donePhrases(): Set<string> {
   const done = new Set<string>();
-  for (const [k, st] of Object.entries(vocab.words)) if (k.includes(' ') && (st === 'known' || st === 'ignored')) done.add(phraseSig(dict, k));
+  for (const [k, st] of Object.entries(vocab.words)) if (k.includes(' ') && (st === 'known' || st === 'ignored')) done.add(sigOf(k));
+  return done;
+}
+function rescore(): void {
+  needScore = false;
+  if (!order.length || !dict) return;
+  heavy++;
+  doneNow = donePhrases();
   rankWords ??= { ...vocab.words } as Record<string, WordStatus>;
-  rankDone ??= done;
+  rankDone ??= doneNow;
   const atStart = rankWords, doneAtStart = rankDone;
   const mine = myLevelOf(extras, settings.learnerLevel), cefr = settings.learnerLevel;
   const hardNumber = Math.min(98, (CEFR_MID[cefr as keyof typeof CEFR_MID] ?? 56) + 10);
@@ -536,8 +685,12 @@ function recompute(): void {
       return true;
     },
   });
-  const kept = keepHardest(all, pcts(), (lemma, kind) => numbers.get(`${kind}:${lemma}`) ?? 0, (lemma) => atStart[lemma] === 'learning');
-  const gone = (l: string) => vocab.words[l] === 'known' || vocab.words[l] === 'ignored' || done.has(phraseSig(dict, l));
+  kept = keepHardest(all, pcts(), (lemma, kind) => numbers.get(`${kind}:${lemma}`) ?? 0, (lemma) => atStart[lemma] === 'learning');
+  refilter();
+}
+/** the stops without what I know now (no dictionary, no look at the text: a few hundred sentences at most) */
+function refilter(): void {
+  const gone = (l: string) => vocab.words[l] === 'known' || vocab.words[l] === 'ignored' || doneNow.has(sigOf(l));
   const list = kept.map((sc) => {
     const idx = sc.lemmas.map((_, i) => i).filter((i) => !gone(sc.lemmas[i]));
     if (idx.length === sc.lemmas.length) return sc;
@@ -546,21 +699,40 @@ function recompute(): void {
   });
   scores = new Map(list.map((s) => [s.key, s]));
   stopSet = selectStopsByLevel(list, caps());
-  // the quiet marks in the text: harder than my level and not known; still learning = a full line
-  const ctx = { dict, zipf, words: vocab.words, myLevel: mine, names };
-  for (const el of document.querySelectorAll<HTMLElement>('#flow .w[data-lemma]')) {
-    const m = markOf(el.textContent ?? '', ctx);
-    el.classList.toggle('learning', m === 'learning');
-    el.classList.toggle('hard', m === 'hard');
-  }
+}
+/** the quiet marks in the text: harder than my level and not known; still learning = a full line. `els` null = every word */
+function remark(els: Iterable<HTMLElement> | null | undefined): void {
+  if (els === undefined) return;
+  const ctx = markCtx();
+  const one = (el: HTMLElement) => { const m = markOf(el.textContent ?? '', ctx); el.classList.toggle('learning', m === 'learning'); el.classList.toggle('hard', m === 'hard'); };
+  if (els) for (const el of els) one(el);
+  else for (const list of wEls.values()) for (const el of list) one(el);
+}
+/** the status of these words changed (a tap, "I know", another window): the light pass */
+function restatus(lemmas: readonly string[]): void {
+  if (lemmas.some((l) => l.includes(' '))) doneNow = donePhrases();
+  if (!needScore) refilter();
+  for (const l of lemmas) remark(wEls.get(l));
   debug();
+}
+/** the words whose new status this page is still writing to the store (what comes back meanwhile does not undo them) */
+const writing = new Map<string, number>();
+/** a word's status: at once on the page (light), in the store after the frame */
+function setStatus(lemma: string, status: 'learning' | 'known', met: { word?: string; sentence?: string }): void {
+  vocab.words[lemma] = status;
+  writing.set(lemma, (writing.get(lemma) ?? 0) + 1);
+  restatus([lemma]);
+  const written = () => { const n = (writing.get(lemma) ?? 1) - 1; if (n > 0) writing.set(lemma, n); else writing.delete(lemma); };
+  afterPaint(() => void store.setWordStatus(lemma, status, met).then(written, written));
 }
 interface StopNow { items: { kind: 'word' | 'phrase'; target: string; lemma: string }[]; sentence: boolean }
 /** does the reading stop after this sentence, and for what (nothing is changed by asking) */
 function stopFor(pos: Position): StopNow | null {
   const key = sentenceKey(pos);
   // (the tutor off: the book is read like any audiobook, no stop by itself)
-  if (!tutorOn() || !stopSet.has(key) || stopped.has(key)) return null;
+  if (!tutorOn()) return null;
+  scoresNow();
+  if (!stopSet.has(key) || stopped.has(key)) return null;
   const sc = scores.get(key);
   if (!sc) return null;
   const c = caps(), here = wordsBefore[idxOf(pos)] ?? 0, win = extras.repeatWords ?? 1000;
@@ -574,7 +746,8 @@ function stopFor(pos: Position): StopNow | null {
 }
 
 // ---- the chapter's phrases and hard sentences: asked once, when Listening starts, and kept --------------------------
-const aiId = (): string => ((stored?.chapters.length ?? 1) > 1 ? `${book.id}#${chapter}` : book.id);
+// (a book that was cut into light parts keeps its work under the cut's version: what was kept for the old parts is not used)
+const aiId = (): string => { const id = shelf?.split ? `${book.id}~${shelf.split}` : book.id; return (stored?.chapters.length ?? 1) > 1 ? `${id}#${chapter}` : id; };
 function startAi(): Promise<void> {
   if (aiStarted) return aiStarted;
   if (!tutorOn() || !hasAi() || !order.length) return Promise.resolve();
@@ -586,7 +759,7 @@ function startAi(): Promise<void> {
       let items: AiItem[] | null = await store.getLevelItems(id).catch(() => null);
       if (!items) { aiCalls++; items = await complete(buildItemsPrompt(lines, title)).then((raw) => parseItems(raw, lines)).catch(() => null); if (items) void store.setLevelItems(id, items).catch(() => undefined); }
       if (!fresh()) return;
-      if (items) { phrases = itemsToHits(book, order, items, dict); recompute(); }
+      if (items) { phrases = itemsToHits(book, order, items, dict); rescoreSoon(); }
       const kept = await store.getAnalysis(`${id}|hard`).catch(() => ({} as Record<string, string>));
       let list: number[] = [];
       if (typeof kept.list === 'string' && kept.n === String(lines.length)) { try { list = JSON.parse(kept.list) as number[]; } catch { list = []; } }
@@ -602,7 +775,7 @@ function startAi(): Promise<void> {
       }
       if (!fresh()) return;
       hardSet = new Set(list.filter((i) => order[i]).map((i) => sentenceKey(order[i])));
-      recompute();
+      rescoreSoon();
     } catch { /* the reading goes on without them */ }
   })();
   return aiStarted;
@@ -644,7 +817,7 @@ function askHere(kind: CardKind, target: string, lemma: string, pos: Position): 
 
 // ---- the card ------------------------------------------------------------------------------------------------------
 type CardKind = 'word' | 'phrase' | 'sentence';
-interface CardNow { kind: CardKind; target: string; lemma: string; pos: Position; openedAt: number; big: boolean; said: string; /** only looked up by hand, nothing explains it: a tap closes it */ only: boolean }
+interface CardNow { kind: CardKind; target: string; lemma: string; pos: Position; big: boolean; said: string; /** only looked up by hand, nothing explains it: a tap closes it */ only: boolean }
 let cardNow: CardNow | null = null;
 /** the 5 seconds after the word was said: a tap = I know */
 let answer: ((a: 'know' | 'timeout') => void) | null = null;
@@ -678,14 +851,14 @@ function paintCard(): void {
   debug();
 }
 function openCard(kind: CardKind, target: string, lemma: string, pos: Position, only = false): void {
-  cardNow = { kind, target, lemma, pos, openedAt: Date.now(), big: cardBig(), said: '', only };
+  cardNow = { kind, target, lemma, pos, big: cardBig(), said: '', only };
   paintCard();
 }
 function closeCard(): void {
   $('card').hidden = true; $('small').hidden = true; $('caption').hidden = true;
   $('card').querySelector('.wait')!.classList.remove('run');
   cardNow = null;
-  document.querySelectorAll('#flow .w.pick').forEach((e) => e.classList.remove('pick'));
+  picked?.classList.remove('pick'); picked = null;
   const then = afterCard; afterCard = null;
   debug();
   then?.();
@@ -709,26 +882,26 @@ function waitAnswer(ms: number): Promise<'know' | 'timeout'> {
     debug();
   });
 }
-/** a tap on the card = "I know" (not in its first 450 ms: that tap was meant for the page under it) */
+/** a tap on the big card = "I know" (a card that was only looked up: the tap closes it) */
 function cardKnow(): void {
   const c = cardNow;
-  if (!c || Date.now() - c.openedAt < 450) return;
+  if (!c) return;
   // (a word that was only looked up, with no tutor behind it: the tap closes its card. It stays a word I am learning.)
   if (c.only) { dropCard(); return; }
+  knowNow(c);
+}
+/**
+ * "I know": the card is gone in the tap itself and the voice stops. Then the light bookkeeping (the word's marks, the
+ * stops); the store is written after the frame. A flow that was teaching the word ends by itself ('known').
+ */
+function knowNow(c: CardNow): void {
   verdict = 'know';
-  if (answer) { answer('know'); return; }
+  const a = answer;
   cancelSpeech();
-  if (!teaching) knowCard(c);
-}
-function knowCard(c: CardNow): void {
-  if (c.kind !== 'sentence') markKnownNow(c.lemma, c.target);
-  else void store.setWordStatus(c.lemma, 'known', { word: c.target.slice(0, 80) }).catch(() => undefined);
   closeCard();
-}
-function markKnownNow(lemma: string, word: string): void {
-  vocab.words[lemma] = 'known';
-  void store.setWordStatus(lemma, 'known', { word }).catch(() => undefined);
-  recompute();
+  if (c.kind !== 'sentence') setStatus(c.lemma, 'known', { word: c.target });
+  else afterPaint(() => void store.setWordStatus(c.lemma, 'known', { word: c.target.slice(0, 80) }).catch(() => undefined));
+  a?.('know');
 }
 
 // ---- the tutor explains ----------------------------------------------------------------------------------------------
@@ -736,10 +909,11 @@ function requestFor(kind: CardKind, target: string, pos: Position): RuleRequest 
   const ctx = contextAround(book, pos, 80, 40);
   const known = new Set<string>();
   for (const t of getSentence(book, pos)?.sentence.tokens ?? []) if (t.kind === 'word' && vocab.words[dict.lemmaOf(t.text)] === 'known') known.add(t.text.toLowerCase());
+  if (kind === 'sentence') scoresNow();
   const teachLen = (() => { const l = settings.ai.explanationLength as string; return l === 'short' || l === 'long' ? l : 'normal'; })();
   return {
     kind: kind as RuleRequest['kind'], target, sentence: textOf(pos) || target, before: ctx.before, after: ctx.after,
-    book: { title: book.title, chapter: book.chapters[chapter]?.title ?? '' }, history: [], position: pos,
+    book: { title: book.title, chapter: partTitle(book.chapters[chapter]?.title ?? '').base }, history: [], position: pos,
     levelRule: { items: kind === 'sentence' ? (scores.get(sentenceKey(pos))?.items ?? []) : [target], known: [...known], level: settings.learnerLevel || 'B2', length: teachLen },
   };
 }
@@ -790,15 +964,18 @@ async function teachFlow(me: number, kind: CardKind, target: string, lemma: stri
   verdict = null;
   const alive = () => me === flowId && o.ok();
   const sentence = textOf(pos);
-  const known = () => { if (kind !== 'sentence') markKnownNow(lemma, target); else void store.setWordStatus(lemma, 'known', { word: target.slice(0, 80) }).catch(() => undefined); closeCard(); return 'known' as const; };
+  // ("I know" was tapped: knowNow closed the card and marked the word in that very tap; the flow only ends here)
+  const known = () => { closeCard(); return 'known' as const; };
   openCard(kind, target, lemma, pos, !o.wait && (!tutorOn() || !hasAi()));
-  if (kind !== 'sentence' && !vocab.words[lemma]) { vocab.words[lemma] = 'learning'; void store.setWordStatus(lemma, 'learning', { word: target, sentence }).catch(() => undefined); recompute(); }
+  // (the card is on the screen first: the word's new status costs a few marks now, the store is written after the frame)
+  if (kind !== 'sentence' && !vocab.words[lemma]) setStatus(lemma, 'learning', { word: target, sentence });
   if (kind !== 'sentence') { heard.ask(lemma, wordsBefore[idxOf(pos)] ?? 0); saveHeardSoon(); }
   const times = async (n: number): Promise<boolean> => {
     for (let i = 0; i < n; i++) {
-      if (i > 0) await sleep(350);
       if (!alive()) return false;
       if (verdict) return true;
+      // (the pause between two times ends at once when the card is tapped)
+      if (i > 0) { await nap(350); if (!alive()) return false; if (verdict) return true; }
       await say(target, true);
       if (!alive()) return false;
     }
@@ -813,8 +990,8 @@ async function teachFlow(me: number, kind: CardKind, target: string, lemma: stri
   if (!alive()) return 'cancelled';
   if (verdict === 'know') return known();
   if (explanation && kind !== 'sentence') {
-    void saveExplained({ lemma, word: target, sentence, explanation, chinese: zhFor(kind, target, lemma, pos).zh, bookId: book.id, bookTitle: book.title, chapter: book.chapters[chapter]?.title ?? '', position: pos }, extras.knownAfter ?? 7)
-      .then((r) => { if (r?.nowKnown) { vocab.words[lemma] = 'known'; recompute(); toast(`“${target}” was explained ${r.times} times: it counts as known now.`, 5000); } }, () => undefined);
+    void saveExplained({ lemma, word: target, sentence, explanation, chinese: zhFor(kind, target, lemma, pos).zh, bookId: book.id, bookTitle: book.title, chapter: partTitle(book.chapters[chapter]?.title ?? '').base, position: pos }, extras.knownAfter ?? 7)
+      .then((r) => { if (r?.nowKnown) { vocab.words[lemma] = 'known'; restatus([lemma]); toast(`“${target}” was explained ${r.times} times: it counts as known now.`, 5000); } }, () => undefined);
   }
   if (kind !== 'sentence' && !(await times(kind === 'word' ? clamp(extras.sayAfter ?? 3, 0, 10) : 1))) return 'cancelled';
   if (verdict === 'know') return known();
@@ -827,10 +1004,10 @@ const sentenceLemma = (text: string): string => `sentence: ${text.trim().toLower
 
 // ---- listening: the book is read aloud ---------------------------------------------------------------------------
 function markCurrent(pos: Position | null): void {
-  document.querySelector('#flow .s.cur')?.classList.remove('cur');
+  curEl?.classList.remove('cur'); curEl = null;
   const el = pos && sentenceEl(pos);
   if (!el) return;
-  el.classList.add('cur');
+  el.classList.add('cur'); curEl = el;
   const p = pageOf(el);
   if (p !== page) goPage(p);
 }
@@ -940,34 +1117,54 @@ function tappedWord(el: HTMLElement): void {
   const sEl = el.closest<HTMLElement>('.s');
   if (!sEl) return;
   const [c, p, s] = sEl.dataset.key!.split('.').map(Number);
-  document.querySelectorAll('#flow .w.pick').forEach((e) => e.classList.remove('pick'));
-  el.classList.add('pick');
+  picked?.classList.remove('pick');
+  el.classList.add('pick'); picked = el;
   const word = (el.textContent ?? '').trim();
   void teachByHand('word', word, el.dataset.lemma || word.toLowerCase(), { chapter: c, paragraph: p, sentence: s });
 }
+/** what is selected, as one line ('' = nothing) */
+const selText = (): string => window.getSelection()?.toString().replace(/\s+/g, ' ').trim() ?? '';
+/**
+ * What is selected in the text is asked: one word (a long press selects it) = a tap on that word, a few words = a
+ * phrase, more = the sentence card. False when nothing in the text is selected.
+ */
+function takeSelection(): boolean {
+  const sel = window.getSelection();
+  const t = selText();
+  if (!sel || sel.isCollapsed || !sel.rangeCount || !t || t.length > 700 || $('rd').hidden || sheetOpen()) return false;
+  const r = sel.getRangeAt(0);
+  const elOf = (n: Node | null): Element | null => (n instanceof Element ? n : n?.parentElement ?? null);
+  const top = elOf(r.commonAncestorContainer);
+  if (!top?.closest('#flow')) return false;
+  const words = t.split(' ').filter(Boolean);
+  if (words.length < 2) {
+    const one = top.closest<HTMLElement>('.w[data-lemma]') ?? [...top.querySelectorAll<HTMLElement>('.w[data-lemma]')].find((w) => r.intersectsNode(w) && !!w.textContent && t.includes(w.textContent)) ?? null;
+    sel.removeAllRanges();
+    if (one) tappedWord(one);
+    return true;
+  }
+  const from = elOf(r.startContainer)?.closest<HTMLElement>('#flow .s') ?? elOf(r.endContainer)?.closest<HTMLElement>('#flow .s') ?? sEls.find((x) => r.intersectsNode(x)) ?? null;
+  if (!from) return false;
+  const [c, p, s] = from.dataset.key!.split('.').map(Number);
+  const pos = { chapter: c, paragraph: p, sentence: s };
+  sel.removeAllRanges();
+  // (a few words = a phrase; more, or a whole sentence = the sentence card: its translation, no pronunciation)
+  if (words.length <= 6) void teachByHand('phrase', t, t.toLowerCase(), pos);
+  else void teachByHand('sentence', t, sentenceLemma(t), pos);
+  return true;
+}
+/** a finger (or the mouse button) is down on the page: what it selects is asked when it lifts */
+let fingerDown = false;
+let selTimer: ReturnType<typeof setTimeout> | null = null;
+/** the selection changed with no finger on the page (its handles were moved, or iOS took the long press): asked a moment later */
+function selectionSoon(): void {
+  if (selTimer) clearTimeout(selTimer);
+  selTimer = setTimeout(() => { selTimer = null; if (!fingerDown) takeSelection(); }, 250);
+}
 function wireSelection(): void {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let last = '';
-  document.addEventListener('selectionchange', () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      const sel = window.getSelection();
-      const t = sel?.toString().replace(/\s+/g, ' ').trim() ?? '';
-      if (!sel || sel.isCollapsed || !t || t === last || t.length > 700) { if (!t) last = ''; return; }
-      const from = (sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement)?.closest<HTMLElement>('#flow .s');
-      if (!from) return;
-      const words = t.split(' ').filter(Boolean);
-      if (words.length < 2) return;
-      last = t;
-      const [c, p, s] = from.dataset.key!.split('.').map(Number);
-      const pos = { chapter: c, paragraph: p, sentence: s };
-      sel.removeAllRanges();
-      // (a few words = a phrase; more, or a whole sentence = the sentence card: its translation, no pronunciation)
-      if (words.length <= 6) void teachByHand('phrase', t, t.toLowerCase(), pos);
-      else void teachByHand('sentence', t, sentenceLemma(t), pos);
-    }, 900);
-  });
+  document.addEventListener('selectionchange', selectionSoon);
+  window.addEventListener('mousedown', () => { fingerDown = true; });
+  window.addEventListener('mouseup', () => { fingerDown = false; });
 }
 
 // ---- fingers: a swipe turns the page, a tap on a word explains it, a tap in the middle calls the bars ----------------
@@ -975,55 +1172,83 @@ function wirePage(): void {
   // (the whole reading screen: the narrow bands above and under the text belong to it too)
   const pg = $('rd');
   const inBars = (t: HTMLElement | null): boolean => !!t?.closest('.chrome, #mini');
-  let down: { x: number; y: number; at: number } | null = null;
-  let lastTouch = 0;
+  let down: { x: number; y: number; at: number; sel: string } | null = null;
+  // (when the last touch ended, and where it began: the click a browser may send after a touch is never taken twice)
+  let lastTouch = 0, touchOn = '', lastX = 0, lastY = 0;
   const tap = (x: number, y: number, target: HTMLElement | null) => {
     if (sheetOpen()) { closeSheet(); return; }
-    if (cardNow && !cardNow.big) { dropCard(); return; }
+    const word = target?.closest<HTMLElement>('#flow .w[data-lemma]') ?? null;
+    // (the small card is open: it goes; a word under the finger opens in the same tap. A book that was being read
+    // stays held for the new word.)
+    if (cardNow && !cardNow.big) { if (word) afterCard = null; dropCard(); if (!word) return; }
     const w = innerWidth;
     // (the band above the text and the band under it: the bars come and go. On a page full of words this is the sure
     // place to tap; a tap on a word explains the word.)
     { const r = $('page').getBoundingClientRect(); if (y < r.top + 6 || y > r.bottom - 6) { setChrome(!chromeOn()); return; } }
     const strip = look.tapEdges ? 64 : Math.max(look.margin, 30);
     const edge = x < strip ? -1 : x > w - strip ? 1 : 0;
-    // (the bars are showing: a tap on the page sends them away, nothing else)
-    if (chromeOn() && !playing) { setChrome(false); return; }
-    const word = target?.closest<HTMLElement>('#flow .w[data-lemma]') ?? null;
+    // (the bars are showing: a tap on the page sends them away; a tap on a word opens the word as well, in the same tap)
+    if (chromeOn() && !playing) { setChrome(false); if (!word) return; }
     if (edge && (look.tapEdges || !word)) { turn(edge as 1 | -1); return; }
     if (word) { tappedWord(word); return; }
     // (beside the text: the left third goes back, the right third goes on, the middle calls the bars)
     if (x < w * 0.28) turn(-1); else if (x > w * 0.72) turn(1); else setChrome(!chromeOn());
   };
-  pg.addEventListener('touchstart', (ev) => { const t = ev.touches[0]; down = ev.touches.length === 1 && !inBars(ev.target as HTMLElement) ? { x: t.clientX, y: t.clientY, at: Date.now() } : null; }, { passive: true });
+  pg.addEventListener('touchstart', (ev) => {
+    const t = ev.touches[0];
+    fingerDown = true; touchOn = 'page';
+    down = ev.touches.length === 1 && !inBars(ev.target as HTMLElement) ? { x: t.clientX, y: t.clientY, at: Date.now(), sel: selText() } : null;
+  }, { passive: true });
+  // (iOS took the touch for itself, e.g. a long press that selects a word: the selection is asked a moment later)
+  pg.addEventListener('touchcancel', () => { down = null; fingerDown = false; selectionSoon(); }, { passive: true });
+  // (not passive: a touch the page has taken sends no click after it, so nothing "taps" the card that just opened)
   pg.addEventListener('touchend', (ev) => {
     const d = down; down = null;
+    fingerDown = (ev.touches?.length ?? 0) > 0;
     lastTouch = Date.now();
     const t = ev.changedTouches[0];
     if (!d || !t) return;
+    lastX = t.clientX; lastY = t.clientY;
     const dx = t.clientX - d.x, dy = t.clientY - d.y, dt = Date.now() - d.at;
-    if (Math.abs(dx) > 44 && Math.abs(dx) > Math.abs(dy) * 1.6 && dt < 900) { window.getSelection()?.removeAllRanges(); turn(dx < 0 ? 1 : -1); return; }
-    if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && dt < 420 && !window.getSelection()?.toString().trim()) tap(t.clientX, t.clientY, ev.target as HTMLElement);
-  }, { passive: true });
+    const sel = selText();
+    // (this finger selected something and lifts: it is asked now, not a moment later)
+    if (sel && sel !== d.sel) { if (takeSelection() && ev.cancelable) ev.preventDefault(); return; }
+    // (a selection left from before never blocks the tap)
+    if (sel) window.getSelection()?.removeAllRanges();
+    if (Math.abs(dx) > 44 && Math.abs(dx) > Math.abs(dy) * 1.6 && dt < 900) { if (ev.cancelable) ev.preventDefault(); turn(dx < 0 ? 1 : -1); return; }
+    // (a tap may be slow or a little unsure: up to 0.8 s and 14 px)
+    if (Math.abs(dx) < 14 && Math.abs(dy) < 14 && dt < 800) { if (ev.cancelable) ev.preventDefault(); tap(t.clientX, t.clientY, ev.target as HTMLElement); }
+  }, { passive: false });
   // (a mouse, on a computer)
-  pg.addEventListener('click', (ev) => { if (Date.now() - lastTouch < 700 || inBars(ev.target as HTMLElement)) return; if (!window.getSelection()?.toString().trim()) tap(ev.clientX, ev.clientY, ev.target as HTMLElement); });
+  pg.addEventListener('click', (ev) => {
+    if (Date.now() - lastTouch < 700 || inBars(ev.target as HTMLElement)) return;
+    if (selText() && takeSelection()) return;
+    window.getSelection()?.removeAllRanges();
+    tap(ev.clientX, ev.clientY, ev.target as HTMLElement);
+  });
   const cardTap = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); cardKnow(); };
-  let cardTouch = 0;
-  let cardDown: { x: number; y: number; at: number } | null = null;
-  $('card').addEventListener('touchstart', (ev) => { const t = ev.touches[0]; cardDown = t && ev.touches.length === 1 ? { x: t.clientX, y: t.clientY, at: Date.now() } : null; }, { passive: true });
+  let cardDown: { x: number; y: number } | null = null;
+  $('card').addEventListener('touchstart', (ev) => { const t = ev.touches[0]; touchOn = 'card'; cardDown = t && ev.touches.length === 1 ? { x: t.clientX, y: t.clientY } : null; }, { passive: true });
   $('card').addEventListener('touchend', (ev) => {
-    cardTouch = Date.now();
+    lastTouch = Date.now();
     const d = cardDown; cardDown = null;
     const t = ev.changedTouches[0];
-    if (!d || !t || Math.abs(t.clientX - d.x) > 10 || Math.abs(t.clientY - d.y) > 10 || Date.now() - d.at > 600) { ev.stopPropagation(); return; }
+    // (any touch that did not move, however long it was; one that moved was reading a long sentence on the card)
+    if (!d || !t || Math.abs(t.clientX - d.x) > 20 || Math.abs(t.clientY - d.y) > 20) { ev.stopPropagation(); return; }
     cardTap(ev);
   });
-  $('card').addEventListener('click', (ev) => { if (Date.now() - cardTouch < 700) return; cardTap(ev); });
+  // (a mouse; never the click that comes after a touch, nor the second click of a double click)
+  $('card').addEventListener('click', (ev) => { if (Date.now() - lastTouch < 700 || ev.detail > 1) return; cardTap(ev); });
+  $('small').addEventListener('touchstart', () => { touchOn = 'small'; }, { passive: true });
+  $('small').addEventListener('touchend', () => { lastTouch = Date.now(); }, { passive: true });
   $('small').addEventListener('click', (ev) => {
+    // (the click a browser may send after a touch on the page, at the same spot, was meant for the page)
+    if (touchOn !== 'small' && Date.now() - lastTouch < 700 && Math.abs(ev.clientX - lastX) < 30 && Math.abs(ev.clientY - lastY) < 30) return;
     const a = (ev.target as HTMLElement).closest<HTMLElement>('[data-a]')?.dataset.a;
     const c = cardNow;
     if (!a || !c) return;
     if (a === 'close') dropCard();
-    else if (a === 'know') { verdict = 'know'; if (answer) answer('know'); else { cancelSpeech(); if (!teaching) knowCard(c); } }
+    else if (a === 'know') knowNow(c);
     else if (a === 'explain') { if (answer) answer('timeout'); else void teachByHand(c.kind, c.target, c.lemma, c.pos); }
   });
   window.addEventListener('keydown', (ev) => {
@@ -1072,7 +1297,7 @@ function lookSheet(): void {
     <div class="rowline"><span>Wide tap edges<small>a tap near the left or right edge turns the page</small></span>${opts('tapEdges', look.tapEdges ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
     <button class="big" data-a="reset">Back to the usual look</button>`);
   void cur;
-  const lpl = () => { const n = lettersPerLine(Math.min($('page').clientWidth, look.size * 34 + 2 * look.margin), look); $('lpl').textContent = `About ${n} letters on a line${n < 30 ? ' (short lines: try smaller text or margins)' : n > 78 ? ' (long lines: try bigger text or margins)' : ''}.`; };
+  const lpl = () => { const n = lettersPerLine(Math.min(pageW || innerWidth, look.size * 34 + 2 * look.margin), look); $('lpl').textContent = `About ${n} letters on a line${n < 30 ? ' (short lines: try smaller text or margins)' : n > 78 ? ' (long lines: try bigger text or margins)' : ''}.`; };
   lpl();
   body.oninput = (ev) => {
     const t = ev.target as HTMLInputElement;
@@ -1080,7 +1305,8 @@ function lookSheet(): void {
     if (!name) return;
     if (t.type === 'color') { setLook({ [name]: t.value, theme: 'custom' } as Partial<Look>); return; }
     const v = Number(t.value);
-    setLook({ [name]: v } as Partial<Look>);
+    // (the number beside the slider follows the finger; the page follows within 150 ms)
+    setLook({ [name]: v } as Partial<Look>, true);
     const out = t.parentElement?.querySelector('output');
     if (out) out.textContent = name === 'line' || name === 'letter' || name === 'word' ? v.toFixed(2) : name === 'para' ? v.toFixed(1) : String(v);
     lpl();
@@ -1099,6 +1325,7 @@ function lookSheet(): void {
   };
 }
 
+const pctSoon: Record<string, ReturnType<typeof setTimeout>> = {};
 async function patchX(p: Partial<store.YtExtras>): Promise<void> { extras = { ...extras, ...p }; await store.patchExtras(p).catch(() => undefined); }
 function tutorSheet(): void {
   const p = pcts();
@@ -1144,7 +1371,8 @@ function tutorSheet(): void {
     if (!name || t.type !== 'range') return;
     const v = Number(t.value);
     const out = t.parentElement?.querySelector('output');
-    if (name === 'pctWords' || name === 'pctPhrases' || name === 'pctSentences') { if (out) out.textContent = `${v}%`; void patchX({ [name]: clampPct(v) }).then(recompute); }
+    // ("how much": the number follows the finger; it is stored, and the stops worked out, a moment after the last step)
+    if (name === 'pctWords' || name === 'pctPhrases' || name === 'pctSentences') { if (out) out.textContent = `${v}%`; clearTimeout(pctSoon[name]); pctSoon[name] = setTimeout(() => void patchX({ [name]: clampPct(v) }).then(() => rescoreSoon()), 200); }
     else if (name === 'teacherVolume') { if (out) out.textContent = `${v}%`; void patchX({ teacherVolume: v, wordVolume: v }); }
     else if (name === 'rate') { if (out) out.textContent = `${v.toFixed(2)}×`; settings = { ...settings, voice: { ...settings.voice, rate: v } }; void store.updateSettings((cur) => ({ voice: { ...cur.voice, rate: v } })).catch(() => undefined); paintPlay(); }
   };
@@ -1160,9 +1388,9 @@ function tutorSheet(): void {
     if (!b) return;
     const group = b.parentElement?.classList.contains('opts') ? b.parentElement.dataset.name : '';
     const v = b.dataset.v ?? '';
-    if (group === 'tutorOn') void patchX({ tutorOn: v === 'on' }).then(async () => { await prepareVoice(); recompute(); again(); });
-    else if (group === 'learnerLevel') { settings = { ...settings, learnerLevel: v as Settings['learnerLevel'] }; rankWords = null; void store.updateSettings(() => ({ learnerLevel: v as Settings['learnerLevel'] })).catch(() => undefined); void patchX({ myLevel: cefrToLevel(v), levelAuto: false }).then(() => { recompute(); again(); }); }
-    else if (group === 'stopItemsOn' || group === 'stopPhrasesOn' || group === 'stopHardOn') void patchX({ [group]: v === 'on' }).then(() => { applyLook(false); recompute(); again(); });
+    if (group === 'tutorOn') void patchX({ tutorOn: v === 'on' }).then(async () => { await prepareVoice(); debug(); again(); });
+    else if (group === 'learnerLevel') { settings = { ...settings, learnerLevel: v as Settings['learnerLevel'] }; rankWords = null; void store.updateSettings(() => ({ learnerLevel: v as Settings['learnerLevel'] })).catch(() => undefined); void patchX({ myLevel: cefrToLevel(v), levelAuto: false }).then(() => { rescoreSoon(true); again(); }); }
+    else if (group === 'stopItemsOn' || group === 'stopPhrasesOn' || group === 'stopHardOn') void patchX({ [group]: v === 'on' }).then(() => { applyLook(false); rescoreSoon(); again(); });
     else if (group === 'cardSize') void patchX({ cardSize: v === 'small' ? 'small' : 'big' }).then(again);
     else if (group === 'showSay') void patchX({ showSay: v === 'on' }).then(again);
     else if (group === 'voice') void patchX({ voice: v as store.VoiceChoice }).then(afterVoice);
@@ -1178,7 +1406,7 @@ function tutorSheet(): void {
         if (k === 'azure') { await patchX({ voice: 'azure' }); const r = (await chrome.runtime.sendMessage({ type: 'dream-test-azure' }).catch(() => null)) as { ok: boolean; message: string } | null; extras = await store.getExtras(); toast(r ? (r.ok ? `Key saved. ${r.message}` : `Key saved, but: ${r.message}`) : 'Key saved.', 7000); }
         else toast('Key saved.');
         await afterVoice();
-        recompute();
+        debug();
       });
     }
     else if (b.dataset.a === 'app-settings') { closeSheet(); void appPost({ kind: 'appSettings' }); }
@@ -1275,15 +1503,35 @@ async function boot(): Promise<void> {
   applyLook(false);
   try { window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyLook(false)); } catch { /* an old browser */ }
   let resizeT: ReturnType<typeof setTimeout> | null = null;
-  window.addEventListener('resize', () => { if (resizeT) clearTimeout(resizeT); resizeT = setTimeout(() => layout(true), 120); });
-  window.addEventListener('pagehide', () => savePlaceNow());
-  document.addEventListener('visibilitychange', () => { if (document.hidden) savePlaceNow(); });
+  window.addEventListener('resize', () => { if (resizeT) clearTimeout(resizeT); resizeT = setTimeout(() => layout(true, true), 120); });
+  // (leaving: what was waiting for the next frame is written now)
+  window.addEventListener('pagehide', () => { runLater(); savePlaceNow(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { runLater(); savePlaceNow(); } });
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== 'local') return;
-    if (ch[store.STORAGE_KEYS.extras]) { extras = { ...store.DEFAULT_EXTRAS, ...(ch[store.STORAGE_KEYS.extras].newValue as Partial<store.YtExtras> | undefined) }; if (shelf) { applyLook(false); recompute(); } }
-    if (ch[store.STORAGE_KEYS.keys]) void store.getKeys().then(async (k) => { keys = k; await prepareVoice(); if (shelf) recompute(); });
-    if (shelf && ch[store.STORAGE_KEYS.vocab]) { vocab = { words: { ...((ch[store.STORAGE_KEYS.vocab].newValue as VocabState | undefined)?.words ?? {}) }, marked: {} }; recompute(); }
-    if (shelf && ch[store.STORAGE_KEYS.settings]) void store.getSettings().then((s) => { settings = s; recompute(); paintPlay(); });
+    // (what this page wrote itself comes back here too: it is the same as what the page has, and costs nothing)
+    if (ch[store.STORAGE_KEYS.extras]) {
+      const next = { ...store.DEFAULT_EXTRAS, ...(ch[store.STORAGE_KEYS.extras].newValue as Partial<store.YtExtras> | undefined) };
+      const a = extras as unknown as Record<string, unknown>, b = next as unknown as Record<string, unknown>;
+      const same = [...new Set([...Object.keys(a), ...Object.keys(b)])].every((k) => a[k] === b[k] || JSON.stringify(a[k]) === JSON.stringify(b[k]));
+      extras = next;
+      if (shelf && !same) { applyLook(false); rescoreSoon(true); }
+    }
+    if (ch[store.STORAGE_KEYS.keys]) void store.getKeys().then(async (k) => { keys = k; await prepareVoice(); debug(); });
+    if (shelf && ch[store.STORAGE_KEYS.vocab]) {
+      const next = (ch[store.STORAGE_KEYS.vocab].newValue as VocabState | undefined)?.words ?? {};
+      const changed: string[] = [];
+      for (const k of Object.keys(next)) if (vocab.words[k] !== next[k] && !writing.has(k)) changed.push(k);
+      for (const k of Object.keys(vocab.words)) if (!(k in next) && !writing.has(k)) changed.push(k);
+      // (another window changed my words: the light pass, for those words only)
+      if (changed.length) {
+        const words = { ...next };
+        for (const k of writing.keys()) if (vocab.words[k]) words[k] = vocab.words[k];
+        vocab = { words, marked: {} };
+        restatus(changed);
+      }
+    }
+    if (shelf && ch[store.STORAGE_KEYS.settings]) void store.getSettings().then((s) => { const lvl = s.learnerLevel !== settings.learnerLevel; settings = s; if (lvl) { rankWords = null; rescoreSoon(true); } paintPlay(); });
   });
   await paintLibrary();
   // (the tutor's settings can be opened from the library, before any book: the voice is known by then)

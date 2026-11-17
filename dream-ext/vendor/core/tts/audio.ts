@@ -1,10 +1,10 @@
 import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult, WordTiming } from '@shared/api';
-import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from './engine';
+import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome, WordTime } from './engine';
 import { ENGINE_LABELS } from './engine';
 import { estimateWordTimes } from './timing';
 import { synthesisSegments, PRIORITY, type SynthesisSegment } from './segments';
-import { bakeVolume, bakeFailed, bakeOk, elementVolumeIgnored } from './gain';
+import { bakeVolume, bakeFailed, bakeOk, elementVolumeIgnored, speechOf } from './gain';
 
 type Synthesize = (engine: TtsEngineId, text: string, voiceId: string, rate: number) => Promise<CloudTtsResult>;
 type ListVoices = (engine: TtsEngineId) => Promise<{ id: string; name: string; lang: string; gender?: string; quality?: string; note?: string }[]>;
@@ -33,6 +33,14 @@ export const voiceStats = { baked: 0, bakeFails: 0, started: 0 };
 const BAKED_START_MS = 2500;
 /** decoded audio elements kept for upcoming segments */
 const PRELOAD_MAX = 8;
+/** the clip that just ended is kept this long: the same text said again at once (a word's repeats) is just play() */
+const AGAIN_MS = 20_000;
+
+/**
+ * A clip ready to play: its audio element is loaded. `baked` = the volume put into its sound (an iPhone, gain.ts);
+ * not set = the clip as the voice service made it. `vol` = the volume it was last played at.
+ */
+interface Loaded { audio: HTMLAudioElement; url: string; durationSec: number | null; baked?: number; bytes?: number; vol?: number }
 
 /**
  * Engine for voices synthesized elsewhere (cloud providers or the local neural model), which return an
@@ -42,7 +50,9 @@ const PRELOAD_MAX = 8;
  * duration.
  *
  * Gaps between sentences: synthesized audio is cached (LRU) and the next sentence is fetched and pre-decoded (an
- * audio element loaded ahead of time) while the current one plays, so starting it is just play(). With `segment`,
+ * audio element loaded ahead of time) while the current one plays, so starting it is just play(). On an iPhone the
+ * clip loaded ahead is already the one made at the learner's volume (gain.ts), and a clip that just ended is kept for
+ * a moment, so a word said three times uses one audio element. With `segment`,
  * a long sentence is requested as clause segments that play back to back; word timings are shifted to the
  * sentence's offsets, so the highlighter sees one sentence.
  */
@@ -74,7 +84,13 @@ export class AudioTtsEngine implements TtsEngine {
   /** requests not answered yet (their cache entries are forgotten when the speech that wanted them is cancelled) */
   private unresolved = new Set<string>();
   /** audio elements already loaded for upcoming segments, by cache key */
-  private preloaded = new Map<string, { audio: HTMLAudioElement; url: string; durationSec: number | null }>();
+  private preloaded = new Map<string, Loaded>();
+  /** clips being made ready now, by cache key (the same clip is not made twice) */
+  private making = new Set<string>();
+  /** the clip that just played to its end, kept for AGAIN_MS */
+  private again: { k: string; clip: Loaded; timer: ReturnType<typeof setTimeout> } | null = null;
+  /** the volume of the last speak(): clips loaded ahead are made at it, unless the caller names another */
+  private lastVolume: number | null = null;
   private current: { audio: HTMLAudioElement; cancel: () => void } | null = null;
   /** every unfinished speak(), including those still waiting for synthesis */
   private pending = new Set<SpeakHandle>();
@@ -124,8 +140,21 @@ export class AudioTtsEngine implements TtsEngine {
     return p;
   }
 
-  prefetch(text: string, voiceId: string, _rate: number): void {
+  /** asks for the sound of `text` (nothing is loaded or played) */
+  private warm(text: string, voiceId: string): void {
     for (const s of this.segmentsOf(text)) void this.fetch(s.text, voiceId).catch(() => undefined);
+  }
+
+  /** the volume a clip made ahead will be played at: the caller's, else the last one spoken at */
+  private aheadVolume(volume?: number): number | null { return volume === undefined ? this.lastVolume : Math.max(0, Math.min(1, volume)); }
+
+  /**
+   * One text made ready ahead without playing it: fetched, its audio element loaded, and on an iPhone already made at
+   * the learner's volume, so that speak() of the same text is just play(). (A local synthesis queue only gets the request.)
+   */
+  prefetch(text: string, voiceId: string, _rate: number, volume?: number): void {
+    this.warm(text, voiceId);
+    if (!this.opts.prepare) this.predecode(text, voiceId, null, this.aheadVolume(volume));
   }
 
   /**
@@ -133,13 +162,14 @@ export class AudioTtsEngine implements TtsEngine {
    * possible. Local synthesis (prepare): all of them go to the main process's read-ahead queue (replacing the
    * previous list), the next one at 'next' priority. Cloud voices: only the next two are fetched (they cost money).
    */
-  readAhead(texts: string[], voiceId: string, _rate: number): void {
+  readAhead(texts: string[], voiceId: string, _rate: number, volume?: number): void {
     const gen = ++this.aheadGen;
     const next = texts[0];
     const prepare = this.opts.prepare;
+    const vol = this.aheadVolume(volume);
     if (!prepare) {
-      texts.slice(0, CLOUD_PREFETCH).forEach((t) => this.prefetch(t, voiceId, 1));
-      if (next) this.predecode(next, voiceId, gen);
+      texts.slice(0, CLOUD_PREFETCH).forEach((t) => this.warm(t, voiceId));
+      if (next) this.predecode(next, voiceId, gen, vol);
       return;
     }
     const items: PrepareItem[] = [{ text: '', replace: true }];
@@ -149,7 +179,7 @@ export class AudioTtsEngine implements TtsEngine {
     // ask to be told when the next sentence is ready rather than requesting it as 'now': an explanation the
     // learner is waiting for must not queue behind it
     prepare([{ text: next, voice: voiceId, speed: 1, priority: PRIORITY.next, wait: true }]).then((ok) => {
-      if (ok !== false && gen === this.aheadGen) this.predecode(next, voiceId, gen);
+      if (ok !== false && gen === this.aheadGen) this.predecode(next, voiceId, gen, vol);
     }).catch(() => undefined);
   }
 
@@ -159,31 +189,82 @@ export class AudioTtsEngine implements TtsEngine {
     void this.opts.prepare?.([{ text: '', replace: true }])?.catch(() => undefined);
   }
 
-  /** Fetches every segment of `text` and loads an audio element for each, so speak() only has to call play(). */
-  private predecode(text: string, voiceId: string, gen: number): void {
+  /**
+   * Fetches every segment of `text` and loads an audio element for each, so speak() only has to call play(). `gen`:
+   * the read-ahead this belongs to (a newer one drops it); null = asked for by prefetch(), it stays. `volume`: the
+   * volume it will be played at (an iPhone: the clip is made at it now, not when it should start).
+   */
+  private predecode(text: string, voiceId: string, gen: number | null, volume: number | null): void {
+    const stale = () => gen !== null && gen !== this.aheadGen;
     for (const s of this.segmentsOf(text)) {
       const k = this.key(s.text, voiceId);
-      if (this.preloaded.has(k)) continue;
-      this.fetch(s.text, voiceId).then((res) => {
-        if (gen !== this.aheadGen || this.preloaded.has(k)) return;
-        this.preloaded.set(k, this.load(res));
-        while (this.preloaded.size > PRELOAD_MAX) {
-          const oldest = this.preloaded.keys().next().value as string;
-          const p = this.preloaded.get(oldest)!;
-          this.preloaded.delete(oldest);
-          URL.revokeObjectURL(p.url);
-        }
-      }).catch(() => undefined);
+      if (this.preloaded.has(k) || this.making.has(k)) continue;
+      this.making.add(k);
+      this.fetch(s.text, voiceId).then((res) => (stale() || this.preloaded.has(k) ? null : this.ready(k, res, volume))).then((clip) => {
+        this.making.delete(k);
+        if (!clip) return;
+        if (stale() || this.preloaded.has(k)) { this.drop(clip); return; }
+        this.keep(k, clip);
+      }).catch(() => { this.making.delete(k); });
     }
   }
 
-  private load(res: CloudTtsResult): { audio: HTMLAudioElement; url: string; durationSec: number | null } {
-    const url = URL.createObjectURL(new Blob([res.audio], { type: res.mime }));
+  /** a clip loaded for later; the oldest go when there are too many */
+  private keep(k: string, clip: Loaded): void {
+    this.preloaded.set(k, clip);
+    while (this.preloaded.size > PRELOAD_MAX) {
+      const oldest = this.preloaded.keys().next().value as string;
+      const p = this.preloaded.get(oldest)!;
+      this.preloaded.delete(oldest);
+      this.drop(p);
+    }
+  }
+
+  /** a loaded clip that is not needed any more */
+  private drop(clip: Loaded): void {
+    try { clip.audio.pause(); clip.audio.src = ''; } catch { /* already gone */ }
+    URL.revokeObjectURL(clip.url);
+  }
+
+  /** the clip that just played to its end, back at its start and kept for AGAIN_MS */
+  private keepAgain(k: string, clip: Loaded): void {
+    this.dropAgain();
+    try { clip.audio.currentTime = 0; } catch { this.drop(clip); return; }
+    const timer = setTimeout(() => { if (this.again?.clip === clip) this.dropAgain(); }, AGAIN_MS);
+    this.again = { k, clip, timer };
+  }
+
+  private dropAgain(): void {
+    const a = this.again;
+    if (!a) return;
+    this.again = null;
+    clearTimeout(a.timer);
+    this.drop(a.clip);
+  }
+
+  private element(blob: Blob): { audio: HTMLAudioElement; url: string } {
+    const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
     audio.preload = 'auto';
     audio.preservesPitch = true;
     audio.load?.();
-    return { audio, url, durationSec: res.durationSec };
+    return { audio, url };
+  }
+
+  private load(res: CloudTtsResult): Loaded {
+    return { ...this.element(new Blob([res.audio], { type: res.mime })), durationSec: res.durationSec };
+  }
+
+  /**
+   * The clip loaded for playing at `volume`: where the element's own volume is ignored (an iPhone) and the volume is
+   * below full, the clip made again with the volume in its sound; else (or when that cannot be made) the clip as it is.
+   */
+  private async ready(k: string, res: CloudTtsResult, volume: number | null): Promise<Loaded> {
+    if (volume !== null && volume < 0.999 && elementVolumeIgnored()) {
+      const blob = await bakeVolume(res.audio, volume, k);
+      if (blob) return { ...this.element(blob), durationSec: res.durationSec, baked: volume, bytes: blob.size };
+    }
+    return this.load(res);
   }
 
   speak(text: string, opts: SpeakOptions): SpeakHandle {
@@ -191,7 +272,16 @@ export class AudioTtsEngine implements TtsEngine {
     const done = new Promise<SpeakOutcome>((r) => { resolve = r; });
     let finished = false;
     let cleanup: (() => void) | null = null;
-    const handle: SpeakHandle = { done, cancel: () => finish('cancelled') };
+    /** the clip of this speech that is loaded or playing now (for clock()) */
+    let live: { audio: HTMLAudioElement; k: string } | null = null;
+    const handle: SpeakHandle = {
+      done, cancel: () => finish('cancelled'),
+      clock: () => {
+        const d = live?.audio.duration;
+        if (!live || d === undefined || !Number.isFinite(d) || d <= 0) return null;
+        return { t: live.audio.currentTime, d, ...(speechOf(live.k) ?? {}) };
+      },
+    };
     const finish = (o: SpeakOutcome) => {
       if (finished) return;
       finished = true;
@@ -202,45 +292,68 @@ export class AudioTtsEngine implements TtsEngine {
     };
     this.pending.add(handle);
     this.liveRate = opts.rate;
+    const volume = Math.max(0, Math.min(1, opts.volume ?? 1));
+    this.lastVolume = volume;
     const t0 = performance.now();
     const segs = this.segmentsOf(text);
     // every segment is requested now, in order: the main process synthesizes them one after the other
     const results = segs.map((s) => { const p = this.fetch(s.text, opts.voiceId); p.catch(() => undefined); return p; });
+    // the service's own word times (ElevenLabs), at this text's offsets; a text said in several pieces has none
+    handle.words = segs.length === 1
+      ? results[0].then((r): WordTime[] | null => {
+        const offset = segs[0].start + (segs[0].text.length - segs[0].text.trimStart().length);
+        return r.timings?.length ? r.timings.map((w) => lettersOf(text, w.start, w.end, w.charIndex + offset, w.charIndex + w.charLength + offset)).filter((w): w is WordTime => !!w) : null;
+      }, () => null)
+      : Promise.resolve(null);
     let started = false;
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     const playSegment = (seg: SynthesisSegment, res: CloudTtsResult): Promise<SpeakOutcome> => new Promise<SpeakOutcome>((segDone) => {
       const k = this.key(seg.text, opts.voiceId);
-      const ready = this.preloaded.get(k);
-      if (ready) this.preloaded.delete(k);
-      const volume = Math.max(0, Math.min(1, opts.volume ?? 1));
       // an iPhone ignores the element's volume: there the clip is made again with the volume in its sound (gain.ts);
       // when that cannot be done the clip plays as it is, through the gain when that works (never silent)
-      if (volume < 0.999 && elementVolumeIgnored()) {
+      const bake = volume < 0.999 && elementVolumeIgnored();
+      // loaded ahead (readAhead / prefetch), or the clip that just ended (the same text again: a word's repeats)
+      let ready = this.preloaded.get(k);
+      if (ready) this.preloaded.delete(k);
+      else if (this.again?.k === k && Math.abs((this.again.clip.vol ?? -1) - volume) < 0.001) { ready = this.again.clip; clearTimeout(this.again.timer); this.again = null; }
+      // (another text now: the clip kept for a repeat is not needed)
+      this.dropAgain();
+      // (made at another volume, the slider moved; or made again where that is not wanted any more: not this one)
+      if (ready && ready.baked !== undefined && (!bake || Math.abs(ready.baked - volume) > 0.001)) { this.drop(ready); ready = undefined; }
+      if (bake) {
+        // the clip as the voice service made it (when the new one cannot be made, or will not play)
+        const plain = () => { const src = ready && ready.baked === undefined ? ready : this.load(res); ready = undefined; run(src, false); };
+        const failed = () => { bakeFailed(); this.lastBaked = null; this.bakeFails++; voiceStats.bakeFails++; plain(); };
+        // made ahead at this volume: starting it is just play()
+        if (ready && ready.baked !== undefined) {
+          const clip = ready;
+          ready = undefined;
+          this.lastBaked = { volume, bytes: clip.bytes ?? 0 };
+          run(clip, true, failed);
+          return;
+        }
         let dropped = false;
-        cleanup = () => { dropped = true; segDone('cancelled'); };
+        cleanup = () => { dropped = true; if (ready) this.drop(ready); segDone('cancelled'); };
         void bakeVolume(res.audio, volume, k).then((blob) => {
           if (dropped) return;
           cleanup = null;
-          // the clip as the voice service made it (when the new one cannot be made, or will not play)
-          const plain = () => { const src = ready ?? this.load(res); run(src.audio, src.url, false); };
           if (!blob) { plain(); return; }
-          const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          audio.preload = 'auto';
-          audio.preservesPitch = true;
+          const clip: Loaded = { ...this.element(blob), durationSec: res.durationSec, baked: volume, bytes: blob.size };
           this.lastBaked = { volume, bytes: blob.size };
           // (it plays: the clip loaded ahead is not needed any more)
-          if (ready) audio.addEventListener('playing', () => { ready.audio.src = ''; URL.revokeObjectURL(ready.url); }, { once: true });
-          run(audio, url, true, () => { bakeFailed(); this.lastBaked = null; this.bakeFails++; voiceStats.bakeFails++; plain(); });
+          const old = ready;
+          if (old) clip.audio.addEventListener('playing', () => { if (ready === old) ready = undefined; this.drop(old); }, { once: true });
+          run(clip, true, failed);
         });
         return;
       }
-      const src = ready ?? this.load(res);
-      run(src.audio, src.url, false);
+      run(ready ?? this.load(res), false);
 
       /** `orElse` (a clip made again at the learner's volume): should it not start, or fail, the original plays instead */
-      function run(this: void, audio: HTMLAudioElement, url: string, isBaked: boolean, orElse?: () => void): void {
+      function run(this: void, clip: Loaded, isBaked: boolean, orElse?: () => void): void {
+      const { audio, url } = clip;
+      live = { audio, k };
       let startWatch: ReturnType<typeof setTimeout> | null = null;
       let swapped = false;
       const swap = (): boolean => {
@@ -250,6 +363,7 @@ export class AudioTtsEngine implements TtsEngine {
         cancelAnimationFrame(raf);
         audio.onplaying = audio.onended = audio.onerror = null;
         audio.pause(); audio.src = ''; URL.revokeObjectURL(url);
+        if (live?.audio === audio) live = null;
         cleanup = null;
         orElse();
         return true;
@@ -281,7 +395,10 @@ export class AudioTtsEngine implements TtsEngine {
         if (startWatch) { clearTimeout(startWatch); startWatch = null; }
         cancelAnimationFrame(raf);
         audio.onplaying = audio.onended = audio.onerror = null;
-        audio.pause(); audio.src = ''; URL.revokeObjectURL(url);
+        if (live?.audio === audio) live = null;
+        // played to its end: kept for a moment, so the same text said again at once is just play() on this element
+        if (o === 'ended') self.keepAgain(k, { ...clip, vol: volume });
+        else { audio.pause(); audio.src = ''; URL.revokeObjectURL(url); }
         segDone(o);
       };
       cleanup = () => end('cancelled');
@@ -315,7 +432,7 @@ export class AudioTtsEngine implements TtsEngine {
         // load the following segment while this one plays
         if (i + 1 < segs.length) {
           const nk = this.key(segs[i + 1].text, opts.voiceId);
-          results[i + 1].then((r) => { if (!finished && !this.preloaded.has(nk)) this.preloaded.set(nk, this.load(r)); }).catch(() => undefined);
+          if (!this.making.has(nk)) results[i + 1].then((r) => (finished || this.preloaded.has(nk) ? null : this.ready(nk, r, volume))).then((c) => { if (!c) return; if (finished || this.preloaded.has(nk)) this.drop(c); else this.preloaded.set(nk, c); }).catch(() => undefined);
         }
         const o = await playSegment(segs[i], res);
         if (o !== 'ended') { finish(o); return; }
@@ -347,3 +464,15 @@ export class AudioTtsEngine implements TtsEngine {
 }
 
 function clampRate(rate: number): number { return Math.min(4, Math.max(0.25, rate)); }
+
+/**
+ * One timed word at its letters: a sound kept from before may count the quotation mark or comma beside a word as
+ * part of it (“Hello,”); the line goes under the letters only. null = no letter or digit in it (a dash on its own).
+ */
+function lettersOf(text: string, start: number, end: number, from: number, to: number): WordTime | null {
+  const letter = /[\p{L}\p{N}]/u;
+  let a = Math.max(0, from), b = Math.min(text.length, to);
+  while (a < b && !letter.test(text[a])) a++;
+  while (b > a && !letter.test(text[b - 1])) b--;
+  return b > a ? { start, end, charStart: a, charEnd: b } : null;
+}
