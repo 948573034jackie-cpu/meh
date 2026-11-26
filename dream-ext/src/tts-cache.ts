@@ -11,10 +11,19 @@ export interface CachedSound { b64: string; mime: string; timings: { start: numb
  * the device voice at once, with no second try.
  */
 export const AZURE_BUSY = 'Microsoft is busy (free keys allow 19 requests a minute)';
+/** what the background answers when the Speechify voice is done for today (the app's or the Worker's daily limit) */
+export const SPEECHIFY_LIMIT = "Speechify: today's limit is reached, the free iPhone voice reads until tomorrow";
 
 const DB = 'dreamVoice', STORE = 'sounds', MAX = 3000;
 /** only short texts are worth keeping (an explanation is new every time) */
 export const CACHE_MAX_CHARS = 80;
+/**
+ * The Speechify voice keeps EVERY clip it made (a whole sentence or paragraph of a book, an explanation), so the same
+ * text is never paid twice: in their own store ('clips'), at most CLIPS_MAX of them (the oldest go first). A paragraph
+ * is about 50-300 KB, so 600 clips stay well under 150 MB.
+ */
+const CLIPS = 'clips';
+export const CLIPS_MAX = 600;
 
 let opening: Promise<IDBDatabase> | null = null;
 function db(): Promise<IDBDatabase> {
@@ -22,8 +31,12 @@ function db(): Promise<IDBDatabase> {
   if ((globalThis as { __drLightBg?: boolean }).__drLightBg) return Promise.reject(new Error('no sound cache on a web page'));
   if (!opening) {
     opening = new Promise<IDBDatabase>((resolve, reject) => {
-      const r = indexedDB.open(DB, 1);
-      r.onupgradeneeded = () => { const s = r.result.createObjectStore(STORE); s.createIndex('at', 'at'); };
+      const r = indexedDB.open(DB, 2);
+      r.onupgradeneeded = () => {
+        const names = r.result.objectStoreNames;
+        if (!names.contains(STORE)) r.result.createObjectStore(STORE).createIndex('at', 'at');
+        if (!names.contains(CLIPS)) r.result.createObjectStore(CLIPS).createIndex('at', 'at');
+      };
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => reject(r.error);
     });
@@ -32,39 +45,43 @@ function db(): Promise<IDBDatabase> {
   return opening;
 }
 
-export async function getSound(key: string): Promise<CachedSound | null> {
+/** `long`: the store of the Speechify clips (any length) */
+export async function getSound(key: string, long = false): Promise<CachedSound | null> {
   try {
     const d = await db();
+    const store = long ? CLIPS : STORE;
     return await new Promise((resolve) => {
-      const q = d.transaction(STORE).objectStore(STORE).get(key);
+      const q = d.transaction(store).objectStore(store).get(key);
       q.onsuccess = () => { const v = q.result as (CachedSound & { at: number }) | undefined; resolve(v ? { b64: v.b64, mime: v.mime, timings: v.timings } : null); };
       q.onerror = () => resolve(null);
     });
   } catch { return null; }
 }
 
-let puts = 0;
-export async function putSound(key: string, sound: CachedSound): Promise<void> {
+let puts = 0, longPuts = 0;
+/** `long`: the store of the Speechify clips (any length) */
+export async function putSound(key: string, sound: CachedSound, long = false): Promise<void> {
   try {
     const d = await db();
+    const store = long ? CLIPS : STORE;
     await new Promise<void>((resolve) => {
-      const tx = d.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put({ ...sound, at: Date.now() }, key);
+      const tx = d.transaction(store, 'readwrite');
+      tx.objectStore(store).put({ ...sound, at: Date.now() }, key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });
-    if (++puts % 50 === 0) await prune(d);
+    if (long ? ++longPuts % 20 === 0 : ++puts % 50 === 0) await prune(d, store, long ? CLIPS_MAX : MAX);
   } catch { /* not kept */ }
 }
 
-/** the oldest sounds go when there are more than MAX */
-async function prune(d: IDBDatabase): Promise<void> {
+/** the oldest sounds go when there are more than `max` */
+async function prune(d: IDBDatabase, name: string, max: number): Promise<void> {
   await new Promise<void>((resolve) => {
-    const tx = d.transaction(STORE, 'readwrite');
-    const store = tx.objectStore(STORE);
+    const tx = d.transaction(name, 'readwrite');
+    const store = tx.objectStore(name);
     const count = store.count();
     count.onsuccess = () => {
-      let extra = count.result - MAX;
+      let extra = count.result - max;
       if (extra <= 0) return;
       const cur = store.index('at').openKeyCursor();
       cur.onsuccess = () => { const c = cur.result; if (!c || extra-- <= 0) return; store.delete(c.primaryKey); c.continue(); };

@@ -166,9 +166,16 @@ export interface YtExtras {
   followWord: boolean;
   /** test only: a silent fake voice instead of the Mac voices */
   fakeVoice?: boolean;
+  /** the Speechify voice: the address of the learner's own speech proxy (Cloudflare Worker), e.g.
+   *  https://iknow-speech.name.workers.dev ('' = not set up). The app code is kept with the keys (Keys.speechify). */
+  speechifyUrl: string;
+  /** the Speechify voice id ('' = the Worker's default: a natural British English voice) */
+  speechifyVoice: string;
+  /** characters the Speechify voice may use in one day on this device; then the free iPhone voice (0 = none) */
+  speechifyDailyChars: number;
 }
 
-export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure';
+export type VoiceChoice = 'auto' | 'mac' | 'openai' | 'elevenlabs' | 'azure' | 'speechify';
 
 export const DEFAULT_EXTRAS: YtExtras = {
   tutorOn: true, explainOnStop: true, panel: true, band: 'auto', hideYtCaptions: true,
@@ -176,6 +183,7 @@ export const DEFAULT_EXTRAS: YtExtras = {
   stopItemsOn: true, capWords: 35, stopPhrasesOn: true, capPhrases: 15, stopHardOn: true, capSentences: 5, repeatWords: 1000, knownAfter: 7, phoneSet: false,
   stageOn: true, replayPart: true, stageSizePx: 34, zhLines: true, aiSentences: true, stopSentences: true, teacher: DEFAULT_TEACHER, shortcuts: {},
   teacherVolume: 60, wordVolume: 80, followVideoVolume: true, bandBottom: 7, hideYtAlways: false, videoSize: 0, stopGapSec: 45, callEngine: 'claude', micAlways: false, voiceMode: false, elevenQuality: 'best', migrated: 0, levelAuto: true, levelAsk: true, levelMode: true, levelListening: true, analysisModel: '', freeWindowSec: 7, azurePaid: false, followWord: true,
+  speechifyUrl: '', speechifyVoice: '', speechifyDailyChars: 20_000,
 };
 
 /**
@@ -209,8 +217,9 @@ export function phoneDefaults(x: YtExtras): Partial<YtExtras> | null {
   return x.phoneSet ? null : { phoneSet: true, zhLines: false, voiceMode: true, view: 'listening', levelAsk: false };
 }
 
-/** github: a token with only "Gists: read and write" (the online vocabulary); genius: not used yet */
-export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string; github?: string; genius?: string }
+/** github: a token with only "Gists: read and write" (the online vocabulary); genius: not used yet;
+ *  speechify: the APP CODE of the learner's speech proxy (NOT the Speechify API key: that one lives only in the Worker) */
+export interface Keys { anthropic?: string; openai?: string; elevenlabs?: string; azure?: string; github?: string; genius?: string; speechify?: string }
 export type KeyName = keyof Keys;
 
 const K = { settings: 'drSettings', extras: 'drExtras', vocab: 'drVocab', entries: 'drEntries', usage: 'drUsage', keys: 'drKeys' } as const;
@@ -428,6 +437,44 @@ export function azureUsageText(used: number): { text: string; low: boolean } {
   const hours = left / 54_000; // about 54,000 characters = 1 hour of the tutor talking
   const leftText = left === 0 ? 'nothing left: the Microsoft voice stops until next month' : `about ${hours >= 1 ? `${hours.toFixed(1)} hours` : `${Math.round(hours * 60)} minutes`} of talking left`;
   return { text: `Microsoft this month: ${used.toLocaleString('en-US')} of ${AZURE_FREE_CHARS.toLocaleString('en-US')} free characters used (${pct}%) · ${leftText}`, low: pct >= 80 };
+}
+// ---- the Speechify voice: characters used on this device, the daily limit ---------------------------------------------
+/** the model name of a Speechify clip in the usage list (inputTokens = the characters Speechify billed) */
+export const SPEECHIFY_MODEL = 'speechify';
+/** characters the Speechify voice was billed for since then (clips from a cache count 0: they are not in the list) */
+export function speechifyCharsSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso && r.model === SPEECHIFY_MODEL).reduce((n, r) => n + (r.inputTokens || 0), 0); }
+/** the device's own day, YYYY-MM-DD */
+export function localDay(now = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+const SPEECHIFY_STOP = 'drSpeechifyStop';
+export interface SpeechifyUsage {
+  /** characters billed today / this month (this device's own count, its own day and month) */
+  today: number; month: number;
+  /** extras.speechifyDailyChars */
+  dailyLimit: number;
+  /** characters left today (0 = the iPhone voice until tomorrow) */
+  left: number;
+  /** done for today: the limit here, or the Worker said 'daily-limit' */
+  stopped: boolean;
+}
+/** the Speechify counter for Settings ("Speechify today: 1,234 of 20,000 characters · this month: 15,678") */
+export async function getSpeechifyUsage(now = new Date()): Promise<SpeechifyUsage> {
+  const list = await getUsage();
+  const { day, month } = periodStarts(now);
+  const today = speechifyCharsSince(list, day), monthChars = speechifyCharsSince(list, month);
+  const dailyLimit = Math.max(0, Math.floor((await getExtras()).speechifyDailyChars ?? 20_000));
+  const o = await area().get(SPEECHIFY_STOP);
+  const told = o[SPEECHIFY_STOP] === localDay(now);
+  const left = Math.max(0, dailyLimit - today);
+  return { today, month: monthChars, dailyLimit, left: told ? 0 : left, stopped: told || left <= 0 };
+}
+/** the Worker said 'daily-limit': no more Speechify on this device today */
+export async function stopSpeechifyToday(now = new Date()): Promise<void> { await area().set({ [SPEECHIFY_STOP]: localDay(now) }); }
+/** "Speechify today: 1,234 of 20,000 characters · this month: 15,678" */
+export function speechifyUsageText(u: SpeechifyUsage): string {
+  const n = (x: number) => x.toLocaleString('en-US');
+  return `Speechify today: ${n(u.today)} of ${n(u.dailyLimit)} characters${u.stopped ? ' (done for today: the iPhone voice reads)' : ''} · this month: ${n(u.month)}`;
 }
 export function usdSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso).reduce((n, r) => n + (r.usd || 0), 0); }
 export function periodStarts(now = new Date()): { day: string; month: string } {

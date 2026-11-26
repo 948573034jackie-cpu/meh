@@ -1,0 +1,25 @@
+# The speech proxy of I Know and I Know Book (see SETUP.md).
+# NEVER put the Speechify key or the app code in this file: they are secrets
+# (npx wrangler secret put SPEECHIFY_API_KEY / npx wrangler secret put APP_CODE).
+name = "iknow-speech"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+# characters Speechify may bill in one day (UTC). After that the apps use the free iPhone voice.
+DAILY_CHAR_LIMIT = "20000"
+# a Speechify voice id; empty = the Worker picks the first natural British English voice by itself
+DEFAULT_VOICE = ""
+# the Speechify model: simba-3.5 (most natural, 48 languages) or simba-3.2 (English only, cheaper)
+MODEL = "simba-3.5"
+# most characters in one request (Speechify's own limit for one clip is 2000)
+MAX_TEXT_CHARS = "2000"
+# browser pages that may use the Worker (the iPhone app's own requests send no Origin and are always fine)
+ALLOWED_ORIGINS = "ytlearn://app,null,https://www.youtube.com,https://m.youtube.com,chrome-extension://*"
+
+# the character counter. Step 4 of SETUP.md: paste the id that
+# "npx wrangler kv namespace create USAGE" prints in place of PASTE_THE_ID_HERE
+[[kv_namespaces]]
+binding = "USAGE"
+id = "PASTE_THE_ID_HERE"

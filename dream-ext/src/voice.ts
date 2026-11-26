@@ -7,10 +7,11 @@
  */
 import { AudioTtsEngine } from '@core/tts/audio';
 import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome, WordTime } from '@core/tts/engine';
+import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult } from '@shared/api';
 import type { VoiceChoice } from './store';
 import type { Position } from '@core/model';
-import { AZURE_BUSY } from './tts-cache';
+import { AZURE_BUSY, SPEECHIFY_LIMIT } from './tts-cache';
 
 export const OPENAI_VOICES: { id: string; name: string }[] = [
   { id: 'marin', name: 'Marin (most natural)' }, { id: 'cedar', name: 'Cedar (most natural)' },
@@ -89,22 +90,77 @@ export const isBusy = (e: unknown): boolean => (e as { code?: string } | null | 
 /** what VoiceWithBackup tells the page (onTrouble) when a sentence went to the device voice for that reason */
 export const BUSY_NOTE = `${AZURE_BUSY}: the iPhone voice read this sentence`;
 
+/** the cloud voices of the tutor ('speechify' = Speechify through the learner's own Worker, speech-proxy/) */
+export type CloudVoice = 'openai' | 'elevenlabs' | 'azure' | 'speechify';
+/** the voice actually used by a page */
+export type VoiceKind = 'mac' | CloudVoice;
+
+/**
+ * The Speechify voice is not one of Dream Read's engine ids (vendor/shared is not edited): its engine carries this id,
+ * typed as an engine id, with its own label (AudioEngineOptions.label).
+ */
+export const SPEECHIFY_ENGINE = 'speechify' as TtsEngineId;
+export const SPEECHIFY_LABEL = 'Speechify voice';
+
+/** what the background sent back when a sentence could not be made */
+type TtsReply = { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string; note?: string } | undefined;
+
+/**
+ * The error of one failed sentence. `code` 'busy' = it goes to the device voice at once (no second try): Microsoft's
+ * free limit, and EVERY failure of the Speechify voice (its rule: any error = the free iPhone voice for that sentence,
+ * at once). `note` + `once` = what the learner is told, only the first time.
+ */
+export function ttsError(id: CloudVoice, r: TtsReply): Error {
+  const message = r?.error ?? 'The voice service did not answer.';
+  if (id === 'speechify') {
+    const limit = message.startsWith(SPEECHIFY_LIMIT) || r?.note === SPEECHIFY_LIMIT;
+    const note = limit ? SPEECHIFY_LIMIT : r?.note ?? `${message.startsWith('Speechify') ? message : `Speechify voice: ${message}`} The iPhone voice reads instead.`;
+    return Object.assign(new Error(message), { code: 'busy', note, once: true });
+  }
+  const busy = r?.code === 'busy' || message.startsWith(AZURE_BUSY);
+  return Object.assign(new Error(message), busy ? { code: 'busy' } : {});
+}
+
 /** A cloud voice; `lang` 'zh' asks the voice to speak Mandarin (the Chinese meanings). */
-export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 'zh', o: CloudOptions = {}): AudioTtsEngine {
+export function cloudEngine(id: CloudVoice, lang: 'en' | 'zh', o: CloudOptions = {}): AudioTtsEngine {
   const synth = async (_engine: unknown, text: string, voiceId: string): Promise<CloudTtsResult> => {
     cloudSpoken.push(text);
     if (cloudSpoken.length > 400) cloudSpoken.splice(0, 200);
-    const r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang, ...(o.light ? { light: true } : {}), ...(o.fast ? { fast: true } : {}) })) as { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string } | undefined;
-    if (!r || r.error || r.b64 === undefined) {
-      const busy = r?.code === 'busy' || !!r?.error?.startsWith(AZURE_BUSY);
-      throw Object.assign(new Error(r?.error ?? 'The voice service did not answer.'), busy ? { code: 'busy' } : {});
-    }
+    let r: TtsReply;
+    try {
+      r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang, ...(o.light ? { light: true } : {}), ...(o.fast ? { fast: true } : {}) })) as TtsReply;
+    } catch (e) { r = { error: (e as Error).message || 'The voice service did not answer.' }; }
+    if (!r || r.error || r.b64 === undefined) throw ttsError(id, r);
     return { audio: fromBase64(r.b64), mime: r.mime ?? 'audio/mpeg', timings: r.timings ?? null, durationSec: null };
   };
+  if (id === 'speechify') {
+    // the picker's list comes from the Worker (speechifyVoiceList); here only the default ('' = the Worker's British voice)
+    const list = async () => [{ id: '', name: 'Speechify British (default)', lang: lang === 'zh' ? 'zh-CN' : 'en-GB' }];
+    // only the very next sentence is made ahead (it costs characters); the word times come from Speechify's speech marks
+    return new AudioTtsEngine(SPEECHIFY_ENGINE, synth, list, true, { segment: false, ahead: 1, label: SPEECHIFY_LABEL, costNote: 'Paid by the characters: through your own Worker, with a daily limit' });
+  }
   const list = async () => (id === 'openai' ? OPENAI_VOICES : id === 'azure' ? AZURE_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
   // whole sentences (no cuts at commas): a cloud voice is fast, and each piece made separately breaks the tone and
   // leaves small gaps between the pieces
   return new AudioTtsEngine(id, synth, list, id === 'elevenlabs', { segment: false });
+}
+
+/** a voice of the Speechify picker (from the Worker's GET /voices); `isDefault` = the natural British default */
+export interface SpeechifyVoiceOption { id: string; name: string; locale: string; gender: string; tags: string[]; preview: string | null; british: boolean; isDefault: boolean }
+/**
+ * The Speechify voices for the picker in Settings (English, the British default first and marked `isDefault`).
+ * Throws with a short message when the Worker cannot be reached or the address / app code is missing.
+ */
+export async function speechifyVoiceList(): Promise<{ voices: SpeechifyVoiceOption[]; default: string | null }> {
+  const r = (await chrome.runtime.sendMessage({ type: 'dream-speechify-voices' })) as { voices?: SpeechifyVoiceOption[]; default?: string | null; error?: string } | undefined;
+  if (!r || r.error || !Array.isArray(r.voices)) throw new Error(r?.error ?? 'The Speechify Worker did not answer.');
+  return { voices: r.voices, default: r.default ?? null };
+}
+/** the name shown for a voice in the picker: "Emma (British, woman) ★ default" */
+export function speechifyVoiceName(v: SpeechifyVoiceOption): string {
+  const accent = v.british ? 'British' : /^en-us/i.test(v.locale) ? 'American' : /^en-au/i.test(v.locale) ? 'Australian' : v.locale || 'English';
+  const who = v.gender === 'female' ? 'woman' : v.gender === 'male' ? 'man' : '';
+  return `${v.name} (${accent}${who ? `, ${who}` : ''})${v.isDefault ? ' ★ default' : ''}`;
 }
 
 /**
@@ -112,8 +168,17 @@ export function cloudEngine(id: 'openai' | 'elevenlabs' | 'azure', lang: 'en' | 
  * without its key = the Mac voice.
  * `o.noOpenAi` (I Know Book): 'auto' never picks OpenAI (its voice models end on 6 Jan 2027): Microsoft, else
  * ElevenLabs, else the device voice. OpenAI chosen by name still works while it lasts.
+ * Speechify: only for a caller that passes `o.speechifyUrl` (extras.speechifyUrl; a page that can play it). Then
+ * 'speechify' = Speechify when the address AND the app code (keys.speechify) are set, else the device voice; 'auto' =
+ * Speechify FIRST when both are set. A caller without `speechifyUrl` never gets 'speechify' (its choice = the device voice).
  */
-export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string }, o: { noOpenAi?: boolean } = {}): 'mac' | 'openai' | 'elevenlabs' | 'azure' {
+export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string; speechify?: string }, o?: { noOpenAi?: boolean }): Exclude<VoiceKind, 'speechify'>;
+export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string; speechify?: string }, o: { noOpenAi?: boolean; speechifyUrl: string }): VoiceKind;
+export function resolveVoice(choice: VoiceChoice, keys: { openai?: string; elevenlabs?: string; azure?: string; speechify?: string }, o: { noOpenAi?: boolean; speechifyUrl?: string } = {}): VoiceKind {
+  const speechify = o.speechifyUrl !== undefined;
+  const speechifyReady = speechify && !!o.speechifyUrl?.trim() && !!keys.speechify?.trim();
+  if (choice === 'speechify') return speechifyReady ? 'speechify' : 'mac';
+  if (choice === 'auto' && speechifyReady) return 'speechify';
   if (choice === 'auto' && o.noOpenAi) return keys.azure ? 'azure' : keys.elevenlabs ? 'elevenlabs' : 'mac';
   if (choice === 'auto') return keys.azure ? 'azure' : keys.openai ? 'openai' : 'mac';
   if (choice === 'azure') return keys.azure ? 'azure' : 'mac';
@@ -148,6 +213,8 @@ export class VoiceWithBackup implements TtsEngine {
   lastError: string | null = null;
   /** when the learner was last told that the service is busy (ms) */
   private busyTold = -Infinity;
+  /** the notes told once already (the Speechify voice: "today's limit", "did not work") */
+  private toldOnce = new Set<string>();
   constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onTrouble: (e: Error, cooling: boolean) => void, private startTimeoutMs = 12_000, private now: () => number = () => Date.now()) {
     this.id = primary.id; this.kind = primary.kind; this.label = primary.label; this.costNote = primary.costNote; this.wordBoundaries = primary.wordBoundaries;
   }
@@ -206,8 +273,12 @@ export class VoiceWithBackup implements TtsEngine {
         // no room at the service just now: a second try would wait in the same line, so this sentence goes to the
         // Mac voice at once; it is no failure of the good voice (the limit frees by itself)
         if (!timedOut && isBusy(h.error)) {
-          this.lastError = BUSY_NOTE;
-          if (this.now() - this.busyTold >= 60_000) { this.busyTold = this.now(); this.onTrouble(Object.assign(new Error(BUSY_NOTE), { code: 'busy' }), false); }
+          // (an error with its own `note`: that is told; `once`: only the first time, not every minute)
+          const { note, once } = (h.error ?? {}) as { note?: string; once?: boolean };
+          const say = note ?? BUSY_NOTE;
+          this.lastError = say;
+          if (once) { if (!this.toldOnce.has(say)) { this.toldOnce.add(say); this.onTrouble(Object.assign(new Error(say), { code: 'busy' }), false); } }
+          else if (this.now() - this.busyTold >= 60_000) { this.busyTold = this.now(); this.onTrouble(Object.assign(new Error(say), { code: 'busy' }), false); }
           return viaBackup();
         }
         this.lastError = timedOut ? 'no sound came in time' : h.error?.message ?? 'the voice failed';

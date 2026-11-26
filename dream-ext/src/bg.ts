@@ -7,11 +7,12 @@
  *   -> { type: 'explain', req }                       <- { type: 'delta', text } ... { type: 'done', text, usage } | { type: 'error', message, code }
  *   -> { type: 'complete', prompt, stream? }          <- ({ type: 'delta', text } ...) { type: 'done', text } | { type: 'error', ... }   (hints model)
  * Closing the port cancels the request.
- * One-off messages: 'dream-tts' (a sentence in the Microsoft / OpenAI / ElevenLabs voice: { engine, text, voice, lang,
+ * One-off messages: 'dream-tts' (a sentence in the Microsoft / OpenAI / ElevenLabs / Speechify voice: { engine, text, voice, lang,
  * light?, fast? } -> { b64, mime, timings } | { error, code? }; code 'busy' = Microsoft's free limit is full for the
  * moment, the page says the sentence with the device voice), 'dream-live-sdp' (connects the live
  * voice call: the page's WebRTC offer goes to OpenAI's /v1/realtime/calls with the key, the answer comes back),
- * 'dream-usage' (the live call's cost), 'dream-test-key', 'dream-open'.
+ * 'dream-usage' (the live call's cost), 'dream-test-key', 'dream-open'; the Speechify voice (through the learner's own
+ * Worker, speech-proxy/): 'dream-speechify-voices', 'dream-speechify-usage', 'dream-speechify-test'.
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
@@ -19,7 +20,7 @@ import type { ExplainRequest, AiErrorCode } from '@shared/api';
 import { buildPrompt, buildStyledPrompt, type PromptBundle } from '@core/ai/prompts';
 import { resolveStyle, type StyleId } from '@shared/styles';
 import type { AiProviderId, Settings } from '@shared/settings';
-import { getSettings, getKeys, getExtras, patchExtras, addUsage, getUsage, usdSince, periodStarts, type Keys } from './store';
+import { getSettings, getKeys, getExtras, patchExtras, addUsage, getUsage, usdSince, periodStarts, getSpeechifyUsage, stopSpeechifyToday, SPEECHIFY_MODEL, type Keys } from './store';
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
@@ -28,7 +29,7 @@ import { levelSummary } from './level-db';
 import { buildRulePrompt, partPromptFor, BOOK_ALWAYS_RULES, type RuleRequest } from './level-rule';
 import { splitByScript } from '@core/listen/script';
 import { getLevel, updateLevel } from './store';
-import { getSound, putSound, CACHE_MAX_CHARS, AZURE_BUSY } from './tts-cache';
+import { getSound, putSound, CACHE_MAX_CHARS, AZURE_BUSY, SPEECHIFY_LIMIT } from './tts-cache';
 import { wordsFromAlignment, type Alignment } from './word-times';
 import { findLyrics } from './lyrics';
 
@@ -330,7 +331,7 @@ export async function runChat(system: string, messages: ChatTurn[], signal: Abor
 
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
 /** `light`: Microsoft's smaller sound (AZURE_LIGHT); `fast`: ElevenLabs' fast model whatever the quality setting (voice.ts CloudOptions) */
-interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure'; text: string; voice: string; lang?: 'en' | 'zh'; light?: boolean; fast?: boolean }
+interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure' | 'speechify'; text: string; voice: string; lang?: 'en' | 'zh'; light?: boolean; fast?: boolean }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
@@ -476,6 +477,8 @@ export async function testAzure(key?: string): Promise<{ ok: boolean; message: s
 export async function synthesize(a: TtsAsk): Promise<TtsAnswer> {
   const text = a.text.trim();
   if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };
+  // Speechify: EVERY clip is kept (any length), so the same text is never paid twice on this device
+  if (a.engine === 'speechify') return speechifyCached(a, text);
   if (text.length > CACHE_MAX_CHARS || typeof indexedDB === 'undefined') return synthesizeNow(a);
   const key = soundKey(a, text, a.engine === 'elevenlabs' ? (await getExtras()).elevenQuality : 'best');
   // (the light sound is asked for: the full one kept from before does as well, and costs nothing)
@@ -499,6 +502,7 @@ export function elevenBody(text: string, model: string): { text: string; model_i
 }
 
 async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
+  if (a.engine === 'speechify') return speechifySay(a);
   const keys = await getKeys();
   const text = a.text.trim();
   if (!text) return { b64: '', mime: 'audio/mpeg', timings: [] };
@@ -547,6 +551,115 @@ async function synthesizeNow(a: TtsAsk): Promise<TtsAnswer> {
   const data = (await res.json()) as { audio_base64: string; alignment?: Alignment | null };
   void addUsage({ date: new Date().toISOString(), provider: 'openai', model: best ? 'elevenlabs-multilingual-v2' : 'elevenlabs-flash', inputTokens: text.length, outputTokens: 0, cachedTokens: 0, usd: text.length * (best ? 0.0001 : 0.00005) }).catch(() => undefined);
   return { b64: data.audio_base64, mime: 'audio/mpeg', timings: data.alignment ? alignmentTimings(text, data.alignment) : null };
+}
+
+// ---- the Speechify voice: through the learner's own speech proxy (speech-proxy/, a Cloudflare Worker) ---------------
+// The Speechify key lives only in the Worker. The app sends the Worker's address (extras.speechifyUrl) and the app code
+// (Keys.speechify, in the iPhone Keychain with the other keys) in X-App-Code. Errors carry `code` 'busy' and a short
+// `note`: the page's voice (voice.ts VoiceWithBackup) then says that sentence with the iPhone voice at once.
+
+/** an error of the Speechify voice: the sentence goes to the device voice at once (code 'busy'), the learner is told `note` once */
+export function speechifyError(message: string, why: 'setup' | 'limit' | 'failed' = 'failed'): Error & { code: 'busy'; note: string; why: string } {
+  const note = why === 'limit' ? SPEECHIFY_LIMIT : `Speechify voice: ${message} The iPhone voice reads instead.`;
+  return Object.assign(new Error(why === 'limit' ? SPEECHIFY_LIMIT : `Speechify voice: ${message}`), { code: 'busy' as const, note, why });
+}
+
+/** the Worker's address and the app code, or an error that says what is missing */
+async function speechifyAccess(): Promise<{ url: string; code: string }> {
+  const url = ((await getExtras()).speechifyUrl ?? '').trim().replace(/\/+$/, '');
+  const code = ((await getKeys()).speechify ?? '').trim();
+  if (!url || !code) throw speechifyError(`${!url ? 'the Worker address' : 'the app code'} is missing in Settings.`, 'setup');
+  if (!/^https:\/\//i.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url)) throw speechifyError('the Worker address must start with https://', 'setup');
+  return { url, code };
+}
+
+/** one request to the Worker (20 s at most) */
+async function workerFetch(path: string, init: { method?: string; body?: unknown } = {}, timeoutMs = 20_000): Promise<Response> {
+  const { url, code } = await speechifyAccess();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(`${url}${path}`, {
+      method: init.method ?? 'GET', signal: ctrl.signal,
+      headers: { 'X-App-Code': code, ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    });
+  } catch (e) {
+    throw speechifyError(ctrl.signal.aborted ? 'the Worker did not answer in time.' : `the Worker could not be reached (${(e as Error).message || 'no internet'}).`);
+  } finally { clearTimeout(timer); }
+}
+
+async function workerProblem(res: Response): Promise<Error> {
+  let j: { error?: string; code?: string } = {};
+  try { j = (await res.json()) as typeof j; } catch { /* not JSON */ }
+  if (res.status === 429 && j.code === 'daily-limit') { await stopSpeechifyToday().catch(() => undefined); return speechifyError(SPEECHIFY_LIMIT, 'limit'); }
+  if (res.status === 401) return speechifyError('the Worker did not accept the app code (check it in Settings).', 'setup');
+  if (res.status === 403) return speechifyError('the Worker refused this page (ALLOWED_ORIGINS in wrangler.toml).', 'setup');
+  if (res.status === 500 && j.code === 'not-set-up') return speechifyError(`${j.error ?? 'the Worker is not set up yet'}.`, 'setup');
+  return speechifyError(`${j.error ?? `the Worker answered HTTP ${res.status}`}.`);
+}
+
+/** test hook: every text sent to the Worker (what was paid for), newest last */
+export const speechifySent: string[] = [];
+
+/** what one paid Speechify character costs (USD, Starter plan list price): simba-3.5 $15 per million, older models $10 */
+const speechifyUsd = (chars: number, model: string): number => chars * (/simba-3\.5/.test(model) ? 15e-6 : 10e-6);
+
+/** one sentence / paragraph from the Worker; the characters billed are counted on this device; the daily limit holds */
+async function speechifySay(a: TtsAsk): Promise<TtsAnswer> {
+  const text = a.text.trim();
+  await speechifyAccess();
+  const u = await getSpeechifyUsage();
+  if (u.stopped || text.length > u.left) { if (!u.stopped) await stopSpeechifyToday().catch(() => undefined); throw speechifyError(SPEECHIFY_LIMIT, 'limit'); }
+  const voice = (a.voice || (await getExtras()).speechifyVoice || '').trim();
+  speechifySent.push(text);
+  if (speechifySent.length > 400) speechifySent.splice(0, 200);
+  const res = await workerFetch('/speak', { method: 'POST', body: { text, ...(voice ? { voice } : {}), format: 'mp3', lang: a.lang ?? 'en' } });
+  if (!res.ok) throw await workerProblem(res);
+  let j: { audio?: string; mime?: string; chars?: number; cached?: boolean; model?: string; marks?: TtsAnswer['timings'] };
+  try { j = (await res.json()) as typeof j; } catch { throw speechifyError('the Worker sent something that is not a clip.'); }
+  if (!j.audio) throw speechifyError('the Worker sent no sound.');
+  // (a clip the Worker had kept costs nothing: 0 characters)
+  const billed = j.cached ? 0 : Math.max(0, Math.round(typeof j.chars === 'number' ? j.chars : text.length));
+  if (billed > 0) await addUsage({ date: new Date().toISOString(), provider: 'openai', model: SPEECHIFY_MODEL, inputTokens: billed, outputTokens: 0, cachedTokens: 0, usd: speechifyUsd(billed, j.model ?? '') }).catch(() => undefined);
+  return { b64: j.audio, mime: j.mime ?? 'audio/mpeg', timings: Array.isArray(j.marks) && j.marks.length ? j.marks : null };
+}
+
+/** the device's clip store first (any length: a cache hit costs 0 and is not counted), then the Worker */
+async function speechifyCached(a: TtsAsk, text: string): Promise<TtsAnswer> {
+  const voice = (a.voice || (await getExtras()).speechifyVoice || '').trim();
+  const key = soundKey({ ...a, voice }, text, 'best');
+  const kept = typeof indexedDB === 'undefined' ? null : await getSound(key, true);
+  if (kept) return kept;
+  const made = await speechifySay({ ...a, voice });
+  if (made.b64 && typeof indexedDB !== 'undefined') void putSound(key, made, true);
+  return made;
+}
+
+/** a voice of the Speechify picker ('isDefault' = the Worker's natural British default) */
+export interface SpeechifyVoiceInfo { id: string; name: string; locale: string; gender: string; tags: string[]; preview: string | null; british: boolean; isDefault: boolean }
+/** the Speechify voices for the picker: English ones, the British default first and marked */
+export async function speechifyVoices(): Promise<{ voices: SpeechifyVoiceInfo[]; default: string | null }> {
+  const res = await workerFetch('/voices');
+  if (!res.ok) throw await workerProblem(res);
+  const j = (await res.json()) as { voices?: SpeechifyVoiceInfo[]; default?: string | null };
+  return { voices: (j.voices ?? []).map((v) => ({ id: v.id, name: v.name, locale: v.locale, gender: v.gender, tags: v.tags ?? [], preview: v.preview ?? null, british: !!v.british, isDefault: !!v.isDefault })), default: j.default ?? null };
+}
+/** the Worker's own count (both apps together, UTC days) */
+export interface SpeechifyServerUsage { day: string; today: number; month: string; monthChars: number; requestsToday: number; dailyLimit: number; left: number }
+export async function speechifyServerUsage(): Promise<SpeechifyServerUsage> {
+  const res = await workerFetch('/usage');
+  if (!res.ok) throw await workerProblem(res);
+  return (await res.json()) as SpeechifyServerUsage;
+}
+/** the Test button: the address and the app code work ({ ok, message }); nothing is paid */
+export async function testSpeechify(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await workerFetch('/health', {}, 10_000);
+    if (!res.ok) throw await workerProblem(res);
+    const j = (await res.json()) as { model?: string; dailyLimit?: number };
+    return { ok: true, message: `The Speechify Worker works (model ${j.model ?? '?'}, at most ${(j.dailyLimit ?? 0).toLocaleString('en-US')} characters a day).` };
+  } catch (e) { return { ok: false, message: (e as Error).message }; }
 }
 
 /** ElevenLabs letter times -> the times of the words of `text` (word-times.ts), in the shape the voice's answer and the sound cache keep */
@@ -700,8 +813,11 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
     if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
-    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error & { code?: string }) => sendResponse({ error: e.message, ...(e.code ? { code: e.code } : {}) })); return true; }
+    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error & { code?: string; note?: string }) => sendResponse({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.note ? { note: e.note } : {}) })); return true; }
     if (msg?.type === 'dream-test-azure') { void testAzure((msg as { key?: string }).key).then(sendResponse); return true; }
+    if (msg?.type === 'dream-speechify-voices') { void speechifyVoices().then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
+    if (msg?.type === 'dream-speechify-usage') { void Promise.all([getSpeechifyUsage(), speechifyServerUsage().catch(() => null)]).then(([local, server]) => sendResponse({ local, server }), (e: Error) => sendResponse({ error: e.message })); return true; }
+    if (msg?.type === 'dream-speechify-test') { void testSpeechify().then(sendResponse); return true; }
     if (msg?.type === 'dream-live-sdp') { void liveConnect(msg as unknown as LiveAsk).then(sendResponse, (e: Error & { status?: number }) => sendResponse({ error: e.message, status: e.status })); return true; }
     if (msg?.type === 'dream-usage') { void recordLive(msg as unknown as { model: string; usage: RealtimeUsage }).then(sendResponse, () => sendResponse(null)); return true; }
     if (msg?.type === 'dream-db-write') { void writeDatabase().then(sendResponse); return true; }

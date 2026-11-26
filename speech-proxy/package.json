@@ -1,0 +1,16 @@
+{
+  "name": "iknow-speech-proxy",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The small Cloudflare Worker between the I Know apps and Speechify. The Speechify key lives only here, as a secret.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -22,6 +22,14 @@ export interface AudioEngineOptions {
   prepare?: Prepare;
   /** speak long texts as clause segments played back to back (synthesisSegments), so the first one starts sooner */
   segment?: boolean;
+  /**
+   * (YouTube side) cloud voices: how many of the read-ahead texts are fetched before they are needed (default
+   * CLOUD_PREFETCH). The Speechify voice takes 1: only the very next sentence, so almost nothing is made that is not heard.
+   */
+  ahead?: number;
+  /** (YouTube side) the name and cost note of an engine that is not in ENGINE_LABELS (the Speechify voice) */
+  label?: string;
+  costNote?: string;
 }
 
 /** cloud voices cost money per character: never fetch further ahead than this */
@@ -108,8 +116,8 @@ export class AudioTtsEngine implements TtsEngine {
   private opts: AudioEngineOptions;
 
   constructor(readonly id: TtsEngineId, private synthesize: Synthesize, private voices: ListVoices, wordBoundaries: boolean, opts: AudioEngineOptions = {}) {
-    this.label = ENGINE_LABELS[id].label;
-    this.costNote = ENGINE_LABELS[id].cost;
+    this.label = opts.label ?? ENGINE_LABELS[id]?.label ?? String(id);
+    this.costNote = opts.costNote ?? ENGINE_LABELS[id]?.cost ?? '';
     this.wordBoundaries = wordBoundaries;
     this.opts = opts;
   }
@@ -168,8 +176,9 @@ export class AudioTtsEngine implements TtsEngine {
     const prepare = this.opts.prepare;
     const vol = this.aheadVolume(volume);
     if (!prepare) {
-      texts.slice(0, CLOUD_PREFETCH).forEach((t) => this.warm(t, voiceId));
-      if (next) this.predecode(next, voiceId, gen, vol);
+      const ahead = Math.max(0, this.opts.ahead ?? CLOUD_PREFETCH);
+      texts.slice(0, ahead).forEach((t) => this.warm(t, voiceId));
+      if (next && ahead > 0) this.predecode(next, voiceId, gen, vol);
       return;
     }
     const items: PrepareItem[] = [{ text: '', replace: true }];
