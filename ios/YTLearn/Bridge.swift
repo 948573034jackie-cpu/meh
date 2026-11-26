@@ -84,6 +84,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply {
         case "appSettings":
             model.showAppSettings = true
             reply(nil, nil)
+        // ---- I Know: a page asks for one of the tabs (My Vocabulary's "Settings" link = the Settings tab) ----
+        case "showTab":
+            if let tab = AppTab(rawValue: body["tab"] as? String ?? "") { model.tab = tab }
+            reply(nil, nil)
         case "layout":
             let full = body["full"] as? Bool ?? false
             if web === model.youtube, model.pageFull != full { model.pageFull = full }

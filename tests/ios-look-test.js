@@ -92,10 +92,15 @@ async function book(browser, scheme) {
   await until(() => p.evaluate(() => document.body.dataset.ready === '1'), 15000);
   const dbg = () => p.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
   await check(p, scheme, 'I Know Book: the library', { scope: '#lib', bg: ['#lib', 'backgroundColor'], accent: ['#e-file', 'backgroundColor'], skip: '.cover' });
-  await p.evaluate(() => document.getElementById('lib-set').click());
+  // (step 2: the library's ⚙ became the Settings tab; My Vocabulary is the Words tab, in this page)
+  await p.evaluate(() => document.getElementById('tab-settings').click());
   await sleep(300);
-  await check(p, scheme, 'I Know Book: the tutor sheet from the library', { scope: '#sheet', bg: ['#sheet', 'backgroundColor'], wantBg: 'raised', accent: ['#sheet .opts button.on', 'color'] });
-  await p.evaluate(() => document.getElementById('veil').click());
+  await check(p, scheme, 'I Know Book: the Settings tab', { scope: '#set', bg: ['#set', 'backgroundColor'], accent: ['#set .opts button.on', 'color'] });
+  await p.evaluate(() => document.getElementById('tab-words').click());
+  await until(() => p.evaluate(() => /You know about/.test((document.getElementById('v-know-big') || {}).textContent || '')), 8000);
+  await check(p, scheme, 'I Know Book: the Words tab (My Vocabulary)', { scope: '#words', bg: ['#words', 'backgroundColor'], accent: ['#v-csv', 'backgroundColor'] });
+  await check(p, scheme, 'I Know Book: the tab bar', { scope: '#tabs', bg: ['#tabs', 'backgroundColor'], wantBg: 'raised', accent: ['#tabs .on', 'color'] });
+  await p.evaluate(() => document.getElementById('tab-books').click());
   await p.evaluate(() => document.getElementById('e-sample').click());
   await until(async () => { const d = await dbg(); return d && d.open && d.sentences > 5 ? d : null; }, 20000);
   await sleep(400);
@@ -168,6 +173,8 @@ async function youtube(browser, scheme, view, name) {
     await book(browser, scheme);
     await appPage(browser, scheme, 'options.html', 'I Know: All settings (options.html)', { bg: ['body', 'backgroundColor'], accent: ['button.primary', 'backgroundColor'] });
     await appPage(browser, scheme, 'vocab.html', 'I Know: My Vocabulary (vocab.html)', { bg: ['body', 'backgroundColor'], accent: ['#csv', 'backgroundColor'] });
+    await appPage(browser, scheme, 'settings.html#tutor', 'I Know: Settings ▸ Tutor settings (settings.html)', { host: 'dr-settings-host', scope: '.quick', bg: ['.quick', 'backgroundColor'], accent: ['.quick .seg button.on', 'color'] });
+    await appPage(browser, scheme, 'settings.html#voice', 'I Know: Settings ▸ Voice (settings.html)', { host: 'dr-settings-host', scope: '.quick', bg: ['.quick', 'backgroundColor'], accent: ['.quick .seg button.on', 'color'] });
     await appPage(browser, scheme, 'reader.html', 'I Know: the reader, its shelf (reader.html)', { bg: ['body', 'backgroundColor'], accent: ['#paste-go', 'backgroundColor'] });
     await appPage(browser, scheme, 'reader.html', 'I Know: the reader, a text open', { bg: ['body', 'backgroundColor'], accent: ['#play', 'backgroundColor'] }, async (p) => {
       await p.evaluate((t) => window.__iknowReader.openText('The Lighthouse Keeper', t), TEXT);

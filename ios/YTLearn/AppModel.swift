@@ -20,7 +20,21 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var pageOn = true         // Video mode: the big page at stops and pauses (drExtras.stageOn)
     @Published var videoMode = false     // the tutor's view is Video mode (drExtras.view "normal"): the two switches show
     @Published var explainSeconds = 20   // the "Explain N s" button: the tutor's part length (drSettings.listen.lastSecondsWindow)
-    @Published var sheetOpen = false     // My tutor's settings / My Vocabulary page
+    @Published var learnerLevel = "B2"   // My level, A1 … C2 (drSettings.learnerLevel): a row of the Settings tab
+    @Published var voiceChoice = "auto"  // the tutor's voice choice (drExtras.voice): its name on the Settings tab
+    /// My tutor's saved extras (drExtras) as they are now: the Settings tab's own rows read them (text size, what to explain)
+    @Published var extrasNow: [String: Any] = [:]
+    /// the Words tab (vocab.html) and the tutor's settings pages of the Settings tab (settings.html): made when first shown
+    var wordsWeb: WKWebView?
+    var prefsWeb: WKWebView?
+    @Published var sheetOpen = false     // My tutor's All settings page (options.html) in a sheet
+    /// I Know: the tab at the bottom (Watch · Words · Settings). Leaving Watch: the video and the tutor go quiet, as
+    /// for the reader and the browser (nothing plays or stops at a word while you look at your words or settings)
+    @Published var tab: AppTab = .watch { didSet { if oldValue != tab { tabChanged(from: oldValue) } } }
+    /// a YouTube video is open (a /watch or /shorts/ page): the Watch tab shows the study bar; else its one main action
+    @Published var videoOpen = false
+    /// the Watch bar's "More" sheet: the actions that are not used every minute
+    @Published var moreOpen = false
     @Published var vocabFolder: String?  // the shared folder of the vocabulary file (iCloud Drive / Google Drive), or nil
     @Published var vocabStatus = ""      // the last save of the vocabulary file, in words
     @Published var showReader = false { didSet { if oldValue != showReader { screenChanged() } } }    // the reader (books, PDFs, texts), full screen: ReaderScreen.swift
@@ -86,6 +100,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         freeMode = (x["offMode"] as? String) == "free"
         (bandOn, pageOn, videoMode) = AppModel.videoSwitches(x)
         explainSeconds = AppModel.partSeconds(in: Store.shared.value(area: "local", key: "drSettings"))
+        learnerLevel = AppModel.level(in: Store.shared.value(area: "local", key: "drSettings"))
+        voiceChoice = x["voice"] as? String ?? "auto"
+        extrasNow = x
         tutorVolume = AppModel.volume(in: x)
         vocabFolder = VocabFile.shared.folderName
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.leaving() }
@@ -97,7 +114,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         youtube.allowsBackForwardNavigationGestures = true
         // (every new page, also inside YouTube's own page: the last one is opened again next time)
         urlWatch = youtube.observe(\.url, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.rememberPage() }
+            DispatchQueue.main.async { self?.rememberPage(); self?.watchVideoOpen() }
         }
 
         // (index: the number of the piece that was heard; the page acts once per piece)
@@ -170,6 +187,16 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// the video's page is wanted now (the reader or the browser closed): loaded if it waited
     func pageWanted() {
         if pageWaits { openLastPage(note: false) }
+    }
+
+    /// the page is a video (the Watch tab shows the study bar) or not (the big "Paste a YouTube link")
+    private func watchVideoOpen() {
+        let open = AppModel.isVideoPage(youtube.url)
+        if open != videoOpen { videoOpen = open }
+    }
+    static func isVideoPage(_ url: URL?) -> Bool {
+        guard let url = url, isYouTube(url.host) else { return false }
+        return url.path == "/watch" || url.path.hasPrefix("/shorts/")
     }
 
     static func isYouTube(_ host: String?) -> Bool {
@@ -597,10 +624,15 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
             if band != bandOn { bandOn = band }
             if page != pageOn { pageOn = page }
             if video != videoMode { videoMode = video }
+            let voice = extras["voice"] as? String ?? "auto"
+            if voice != voiceChoice { voiceChoice = voice }
+            extrasNow = extras
         }
         if area == "local", let settings = obj["drSettings"] {
             let seconds = AppModel.partSeconds(in: settings)
             if seconds != explainSeconds { explainSeconds = seconds }
+            let level = AppModel.level(in: settings)
+            if level != learnerLevel { learnerLevel = level }
         }
         tellOtherWindows(obj, area: area, except: web)
     }
@@ -669,6 +701,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         if obj.isEmpty { return }
         var targets: [(WKWebView, WKContentWorld)] = [(youtube, AppModel.world)]
         if sheetOpen { targets.append((sheet, .page)) }
+        // (the Words tab and the tutor's settings pages of the Settings tab, once they were opened)
+        for view in [wordsWeb, prefsWeb] { if let view = view, view.url != nil { targets.append((view, .page)) } }
         for tell in storageListeners { tell(obj, area, web) }   // the reader, the browser's tabs
         for (view, world) in targets where view !== web {
             view.callAsyncJavaScript("window.__ytcStorageChanged && window.__ytcStorageChanged(obj, area)",
@@ -679,6 +713,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// My tutor opens its settings or My Vocabulary (ytlearn://app/dream/…) in a sheet
     func openPage(_ address: String) {
         guard let url = URL(string: address), url.scheme == SchemeHandler.scheme else { return }
+        #if !BOOK
+        // (My Vocabulary is the Words tab now: the tutor's 📒, "Words" and every link to it open the tab, 1 tap)
+        if url.path.hasSuffix("/vocab.html") { tab = .words; return }
+        #endif
         sheet.load(URLRequest(url: url))
         sheetOpen = true
     }

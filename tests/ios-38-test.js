@@ -109,8 +109,10 @@ const act = (page, id) => page.evaluate((i) => window.__ytcDream.action(i), id);
     ok('...the "Full screen" button gives full screen on the iPad too', !!f1, JSON.stringify(f1 || await fullOf(page)));
     await ctx.close();
   }
-  ok('the app: the bar hides and a side rail of 60 pt buttons shows in full screen on an iPhone on its side; the status bar goes; a "Full screen" button is in the bar',
-    /statusBarHidden\(compactFull\)/.test(cv) && /private var sideRail/.test(cv) && /frame\(width: 60, height: 60\)/.test(cv) && /private var fullButton/.test(cv) && /case "layout"/.test(fs.readFileSync(path.join(H.IOS, 'Bridge.swift'), 'utf8')) && /pageScripts = \["page-hooks"\]/.test(H.swift) && /in: \.page\)\)/.test(H.swift));
+  // (step 2, "simpler to use": "Full screen" moved from the long bar into the Watch bar's More sheet, Tabs.swift)
+  const tabsSwift = fs.readFileSync(path.join(H.IOS, 'Tabs.swift'), 'utf8');
+  ok('the app: the bar hides and a side rail of 60 pt buttons shows in full screen on an iPhone on its side; the status bar goes; "Full screen" is in the Watch bar\'s More',
+    /statusBarHidden\(compactFull\)/.test(cv) && /private var sideRail/.test(cv) && /frame\(width: 60, height: 60\)/.test(cv) && /id: "full"[^\n]*\$0\.fullScreen\(\)/.test(tabsSwift) && /case "layout"/.test(fs.readFileSync(path.join(H.IOS, 'Bridge.swift'), 'utf8')) && /pageScripts = \["page-hooks"\]/.test(H.swift) && /in: \.page\)\)/.test(H.swift));
 
   // ---- 1b. an iPad, Video mode, the page on: the video stays in sight (beside the page, or over it) ----
   {
@@ -224,7 +226,8 @@ const act = (page, id) => page.evaluate((i) => window.__ytcDream.action(i), id);
     ok('One button mode in Video mode: a touch on the video = the last 10 s are explained', !!part && !!(await until(() => apiLog.slice(n0).find((r) => r.kind === 'explain'), 20000, 100)), JSON.stringify({ flow: part && part.flow }));
     await ctx.close();
   }
-  ok('the app\'s bar is the same in One button mode (no "Leave one-button mode" bar; its button says it is on)', !/Leave one-button mode/.test(cv) && /One button on/.test(cv) && !/model\.tutorOn && model\.oneButton/.test(cv));
+  // (step 2: the One button switch moved from the long bar into the Watch bar's More sheet, Tabs.swift)
+  ok('the app\'s bar is the same in One button mode (no "Leave one-button mode" bar; its button in More says it is on)', !/Leave one-button mode/.test(cv) && /One button on/.test(fs.readFileSync(path.join(H.IOS, 'Tabs.swift'), 'utf8')) && !/model\.tutorOn && model\.oneButton/.test(cv));
 
   // ---- 3. the tutor's volume: quieter / louder ----
   {
@@ -250,7 +253,8 @@ const act = (page, id) => page.evaluate((i) => window.__ytcDream.action(i), id);
     ok('...what the tutor says next is said at that volume (50% of the slider = a quarter of the sound)', !!said && Math.abs(said[1] - 0.25) < 0.02, JSON.stringify(said));
     await ctx.close();
   }
-  ok('the app\'s bar has a Volume button that opens two 60 pt buttons, quieter and louder', /private var volumeButton/.test(cv) && /volumeStep\("quieter"\)/.test(cv) && /volumeStep\("louder"\)/.test(cv) && /frame\(width: 64, height: 60\)/.test(cv) && /teacherVolume/.test(H.swift));
+  // (step 2: the volume panel's two big buttons are now the top row of the Watch bar's More sheet: one tap each once More is open)
+  ok('the Watch bar\'s More has the tutor\'s volume: two 60 pt buttons, quieter and louder', /private var volumeRow/.test(tabsSwift) && /model\.dream\("quieter"\)/.test(tabsSwift) && /model\.dream\("louder"\)/.test(tabsSwift) && /frame\(width: 64, height: 60\)/.test(tabsSwift) && /teacherVolume/.test(H.swift));
   ok('the live call\'s voice gets its volume through a gain where the element\'s own volume is ignored (an iPhone); cloud voices get it in the sound itself',
     /createMediaStreamSource\(stream\)\.connect\(gain\)/.test(fs.readFileSync(path.join(__dirname, '../dream-ext/src/live.ts'), 'utf8')) && /bakeVolume\(res\.audio, volume, k\)/.test(fs.readFileSync(path.join(__dirname, '../dream-ext/vendor/core/tts/audio.ts'), 'utf8')));
 

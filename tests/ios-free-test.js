@@ -25,8 +25,10 @@ const savedHard = (index) => ({ version: 1, level: 'B2', hints: {}, phrases: {},
 
   // ---- the app's side: the bar of free mode, Apple's Translation ----
   const cv = fs.readFileSync(path.join(IOS, 'ContentView.swift'), 'utf8');
-  const free = /if model\.freeMode \{([\s\S]*?)appButton\("house"/.exec(cv);
-  ok('the bar of free mode (when Settings asks for free mode): play / stop, the Video mode switches, Mode, Find (no Explain, no Call)', !!free && /tutorButton\("stop"/.test(free[1]) && /tutorButton\("band"/.test(free[1]) && /tutorButton\("pageAuto"/.test(free[1]) && /tutorButton\("mode"/.test(free[1]) && /tutorButton\("find"/.test(free[1]) && !/explainLast|"talk"/.test(free[1]) && /My tutor is off: turn it on/.test(cv), free && free[1].trim().slice(0, 200));
+  // (step 2, "simpler to use": free mode's bar keeps Play / stop; its Video mode switches, Mode and Find are in the Watch bar's More sheet, Tabs.swift)
+  const free = /if model\.freeMode \{([\s\S]*?)\n                \}/.exec(cv);
+  const freeMore = /\} else if model\.freeMode \{([\s\S]*?)\} else \{/.exec(fs.readFileSync(path.join(IOS, 'Tabs.swift'), 'utf8'));
+  ok('the bar of free mode (when Settings asks for free mode): play / stop; in More the Video mode switches, Mode, Find (no Explain, no Call)', !!free && !!freeMore && /tutorButton\("stop"/.test(free[1]) && /list \+= video/.test(freeMore[1]) && /mode, find/.test(freeMore[1]) && !/explainLast|"talk"/.test(free[1] + freeMore[1]) && /My tutor is off: turn it on/.test(cv), free && free[1].trim().slice(0, 200));
   const tr = fs.existsSync(path.join(IOS, 'Translator.swift')) ? fs.readFileSync(path.join(IOS, 'Translator.swift'), 'utf8') : '';
   const bridge = fs.readFileSync(path.join(IOS, 'Bridge.swift'), 'utf8');
   ok('Apple\'s Translation in the app: English to Chinese on the device (iOS 18), answered through the bridge, left out of older builds', /#if canImport\(Translation\) && compiler\(>=6\.0\)/.test(tr) && /\.translationTask\(/.test(tr) && /zh-Hans/.test(tr) && /case "translate":/.test(bridge) && /func translate\(/.test(H.swift) && /TranslatorHost\(translator:/.test(cv));

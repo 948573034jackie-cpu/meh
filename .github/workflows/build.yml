@@ -147,6 +147,11 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app || echo "I Know was not installed"
           xcrun simctl install "$UDID" build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app || echo "I Know Book was not installed"
+          # (the microphone and speech recognition are allowed first, so no permission question covers a picture;
+          # the bundle ids are the ones of ios/project.yml)
+          for APPID in local.ytlearn.app local.ytlearn.book; do
+            for SERVICE in microphone speech-recognition; do xcrun simctl privacy "$UDID" grant "$SERVICE" "$APPID" || echo "could not grant $SERVICE to $APPID"; done
+          done
           # shot <app id> <picture name> <seconds to wait> <launch arguments...>
           shot() {
             local APPID="$1" FILE="$2" WAIT="$3"; shift 3
@@ -159,11 +164,12 @@ jobs:
           for MODE in light dark; do
             xcrun simctl ui "$UDID" appearance "$MODE" || true
             SUFFIX=""; [ "$MODE" = dark ] && SUFFIX="-dark"
-            # (dark: only the main screen and Settings)
-            if [ "$MODE" = light ]; then NAMES="main settings tutorpage words reader browser"; BOOKNAMES="main settings tutorpage words"; else NAMES="main settings"; BOOKNAMES="main settings"; fi
+            # the three tabs of each app (main = Watch / Books, words, settings), I Know's More sheet; in light also the
+            # rarer screens (dark: the tabs and More only). Book "reading" = the sample story open (-demo).
+            if [ "$MODE" = light ]; then NAMES="main words settings more tutorpage reader browser"; BOOKNAMES="main words settings appsettings tutorpage reading"; else NAMES="main words settings more"; BOOKNAMES="main words settings"; fi
             for NAME in $NAMES; do shot local.ytlearn.app "native-iknow-$NAME$SUFFIX" 12 -shot "$NAME"; done
             for NAME in $BOOKNAMES; do
-              if [ "$NAME" = main ]; then shot local.ytlearn.book "native-book-$NAME$SUFFIX" 9 -demo -shot "$NAME"; else shot local.ytlearn.book "native-book-$NAME$SUFFIX" 7 -shot "$NAME"; fi
+              if [ "$NAME" = reading ]; then shot local.ytlearn.book "native-book-$NAME$SUFFIX" 9 -demo -shot main; else shot local.ytlearn.book "native-book-$NAME$SUFFIX" 8 -shot "$NAME"; fi
             done
           done
           xcrun simctl ui "$UDID" appearance light || true
@@ -257,6 +263,12 @@ jobs:
       - name: The Speechify voice in Settings of both apps (a fake Speechify server, no real key), in WebKit
         if: always()
         run: node tests/speechify-ui-test.js
+      - name: The simpler apps (3 tabs, one main action, often-used actions in one tap), in WebKit
+        if: always()
+        run: node tests/tabs-test.js
+      - name: The one look of both apps (light and dark, text sizes, 44 pt buttons), in WebKit
+        if: always()
+        run: node tests/ios-look-test.js
 
   dream-tutor:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)

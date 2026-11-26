@@ -45,6 +45,7 @@ import { saveExplained } from './word-save';
 import { nativeTranslate, appPost, inApp } from './native-bridge';
 import { readLook, themeOf, paletteOf, textVars, lettersPerLine, coverOf, DEFAULT_LOOK, THEMES, FONTS, LIMITS, type Look } from './book-look';
 import { SAMPLE_TITLE, SAMPLE_AUTHOR, SAMPLE_TEXT } from './book-sample';
+import { mountVocab, type VocabView } from './vocab-view';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -74,6 +75,7 @@ const ICON = {
   gear: icon('slider.horizontal.3'), back: icon('chevron.left'), prev: icon('chevron.left'), next: icon('chevron.right'),
   play: icon('play.fill'), pause: icon('pause.fill'), sback: icon('backward.fill'), sfwd: icon('forward.fill'),
   book: icon('book'), ear: icon('headphones'), plus: icon('plus'), tutor: icon('slider.horizontal.3'), more: icon('ellipsis'),
+  words: icon('character.book.closed'), settings: icon('gearshape'),
 };
 
 // ---- what is open ------------------------------------------------------------------------------------------------
@@ -96,6 +98,8 @@ let keys: store.Keys = {};
 let look: Look = DEFAULT_LOOK;
 const LOOK_KEY = 'bkLook', OPEN_KEY = 'bkOpen', MODE_KEY = 'bkMode';
 let mode: 'read' | 'listen' = 'read';
+/** the tab at the bottom of the library (Books · Words · Settings); while a book is open there is no tab bar */
+let tab: 'books' | 'words' | 'settings' = 'books';
 
 // the voice
 let tts: TtsEngine;
@@ -156,7 +160,7 @@ function debug(): void {
     marks: { hard: document.querySelectorAll('#flow .w.hard').length, learning: document.querySelectorAll('#flow .w.learning').length },
     look: { theme: themeOf(look, systemDark()).id, size: look.size, font: look.font }, chrome: !$('rd').classList.contains('plain'), waiting: !!answer,
     ai: shelf && book ? aiId() : '', split: shelf?.split ?? 0, heavy,
-    deviceSaid: fakeDevice ? fakeDevice.spoken.slice(-12).map((x) => x.text) : [], voiceError: lastVoiceError,
+    deviceSaid: fakeDevice ? fakeDevice.spoken.slice(-12).map((x) => x.text) : [], voiceError: lastVoiceError, tab, tabs: !$('tabs').hidden,
   });
 }
 
@@ -215,6 +219,26 @@ async function paintLibrary(): Promise<void> {
   document.body.dataset.books = String(list.length);
   debug();
 }
+// ---- the three tabs: Books (the library) · Words (My Vocabulary) · Settings ------------------------------------------
+let vocabView: VocabView | null = null;
+function showTab(t: 'books' | 'words' | 'settings'): void {
+  if (shelf) return;   // (a book is open: the page is the book alone, as in Apple Books; the tabs come back in the library)
+  if (sheetOpen()) closeSheet();
+  tab = t;
+  $('lib').hidden = t !== 'books';
+  $('words').hidden = t !== 'words';
+  $('set').hidden = t !== 'settings';
+  $('tabs').hidden = false;
+  for (const b of $('tabs').querySelectorAll<HTMLElement>('[data-tab]')) { const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); }
+  if (t === 'words') {
+    // (the same My Vocabulary as I Know's Words tab; its "Settings" link is this app's Settings tab)
+    if (!vocabView) vocabView = mountVocab($('words-body'), { prefix: 'v-', onSettings: () => showTab('settings') });
+    else vocabView.refresh();
+    $('words').scrollTop = 0;
+  } else if (t === 'settings') { paintSettingsPage(); $('set').scrollTop = 0; }
+  debug();
+}
+
 function showLibrary(): void {
   setPlaying(false);
   savePlaceNow();
@@ -222,10 +246,10 @@ function showLibrary(): void {
   closeSheet();
   void chrome.storage.local.set({ [OPEN_KEY]: '' }).catch(() => undefined);
   $('rd').hidden = true; $('caption').hidden = true;
-  $('lib').hidden = false;
   shelf = null; stored = null;
   clearFlow();
   delete document.body.dataset.sentences;
+  showTab('books');
   void paintLibrary();
 }
 
@@ -316,7 +340,7 @@ async function openBook(id: string, then: 'read' | 'listen' | 'same' = 'same', g
     await prepareVoice();
     // (the book before leaves the page first; the page is measured again once it is on the screen)
     clearFlow(); pageW = 0;
-    $('lib').hidden = true;
+    $('lib').hidden = true; $('words').hidden = true; $('set').hidden = true; $('tabs').hidden = true;
     $('rd').hidden = false;
     $('ttl').textContent = shelf.title; $('head-t').textContent = shelf.title;
     if (then !== 'same') mode = then;
@@ -585,7 +609,7 @@ function setMode(m: 'read' | 'listen'): void {
   debug();
 }
 function paintPlay(): void {
-  for (const id of ['t-play', 'm-play']) { $(id).innerHTML = reading() ? ICON.pause : ICON.play; $(id).setAttribute('aria-label', reading() ? 'Pause' : 'Play'); }
+  for (const id of ['t-play', 'm-play', 'rplay']) { $(id).innerHTML = reading() ? ICON.pause : ICON.play; $(id).setAttribute('aria-label', reading() ? 'Pause' : 'Play'); }
   $('t-speed').textContent = `${(settings?.voice.rate ?? 1).toFixed(1)}×`;
   $('t-voice').textContent = voiceName(voiceKind);
 }
@@ -1329,7 +1353,23 @@ function lookSheet(): void {
 
 const pctSoon: Record<string, ReturnType<typeof setTimeout>> = {};
 async function patchX(p: Partial<store.YtExtras>): Promise<void> { extras = { ...extras, ...p }; await store.patchExtras(p).catch(() => undefined); }
-function tutorSheet(): void {
+/**
+ * The settings, ONE place (the tutor sheet, the app's settings and the text look entry, merged; the most used first):
+ * My tutor, My level, what to explain by itself, the voice (Speechify too), the card, "Text and colours", the keys,
+ * then the rare rest ("My word file, and more settings": the app's own sheet). Drawn in the Settings tab (a page) or,
+ * from the reading page (💬 and the Voice chip), the same rows in a sheet over the book.
+ */
+function tutorSheet(at?: 'voice'): void {
+  const body = openSheet('tutor', settingsHtml(), true);
+  wireSettings(body, () => { if (sheetKind === 'tutor') { const top = body.scrollTop; tutorSheet(); $('sheet-body').scrollTop = top; } });
+  if (at === 'voice') body.querySelector('#set-voice')?.scrollIntoView({ block: 'start' });
+}
+function paintSettingsPage(): void {
+  const box = $('set-body');
+  box.innerHTML = settingsHtml();
+  wireSettings(box, () => { if (tab === 'settings' && !$('set').hidden) { const top = $('set').scrollTop; paintSettingsPage(); $('set').scrollTop = top; } });
+}
+function settingsHtml(): string {
   const p = pcts();
   const kind = (sw: keyof store.YtExtras, name: string, label: string, on: boolean, pct: number) => `<div class="rowline"><span>${label}</span>${opts(sw as string, on ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
     <div class="ctl"><label>How much</label><input type="range" data-name="${name}" min="0" max="100" step="5" value="${pct}"${on ? '' : ' disabled'}><output>${pct}%</output></div>`;
@@ -1341,7 +1381,7 @@ function tutorSheet(): void {
     : voiceKind === 'openai' ? select('openaiVoice', OPENAI_VOICES, extras.openaiVoice)
     : voiceKind === 'elevenlabs' ? select('elevenVoice', ELEVEN_VOICES, extras.elevenVoice)
     : macVoices.length ? select('macVoice', macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), settings.voice.voiceId || voiceId) : '';
-  const body = openSheet('tutor', `
+  return `
     <h4>My tutor</h4>
     <div class="rowline"><span>My tutor<small>off = only the dictionary, no AI, nothing paid</small></span>${opts('tutorOn', tutorOn() ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
     ${tutorOn() && !hasAi() ? `<p class="warn">No Claude key is saved: the tutor cannot explain. Paste your Claude key and press Save.</p>${keyBox('anthropic', 'Claude key')}` : ''}
@@ -1351,21 +1391,27 @@ function tutorSheet(): void {
     ${kind('stopPhrasesOn', 'pctPhrases', 'Phrases', extras.stopPhrasesOn !== false, p.phrase)}
     ${kind('stopHardOn', 'pctSentences', 'Sentences', extras.stopHardOn !== false, p.sentence)}
     <p class="note">Nothing below your level is explained by itself, and nothing you know. 100 % = everything at your level or above, a low number = only the hardest. A tap on any word always explains it.</p>
-    <h4>The card</h4>
-    <div class="rowline"><span>Size</span>${opts('cardSize', cardBig() ? 'big' : 'small', [['big', 'Big (whole screen)'], ['small', 'Small']])}</div>
-    <div class="rowline"><span>Show the explanation as text</span>${opts('showSay', extras.showSay ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
-    <h4>Voice</h4>
+    <h4 id="set-voice">Voice</h4>
     ${opts('voice', extras.voice, [['auto', 'Auto'], ['azure', 'Microsoft'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], SPEECHIFY_CHOICE, ['mac', 'iPhone']])}
-    ${missing ? `<p class="warn">No ${missing} key is saved, so you hear the iPhone voice now. Paste your ${missing} key and press Save.</p>${keyBox(wants as store.KeyName, `${missing} key`)}${wants === 'azure' ? `<div class="key"><input type="text" class="field" data-name="azureRegion" value="${esc(extras.azureRegion ?? 'eastus')}" placeholder="Region, for example eastus" autocapitalize="off" autocorrect="off" spellcheck="false"><button data-a="test-azure">Test</button></div>` : ''}` : ''}
+    ${missing ? `<p class="warn">No ${missing} key is saved, so you hear the iPhone voice now. Paste your ${missing} key and press Save.</p>${keyBox(wants as store.KeyName, `${missing} key`)}${wants === 'azure' ? '<p class="note">Then press Test under Keys: it finds the Microsoft region by itself.</p>' : ''}` : ''}
     ${extras.voice === 'speechify' || voiceKind === 'speechify' ? speechifyRowsHtml(extras, keys) : voiceList}
     <button class="big" data-a="test-voice">Hear the voice</button>
     ${range('teacherVolume', 'Volume', extras.teacherVolume ?? 60, { min: 0, max: 100, step: 5 }, `${extras.teacherVolume ?? 60}%`)}
     ${range('rate', 'Speed', Math.round(rateNow() * 20) / 20, { min: 0.6, max: 1.4, step: 0.05 }, `${rateNow().toFixed(2)}×`)}
+    <h4>The card</h4>
+    <div class="rowline"><span>Size</span>${opts('cardSize', cardBig() ? 'big' : 'small', [['big', 'Big (whole screen)'], ['small', 'Small']])}</div>
+    <div class="rowline"><span>Show the explanation as text</span>${opts('showSay', extras.showSay ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
+    <h4>The page</h4>
+    <button class="big" data-a="look">${icon('textformat.size')} Text and colours</button>
     <h4>Keys</h4>
-    ${keyBox('anthropic', 'Claude')}${keyBox('azure', 'Microsoft voice')}${keyBox('openai', 'OpenAI')}${keyBox('elevenlabs', 'ElevenLabs')}
-    <p class="note">Keys stay on this device (in its Keychain). Claude explains; the Microsoft key (free) gives the natural voice.</p>
-    ${inApp() ? '<button class="big" data-a="app-settings">My word file, and more settings</button>' : ''}`, true);
-  const again = () => { if (sheetKind === 'tutor') { const top = body.scrollTop; tutorSheet(); $('sheet-body').scrollTop = top; } };
+    ${keyBox('anthropic', 'Claude')}${keyBox('azure', 'Microsoft voice')}${keyBox('openai', 'OpenAI')}${keyBox('elevenlabs', 'ElevenLabs')}${keyBox('github', 'GitHub token')}
+    <p class="note">Microsoft region</p>
+    <div class="key"><input type="text" class="field" data-name="azureRegion" value="${esc(extras.azureRegion ?? 'eastus')}" placeholder="Microsoft region, for example eastus" aria-label="Microsoft region" autocapitalize="off" autocorrect="off" spellcheck="false"><button data-a="test-azure">Test</button></div>
+    <p class="note">Keys stay on this device (in its Keychain). Claude explains; the Microsoft key (free) gives the natural voice; Test finds the Microsoft region by itself. The GitHub token keeps your words in one private gist, shared with your computer. (The Speechify app code is with the voice: Voice ▸ Speechify.)</p>
+    ${inApp() ? `<h4>More settings</h4><button class="big" data-a="app-settings">My word file, and more settings</button><p class="note">The word file shared with the Mac, the All settings page, the help.</p>` : ''}`;
+}
+/** handles the settings rows in `body` (the page or the sheet); `again` draws them again after a change */
+function wireSettings(body: HTMLElement, again: () => void): void {
   const afterVoice = async () => { const was = reading(); if (was) setPlaying(false); else cancelSpeech(); await prepareVoice(); again(); if (was && !playing && shelf) setPlaying(true); };
   wireSpeechifyRows(body, { toast, changed: () => void Promise.all([store.getExtras(), store.getKeys()]).then(([x, k]) => { extras = x; keys = k; return afterVoice(); }) });
   body.oninput = (ev) => {
@@ -1413,6 +1459,7 @@ function tutorSheet(): void {
       });
     }
     else if (b.dataset.a === 'app-settings') { closeSheet(); void appPost({ kind: 'appSettings' }); }
+    else if (b.dataset.a === 'look') lookSheet();
   };
 }
 
@@ -1459,12 +1506,13 @@ function bookSheet(id: string, title: string): void {
 
 // ---- start ---------------------------------------------------------------------------------------------------------
 function wireChrome(): void {
-  $('lib-set').innerHTML = ICON.gear; $('b-lib').innerHTML = ICON.back; $('b-tutor').innerHTML = ICON.tutor;
+  $('b-lib').innerHTML = ICON.back; $('b-tutor').innerHTML = ICON.tutor;
+  $('tab-books').innerHTML = `${ICON.book}<span>Books</span>`; $('tab-words').innerHTML = `${ICON.words}<span>Words</span>`; $('tab-settings').innerHTML = `${ICON.settings}<span>Settings</span>`;
+  $('tabs').onclick = (ev) => { const t = (ev.target as HTMLElement).closest<HTMLElement>('[data-tab]')?.dataset.tab; if (t === 'books' || t === 'words' || t === 'settings') showTab(t); };
   $('c-prev').innerHTML = ICON.prev; $('c-next').innerHTML = ICON.next;
   for (const id of ['t-back', 'm-back']) $(id).innerHTML = ICON.sback;
   for (const id of ['t-fwd', 'm-fwd']) $(id).innerHTML = ICON.sfwd;
   $('mode-read').innerHTML = `${ICON.book} Read`; $('mode-listen').innerHTML = `${ICON.ear} Listen`;
-  $('lib-set').onclick = () => tutorSheet();
   $('b-lib').onclick = () => showLibrary();
   $('b-look').onclick = () => (sheetKind === 'look' ? closeSheet() : lookSheet());
   $('b-tutor').onclick = () => (sheetKind === 'tutor' ? closeSheet() : tutorSheet());
@@ -1473,12 +1521,13 @@ function wireChrome(): void {
   $('c-next').onclick = () => { setPlaying(false); showChapter(chapter + 1, null); };
   $('chapters').onchange = () => { setPlaying(false); showChapter(Number($<HTMLSelectElement>('chapters').value) || 0, null); };
   $('modes').onclick = (ev) => { const m = (ev.target as HTMLElement).closest<HTMLElement>('[data-mode]')?.dataset.mode; if (m === 'read' || m === 'listen') setMode(m); };
-  for (const id of ['t-play', 'm-play']) $(id).onclick = () => setPlaying(!reading());
+  for (const id of ['t-play', 'm-play', 'rplay']) $(id).onclick = () => setPlaying(!reading());
   for (const id of ['t-back', 'm-back']) $(id).onclick = () => stepSentence(-1);
   for (const id of ['t-fwd', 'm-fwd']) $(id).onclick = () => stepSentence(1);
   $('t-speed').onclick = () => { const steps = [0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.3]; const cur = rateNow(); const next = steps.find((s) => s > cur + 0.01) ?? steps[0]; settings = { ...settings, voice: { ...settings.voice, rate: next } }; void store.updateSettings((c) => ({ voice: { ...c.voice, rate: next } })).catch(() => undefined); paintPlay(); };
-  $('t-voice').onclick = () => tutorSheet();
+  $('t-voice').onclick = () => tutorSheet('voice');
   $('file').addEventListener('change', () => { const f = $<HTMLInputElement>('file').files?.[0]; if (f) void openFile(f); });
+  $('e-file').innerHTML = `${ICON.book} Open a book`;
   $('e-file').onclick = () => $<HTMLInputElement>('file').click();
   $('e-paste').onclick = () => addSheet(true);
   $('e-sample').onclick = () => void openSample();
@@ -1556,5 +1605,7 @@ async function boot(): Promise<void> {
   save: () => savePlaceNow(),
   play: (on: boolean) => setPlaying(on),
   turn: (d: 1 | -1) => turn(d),
+  /** the tab of the library (the app's pictures: -shot words / settings) */
+  tab: (t: 'books' | 'words' | 'settings') => { if (shelf) showLibrary(); showTab(t); },
 };
 void boot();

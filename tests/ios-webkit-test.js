@@ -466,8 +466,9 @@ const api = H.startServer();
   await hctx.close();
 
   // ---- 14. Video mode: the two switches of the bar (subtitles on / off, the big page on / off) ----
-  const cv = fs.readFileSync(path.join(IOS, 'ContentView.swift'), 'utf8');
-  ok('the bar has the two Video mode switches (subtitles, the big page), shown only in Video mode', /if model\.videoMode \{[\s\S]{0,200}tutorButton\("band"[\s\S]{0,200}tutorButton\("pageAuto"/.test(cv)
+  // (step 2, "simpler to use": the two switches moved from the long bar into the Watch bar's More sheet, Tabs.swift)
+  const tabsSwift = fs.readFileSync(path.join(IOS, 'Tabs.swift'), 'utf8');
+  ok('the Watch bar\'s More has the two Video mode switches (subtitles, the big page), shown only in Video mode', /let video = model\.videoMode \? \[[\s\S]{0,200}id: "band"[\s\S]{0,200}\$0\.dream\("band"\)[\s\S]{0,200}id: "pageAuto"[\s\S]{0,200}\$0\.dream\("pageAuto"\)/.test(tabsSwift)
     && /@Published var bandOn/.test(H.swift) && /@Published var pageOn/.test(H.swift) && /@Published var videoMode/.test(H.swift) && /videoSwitches\(extras\)/.test(H.swift));
   stores.local.drExtras = { ...stores.local.drExtras, view: 'normal', band: 'auto', stageOn: true, hideYtCaptions: true, levelAsk: false, levelMode: false, oneButton: false, voiceMode: false };
   stores.local.drVocab = { ...stores.local.drVocab, words: { ...stores.local.drVocab.words, meticulous: 'learning', gregarious: 'learning' } };

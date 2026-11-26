@@ -326,6 +326,10 @@ kbd { font-family: var(--t-font-ui); font-size: 13px; border: 1px solid var(--t-
 /* ---- the one look on a touch screen (design/theme.json): big readable text, every button 44 px or more ---- */
 :host([data-phone="1"]) button:not(.sx) { min-height: var(--t-control); min-width: var(--t-control); }
 :host([data-phone="1"]) .seg button { min-height: var(--t-control); padding: 0 var(--t-space-m); font-size: var(--t-size-footnote); }
+/* (the tutor's voice: six choices with Speechify: three in a row, two rows, each one whole and 44 px tall) */
+:host([data-phone="1"]) .quick .seg[data-name="voice"] { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--t-line-strong); width: 100%; }
+:host([data-phone="1"]) .quick .seg[data-name="voice"] button { border-left: 0; background: var(--t-raised); padding: 2px var(--t-space-xs); line-height: 1.2; }
+:host([data-phone="1"]) .quick .seg[data-name="voice"] button.on { background: var(--t-accent-soft); }
 :host([data-phone="1"]) .quick { font-size: var(--t-size-body); border-color: var(--t-line); }
 :host([data-phone="1"]) .quick .q-head { min-height: 56px; padding: var(--t-space-s) var(--t-space-s) var(--t-space-s) var(--t-space-l); }
 :host([data-phone="1"]) .quick .q-head b { font-size: var(--t-size-title); font-weight: 650; }

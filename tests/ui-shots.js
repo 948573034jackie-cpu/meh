@@ -61,11 +61,42 @@ async function book(browser, scheme) {
   await until(() => p.evaluate(() => document.body.dataset.ready === '1'), 15000);
   const dbg = () => p.evaluate(() => { try { return JSON.parse(document.documentElement.dataset.drDebug || 'null'); } catch (e) { return null; } });
   await shot('book-library-empty');
-  await tryStep('book settings from the library', async () => { await p.evaluate(() => document.getElementById('lib-set').click()); await shot('book-library-settings'); await p.evaluate(() => document.getElementById('veil').click()); });
+  // (the three tabs: Words and Settings, one tap each; Settings with the Speechify rows, set up with the fake server)
+  await tryStep('book words tab', async () => {
+    await p.evaluate(() => document.getElementById('tab-words').click());
+    await until(() => p.evaluate(() => /You know about/.test((document.getElementById('v-know-big') || {}).textContent || '')), 8000);
+    await shot('book-words', { wait: 600 });
+  });
+  await tryStep('book settings tab', async () => {
+    await p.evaluate(() => document.getElementById('tab-settings').click());
+    await shot('book-settings');
+    await p.evaluate(() => { const s = document.getElementById('set'); s.scrollTop = s.scrollHeight; });
+    await shot('book-settings-end');
+  });
+  await tryStep('book settings, Speechify', async () => {
+    // (the app code saved as the rows' own Save would: through the page, so the page knows it at once)
+    await p.evaluate(async (code) => { const o = await chrome.storage.local.get(['drExtras', 'drKeys']); await chrome.storage.local.set({ drKeys: { ...(o.drKeys || {}), speechify: code }, drExtras: { ...o.drExtras, speechifyUrl: 'https://iknow-speech.tester.workers.dev' } }); }, H.SPEECHIFY_CODE);
+    await p.evaluate(() => document.getElementById('tab-books').click());
+    await p.evaluate(() => document.getElementById('tab-settings').click());
+    await p.evaluate(() => document.querySelector('#set .opts[data-name="voice"] button[data-v="speechify"]').click());
+    await until(() => p.evaluate(() => (document.querySelectorAll('#set [data-sfy="voice"] option').length >= 4) && /your server/.test((document.querySelector('#set [data-sfy-out="usage"]') || {}).textContent || '')), 8000);
+    await p.evaluate(() => document.querySelector('#set [data-sfy-box]').scrollIntoView({ block: 'start' }));
+    await shot('book-settings-speechify', { wait: 500 });
+    await p.evaluate(() => { document.querySelector('#set [data-sfy-act="test"]').click(); });
+    await until(() => p.evaluate(() => /works/.test((document.querySelector('#set [data-sfy-out="test"]') || {}).textContent || '')), 5000);
+    await p.evaluate(() => { document.querySelector('#set [data-sfy-act="steps"]').click(); document.querySelector('#set [data-sfy-out="test"]').scrollIntoView({ block: 'start' }); });
+    await shot('book-settings-speechify-steps', { wait: 500 });
+    // (back to the voice the other pictures had: no Speechify server)
+    await p.evaluate(() => document.querySelector('#set .opts[data-name="voice"] button[data-v="auto"]').click());
+    await p.evaluate(async () => { const o = await chrome.storage.local.get('drExtras'); await chrome.storage.local.set({ drExtras: { ...o.drExtras, speechifyUrl: '' } }); });
+    await sleep(300);
+    await p.evaluate(() => document.getElementById('tab-books').click());
+  });
   await p.evaluate(() => document.getElementById('e-sample').click());
   await until(async () => { const d = await dbg(); return d && d.open && d.sentences > 5 ? d : null; }, 20000);
   await shot('book-reading-bars');
   await sleep(2800);
+  // (Reading, the bars away: the small Play under the text)
   await shot('book-reading');
   await tryStep('text settings', async () => { await p.evaluate(() => document.getElementById('b-look').click()); await shot('book-text-settings'); await p.evaluate(() => document.getElementById('veil').click()); });
   await tryStep('tutor sheet', async () => { await p.evaluate(() => document.getElementById('b-tutor').click()); await shot('book-tutor-sheet'); await p.evaluate(() => document.getElementById('veil').click()); });
@@ -153,6 +184,14 @@ async function appPage(browser, scheme, file, name, after) {
     await tryStep(`video (${scheme})`, () => youtube(browser, scheme, 'normal', 'iknow-tutor-video'));
     await tryStep(`options (${scheme})`, () => appPage(browser, scheme, 'options.html', 'iknow-options', async (p, shot) => { await shot('iknow-options-full', { full: true }); }));
     await tryStep(`vocab (${scheme})`, () => appPage(browser, scheme, 'vocab.html', 'iknow-vocab'));
+    // I Know's Settings tab: the tutor's own settings page (settings.html), its two parts; the voice with Speechify
+    await tryStep(`settings tutor (${scheme})`, () => appPage(browser, scheme, 'settings.html#tutor', 'iknow-settings-tutor', async (p, shot) => { await shot('iknow-settings-tutor-full', { full: true }); }));
+    await tryStep(`settings voice (${scheme})`, () => appPage(browser, scheme, 'settings.html#voice', 'iknow-settings-voice', async (p, shot) => {
+      keychain.drKeys = JSON.stringify({ anthropic: 'sk-ant-test-key', speechify: H.SPEECHIFY_CODE });
+      await p.evaluate(async () => { const o = await chrome.storage.local.get('drExtras'); await chrome.storage.local.set({ drExtras: { ...o.drExtras, voice: 'speechify', speechifyUrl: 'https://iknow-speech.tester.workers.dev' } }); });
+      await until(() => p.evaluate(() => { const r = document.getElementById('dr-settings-host').shadowRoot; return r.querySelectorAll('[data-sfy="voice"] option').length >= 4 && /your server/.test((r.querySelector('[data-sfy-out="usage"]') || {}).textContent || ''); }), 8000);
+      await shot('iknow-settings-voice-speechify', { full: true, wait: 500 });
+    }));
     await tryStep(`reader (${scheme})`, () => appPage(browser, scheme, 'reader.html', 'iknow-reader', async (p, shot) => {
       await p.evaluate((t) => window.__iknowReader.openText('The Lighthouse Keeper', t), SECOND_BOOK);
       await until(() => p.evaluate(() => !document.getElementById('reader').hidden), 8000);

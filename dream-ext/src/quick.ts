@@ -42,6 +42,13 @@ export interface QuickCtx {
   setSleep?(minutes: number): void;
   /** start a test call */
   testCall(): void;
+  /**
+   * I Know's Settings tab (settings.html, open without a video): only one part, no head, no keys, no links
+   * (those have their own rows there, as the tutor volume, the text size, My level, what to explain and "Explain the
+   * last"). 'tutor' = the card, the look, the mode and Advanced; 'voice' = the voice choice, its list, the Speechify
+   * rows, Test. Undefined = the whole sheet (on the video, and in Chrome).
+   */
+  part?: 'tutor' | 'voice';
   close(): void;
   toast(text: string, ms?: number): void;
 }
@@ -122,38 +129,41 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
   const kindRow = (sw: string, name: string, label: string, on: boolean, pct: number) => `<label class="col lvl kind"><span>Explain <b>${label}</b> ${onOff(sw, on)} <output class="lvl-n">${pct}%</output></span>
         <input type="range" class="wide" data-name="${name}" min="0" max="100" step="5" value="${pct}"${on ? '' : ' disabled'} aria-label="How much of the ${label.toLowerCase()} to explain, 0 nothing to 100 everything"></label>`;
   const needKey = !keys.anthropic && !keys.openai;
-  el.innerHTML = `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)" aria-label="Close">${icon('xmark')}</button></div>
+  // (I Know's Settings tab shows one part at a time; the sheet on the video and Chrome show everything, as before)
+  const part = ctx.part;
+  const tutorPart = !part || part === 'tutor', voicePart = !part || part === 'voice', both = !part;
+  el.innerHTML = `${part ? '' : `<div class="q-head"><b>Quick settings</b><span class="grow"></span><span class="muted">saved at once</span><button class="quiet" data-act="close" title="Close (Esc)" aria-label="Close">${icon('xmark')}</button></div>`}
   <div class="q-body">
     <section class="first">
-      <label>Tutor volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')}</label>
-      ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 17, 42, 1, 'px')} <span class="muted">every page, the subtitles on the video and the card: one size</span></label>` : ''}
-      <label>My level ${seg('learnerLevel', s.learnerLevel, LEVELS as [Settings['learnerLevel'], string][])}</label>
-      ${kindRow('stopItemsOn', 'pctWords', 'Words', x.stopItemsOn !== false, pcts.word)}
+      ${both ? `<label>Tutor volume ${slider('allVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')}</label>
+      ${ctx.phone ? `<label>Text size ${slider('phoneSize', x.phoneSizePx ?? 21, 17, 42, 1, 'px')} <span class="muted">every page, the subtitles on the video and the card: one size</span></label>` : ''}` : ''}
+      ${both ? `<label>My level ${seg('learnerLevel', s.learnerLevel, LEVELS as [Settings['learnerLevel'], string][])}</label>` : ''}
+      ${both ? `${kindRow('stopItemsOn', 'pctWords', 'Words', x.stopItemsOn !== false, pcts.word)}
       ${kindRow('stopPhrasesOn', 'pctPhrases', 'Phrases', x.stopPhrasesOn !== false, pcts.phrase)}
       ${kindRow('stopHardOn', 'pctSentences', 'Sentences', x.stopHardOn !== false, pcts.sentence)}
-      <p class="muted">For each kind: On / Off, and how much to explain: 100 % = everything at your level or above, a low number = only the hardest, 0 = nothing. Nothing below your level is explained by itself, and nothing you know. A kind that is off is not marked in the text either. A tap on any word still explains it.</p>
-      <label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>
-      ${ctx.phone ? `<label>Card ${seg('cardSize', x.cardSize === 'small' ? 'small' : 'big', [['big', 'Big (whole screen)'], ['small', 'Small']])} <span class="muted">the word, phrase or sentence with its translation; it closes by itself before the sentence plays again</span></label>` : ''}
+      <p class="muted">For each kind: On / Off, and how much to explain: 100 % = everything at your level or above, a low number = only the hardest, 0 = nothing. Nothing below your level is explained by itself, and nothing you know. A kind that is off is not marked in the text either. A tap on any word still explains it.</p>` : ''}
+      ${both ? `<label>Explain the last ${seg('seconds', s.listen.lastSecondsWindow, [[10, '10 s'], [20, '20 s'], [30, '30 s']])} <span class="muted">the Explain button, “hello”, One button</span></label>` : ''}
+      ${tutorPart ? `${ctx.phone ? `<label>Card ${seg('cardSize', x.cardSize === 'small' ? 'small' : 'big', [['big', 'Big (whole screen)'], ['small', 'Small']])} <span class="muted">the word, phrase or sentence with its translation; it closes by itself before the sentence plays again</span></label>` : ''}
       <label>Look ${seg('readLook', x.readLook === 'day' || x.readLook === 'night' ? x.readLook : 'auto', [['auto', 'Auto'], ['day', 'Day'], ['night', 'Night']])} <span class="muted">every mode the same · Auto = as your ${ctx.phone ? 'iPhone' : 'computer'} is set</span></label>
-      <label>Mode ${seg('view', x.view, [['listening', 'Listening'], ['reading', 'Reading'], ['lyrics', 'Lyrics'], ['normal', 'Video']])}</label>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], SPEECHIFY_CHOICE, ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
-      ${voiceRows}
-      ${needKey ? `<p class="warn">No Claude key is saved: the tutor cannot explain. Paste your Claude key here and press Save:</p>${keyBox('anthropic', 'Claude key', true)}` : ''}
+      <label>Mode ${seg('view', x.view, [['listening', 'Listening'], ['reading', 'Reading'], ['lyrics', 'Lyrics'], ['normal', 'Video']])}</label>` : ''}
+      ${voicePart ? `<label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], SPEECHIFY_CHOICE, ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
+      ${voiceRows}` : ''}
+      ${needKey && tutorPart ? `<p class="warn">No Claude key is saved: the tutor cannot explain. Paste your Claude key here and press Save:</p>${keyBox('anthropic', 'Claude key', true)}` : ''}
     </section>
-    <details class="adv keys"${keysOpen ? ' open' : ''}><summary>API keys</summary>
+    ${both ? `<details class="adv keys"${keysOpen ? ' open' : ''}><summary>API keys</summary>
     <section>
       ${(['azure', 'anthropic', 'openai', 'elevenlabs', 'github'] as const).map((k) => keyBox(k, keyName(k), k === 'azure' && !keys.azure)).join('')}
       ${regionRow}
       <p class="muted">Keys stay on this device (on the iPhone in its Keychain). Claude explains; Microsoft (free), OpenAI or ElevenLabs give the voice. The GitHub token (github.com → Settings → Developer settings → Fine-grained tokens, with only "Gists: Read and write") keeps your words in one private gist, shared by the phone and the computer within seconds.${ctx.gist ? ` ${esc(ctx.gist)}` : ''}</p>
     </section>
-    </details>
-    <details class="adv main"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
+    </details>` : ''}
+    ${tutorPart ? `<details class="adv main"${advOpen ? ' open' : ''}><summary>Advanced (everything else)</summary>
     <section><h4>My tutor stops</h4>
       <label>Explanations ${seg('teachLength', s.ai.explanationLength === 'short' || s.ai.explanationLength === 'long' ? s.ai.explanationLength : 'normal', [['short', 'Short'], ['normal', 'Mid'], ['long', 'Long']])}</label>
       <label>At a stop: say the word ${num('sayBefore', x.sayBefore ?? 1, 0, 10)} time before the explanation and ${num('sayAfter', x.sayAfter ?? 3, 0, 10)} times after it <span class="muted">then the sentence once</span></label>
       <label>The same word not again within ${num('repeatWords', x.repeatWords ?? 1000, 0, 9999)} words · known after ${num('knownAfter', x.knownAfter ?? 7, 0, 20)} explanations</label>
       ${ctx.phone ? `<label>Free mode: seconds to look at the card ${slider('freeWindow', x.freeWindowSec ?? 7, 3, 20, 1, ' s')} <span class="muted">(My tutor off: no AI; one tap = I know)</span></label>` : ''}
-      <label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>
+      ${ctx.setSleep ? `<label>Sleep timer ${seg('sleep', (ctx.sleepMin ?? 0) > 30 ? 60 : (ctx.sleepMin ?? 0) > 0 ? 30 : 0, [[0, 'Off'], [30, '30 min'], [60, '60 min']])}${ctx.sleepMin ? ` <span class="muted">${ctx.sleepMin} min left</span>` : ''}</label>` : ''}
       <label>Microphone ${seg('mic', x.micLevel ?? 3, [[1, 'Low'], [2, 'Mid'], [3, 'High']])} <span class="muted">how easily it hears you</span></label>
       ${ctx.phone ? `<label>Talk through Bluetooth headphones ${onOff('headsetMic', !!x.headsetMic)} <span class="muted">their microphone hears you (the sound becomes phone-call quality while on). Wired headphones with a microphone always work.</span></label>` : ''}
       <label>Tutor's volume ${slider('teacherVolume', x.teacherVolume ?? 60, 0, 100, 1, '%')} <button type="button" data-act="test">${icon('play.fill')} Test</button></label>
@@ -222,8 +232,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section><h4>Level Check</h4>
       <button type="button" data-act="copy-level">Copy my level for Claude</button>
     </section>
-    </details>
-    <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">${icon('character.book.closed')} My Vocabulary</button><button type="button" data-act="reader">${icon('book')} Read a PDF or text</button></section>
+    </details>` : ''}
+    ${both ? `<section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">${icon('character.book.closed')} My Vocabulary</button><button type="button" data-act="reader">${icon('book')} Read a PDF or text</button></section>` : ''}
   </div>`;
 
   wireSpeechifyRows(el, { toast: (t, ms) => ctx.toast(t, ms) });

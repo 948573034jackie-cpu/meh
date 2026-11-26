@@ -28,7 +28,16 @@ svg{display:block}
 .ic{width:24px;height:24px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 
 /* ---------- the library ---------- */
-#lib{position:absolute;inset:0;overflow-y:auto;background:var(--t-bg);color:var(--t-text);-webkit-overflow-scrolling:touch;padding:calc(var(--top) + 18px) calc(var(--sr) + 22px) calc(var(--bot) + 40px) calc(var(--sl) + 22px)}
+#lib,#words,#set{position:absolute;inset:0;overflow-y:auto;background:var(--t-bg);color:var(--t-text);-webkit-overflow-scrolling:touch;padding:calc(var(--top) + 18px) calc(var(--sr) + 22px) calc(var(--bot) + 96px) calc(var(--sl) + 22px)}
+#words,#set{-webkit-user-select:text;user-select:text}
+#words .wrap,#set .wrap{max-width:720px;margin:0 auto}
+/* ---------- the tab bar: Books · Words · Settings (the same as I Know's native one); gone while a book is open ---------- */
+#tabs{position:absolute;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(3,1fr);background:var(--t-raised);border-top:1px solid var(--t-line);padding:2px calc(var(--sr) + 4px) var(--bot) calc(var(--sl) + 4px)}
+#tabs button{min-height:54px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;color:var(--t-muted);font:var(--t-weight-caption) var(--t-size-caption)/1 var(--ui)}
+#tabs button .ic{width:24px;height:24px}
+#tabs button.on{color:var(--t-accent)}
+#tabs button:active{background:var(--t-hover)}
+h1.page{font:700 var(--t-size-large-title)/1.2 var(--t-font-serif);margin:0 0 var(--t-space-l)}
 #lib .wrap{max-width:820px;margin:0 auto}
 .mast{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px}
 .mark{font:600 var(--t-size-caption)/1 var(--ui);letter-spacing:.22em;text-transform:uppercase;color:var(--t-muted)}
@@ -65,8 +74,10 @@ h3.sec{font:600 var(--t-size-caption)/1 var(--ui);letter-spacing:.14em;text-tran
 #empty{text-align:center;padding:9vh 8px 0;max-width:420px;margin:0 auto}
 #empty h1{font:600 var(--t-size-large-title)/1.2 var(--t-font-serif);margin:0 0 var(--t-space-m)}
 #empty p{color:var(--t-muted);font-size:var(--t-size-body);line-height:1.5;margin:0 0 26px}
-#empty .acts{display:flex;flex-direction:column;gap:12px;align-items:stretch}
+#empty .acts{display:flex;flex-direction:column;gap:6px;align-items:stretch}
 #empty .pill{justify-content:center;min-height:var(--t-control-main)}
+#empty .pill.quiet{border-color:transparent;background:transparent;color:var(--t-accent);min-height:var(--t-control)}
+#empty .pill.go .ic{width:22px;height:22px}
 #lib-msg{color:var(--t-off);font-size:var(--t-size-footnote);margin:14px 0 0;min-height:1em}
 
 /* ---------- the reading page ---------- */
@@ -126,7 +137,12 @@ html[data-marks="0"] .w.hard,html[data-marks="0"] .w.learning{text-decoration:no
 #mini .step{width:46px;height:46px;border-radius:var(--t-radius-pill);display:grid;place-items:center}
 #mini .playbtn{width:56px;height:56px}
 #rd:not(.plain) #mini,#rd[data-mode="read"] #mini{display:none}
-#rd[data-mode="read"] .transport{display:none}
+/* Reading: Play is one tap too: in the bar, and (bars away) one small round button under the text, between the
+   page number and the %, never on the text */
+#rd[data-mode="read"] #page{bottom:calc(var(--bot) + 52px)}
+#rplay{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--bot) + 4px);z-index:15;width:44px;height:44px;border-radius:var(--t-radius-pill);display:grid;place-items:center;background:var(--t-raised);color:var(--t-accent);border:1px solid var(--t-line);box-shadow:var(--t-shadow)}
+#rplay .ic{width:20px;height:20px;fill:currentColor;stroke:none}
+#rd:not(.plain) #rplay,#rd[data-mode="listen"] #rplay{display:none}
 #rd[data-chapters="1"] .where{display:none}
 
 /* ---------- the big card: the word, how it sounds, what it means here (a solid page; shown and gone at once) ---------- */
@@ -160,10 +176,10 @@ html[data-marks="0"] .w.hard,html[data-marks="0"] .w.learning{text-decoration:no
 .sheet{position:absolute;left:0;right:0;bottom:0;z-index:61;max-height:76%;display:flex;flex-direction:column;background:var(--t-raised);color:var(--t-text);border-radius:var(--t-radius-card) var(--t-radius-card) 0 0;border-top:1px solid var(--t-line);box-shadow:0 -12px 32px -16px rgba(0,0,0,.4);padding:8px 0 calc(var(--bot) + 10px);max-width:680px;margin:0 auto}
 .sheet .grab{width:38px;height:5px;border-radius:3px;background:var(--t-faint);margin:2px auto 8px;flex:none;opacity:.6}
 .sheet .body{overflow-y:auto;-webkit-overflow-scrolling:touch;padding:4px var(--t-space-l) 6px}
-.sheet h4{font:600 var(--t-size-caption)/1.2 var(--ui);letter-spacing:.1em;text-transform:uppercase;color:var(--t-muted);margin:var(--t-space-xl) 0 var(--t-space-s)}
-.sheet h4:first-child{margin-top:6px}
-.sheet p.note{font-size:var(--t-size-footnote);line-height:1.45;color:var(--t-muted);margin:var(--t-space-s) 0 0}
-.sheet p.warn{font-size:var(--t-size-footnote);line-height:1.4;color:var(--t-off);margin:10px 0 6px}
+:is(.sheet,#set) h4{font:600 var(--t-size-caption)/1.2 var(--ui);letter-spacing:.1em;text-transform:uppercase;color:var(--t-muted);margin:var(--t-space-xl) 0 var(--t-space-s)}
+:is(.sheet,#set) h4:first-child{margin-top:6px}
+:is(.sheet,#set) p.note{font-size:var(--t-size-footnote);line-height:1.45;color:var(--t-muted);margin:var(--t-space-s) 0 0}
+:is(.sheet,#set) p.warn{font-size:var(--t-size-footnote);line-height:1.4;color:var(--t-off);margin:10px 0 6px}
 .swatches{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 8px;-webkit-overflow-scrolling:touch}
 .sw{flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;font:500 var(--t-size-caption)/1 var(--ui);color:var(--t-muted)}
 .sw i{width:46px;height:46px;border-radius:23px;border:1px solid rgba(128,128,128,.4);display:grid;place-items:center;font:600 17px/1 var(--t-font-serif);font-style:normal}
@@ -201,15 +217,53 @@ textarea.field{min-height:140px;padding:12px;line-height:1.4;width:100%;resize:n
 .big.danger{color:var(--t-off)}
 #toast{position:absolute;left:50%;transform:translateX(-50%);top:calc(var(--top) + 14px);z-index:95;max-width:calc(100% - 32px);background:var(--t-text);color:var(--t-bg);font:500 var(--t-size-footnote)/1.35 var(--ui);padding:10px 16px;border-radius:var(--t-radius-control);text-align:center;box-shadow:var(--t-shadow)}
 #busy{position:absolute;inset:0;z-index:90;display:grid;place-items:center;background:color-mix(in srgb,var(--t-bg) 86%,transparent);font:500 var(--t-size-body)/1.4 var(--ui);color:var(--t-muted);text-align:center;padding:30px}
+#set .body{padding:0}
+#set .group{background:var(--t-raised);border:1px solid var(--t-line);border-radius:var(--t-radius-card);padding:var(--t-space-xs) var(--t-space-l) var(--t-space-l);margin:0 0 var(--t-space-l)}
+/* ---------- My Vocabulary in the Words tab (vocab-view.ts, the same part as I Know's vocab.html), in this page's look ---------- */
+#words h1{font:700 var(--t-size-large-title)/1.2 var(--t-font-serif);margin:0 0 var(--t-space-s)}
+#words h2{font:600 var(--t-size-caption)/1.3 var(--ui);text-transform:uppercase;letter-spacing:.08em;color:var(--t-muted);margin:0 0 var(--t-space-m)}
+#words a{color:var(--t-accent)}
+#words .muted{color:var(--t-muted)}
+#words .lead{color:var(--t-muted);margin:0 0 var(--t-space-l);font-size:var(--t-size-body)}
+#words section{background:var(--t-raised);border:1px solid var(--t-line);border-radius:var(--t-radius-card);padding:var(--t-space-l);margin:0 0 var(--t-space-l)}
+#words .row{display:flex;gap:var(--t-space-s);align-items:center;flex-wrap:wrap}
+#words .ic{width:1.2em;height:1.2em}
+#words button{min-height:var(--t-control);padding:0 var(--t-space-l);border-radius:var(--t-radius-control);border:1px solid var(--t-line-strong);background:var(--t-raised);color:var(--t-text);font:var(--t-weight-button) var(--t-size-button)/1.2 var(--ui);display:inline-flex;align-items:center;justify-content:center;gap:var(--t-space-s)}
+#words button:active{background:var(--t-hover)}
+#words button.primary{background:var(--t-accent);color:var(--t-accent-text);border-color:var(--t-accent)}
+#words button.danger{color:var(--t-off)}
+#words input,#words select{flex:1 1 100%;min-width:0;min-height:var(--t-control);border-radius:var(--t-radius-control);border:1px solid var(--t-line);background:var(--t-sunken);color:var(--t-text);font:400 var(--t-size-body)/1.2 var(--ui);padding:0 var(--t-space-m);-webkit-appearance:none;appearance:none}
+#words .tabs{display:flex;gap:var(--t-space-s);margin:0 0 var(--t-space-l);flex-wrap:wrap;align-items:center}
+#words .tabs button.sel{border-color:var(--t-accent);background:var(--t-accent-soft);color:var(--t-accent)}
+#words .knowbox{background:var(--t-raised);border:1px solid var(--t-line);border-radius:var(--t-radius-card);padding:var(--t-space-l);margin:var(--t-space-xs) 0 var(--t-space-l)}
+#words .knowbox .big{display:block;width:auto;min-height:0;margin:0;border:0;background:none;text-align:left;font:600 var(--t-size-title)/1.3 var(--ui)}
+#words .knowbox .big b{color:var(--t-accent);font-size:34px}
+#words .knowbox .online{margin-top:var(--t-space-s);font-size:var(--t-size-footnote);color:var(--t-muted);display:flex;flex-wrap:wrap;align-items:center;gap:var(--t-space-s)}
+#words table{width:100%;border-collapse:collapse;font-size:var(--t-size-footnote)}
+#words td{text-align:left;padding:2px 0;vertical-align:top}
+#words td.word{font:700 var(--t-size-body)/1.3 var(--t-font-serif)}
+#words td.word .muted{font:500 var(--t-size-caption) var(--ui)}
+#words td.zh{font:500 var(--t-size-body)/1.4 var(--zh)}
+#words .st-learning{color:var(--t-learning)} #words .st-known{color:var(--t-on)}
+#words #v-tab-words table,#words #v-tab-words tbody,#words #v-tab-words tr,#words #v-tab-words td{display:block;width:100%}
+#words #v-tab-words thead{display:none}
+#words #v-tab-words tr{border-bottom:1px solid var(--t-line);padding:var(--t-space-m) 0}
+#words #v-tab-words td:nth-child(5),#words #v-tab-words td:nth-child(6){display:inline-block;width:auto;margin:var(--t-space-s) var(--t-space-s) 0 0}
+#words #v-tab-progress td{display:table-cell;padding:var(--t-space-s);border-bottom:1px solid var(--t-line)}
+#words .levels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--t-space-s)}
+#words .level{display:block;text-align:left;background:var(--t-sunken);border:1px solid var(--t-line);border-radius:var(--t-radius-control);padding:var(--t-space-m);font-size:var(--t-size-footnote);height:auto}
+#words .level b{font-size:var(--t-size-body)}
+#words .bar{height:6px;border-radius:3px;background:var(--t-line);overflow:hidden;display:flex;margin:6px 0 4px}
+#words .bar .k{background:var(--t-on)} #words .bar .l{background:var(--t-learning)}
 @media (prefers-reduced-motion:reduce){#flow,.chrome{transition:none}}
 </style></head>
 <body>
 <div id="lib"><div class="wrap">
-  <div class="mast"><span class="mark"><b>I Know</b> Book</span><button class="round" id="lib-set" aria-label="Settings"></button></div>
+  <div class="mast"><span class="mark"><b>I Know</b> Book</span></div>
   <div id="empty" hidden>
     <h1>Read with your tutor</h1>
     <p>Open a book, a PDF or a text. Read it, or let it be read to you. Tap any word and your tutor explains it.</p>
-    <div class="acts"><button class="pill go" id="e-file">Open a book or a PDF</button><button class="pill" id="e-paste">Paste a text</button><button class="pill" id="e-sample">Try a short story</button></div>
+    <div class="acts"><button class="pill go" id="e-file">Open a book</button><button class="pill quiet" id="e-paste">Paste a text</button><button class="pill quiet" id="e-sample">Try a short story</button></div>
   </div>
   <section id="hero" hidden></section>
   <section id="shelf" hidden><h3 class="sec">My books</h3><div id="grid"></div></section>
@@ -217,10 +271,15 @@ textarea.field{min-height:140px;padding:12px;line-height:1.4;width:100%;resize:n
   <input id="file" type="file" hidden accept=".epub,.pdf,.txt,.md,.markdown,.text,application/epub+zip,application/pdf,text/plain,text/markdown">
 </div></div>
 
+<div id="words" hidden><div class="wrap" id="words-body"></div></div>
+<div id="set" hidden><div class="wrap"><h1 class="page">Settings</h1><div class="body" id="set-body"></div></div></div>
+<nav id="tabs" aria-label="I Know Book"><button id="tab-books" data-tab="books" class="on" aria-selected="true"></button><button id="tab-words" data-tab="words" aria-selected="false"></button><button id="tab-settings" data-tab="settings" aria-selected="false"></button></nav>
+
 <div id="rd" class="plain" data-mode="read" hidden>
   <div id="head"><span id="head-t"></span></div>
   <div id="page"><div id="flow"></div></div>
   <div id="foot"><span id="foot-l"></span><span id="foot-r"></span></div>
+  <button id="rplay" aria-label="Play: read the book aloud"></button>
   <div id="mini"><button class="step" id="m-back" aria-label="One sentence back"></button><button class="playbtn" id="m-play" aria-label="Play or pause"></button><button class="step" id="m-fwd" aria-label="One sentence forward"></button></div>
   <header id="top" class="chrome"><button class="round" id="b-lib" aria-label="My books"></button><span class="ttl" id="ttl"></span><button class="round aa" id="b-look" aria-label="Text and colours">A<small>a</small></button><button class="round" id="b-tutor" aria-label="Tutor settings"></button></header>
   <footer id="bar" class="chrome">

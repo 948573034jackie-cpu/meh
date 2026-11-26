@@ -285,8 +285,10 @@ const inQuick = (page, fn, arg) => page.evaluate(`(${fn})(document.getElementByI
       /"appScreen": screen/.test(am) && /screen == "reader" \|\| screen == "browser"/.test(am) && /pageWaits = true/.test(am) && /pageWanted\(\)/.test(rs));
     ok('any YouTube address counts as the last page (not only m.youtube.com)', /static func isYouTube/.test(am) && /AppModel\.isYouTube\(parts\.host\)/.test(am));
     ok('the reader opens the book that was open again, at its place', /drReaderOpen/.test(src('dream-ext/src/reader.ts')) && /openBook\(id, false\)/.test(src('dream-ext/src/reader.ts')));
-    ok('App settings has the API keys: a box for each key (typed by the learner, kept in the Keychain), the region, Save and Test',
-      /Section\(header: Text\("API keys"\)/.test(cv) && /SecureField/.test(cv) && /model\.saveKeys\(keyText, region: region\)/.test(cv) && /model\.testMicrosoft/.test(cv) && /Keys\.set\("drKeys", text\)/.test(am) && !/print\(.*drKeys/.test(am));
+    // (step 2: the App settings sheet became I Know's Settings tab; its key boxes are KeysSection, Tabs.swift)
+    const tb = fs.readFileSync(path.join(H.IOS, 'Tabs.swift'), 'utf8');
+    ok('the Settings tab has the API keys: a box for each key (typed by the learner, kept in the Keychain), the region, Save and Test',
+      /Section\(header: Text\("API keys"\)/.test(tb) && /SecureField/.test(tb) && /model\.saveKeys\(keyText, region: region\)/.test(tb) && /model\.testMicrosoft/.test(tb) && /KeysSection\(model: model\)/.test(tb) && /Keys\.set\("drKeys", text\)/.test(am) && !/print\(.*drKeys/.test(am));
   }
 
   await browser.close();

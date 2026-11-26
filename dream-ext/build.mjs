@@ -18,6 +18,8 @@ const entries = [
   ['src/yt.ts', 'dream-yt.js'],
   ['src/options.ts', 'options.js'],
   ['src/vocab-page.ts', 'vocab-page.js'],
+  // I Know's Settings tab: the tutor's own settings without a video (settings.html)
+  ['src/settings-page.ts', 'settings-page.js'],
   ['src/reader.ts', 'reader.js'],
   // I Know Book: the reading and listening app (its own page, book.html)
   ['src/book.ts', 'book.js'],
