@@ -108,13 +108,17 @@ const BIG = BIG_PARAS.join('\n\n');
   ok('"Aa" opens the text settings over the lower part of the page (the text stays in view): page colours, fonts, and sliders for size, line spacing, margins, letters, words, paragraphs', sheet1.display !== 'none' && sheet1.themes === 'auto white paper sepia green grey night black custom' && sheet1.fonts >= 8 && sheet1.sliders === 'size line margin letter word para' && sheet1.h >= 44 && sheet1.pageSeen, JSON.stringify(sheet1));
   const setRange = (name, v) => p.evaluate(([n, val]) => { const i = document.querySelector(`#sheet-body input[data-name="${n}"]`); i.value = String(val); i.dispatchEvent(new Event('input', { bubbles: true })); }, [name, v]);
   const anchorBefore = await firstSentence(p);
+  // (the sentence is known by its number in the book, not by its words: the test story says "We had some bread..." in
+  // every paragraph, and with another font the page can start with just that sentence)
+  const anchorNo = await p.evaluate(() => [...document.querySelectorAll('#flow .s')].findIndex((x) => { const r = x.getClientRects()[0]; return r && r.left >= 0 && r.left < innerWidth; }));
+  const anchorOnPage = () => p.evaluate((i) => { const s = document.querySelectorAll('#flow .s')[i]; const r = s && s.getClientRects()[0]; return !!r && r.left >= 0 && r.left < innerWidth; }, anchorNo);
   await setRange('size', 24);
   // (waits for the thing that is measured: the sentence back on the page — on a slow machine the page is still moving at 300 ms)
-  await until(async () => ((await dbg()).pages > back.pages && (await onPage(p, anchorBefore))) || null, 4000);
+  await until(async () => ((await dbg()).pages > back.pages && (await anchorOnPage())) || null, 4000);
   await sleep(300);
   const big = await p.evaluate(() => { const c = getComputedStyle(document.getElementById('flow')); return { size: c.fontSize, out: document.querySelector('#sheet-body input[data-name="size"]').parentElement.querySelector('output').textContent }; });
   const dBig = await dbg();
-  ok('bigger text at once: 24 px, more pages, and the sentence I was at is still on the page', big.size === '24px' && big.out === '24' && dBig.pages > back.pages && (await onPage(p, anchorBefore)), JSON.stringify({ big, pages: [back.pages, dBig.pages], now: await firstSentence(p), was: anchorBefore, state: { page: dBig.page, playing: dBig.playing, index: dBig.index, mode: dBig.mode, place: dBig.place, pageBefore: back.page, placeBefore: back.place, playingBefore: back.playing, indexBefore: back.index } }));
+  ok('bigger text at once: 24 px, more pages, and the sentence I was at is still on the page', big.size === '24px' && big.out === '24' && dBig.pages > back.pages && (await anchorOnPage()), JSON.stringify({ big, pages: [back.pages, dBig.pages], now: await firstSentence(p), was: anchorBefore, state: { page: dBig.page, playing: dBig.playing, index: dBig.index, mode: dBig.mode, place: dBig.place, pageBefore: back.page, placeBefore: back.place, playingBefore: back.playing, indexBefore: back.index } }));
   await setRange('line', 1.8); await setRange('margin', 40); await setRange('letter', 0.04); await setRange('word', 0.1);
   await p.evaluate(() => document.querySelector('#sheet-body .fonts button[data-font="georgia"]').click());
   await p.evaluate(() => document.querySelector('#sheet-body .sw[data-theme="night"]').click());
@@ -123,7 +127,7 @@ const BIG = BIG_PARAS.join('\n\n');
   const lum = (c) => { const m = /(\d+), (\d+), (\d+)/.exec(c); return m ? (+m[1] + +m[2] + +m[3]) / 3 : -1; };
   ok('line spacing, margins, letter and word spacing, the font and the page colour all change the page at once (Georgia, night: a dark page with light text)',
     Math.abs(styled.lh - 1.8) < 0.02 && Math.abs(parseFloat(styled.letter) - 0.96) < 0.1 && Math.abs(parseFloat(styled.word) - 2.4) < 0.2 && /^Georgia/.test(styled.font) && lum(styled.bg) < 60 && lum(styled.fg) > 150 && styled.left >= 39, JSON.stringify(styled));
-  ok('...and the sentence I was at is still on the page', (await onPage(p, anchorBefore)), `${await firstSentence(p)} / ${anchorBefore}`);
+  ok('...and the sentence I was at is still on the page', (await anchorOnPage()), `${await firstSentence(p)} / ${anchorBefore}`);
   await p.evaluate(() => { document.querySelector('#sheet-body .sw[data-theme="custom"]').click(); });
   await p.evaluate(() => { const set = (n, v) => { const i = document.querySelector(`#sheet-body input[data-name="${n}"]`); i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); }; set('bg', '#103050'); set('fg', '#183858'); });
   await sleep(300);
