@@ -145,17 +145,23 @@ jobs:
           if [ -z "$UDID" ]; then echo "NO IPHONE SIMULATOR FOUND"; exit 0; fi
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app || echo "I Know was not installed"
-          xcrun simctl install "$UDID" build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app || echo "I Know Book was not installed"
-          # (the microphone and speech recognition are allowed first, so no permission question covers a picture;
-          # the bundle ids are the ones of ios/project.yml)
-          for APPID in local.ytlearn.app local.ytlearn.book; do
-            for SERVICE in microphone speech-recognition; do xcrun simctl privacy "$UDID" grant "$SERVICE" "$APPID" || echo "could not grant $SERVICE to $APPID"; done
-          done
+          # fresh = both apps as new (no video and no book from an earlier step, so "main" is the true first screen).
+          # The microphone is allowed first; the app itself does not ask for speech recognition when it is started
+          # with -shot (SpeechListener.swift), so no permission question covers a picture. Bundle ids as in ios/project.yml.
+          fresh() {
+            xcrun simctl terminate "$UDID" local.ytlearn.app 2>/dev/null || true
+            xcrun simctl terminate "$UDID" local.ytlearn.book 2>/dev/null || true
+            xcrun simctl uninstall "$UDID" local.ytlearn.app 2>/dev/null || true
+            xcrun simctl uninstall "$UDID" local.ytlearn.book 2>/dev/null || true
+            xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app || echo "I Know was not installed"
+            xcrun simctl install "$UDID" build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app || echo "I Know Book was not installed"
+            for APPID in local.ytlearn.app local.ytlearn.book; do xcrun simctl privacy "$UDID" grant microphone "$APPID" || echo "could not grant the microphone to $APPID"; done
+          }
           # shot <app id> <picture name> <seconds to wait> <launch arguments...>
           shot() {
             local APPID="$1" FILE="$2" WAIT="$3"; shift 3
-            xcrun simctl terminate "$UDID" "$APPID" 2>/dev/null || true
+            xcrun simctl terminate "$UDID" local.ytlearn.app 2>/dev/null || true
+            xcrun simctl terminate "$UDID" local.ytlearn.book 2>/dev/null || true
             sleep 1
             for TRY in 1 2 3; do xcrun simctl launch "$UDID" "$APPID" "$@" && break; sleep 10; done
             sleep "$WAIT"
@@ -164,6 +170,7 @@ jobs:
           for MODE in light dark; do
             xcrun simctl ui "$UDID" appearance "$MODE" || true
             SUFFIX=""; [ "$MODE" = dark ] && SUFFIX="-dark"
+            fresh
             # the three tabs of each app (main = Watch / Books, words, settings), I Know's More sheet; in light also the
             # rarer screens (dark: the tabs and More only). Book "reading" = the sample story open (-demo).
             if [ "$MODE" = light ]; then NAMES="main words settings more tutorpage reader browser"; BOOKNAMES="main words settings appsettings tutorpage reading"; else NAMES="main words settings more"; BOOKNAMES="main words settings"; fi

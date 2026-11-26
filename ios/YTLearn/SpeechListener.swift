@@ -79,6 +79,8 @@ final class SpeechListener {
         // (a task that iOS stopped without telling — the sound was taken away — is ended and started again)
         if running && !engine.isRunning { closePiece(); cleanup() }
         if running { return }
+        // (the build server's pictures, "-shot": nothing is asked, so no permission question covers the screen)
+        if ShotLaunch.name != nil { return }
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 guard let self = self else { return }

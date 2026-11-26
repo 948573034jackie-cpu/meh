@@ -109,10 +109,12 @@ const BIG = BIG_PARAS.join('\n\n');
   const setRange = (name, v) => p.evaluate(([n, val]) => { const i = document.querySelector(`#sheet-body input[data-name="${n}"]`); i.value = String(val); i.dispatchEvent(new Event('input', { bubbles: true })); }, [name, v]);
   const anchorBefore = await firstSentence(p);
   await setRange('size', 24);
+  // (waits for the thing that is measured: the sentence back on the page — on a slow machine the page is still moving at 300 ms)
+  await until(async () => ((await dbg()).pages > back.pages && (await onPage(p, anchorBefore))) || null, 4000);
   await sleep(300);
   const big = await p.evaluate(() => { const c = getComputedStyle(document.getElementById('flow')); return { size: c.fontSize, out: document.querySelector('#sheet-body input[data-name="size"]').parentElement.querySelector('output').textContent }; });
   const dBig = await dbg();
-  ok('bigger text at once: 24 px, more pages, and the sentence I was at is still on the page', big.size === '24px' && big.out === '24' && dBig.pages > back.pages && (await onPage(p, anchorBefore)), JSON.stringify({ big, pages: [back.pages, dBig.pages], now: await firstSentence(p), was: anchorBefore }));
+  ok('bigger text at once: 24 px, more pages, and the sentence I was at is still on the page', big.size === '24px' && big.out === '24' && dBig.pages > back.pages && (await onPage(p, anchorBefore)), JSON.stringify({ big, pages: [back.pages, dBig.pages], now: await firstSentence(p), was: anchorBefore, state: { page: dBig.page, playing: dBig.playing, index: dBig.index, mode: dBig.mode, place: dBig.place, pageBefore: back.page, placeBefore: back.place, playingBefore: back.playing, indexBefore: back.index } }));
   await setRange('line', 1.8); await setRange('margin', 40); await setRange('letter', 0.04); await setRange('word', 0.1);
   await p.evaluate(() => document.querySelector('#sheet-body .fonts button[data-font="georgia"]').click());
   await p.evaluate(() => document.querySelector('#sheet-body .sw[data-theme="night"]').click());
