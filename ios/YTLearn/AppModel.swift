@@ -152,7 +152,8 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// which screen is in front (the video, the reader, the browser): kept, so the app opens there again
     private func screenChanged() {
-        if !started { return }
+        // (a picture of the build server, -shot reader / browser: the next start must still open the video)
+        if !started || ShotLaunch.name != nil { return }
         let screen = showBrowser ? "browser" : showReader ? "reader" : "video"
         if (Store.shared.value(area: "local", key: "appScreen") as? String ?? "video") == screen { return }
         Store.shared.set(area: "local", json: AppModel.jsonString(["appScreen": screen]))

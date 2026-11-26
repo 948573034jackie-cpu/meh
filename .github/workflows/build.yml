@@ -133,6 +133,44 @@ jobs:
             if [ -n "$CR" ]; then echo "----- crash report -----"; head -c 5000 "$CR"; fi
             xcrun simctl shutdown "$UDID" || true
           done
+      - name: Pictures of the native screens of both apps, light and dark (the family look, before and after; iPhone)
+        continue-on-error: true   # (a slow simulator must never keep the apps from being packed)
+        timeout-minutes: 15
+        working-directory: ios
+        shell: bash
+        run: |
+          # Each app is started once per screen with -shot <name> (ShotLaunch.swift): it opens that screen by itself.
+          mkdir -p ../shots
+          UDID=$(xcrun simctl list devices available | grep -F "iPhone 1" | tail -1 | grep -oE "[0-9A-F-]{36}")
+          if [ -z "$UDID" ]; then echo "NO IPHONE SIMULATOR FOUND"; exit 0; fi
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" build-sim/Build/Products/Debug-iphonesimulator/YTLearn.app || echo "I Know was not installed"
+          xcrun simctl install "$UDID" build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app || echo "I Know Book was not installed"
+          # shot <app id> <picture name> <seconds to wait> <launch arguments...>
+          shot() {
+            local APPID="$1" FILE="$2" WAIT="$3"; shift 3
+            xcrun simctl terminate "$UDID" "$APPID" 2>/dev/null || true
+            sleep 1
+            for TRY in 1 2 3; do xcrun simctl launch "$UDID" "$APPID" "$@" && break; sleep 10; done
+            sleep "$WAIT"
+            xcrun simctl io "$UDID" screenshot "../shots/$FILE.png" || echo "NO PICTURE $FILE"
+          }
+          for MODE in light dark; do
+            xcrun simctl ui "$UDID" appearance "$MODE" || true
+            SUFFIX=""; [ "$MODE" = dark ] && SUFFIX="-dark"
+            # (dark: only the main screen and Settings)
+            if [ "$MODE" = light ]; then NAMES="main settings tutorpage words reader browser"; BOOKNAMES="main settings tutorpage words"; else NAMES="main settings"; BOOKNAMES="main settings"; fi
+            for NAME in $NAMES; do shot local.ytlearn.app "native-iknow-$NAME$SUFFIX" 12 -shot "$NAME"; done
+            for NAME in $BOOKNAMES; do
+              if [ "$NAME" = main ]; then shot local.ytlearn.book "native-book-$NAME$SUFFIX" 9 -demo -shot "$NAME"; else shot local.ytlearn.book "native-book-$NAME$SUFFIX" 7 -shot "$NAME"; fi
+            done
+          done
+          xcrun simctl ui "$UDID" appearance light || true
+          xcrun simctl terminate "$UDID" local.ytlearn.app 2>/dev/null || true
+          xcrun simctl terminate "$UDID" local.ytlearn.book 2>/dev/null || true
+          xcrun simctl shutdown "$UDID" || true
+          ls -la ../shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:

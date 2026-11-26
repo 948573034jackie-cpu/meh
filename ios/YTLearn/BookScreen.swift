@@ -102,7 +102,10 @@ struct BookRootView: View {
     var body: some View {
         WebHost(webView: model.bookHost.web)
             .ignoresSafeArea()
-            .onAppear { model.bookHost.open() }
+            .onAppear {
+                model.bookHost.open()
+                model.openShotScreen { model.showAppSettings = true }   // (only with -shot <name>: the build server's pictures)
+            }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in model.bookHost.backInFront() }
             .sheet(isPresented: $model.showAppSettings) { SettingsView(model: model) }
             .background(EmptyView().sheet(isPresented: $model.sheetOpen) { TutorPageView(model: model) })

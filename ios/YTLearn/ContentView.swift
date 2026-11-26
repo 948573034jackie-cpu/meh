@@ -28,7 +28,10 @@ struct ContentView: View {
             }
             if hideBar { sideRail.padding(.trailing, 6) }
         }
-        .onAppear { model.start() }
+        .onAppear {
+            model.start()
+            model.openShotScreen { showSettings = true }   // (only with -shot <name>: the build server's pictures)
+        }
         .overlay(alignment: .bottom) { toastView }
         .overlay(alignment: .bottomTrailing) { volumePanel }
         .statusBarHidden(compactFull)
