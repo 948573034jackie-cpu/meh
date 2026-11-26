@@ -132,10 +132,11 @@ function speechifyHandler(req, res, body) {
   const send = (status, o) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
   if (entry.code !== SPEECHIFY_CODE) return send(401, { error: 'App code missing or wrong', code: 'auth' });
   if (failNextSpeechify > 0) { failNextSpeechify--; entry.failed = true; return send(502, { error: 'Speechify did not answer', code: 'upstream' }); }
-  if (path0 === '/health') return send(200, { ok: true, model: 'simba-3.5', dailyLimit: 20000 });
-  if (path0 === '/voices') return send(200, { default: 'gb-emma', voices: SPEECHIFY_VOICES });
+  // (version = "MODEL|default voice", as speech-proxy versionOf: the apps keep their clips under it)
+  if (path0 === '/health') return send(200, { ok: true, model: 'simba-3.5', dailyLimit: 20000, voice: 'gb-emma', version: 'simba-3.5|gb-emma' });
+  if (path0 === '/voices') return send(200, { default: 'gb-emma', model: 'simba-3.5', version: 'simba-3.5|gb-emma', voices: SPEECHIFY_VOICES });
   if (path0 === '/usage') return send(200, { day: new Date().toISOString().slice(0, 10), today: 2345, month: new Date().toISOString().slice(0, 7), monthChars: 9876, requestsToday: 4, dailyLimit: 20000, left: 17655 });
-  if (path0 === '/speak' && req.method === 'POST') return send(200, { audio: speechifyClip.toString('base64'), mime: 'audio/wav', chars: String(j.text || '').length, cached: false, model: 'simba-3.5', marks: null });
+  if (path0 === '/speak' && req.method === 'POST') return send(200, { audio: speechifyClip.toString('base64'), mime: 'audio/wav', chars: String(j.text || '').length, cached: false, voice: j.voice || 'gb-emma', model: 'simba-3.5', version: 'simba-3.5|gb-emma', marks: null });
   return send(404, { error: 'Unknown address', code: 'not-found' });
 }
 const PORT = +process.env.IOS_TEST_PORT || 8791;   // (another port: two runs side by side)

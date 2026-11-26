@@ -1,17 +1,37 @@
 /**
- * The speech proxy with a fake Cloudflare (KV, Cache API, waitUntil) and a fake Speechify (global fetch mocked):
- * no network, no real key.
+ * The speech proxy with a fake Cloudflare (the counter's Durable Object on a real SQLite in memory, Cache API,
+ * waitUntil) and a fake Speechify (global fetch mocked): no network, no real key.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import worker, { pickDefaultVoice, marksToTimings, sameSecret, originAllowed, type Env, type KVLike, type SpeechifyVoice } from '../src/index';
+import { DatabaseSync } from 'node:sqlite';
+import worker, { UsageCounter, pickDefaultVoice, marksToTimings, sameSecret, originAllowed, type Env, type CounterNamespace, type SqlLike, type SpeechifyVoice } from '../src/index';
 
 const CODE = 'test-app-code-0123456789abcdef';
 
-class FakeKV implements KVLike {
-  data = new Map<string, string>();
+/** ctx.storage.sql of a SQLite Durable Object, on node:sqlite (synchronous, like the real one) */
+class FakeSql implements SqlLike {
+  db = new DatabaseSync(':memory:');
   writes = 0;
-  async get(k: string) { return this.data.get(k) ?? null; }
-  async put(k: string, v: string) { this.writes++; this.data.set(k, v); }
+  exec(query: string, ...b: (string | number | null)[]) {
+    const st = this.db.prepare(query);
+    if (/^\s*select/i.test(query)) { const rows = st.all(...b) as Record<string, unknown>[]; return { toArray: () => rows }; }
+    if (/^\s*(insert|update|delete)/i.test(query)) this.writes++;
+    st.run(...b);
+    return { toArray: () => [] };
+  }
+}
+/** the Durable Object namespace: one object per name, its requests one at a time as Cloudflare runs them */
+class FakeCounters implements CounterNamespace {
+  sql = new FakeSql();
+  objects = new Map<string, UsageCounter>();
+  idFromName(name: string) { return name; }
+  get(id: unknown) {
+    const name = String(id);
+    if (!this.objects.has(name)) this.objects.set(name, new UsageCounter({ storage: { sql: this.sql } }));
+    const o = this.objects.get(name)!;
+    return { fetch: (req: Request) => o.fetch(req) };
+  }
+  get writes() { return this.sql.writes; }
 }
 class FakeCache {
   data = new Map<string, Response>();
@@ -27,7 +47,7 @@ const VOICES: SpeechifyVoice[] = [
   { id: 'fr-1', display_name: 'Amélie', locale: 'fr-FR', gender: 'female', type: 'shared', staff_pick_rank: 1 },
 ];
 
-let kv: FakeKV, cache: FakeCache, env: Env, waits: Promise<unknown>[];
+let kv: FakeCounters, cache: FakeCache, env: Env, waits: Promise<unknown>[];
 let speechCalls: { url: string; body: Record<string, unknown> | null; auth: string | null }[];
 let speechAnswer: () => Response;
 const ctx = { waitUntil: (p: Promise<unknown>) => { waits.push(p); } };
@@ -38,9 +58,9 @@ const okSpeech = (text: string) => new Response(JSON.stringify({
 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
 beforeEach(() => {
-  kv = new FakeKV(); cache = new FakeCache(); waits = []; speechCalls = [];
+  kv = new FakeCounters(); cache = new FakeCache(); waits = []; speechCalls = [];
   (globalThis as unknown as { caches: unknown }).caches = { default: cache };
-  env = { SPEECHIFY_API_KEY: 'sk_test_key', APP_CODE: CODE, USAGE: kv, DAILY_CHAR_LIMIT: '100', DEFAULT_VOICE: '', MODEL: 'simba-3.5' };
+  env = { SPEECHIFY_API_KEY: 'sk_test_key', APP_CODE: CODE, USAGE_COUNTER: kv, DAILY_CHAR_LIMIT: '100', DEFAULT_VOICE: '', MODEL: 'simba-3.5' };
   speechAnswer = () => okSpeech('Hello world.');
   vi.stubGlobal('fetch', vi.fn(async (input: string | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -115,7 +135,8 @@ describe('/speak', () => {
     expect(sent.body).toMatchObject({ input: 'Hello world.', voice_id: 'gb-1', audio_format: 'mp3', model: 'simba-3.5' });
     expect(r.headers.get('X-Chars-Billed')).toBe('12');
     expect(await usage()).toMatchObject({ today: 12, monthChars: 12, requestsToday: 1, left: 88 });
-    expect(kv.writes).toBe(1);
+    expect(j).not.toHaveProperty('error');
+    expect((j as unknown as { version: string }).version).toBe('simba-3.5|gb-1');
   });
 
   it('a cache hit makes no Speechify call and counts nothing (the same text is never paid twice)', async () => {
@@ -143,10 +164,16 @@ describe('/speak', () => {
   it('over the daily limit -> 429 daily-limit, Speechify is not called', async () => {
     env.DAILY_CHAR_LIMIT = '20';
     expect((await call('/speak', { body: { text: 'Hello world.' } })).status).toBe(200);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-26T15:30:00Z'));
     const r = await call('/speak', { body: { text: 'Hello again!' } });
     expect(r.status).toBe(429);
-    expect(((await r.json()) as { code: string }).code).toBe('daily-limit');
+    const j = (await r.json()) as { code: string; resetAt: string; today: number };
+    expect(j.code).toBe('daily-limit');
+    // (when the limit starts again: the next UTC midnight, for the apps)
+    expect(j.resetAt).toBe('2026-11-27T00:00:00.000Z');
     expect(speechOnly()).toHaveLength(1);
+    vi.useRealTimers();
     // (a clip made before still plays: it costs nothing)
     expect((await call('/speak', { body: { text: 'Hello world.' } })).status).toBe(200);
   });
@@ -158,6 +185,45 @@ describe('/speak', () => {
     vi.setSystemTime(new Date('2026-11-26T00:01:00Z'));
     await call('/speak', { body: { text: 'Second day.' } });
     expect(await usage()).toMatchObject({ today: 12, monthChars: 24, requestsToday: 1 });
+  });
+
+  it('many requests at the same moment never pass the daily limit together (the characters are reserved first)', async () => {
+    env.DAILY_CHAR_LIMIT = '30';
+    // (Speechify answers slowly: all five are on their way at the same time)
+    speechAnswer = () => okSpeech('Hello world.');
+    const slow = vi.fn(async (input: string | Request, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes('/v1/voices')) return new Response(JSON.stringify({ voices: VOICES, has_more: false, next_cursor: null }), { status: 200 });
+      speechCalls.push({ url, body: JSON.parse(String(init?.body)), auth: null });
+      await new Promise((r) => setTimeout(r, 20));
+      const text = String((JSON.parse(String(init?.body)) as { input: string }).input);
+      return okSpeech(text);
+    });
+    vi.stubGlobal('fetch', slow);
+    const texts = ['Sentence one', 'Sentence two', 'Sentence 333', 'Sentence 444', 'Sentence 555'];
+    const all = await Promise.all(texts.map((text) => call('/speak', { body: { text } })));
+    const codes = all.map((r) => r.status);
+    expect(codes.filter((c) => c === 200)).toHaveLength(2);
+    expect(codes.filter((c) => c === 429)).toHaveLength(3);
+    expect(speechOnly()).toHaveLength(2);
+    expect(await usage()).toMatchObject({ today: 24, requestsToday: 2, left: 6 });
+  });
+
+  it('the reservation becomes what Speechify really billed', async () => {
+    speechAnswer = () => new Response(JSON.stringify({ audio_data: btoa('x'), audio_format: 'mp3', billable_characters_count: 5 }), { status: 200 });
+    await call('/speak', { body: { text: 'Hello world.' } });
+    expect(await usage()).toMatchObject({ today: 5, requestsToday: 1 });
+  });
+
+  it('GET /health and /voices tell the version the apps keep their clips under (model | default voice)', async () => {
+    const h = (await (await call('/health')).json()) as { ok: boolean; model: string; voice: string; version: string };
+    expect(h).toMatchObject({ ok: true, model: 'simba-3.5', voice: 'gb-1', version: 'simba-3.5|gb-1' });
+    env.MODEL = 'simba-3.2';
+    env.DEFAULT_VOICE = 'gb-2';
+    const v = (await (await call('/voices')).json()) as { version: string; model: string };
+    expect(v).toMatchObject({ version: 'simba-3.2|gb-2', model: 'simba-3.2' });
+    const s = (await (await call('/speak', { body: { text: 'Hello world.', voice: 'gb-1' } })).json()) as { version: string; voice: string; model: string };
+    expect(s).toMatchObject({ version: 'simba-3.2|gb-2', voice: 'gb-1' });
   });
 
   it('refuses empty and too long text', async () => {
@@ -178,7 +244,8 @@ describe('/speak', () => {
     expect(j.code).toBe('speechify');
     expect(j.upstream).toBe(401);
     expect(j.error).toMatch(/did not accept the API key/);
-    expect(kv.writes).toBe(0);
+    // (the reservation was given back)
+    expect(await usage()).toMatchObject({ today: 0, requestsToday: 0 });
     speechAnswer = () => new Response('oops', { status: 500 });
     const r2 = await call('/speak', { body: { text: 'Hello world.' } });
     expect(r2.status).toBe(502);

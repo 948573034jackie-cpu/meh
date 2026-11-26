@@ -85,18 +85,19 @@ Official pricing page: https://speechify.ai/pricing (no date on the page; read 2
 
 ## Cloudflare Workers (free plan)
 
-Sources: https://developers.cloudflare.com/workers/platform/limits/ , https://developers.cloudflare.com/kv/platform/limits/ ,
+Sources: https://developers.cloudflare.com/workers/platform/limits/ , https://developers.cloudflare.com/durable-objects/platform/pricing/ ,
 https://developers.cloudflare.com/workers/runtime-apis/cache/ (read 26 Nov 2026)
 
 - 100,000 requests a day (resets at midnight UTC), **10 ms CPU** per request (waiting for Speechify does not count),
   50 subrequests per request, 128 MB memory.
-- **KV (the counter): 100,000 reads a day, 1,000 writes a day, 1 write a second to the same key**, 1 GB.
-  The Worker writes once per paid clip (cached clips write nothing). With 20,000 characters a day and one sentence
-  (about 100 characters) per request that is about 200 writes a day. A paragraph per request is fewer.
-  Raise DAILY_CHAR_LIMIT above about 80,000 only with paragraph-size requests, or the 1,000 writes run out.
-  Two clips within the same second: the second write waits 1.1 s and tries again.
-  KV is "eventually consistent": two requests at the same moment can count one of them late. The apps keep their own
-  count too, with the same daily limit, so the limit holds.
+- **The counter: one Durable Object with SQLite storage** (on the free plan since April 2025; SQLite-backed only).
+  Free plan, about: 100,000 Durable Object requests a day, 5 million rows read and 100,000 rows written a day, 5 GB.
+  A paid clip is 3 counter requests (reserve, settle, and /usage when the app shows the count) and about 3 row
+  writes; a cached clip is none. 20,000 characters a day in sentences of about 100 characters = about 200 clips =
+  about 600 writes a day: far under the limit.
+  A Durable Object runs one request at a time and its SQLite is synchronous, so "is there room?" and "take the
+  characters" are one step: two requests at the same moment can never both pass DAILY_CHAR_LIMIT. The characters
+  are reserved before Speechify is called, then changed to what Speechify billed (or given back when it failed).
 - **Cache API (the clips):** keeps GET keys only (the Worker uses a made-up GET address per clip), per data centre
   (not shared world-wide), `Cache-Control` decides how long. **Not sure:** older Cloudflare pages say the Cache API
   does nothing on `*.workers.dev` addresses (only on your own domain); newer pages name only the dashboard editor and

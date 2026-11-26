@@ -18,8 +18,12 @@ MAX_TEXT_CHARS = "2000"
 # browser pages that may use the Worker (the iPhone app's own requests send no Origin and are always fine)
 ALLOWED_ORIGINS = "ytlearn://app,null,https://www.youtube.com,https://m.youtube.com,chrome-extension://*"
 
-# the character counter. Step 4 of SETUP.md: paste the id that
-# "npx wrangler kv namespace create USAGE" prints in place of PASTE_THE_ID_HERE
-[[kv_namespaces]]
-binding = "USAGE"
-id = "PASTE_THE_ID_HERE"
+# the character counter: one small Durable Object with its own SQLite database (free plan; nothing to paste:
+# "npx wrangler deploy" makes it by itself)
+[[durable_objects.bindings]]
+name = "USAGE_COUNTER"
+class_name = "UsageCounter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UsageCounter"]

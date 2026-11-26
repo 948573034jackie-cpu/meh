@@ -20,7 +20,7 @@ import type { ExplainRequest, AiErrorCode } from '@shared/api';
 import { buildPrompt, buildStyledPrompt, type PromptBundle } from '@core/ai/prompts';
 import { resolveStyle, type StyleId } from '@shared/styles';
 import type { AiProviderId, Settings } from '@shared/settings';
-import { getSettings, getKeys, getExtras, patchExtras, addUsage, getUsage, usdSince, periodStarts, getSpeechifyUsage, stopSpeechifyToday, SPEECHIFY_MODEL, type Keys } from './store';
+import { getSettings, getKeys, getExtras, patchExtras, addUsage, getUsage, usdSince, periodStarts, getSpeechifyUsage, stopSpeechifyUntil, getSpeechifyServer, setSpeechifyServer, SPEECHIFY_MODEL, type Keys } from './store';
 import { PART_PROMPT, ALWAYS_RULES } from './teacher-text';
 import { isWay } from './teaching-ways';
 import { installVocabSync, loadOnline, saveOnline } from './vocab-sync';
@@ -573,7 +573,7 @@ async function speechifyAccess(): Promise<{ url: string; code: string }> {
   return { url, code };
 }
 
-/** one request to the Worker (20 s at most) */
+/** one request to the Worker (20 s at most; /speak: SPEECHIFY_SPEAK_TIMEOUT_MS) */
 async function workerFetch(path: string, init: { method?: string; body?: unknown } = {}, timeoutMs = 20_000): Promise<Response> {
   const { url, code } = await speechifyAccess();
   const ctrl = new AbortController();
@@ -585,14 +585,16 @@ async function workerFetch(path: string, init: { method?: string; body?: unknown
       ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
     });
   } catch (e) {
-    throw speechifyError(ctrl.signal.aborted ? 'the Worker did not answer in time.' : `the Worker could not be reached (${(e as Error).message || 'no internet'}).`);
+    const why = ctrl.signal.aborted ? 'the Worker did not answer in time.' : `the Worker could not be reached (${(e as Error).message || 'no internet'}).`;
+    throw Object.assign(speechifyError(why), { down: why });
   } finally { clearTimeout(timer); }
 }
 
 async function workerProblem(res: Response): Promise<Error> {
-  let j: { error?: string; code?: string } = {};
+  let j: { error?: string; code?: string; resetAt?: string } = {};
   try { j = (await res.json()) as typeof j; } catch { /* not JSON */ }
-  if (res.status === 429 && j.code === 'daily-limit') { await stopSpeechifyToday().catch(() => undefined); return speechifyError(SPEECHIFY_LIMIT, 'limit'); }
+  // (the Worker's own count, both apps together: no Speechify until its day starts again, at resetAt)
+  if (res.status === 429 && j.code === 'daily-limit') { await stopSpeechifyUntil(j.resetAt).catch(() => undefined); return speechifyError(SPEECHIFY_LIMIT, 'limit'); }
   if (res.status === 401) return speechifyError('the Worker did not accept the app code (check it in Settings).', 'setup');
   if (res.status === 403) return speechifyError('the Worker refused this page (ALLOWED_ORIGINS in wrangler.toml).', 'setup');
   if (res.status === 500 && j.code === 'not-set-up') return speechifyError(`${j.error ?? 'the Worker is not set up yet'}.`, 'setup');
@@ -605,34 +607,88 @@ export const speechifySent: string[] = [];
 /** what one paid Speechify character costs (USD, Starter plan list price): simba-3.5 $15 per million, older models $10 */
 const speechifyUsd = (chars: number, model: string): number => chars * (/simba-3\.5/.test(model) ? 15e-6 : 10e-6);
 
+/** a sentence waits this long for the Worker at most; then the device voice says it (one try only) */
+export const SPEECHIFY_SPEAK_TIMEOUT_MS = 6_000;
+/** after the Worker did not answer (too slow, no internet): the device voice for this long, no request (ms) */
+export const SPEECHIFY_QUIET_MS = 60_000;
+let speechifyQuietUntil = 0;
+/** why (the same words, so the learner is told only once) */
+let speechifyQuietWhy = '';
+/** (tests) */
+export function resetSpeechifyQuiet(): void { speechifyQuietUntil = 0; }
+
 /** one sentence / paragraph from the Worker; the characters billed are counted on this device; the daily limit holds */
-async function speechifySay(a: TtsAsk): Promise<TtsAnswer> {
+async function speechifySay(a: TtsAsk): Promise<TtsAnswer & { version?: string }> {
   const text = a.text.trim();
   await speechifyAccess();
+  // (the Worker did not answer a moment ago: the device voice at once, no new wait of seconds per sentence)
+  if (Date.now() < speechifyQuietUntil) throw speechifyError(speechifyQuietWhy || 'the Worker did not answer.');
   const u = await getSpeechifyUsage();
-  if (u.stopped || text.length > u.left) { if (!u.stopped) await stopSpeechifyToday().catch(() => undefined); throw speechifyError(SPEECHIFY_LIMIT, 'limit'); }
+  if (u.stopped) throw speechifyError(SPEECHIFY_LIMIT, 'limit');
+  // (one text longer than what is left today: only this text goes to the device voice; shorter ones still fit)
+  if (text.length > u.left) throw speechifyError(`this text is longer than the characters left today (${u.left.toLocaleString('en-US')}).`);
   const voice = (a.voice || (await getExtras()).speechifyVoice || '').trim();
   speechifySent.push(text);
   if (speechifySent.length > 400) speechifySent.splice(0, 200);
-  const res = await workerFetch('/speak', { method: 'POST', body: { text, ...(voice ? { voice } : {}), format: 'mp3', lang: a.lang ?? 'en' } });
+  let res: Response;
+  try {
+    res = await workerFetch('/speak', { method: 'POST', body: { text, ...(voice ? { voice } : {}), format: 'mp3', lang: a.lang ?? 'en' } }, SPEECHIFY_SPEAK_TIMEOUT_MS);
+  } catch (e) {
+    const down = (e as { down?: string }).down;
+    if (down) { speechifyQuietUntil = Date.now() + SPEECHIFY_QUIET_MS; speechifyQuietWhy = down; }
+    throw e;
+  }
   if (!res.ok) throw await workerProblem(res);
-  let j: { audio?: string; mime?: string; chars?: number; cached?: boolean; model?: string; marks?: TtsAnswer['timings'] };
+  let j: { audio?: string; mime?: string; chars?: number; cached?: boolean; model?: string; version?: string; marks?: TtsAnswer['timings'] };
   try { j = (await res.json()) as typeof j; } catch { throw speechifyError('the Worker sent something that is not a clip.'); }
   if (!j.audio) throw speechifyError('the Worker sent no sound.');
   // (a clip the Worker had kept costs nothing: 0 characters)
   const billed = j.cached ? 0 : Math.max(0, Math.round(typeof j.chars === 'number' ? j.chars : text.length));
   if (billed > 0) await addUsage({ date: new Date().toISOString(), provider: 'openai', model: SPEECHIFY_MODEL, inputTokens: billed, outputTokens: 0, cachedTokens: 0, usd: speechifyUsd(billed, j.model ?? '') }).catch(() => undefined);
-  return { b64: j.audio, mime: j.mime ?? 'audio/mpeg', timings: Array.isArray(j.marks) && j.marks.length ? j.marks : null };
+  return { b64: j.audio, mime: j.mime ?? 'audio/mpeg', timings: Array.isArray(j.marks) && j.marks.length ? j.marks : null, ...(typeof j.version === 'string' && j.version ? { version: j.version } : {}) };
+}
+
+/**
+ * The name a Speechify clip is kept under on the device: the voice asked for ('' = the Worker's default), the
+ * Worker's `version` ("MODEL|default voice": a new model or default voice is a new clip), the language, the text.
+ */
+export function speechifyClipKey(voice: string, version: string, lang: 'en' | 'zh' | undefined, text: string): string {
+  return `speechify|${voice}|${version}|${lang ?? 'en'}|best|${text}`;
+}
+/** the Worker's version is asked again (GET /health, free) when it was last heard longer ago than this (ms) */
+export const SPEECHIFY_VERSION_MAX_AGE_MS = 6 * 3_600_000;
+let versionAsking: Promise<void> | null = null;
+/** the Worker's version again, in the background (nothing waits for it) */
+function refreshSpeechifyVersion(): Promise<void> {
+  versionAsking ??= workerFetch('/health', {}, 10_000)
+    .then(async (res) => { if (res.ok) { const j = (await res.json()) as { version?: string }; if (j.version) await setSpeechifyServer(j.version); } })
+    .catch(() => undefined)
+    .finally(() => { versionAsking = null; });
+  return versionAsking;
 }
 
 /** the device's clip store first (any length: a cache hit costs 0 and is not counted), then the Worker */
 async function speechifyCached(a: TtsAsk, text: string): Promise<TtsAnswer> {
+  // (a web page in the app's browser: nothing of ours is kept in a site's own database, and the page never has the
+  // app code; Speechify is not used there, so no clip is ever paid without being kept)
+  if ((globalThis as { __drLightBg?: boolean }).__drLightBg) throw speechifyError('it is not used on web pages.', 'setup');
   const voice = (a.voice || (await getExtras()).speechifyVoice || '').trim();
-  const key = soundKey({ ...a, voice }, text, 'best');
-  const kept = typeof indexedDB === 'undefined' ? null : await getSound(key, true);
-  if (kept) return kept;
-  const made = await speechifySay({ ...a, voice });
-  if (made.b64 && typeof indexedDB !== 'undefined') void putSound(key, made, true);
+  const idb = typeof indexedDB !== 'undefined';
+  // (the Worker's version is known from before, also after a restart: the clip plays with no request at all)
+  const server = await getSpeechifyServer().catch(() => null);
+  if (server && idb) {
+    const kept = await getSound(speechifyClipKey(voice, server.version, a.lang, text), true);
+    if (kept) {
+      if (Date.now() - server.at > SPEECHIFY_VERSION_MAX_AGE_MS) void refreshSpeechifyVersion();
+      return kept;
+    }
+  }
+  const { version, ...made } = await speechifySay({ ...a, voice });
+  // (kept under the version the Worker made it with; a new version is remembered for the next clips)
+  const ver = version ?? server?.version ?? '';
+  if (version && version !== server?.version) await setSpeechifyServer(version).catch(() => undefined);
+  else if (version && server && Date.now() - server.at > SPEECHIFY_VERSION_MAX_AGE_MS / 2) void setSpeechifyServer(version).catch(() => undefined);
+  if (made.b64 && idb) void putSound(speechifyClipKey(voice, ver, a.lang, text), made, true);
   return made;
 }
 
@@ -642,7 +698,8 @@ export interface SpeechifyVoiceInfo { id: string; name: string; locale: string; 
 export async function speechifyVoices(): Promise<{ voices: SpeechifyVoiceInfo[]; default: string | null }> {
   const res = await workerFetch('/voices');
   if (!res.ok) throw await workerProblem(res);
-  const j = (await res.json()) as { voices?: SpeechifyVoiceInfo[]; default?: string | null };
+  const j = (await res.json()) as { voices?: SpeechifyVoiceInfo[]; default?: string | null; version?: string };
+  if (j.version) await setSpeechifyServer(j.version).catch(() => undefined);
   return { voices: (j.voices ?? []).map((v) => ({ id: v.id, name: v.name, locale: v.locale, gender: v.gender, tags: v.tags ?? [], preview: v.preview ?? null, british: !!v.british, isDefault: !!v.isDefault })), default: j.default ?? null };
 }
 /** the Worker's own count (both apps together, UTC days) */
@@ -657,7 +714,8 @@ export async function testSpeechify(): Promise<{ ok: boolean; message: string }>
   try {
     const res = await workerFetch('/health', {}, 10_000);
     if (!res.ok) throw await workerProblem(res);
-    const j = (await res.json()) as { model?: string; dailyLimit?: number };
+    const j = (await res.json()) as { model?: string; dailyLimit?: number; version?: string };
+    if (j.version) await setSpeechifyServer(j.version).catch(() => undefined);
     return { ok: true, message: `The Speechify Worker works (model ${j.model ?? '?'}, at most ${(j.dailyLimit ?? 0).toLocaleString('en-US')} characters a day).` };
   } catch (e) { return { ok: false, message: (e as Error).message }; }
 }

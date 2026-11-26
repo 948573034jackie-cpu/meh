@@ -101,6 +101,13 @@ export type VoiceKind = 'mac' | CloudVoice;
  */
 export const SPEECHIFY_ENGINE = 'speechify' as TtsEngineId;
 export const SPEECHIFY_LABEL = 'Speechify voice';
+/**
+ * The Speechify voice waits this long for its sound at most (the background gives up on the Worker after 6 s, bg.ts
+ * SPEECHIFY_SPEAK_TIMEOUT_MS); then the device voice says the sentence, with no second try, and the device voice reads
+ * for SPEECHIFY_COOL_MS (a stalled Worker never makes many seconds of silence per sentence).
+ */
+export const SPEECHIFY_START_TIMEOUT_MS = 8_000;
+export const SPEECHIFY_COOL_MS = 60_000;
 
 /** what the background sent back when a sentence could not be made */
 type TtsReply = { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string; note?: string } | undefined;
@@ -219,6 +226,8 @@ export class VoiceWithBackup implements TtsEngine {
     this.id = primary.id; this.kind = primary.kind; this.label = primary.label; this.costNote = primary.costNote; this.wordBoundaries = primary.wordBoundaries;
   }
   get failed(): boolean { return this.now() < this.coolUntil; }
+  /** the Speechify voice: every sentence is tried once only (it costs characters, and a wait is silence) */
+  private get oneTry(): boolean { return this.primary.id === SPEECHIFY_ENGINE; }
   get paused(): boolean { return (this.failed ? this.backup : this.primary).paused; }
   listVoices(): Promise<TtsVoice[]> { return this.primary.listVoices(); }
   /** the backup voice for this text; '' (no fitting Mac voice, e.g. for Chinese) = say nothing */
@@ -263,7 +272,7 @@ export class VoiceWithBackup implements TtsEngine {
         if (this.primary.paused) { timer = watch(); return; }
         timedOut = true;
         h.cancel();
-      }, this.startTimeoutMs);
+      }, this.oneTry ? Math.min(this.startTimeoutMs, SPEECHIFY_START_TIMEOUT_MS) : this.startTimeoutMs);
       let timer = watch();
       return h.done.then(async (o): Promise<SpeakOutcome> => {
         clearTimeout(timer);
@@ -282,6 +291,14 @@ export class VoiceWithBackup implements TtsEngine {
           return viaBackup();
         }
         this.lastError = timedOut ? 'no sound came in time' : h.error?.message ?? 'the voice failed';
+        // (the Speechify voice: no second try; no sound in time = its Worker is stalled: the device voice for a minute)
+        if (this.oneTry) {
+          if (timedOut) this.lastError = 'Speechify voice: no sound came in time. The iPhone voice reads for a minute.';
+          const cooling = timedOut || ++this.fails >= 3;
+          if (cooling) { this.coolUntil = this.now() + SPEECHIFY_COOL_MS; this.fails = 0; }
+          this.onTrouble(new Error(this.lastError), cooling);
+          return viaBackup();
+        }
         // once more (most failures are a short hiccup)
         if (n === 0) { await new Promise((r) => setTimeout(r, 400)); if (gone()) return 'cancelled'; return attempt(1); }
         this.fails++;

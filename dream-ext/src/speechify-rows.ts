@@ -28,10 +28,9 @@ export const SPEECHIFY_STEPS: string[] = [
   'On the Mac, open Terminal, type cd and a space, drag the speech-proxy folder (in the meh folder) into Terminal, press Return.',
   'Type npm install and press Return (one time, about 1 minute).',
   'Type npx wrangler login, sign in to Cloudflare in the browser, click Allow.',
-  'Type npx wrangler kv namespace create USAGE. Copy the long id it prints into wrangler.toml, in place of PASTE_THE_ID_HERE. Save.',
   'Type npx wrangler secret put SPEECHIFY_API_KEY and paste your Speechify key. THIS is the only place for the key (you do not see it: that is normal).',
   'Type openssl rand -hex 24: that is your app code. Keep it in Notes. Then npx wrangler secret put APP_CODE and paste it.',
-  'Type npx wrangler deploy. It prints your server address, like https://iknow-speech.yourname.workers.dev. Keep it in Notes.',
+  'Type npx wrangler deploy. It prints your server address, like https://iknow-speech.yourname.workers.dev. Keep it in Notes. (It also makes the character counter by itself.)',
   'Open that address in Safari: "App code missing or wrong" means it works.',
   'Here, in both apps: paste the address into Server address and press Save, paste the app code into App code and press Save, then Test. Choose Speechify (or keep Auto).',
   'The other way for the key: dash.cloudflare.com → Workers & Pages → iknow-speech → Settings → Variables and Secrets → Add → Type Secret, name SPEECHIFY_API_KEY, paste the key, Deploy.',
@@ -60,7 +59,7 @@ export function speechifyRowsHtml(x: store.YtExtras, keys: store.Keys, o: { devi
   <p class="sfy-title">Speechify</p>
   ${ready ? '' : `<p class="sfy-warn">Add the server address and the app code: until then you hear the ${esc(device)} voice.</p>`}
   <div class="sfy-row"><label class="sfy-l" for="sfy-url">Server address</label><div class="sfy-in"><input id="sfy-url" type="url" data-sfy="url" value="${esc(x.speechifyUrl ?? '')}" placeholder="${SPEECHIFY_ADDRESS_HINT}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" data-sfy-act="save-url">Save</button></div></div>
-  <div class="sfy-row"><label class="sfy-l" for="sfy-code">App code</label><div class="sfy-in"><input id="sfy-code" type="password" data-sfy="code" value="" placeholder="${keys.speechify ? 'saved (hidden): paste a new one to change it' : 'paste your app code'}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" data-sfy-act="save-code">Save</button></div></div>
+  <div class="sfy-row"><label class="sfy-l" for="sfy-code">App code</label><div class="sfy-in"><input id="sfy-code" type="password" data-sfy="code" value="" placeholder="${keys.speechify ? 'saved (hidden): paste a new one to change it' : 'paste your app code'}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" data-sfy-act="save-code">Save</button><button type="button" class="sfy-small" data-sfy-act="remove-code"${keys.speechify ? '' : ' hidden'}>Remove</button></div></div>
   <div class="sfy-row"><label class="sfy-l" for="sfy-voice">Voice</label><div class="sfy-in"><select id="sfy-voice" data-sfy="voice"><option value="">Default (British)</option>${x.speechifyVoice ? `<option value="${esc(x.speechifyVoice)}" selected>${esc(x.speechifyVoice)}</option>` : ''}</select></div></div>
   <p class="sfy-note" data-sfy-out="voices">${ready ? 'Asking your server for the voices…' : 'The voices come from your server once the address and the app code are saved.'}</p>
   <div class="sfy-row sfy-test"><button type="button" data-sfy-act="test">Test</button><span class="sfy-msg" data-sfy-out="test" role="status"></span></div>
@@ -124,7 +123,10 @@ export function wireSpeechifyRows(root: ParentNode, host: SpeechifyHost): void {
     const n = Number(v);
     if (v === '' || !Number.isFinite(n)) { host.toast('Type a number of characters (0 = no Speechify).'); return; }
     const chars = Math.max(0, Math.round(n));
+    const before = Math.max(0, Math.floor((await store.getExtras()).speechifyDailyChars ?? 20_000));
     await store.patchExtras({ speechifyDailyChars: chars });
+    // (a higher limit: "done for today" is forgotten, Speechify may speak again)
+    if (chars > before) await store.clearSpeechifyStop().catch(() => undefined);
     host.toast(chars ? `Daily limit: ${chars.toLocaleString('en-US')} characters.` : 'Daily limit 0: the Speechify voice stays quiet, the free voice reads.');
     void paintUsage(box, speechifyReady(await store.getExtras(), await store.getKeys()));
   };
@@ -144,14 +146,25 @@ export function wireSpeechifyRows(root: ParentNode, host: SpeechifyHost): void {
       const v = (el?.value ?? '').trim();
       // (the code goes to the Keychain with the other keys; the box is emptied at once and never shows it again)
       if (el) el.value = '';
+      // (an empty box never removes the saved code: that is the Remove button)
+      if (!v) { void store.getKeys().then((k) => host.toast(k.speechify ? 'The box is empty: the saved app code is kept.' : 'Paste the app code first.')); return; }
       forgetSpeechifyVoices();
-      void store.getKeys().then((k) => {
-        if (!v && !k.speechify) { host.toast('Paste the app code first.'); return; }
-        return store.setKey('speechify', v).then(() => {
-          if (el) el.placeholder = v ? 'saved (hidden): paste a new one to change it' : 'paste your app code';
-          host.toast(v ? 'App code saved (in the Keychain).' : 'App code removed.');
-          host.changed?.();
-        });
+      void store.setKey('speechify', v).then(() => {
+        if (el) el.placeholder = 'saved (hidden): paste a new one to change it';
+        const rm = box.querySelector<HTMLElement>('[data-sfy-act="remove-code"]');
+        if (rm) rm.hidden = false;
+        host.toast('App code saved (in the Keychain).');
+        host.changed?.();
+      });
+    } else if (act === 'remove-code') {
+      const el = input('code');
+      if (el) el.value = '';
+      forgetSpeechifyVoices();
+      void store.setKey('speechify', '').then(() => {
+        if (el) el.placeholder = 'paste your app code';
+        b.hidden = true;
+        host.toast('App code removed.');
+        host.changed?.();
       });
     } else if (act === 'save-limit') void saveLimit();
     else if (act === 'test') {
@@ -191,6 +204,7 @@ export const SPEECHIFY_CSS = `.sfy{display:flex;flex-direction:column;gap:var(--
 .sfy .sfy-unit{color:var(--t-muted);font-size:var(--t-size-footnote)}
 .sfy button{flex:none;min-height:var(--t-control);padding:0 var(--t-space-l);border-radius:var(--t-radius-control);border:1px solid var(--t-line-strong);background:var(--t-raised);color:var(--t-text);font:var(--t-weight-button) var(--t-size-button)/1 var(--t-font-ui);cursor:pointer}
 .sfy button:active{background:var(--t-hover)}
+.sfy button.sfy-small{padding:0 var(--t-space-m);border-color:transparent;background:transparent;color:var(--t-muted)}
 .sfy .sfy-steps-btn{align-self:flex-start;border-color:transparent;background:transparent;color:var(--t-accent);padding:0}
 .sfy p{margin:0}
 .sfy .sfy-note,.sfy .sfy-help,.sfy .sfy-usage{font:400 var(--t-size-footnote)/1.45 var(--t-font-ui);color:var(--t-muted)}

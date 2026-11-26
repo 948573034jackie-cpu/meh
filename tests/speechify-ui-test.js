@@ -88,6 +88,23 @@ async function bookPart(browser) {
   ok('App code: Save puts it in the Keychain (the stand-in), with the other keys', !!saved && /sk-ant-test-key/.test(keychain.drKeys), String(!!saved));
   ok('...it is never in the store, nor anywhere on the page (the box is a password box, empty, "saved (hidden)")',
     !JSON.stringify(stores).includes(SPEECHIFY_CODE) && !leak.html && !leak.text && !leak.fields && leak.type === 'password' && /saved \(hidden\)/.test(leak.ph), JSON.stringify(leak));
+  // an empty box and Save: the saved code stays (only Remove removes it)
+  await p.fill('[data-sfy="code"]', '');
+  await p.click('[data-sfy-act="save-code"]');
+  await sleep(500);
+  const kept = (() => { try { return JSON.parse(keychain.drKeys).speechify; } catch (e) { return null; } })();
+  const keptToast = await p.evaluate(() => { const t = document.getElementById('toast'); return t && !t.hidden ? t.textContent : ''; });
+  ok('App code: Save with an EMPTY box keeps the saved code (and says so)', kept === SPEECHIFY_CODE && /saved app code is kept/.test(keptToast), JSON.stringify({ kept: kept === SPEECHIFY_CODE, keptToast }));
+  const rm = await p.evaluate(onScreen, '[data-sfy-act="remove-code"]');
+  ok('...a separate small "Remove" button is on the screen next to it', rm.there && rm.display !== 'none' && rm.h > 0 && rm.inside && rm.onTop && (await p.evaluate(() => document.querySelector('[data-sfy-act="remove-code"]').textContent)) === 'Remove', JSON.stringify(rm));
+  await p.click('[data-sfy-act="remove-code"]');
+  const gone = await until(() => { try { return !('speechify' in JSON.parse(keychain.drKeys)); } catch (e) { return false; } }, 4000);
+  const rmHidden = await until(() => p.evaluate(() => { const b = document.querySelector('[data-sfy-act="remove-code"]'); return !b || getComputedStyle(b).display === 'none'; }), 4000);
+  ok('...Remove removes the code from the Keychain (the other keys stay), then it is not shown any more', !!gone && /sk-ant-test-key/.test(keychain.drKeys) && !!rmHidden, JSON.stringify({ gone: !!gone, rmHidden: !!rmHidden }));
+  await until(() => p.evaluate(() => !!document.querySelector('[data-sfy="code"]')), 3000);
+  await p.fill('[data-sfy="code"]', SPEECHIFY_CODE);
+  await p.click('[data-sfy-act="save-code"]');
+  ok('...and it can be saved again', !!(await until(() => { try { return JSON.parse(keychain.drKeys).speechify === SPEECHIFY_CODE; } catch (e) { return false; } }, 4000)), '');
   // the voice picker, from the server
   const list = await until(async () => { const o = await p.evaluate(() => [...document.querySelectorAll('[data-sfy="voice"] option')].map((x) => [x.value, x.textContent])); return o.length >= 4 ? o : null; }, 8000);
   ok('Voice: the picker lists the server\'s voices, the British default first and marked ★ (and "Default (British)" on top)',
@@ -113,6 +130,12 @@ async function bookPart(browser) {
   ok('Daily limit: Save keeps it (extras.speechifyDailyChars)', !!(await until(() => stores.local.drExtras.speechifyDailyChars === 15000, 4000)), String(stores.local.drExtras.speechifyDailyChars));
   const line2 = await until(async () => { const t = await p.evaluate(() => (document.querySelector('[data-sfy-out="usage"]') || {}).textContent || ''); return / of 15,000 characters/.test(t) ? t : null; }, 6000);
   ok('...and the counter follows it', !!line2, String(line2));
+  // the Worker said "daily-limit" earlier: a HIGHER limit here lets Speechify speak again
+  stores.local.drSpeechifyStop = { until: new Date(Date.now() + 3600_000).toISOString() };
+  await p.fill('[data-sfy="limit"]', '18000');
+  await p.click('[data-sfy-act="save-limit"]');
+  const cleared = await until(() => stores.local.drExtras.speechifyDailyChars === 18000 && !('drSpeechifyStop' in stores.local), 4000);
+  ok('Daily limit raised: "done for today" is forgotten (drSpeechifyStop removed)', !!cleared, JSON.stringify({ limit: stores.local.drExtras.speechifyDailyChars, stop: stores.local.drSpeechifyStop }));
   // the steps
   await p.click('[data-sfy-act="steps"]');
   const steps = await p.evaluate(() => { const o = document.querySelector('[data-sfy-out="steps"]'); o.scrollIntoView({ block: 'start' }); const r = o.getBoundingClientRect(); return { h: Math.round(r.height), display: getComputedStyle(o).display, n: o.querySelectorAll('li').length, text: o.innerText }; });

@@ -141,9 +141,11 @@ extension AppModel {
 
     /// Back at the video: the YouTube page's listener is told that the microphone was closed (it opens it again by
     /// itself when voice mode is on).
+    /// (opened from Settings ▸ More settings or another tab: the YouTube tutor stays asleep, its microphone stays closed)
     func coverClosed() {
         if showReader || showBrowser || coverSwitch { return }
         pageWanted()
+        if tab != .watch { return }
         tutorVoice.stop()
         handle(kind: "speech", body: ["op": "stop"]) { _, _ in }
         youtube.evaluateJavaScript("window.__ytcSpeech && window.__ytcSpeech({ type: 'end' }); 0", in: nil, in: AppModel.world, completionHandler: nil)

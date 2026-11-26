@@ -55,7 +55,7 @@ const tts = kind === 'mac' ? mac : new VoiceWithBackup(cloudEngine(kind, 'en'), 
   **of the same paragraph** (nothing across a paragraph end):
   `order.slice(index + 1, index + 3).filter((p) => sameParagraph(p, pos))` when `voiceKind === 'speechify'`.
 - One request per paragraph (the owner's wish) is possible: `say(paragraphText)` once, and move the "current
-  sentence" mark with the word times (`SpeakHandle.words`, charIndex into the paragraph). Fewer requests (fewer KV
+  sentence" mark with the word times (`SpeakHandle.words`, charIndex into the paragraph). Fewer requests (fewer counter
   writes, see SPEECHIFY-FACTS.md), but a stop in the middle of a paragraph then needs the paragraph again (from the
   device cache: free). Per sentence works too and stays well under the limits. The Worker takes up to 2,000
   characters per request (Speechify's limit); a longer paragraph fails and is read by the iPhone voice, so split

@@ -447,6 +447,10 @@ export function speechifyCharsSince(list: UsageRecord[], sinceIso: string): numb
 export function localDay(now = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
+/**
+ * The Worker said 'daily-limit' (its own count, both apps together): no Speechify on this device until `until` (an
+ * ISO time: the Worker's resetAt, the next UTC midnight). (An older app kept the local day here as a string.)
+ */
 const SPEECHIFY_STOP = 'drSpeechifyStop';
 export interface SpeechifyUsage {
   /** characters billed today / this month (this device's own count, its own day and month) */
@@ -458,6 +462,12 @@ export interface SpeechifyUsage {
   /** done for today: the limit here, or the Worker said 'daily-limit' */
   stopped: boolean;
 }
+/** the Worker's 'daily-limit' still holds at `now` */
+function stopHolds(v: unknown, now: Date): boolean {
+  if (typeof v === 'string') return v === localDay(now);
+  const until = v && typeof v === 'object' ? Date.parse(String((v as { until?: string }).until ?? '')) : NaN;
+  return Number.isFinite(until) && now.getTime() < until;
+}
 /** the Speechify counter for Settings ("Speechify today: 1,234 of 20,000 characters · this month: 15,678") */
 export async function getSpeechifyUsage(now = new Date()): Promise<SpeechifyUsage> {
   const list = await getUsage();
@@ -465,18 +475,44 @@ export async function getSpeechifyUsage(now = new Date()): Promise<SpeechifyUsag
   const today = speechifyCharsSince(list, day), monthChars = speechifyCharsSince(list, month);
   const dailyLimit = Math.max(0, Math.floor((await getExtras()).speechifyDailyChars ?? 20_000));
   const o = await area().get(SPEECHIFY_STOP);
-  const told = o[SPEECHIFY_STOP] === localDay(now);
+  const told = stopHolds(o[SPEECHIFY_STOP], now);
   const left = Math.max(0, dailyLimit - today);
   return { today, month: monthChars, dailyLimit, left: told ? 0 : left, stopped: told || left <= 0 };
 }
-/** the Worker said 'daily-limit': no more Speechify on this device today */
-export async function stopSpeechifyToday(now = new Date()): Promise<void> { await area().set({ [SPEECHIFY_STOP]: localDay(now) }); }
+/** the next UTC midnight after `now` (when the Worker's day starts again) */
+export const nextUtcMidnight = (now = new Date()): string => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString();
+/** the Worker said 'daily-limit': no more Speechify on this device until `resetAt` (the Worker's; else the next UTC midnight) */
+export async function stopSpeechifyUntil(resetAt?: string, now = new Date()): Promise<void> {
+  const t = Date.parse(resetAt ?? '');
+  // (a time in the past, or more than two days on, is not believed: the next UTC midnight)
+  const until = Number.isFinite(t) && t > now.getTime() && t - now.getTime() <= 2 * 86_400_000 ? new Date(t).toISOString() : nextUtcMidnight(now);
+  await area().set({ [SPEECHIFY_STOP]: { until } });
+}
+/** Speechify may speak again (the learner raised the daily limit) */
+export async function clearSpeechifyStop(): Promise<void> { await area().remove(SPEECHIFY_STOP); }
+
+/**
+ * What the learner's Worker said its clips are made with ("MODEL|default voice", its `version`): the device keeps
+ * Speechify clips under it, so a new model or default voice is never answered with an old clip. `at` = when it was
+ * last heard from the Worker (ms).
+ */
+const SPEECHIFY_SERVER = 'drSpeechifyServer';
+export async function getSpeechifyServer(): Promise<{ version: string; at: number } | null> {
+  const v = (await area().get(SPEECHIFY_SERVER))[SPEECHIFY_SERVER] as { version?: unknown; at?: unknown } | undefined;
+  return v && typeof v.version === 'string' && v.version ? { version: v.version, at: Number(v.at) || 0 } : null;
+}
+export async function setSpeechifyServer(version: string, now = Date.now()): Promise<void> {
+  if (version) await area().set({ [SPEECHIFY_SERVER]: { version, at: now } });
+}
 /** "Speechify today: 1,234 of 20,000 characters · this month: 15,678" */
 export function speechifyUsageText(u: SpeechifyUsage): string {
   const n = (x: number) => x.toLocaleString('en-US');
   return `Speechify today: ${n(u.today)} of ${n(u.dailyLimit)} characters${u.stopped ? ' (done for today: the iPhone voice reads)' : ''} · this month: ${n(u.month)}`;
 }
-export function usdSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso).reduce((n, r) => n + (r.usd || 0), 0); }
+/** the AI's cost since then (what the AI budget counts): the Speechify voice is not in it (its own daily limit holds it) */
+export function usdSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso && r.model !== SPEECHIFY_MODEL).reduce((n, r) => n + (r.usd || 0), 0); }
+/** the Speechify voice's cost since then (an estimate at the list price; shown beside the AI's, never in its budget) */
+export function voiceUsdSince(list: UsageRecord[], sinceIso: string): number { return list.filter((r) => r.date >= sinceIso && r.model === SPEECHIFY_MODEL).reduce((n, r) => n + (r.usd || 0), 0); }
 export function periodStarts(now = new Date()): { day: string; month: string } {
   return { day: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(), month: new Date(now.getFullYear(), now.getMonth(), 1).toISOString() };
 }

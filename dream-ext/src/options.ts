@@ -104,7 +104,9 @@ async function init(): Promise<void> {
   bindNumber('monthlyStopUsd', () => S.ai.monthlyStopUsd, (n) => ({ ai: { ...S.ai, monthlyStopUsd: n } }));
   const usage = await store.getUsage();
   const { day, month } = store.periodStarts();
-  $('spent').textContent = `Spent today $${store.usdSince(usage, day).toFixed(2)}, this month $${store.usdSince(usage, month).toFixed(2)} (estimate)`;
+  // (the Speechify voice has its own daily limit: shown here as the voice, never counted in the AI budget)
+  const voiceMonth = store.voiceUsdSince(usage, month);
+  $('spent').textContent = `Spent today $${store.usdSince(usage, day).toFixed(2)}, this month $${store.usdSince(usage, month).toFixed(2)} (estimate)${voiceMonth > 0 ? ` · Speechify voice this month $${voiceMonth.toFixed(2)} (not in the AI budget)` : ''}`;
 
   // ---- level
   // MY LEVEL (A1 … C2): nothing below it is explained by itself; and how much of the rest (the hardest share)

@@ -29,7 +29,7 @@ You type every key and code yourself. Nobody else sees them.
 3. On the left, click **API Keys** (it can also be under **Settings**).
 4. Click **Create key** (or **New API key**). Give it a name, for example `I Know`.
 5. Click **Copy**. The key starts with `sk_`.
-6. Keep this page open. You will paste the key in Step 7.
+6. Keep this page open. You will paste the key in Step 6.
 
 The free plan has some free characters each month (see SPEECHIFY-FACTS.md). When they are used up, the apps simply
 use the free iPhone voice.
@@ -64,22 +64,7 @@ npx wrangler login
 A browser window opens. Sign in to Cloudflare if it asks. Click **Allow**. Go back to Terminal. It says
 "Successfully logged in".
 
-## Step 6. Make the character counter
-
-```
-npx wrangler kv namespace create USAGE
-```
-
-Terminal prints some lines. One of them has `id = "..."` with a long code of letters and numbers, like
-`id = "3f1c0a9b7e5d4c2b8a6f0e1d2c3b4a59"`.
-
-1. Copy that long code (only the letters and numbers, without the quotes).
-2. In Finder, open the file **wrangler.toml** in the speech-proxy folder (right-click → Open With → TextEdit).
-3. Find the line `id = "PASTE_THE_ID_HERE"` near the end.
-4. Replace `PASTE_THE_ID_HERE` with your code. Keep the quotes. It looks like `id = "3f1c0a9b7e5d4c2b8a6f0e1d2c3b4a59"`.
-5. Save (Command + S) and close TextEdit.
-
-## Step 7. Paste your Speechify key (THE place for the key)
+## Step 6. Paste your Speechify key (THE place for the key)
 
 ```
 npx wrangler secret put SPEECHIFY_API_KEY
@@ -92,7 +77,7 @@ npx wrangler secret put SPEECHIFY_API_KEY
 
 The key is now stored safely at Cloudflare. It is not in any file and not in the apps.
 
-## Step 8. Make your app code and save it in the Worker
+## Step 7. Make your app code and save it in the Worker
 
 The app code is a long private password. Only your apps know it. The Worker refuses everybody without it.
 
@@ -103,7 +88,7 @@ The app code is a long private password. Only your apps know it. The Worker refu
    ```
 
    Terminal prints a code with 48 letters and numbers. Copy it.
-2. **Keep this code**: paste it into the Notes app. You need it again in Step 11.
+2. **Keep this code**: paste it into the Notes app. You need it again in Step 10.
 3. Save it in the Worker:
 
    ```
@@ -112,7 +97,7 @@ The app code is a long private password. Only your apps know it. The Worker refu
 
    When it says **Enter a secret value**, paste the code and press Return.
 
-## Step 9. Put the Worker on the internet
+## Step 8. Put the Worker on the internet
 
 ```
 npx wrangler deploy
@@ -126,7 +111,10 @@ https://iknow-speech.yourname.workers.dev
 
 Copy this address. Paste it into Notes too.
 
-## Step 10. Check that it works
+This command also makes the character counter (it counts the Speechify characters of each day).
+You do not need to do anything for it.
+
+## Step 9. Check that it works
 
 Open the address in Safari. You should see:
 
@@ -136,16 +124,16 @@ Open the address in Safari. You should see:
 
 That is **good**: the Worker is running, and it refuses people without your app code.
 
-(If you see `not-set-up`, Step 7 or Step 8 is missing. Do it again.)
+(If you see `not-set-up`, Step 6 or Step 7 is missing. Do it again.)
 
-## Step 11. Paste the address and the app code into each app
+## Step 10. Paste the address and the app code into each app
 
 Do this in **I Know** and in **I Know Book**:
 
 1. Open **Settings**. I Know: the **Settings** tab ▸ **Voice**. I Know Book: the **Settings** tab ▸ **Voice**.
 2. Tap **Speechify (natural)** in the voice choice. The Speechify rows appear under it.
-3. **Server address**: paste the address from Step 9. Press **Save**.
-4. **App code**: paste the code from Step 8. Press **Save**. (It goes into the iPhone's Keychain. The box stays empty
+3. **Server address**: paste the address from Step 8. Press **Save**.
+4. **App code**: paste the code from Step 7. Press **Save**. (It goes into the iPhone's Keychain. The box stays empty
    after that: the code is never shown again.)
 5. Press **Test**. It should say "The Speechify Worker works".
 6. **Voice**: the British voice marked ★ is the default. You can pick another one.
@@ -160,7 +148,7 @@ In Settings you also see **Speechify today / this month** (characters used) and 
 
 ## The other way to set a secret: in the Cloudflare website
 
-You can also paste the key in the website instead of Step 7 (for example, to change the key later):
+You can also paste the key in the website instead of Step 6 (for example, to change the key later):
 
 1. Open https://dash.cloudflare.com and sign in.
 2. On the left, click **Workers & Pages** (it can be under **Compute**).
@@ -194,9 +182,8 @@ less and gives more free characters. Change it, save, `npx wrangler deploy`.
 |---|---|
 | `npx: command not found` | Install Node.js from https://nodejs.org, then open Terminal again (Step 3). |
 | `Not logged in` | `npx wrangler login` again (Step 5). |
-| `KV namespace ... is not valid` when you deploy | The id in wrangler.toml is wrong. Do Step 6 again. |
-| The app says "did not accept the app code" | The app code in the app is not the same as in Step 8. Paste it again. |
-| The app says "Speechify did not accept the API key" | Do Step 7 again with a new key from platform.speechify.ai. |
+| The app says "did not accept the app code" | The app code in the app is not the same as in Step 7. Paste it again. |
+| The app says "Speechify did not accept the API key" | Do Step 6 again with a new key from platform.speechify.ai. |
 | The app says "no characters left on the Speechify account" | The free amount of this month is used. The iPhone voice reads until next month (or buy a plan). |
 | You want to stop Speechify for a moment | In the app, choose another voice. Or in wrangler.toml set `DAILY_CHAR_LIMIT = "0"` and deploy. |
-| You think someone else knows your app code | Make a new one (Step 8), and paste the new one into both apps. |
+| You think someone else knows your app code | Make a new one (Step 7), and paste the new one into both apps. |

@@ -440,6 +440,7 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
     private func sendSpeech(_ event: [String: Any]) {
         if showBrowser { browser.heard(event); return }   // the browser is in front: only its page hears "hello" / "stop"
         if showReader { return }                           // the reader is in front: the video's tutor hears nothing
+        if tab != .watch { return }                        // another tab is in front: the hidden video's tutor hears nothing
         let json = AppModel.jsonString(event)
         youtube.evaluateJavaScript("window.__ytcSpeech && window.__ytcSpeech(\(json))", in: nil, in: AppModel.world, completionHandler: nil)
     }
@@ -534,7 +535,10 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         var changed = false
         let r = AppModel.azureRegion(of: region)
         if !r.isEmpty, (extras["azureRegion"] as? String ?? "eastus") != r { extras["azureRegion"] = r; changed = true }
-        if !(typed["azure"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (extras["voice"] as? String) != "azure" { extras["voice"] = "azure"; changed = true }
+        // (a new Microsoft key makes it the voice only when no other voice was chosen: a chosen Speechify,
+        // OpenAI or ElevenLabs voice stays)
+        let voiceNow = extras["voice"] as? String ?? "auto"
+        if !(typed["azure"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, ["auto", "mac", ""].contains(voiceNow) { extras["voice"] = "azure"; changed = true }
         if changed { storageSet(area: "local", json: AppModel.jsonString(["drExtras": extras]), from: nil) }
         return count
     }

@@ -7,18 +7,27 @@
  *   (`chars` = characters Speechify billed for this request; 0 when the clip came from the cache)
  * - GET /voices -> {default, voices: [...]} (English voices, British first; the Speechify list is cached for a day)
  * - GET /usage  -> {day, today, month, monthChars, requestsToday, dailyLimit, left} (as this Worker counts them, UTC days)
- * - GET /health -> {ok: true, ...} (also needs the app code: it proves the address AND the code are right)
+ * - GET /health -> {ok: true, model, voice, version, ...} (also needs the app code: it proves the address AND the code are right)
+ *
+ * `version` (in /speak, /voices and /health) = "MODEL|default voice": the apps keep their clips under it, so a new
+ * MODEL or DEFAULT_VOICE is never answered with an old clip.
  *
  * Money rules: a finished clip is kept in the Cache API under SHA-256(voice | model | format | lang | text), so the
- * same text is never paid twice, from either app; a cached clip counts nothing. Each paid request adds its characters
- * to one KV value per month (one KV write per paid request). Over DAILY_CHAR_LIMIT -> 429 {code: 'daily-limit'}; the
- * apps then use the free iPhone voice.
+ * same text is never paid twice, from either app; a cached clip counts nothing. The characters are counted by ONE
+ * Durable Object (UsageCounter, SQLite): a request first RESERVES its characters there (one step, so two requests at
+ * the same moment can never both pass the limit), then Speechify is called; afterwards the reservation becomes the
+ * billed characters, or is given back when Speechify failed. Over DAILY_CHAR_LIMIT -> 429 {code: 'daily-limit',
+ * resetAt}; the apps then use the free iPhone voice until resetAt (the next UTC midnight).
  */
 
-export interface KVLike {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+/** what a Durable Object namespace gives (only what is used here) */
+export interface CounterNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): { fetch(req: Request): Promise<Response> };
 }
+/** the SQLite of a Durable Object (ctx.storage.sql; only what is used here) */
+export interface SqlLike { exec(query: string, ...bindings: (string | number | null)[]): { toArray(): Record<string, unknown>[] } }
+export interface CounterState { storage: { sql: SqlLike } }
 export interface CacheLike {
   match(req: Request): Promise<Response | undefined>;
   put(req: Request, res: Response): Promise<void>;
@@ -30,8 +39,8 @@ export interface Env {
   SPEECHIFY_API_KEY?: string;
   /** secret: the private code both apps send in X-App-Code (wrangler secret put APP_CODE) */
   APP_CODE?: string;
-  /** KV namespace for the character counter */
-  USAGE: KVLike;
+  /** the Durable Object that counts the characters (wrangler.toml: [[durable_objects.bindings]] USAGE_COUNTER) */
+  USAGE_COUNTER: CounterNamespace;
   /** characters Speechify may bill per UTC day (default 20000) */
   DAILY_CHAR_LIMIT?: string;
   /** a Speechify voice id; empty = the first natural British English voice of GET /v1/voices */
@@ -103,15 +112,74 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
 }
 const fail = (status: number, code: string, message: string, extra: Record<string, string> = {}) => json({ error: message, code }, status, extra);
 
-// ---- the counter (KV, one value per UTC month) ----------------------------------------------------------------------
+// ---- the counter: one Durable Object with its own SQLite (free plan), one row per UTC day ----------------------------
 export interface MonthUsage { days: Record<string, number>; requests: Record<string, number> }
 export const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
-const monthKey = (d: Date): string => `usage:${d.toISOString().slice(0, 7)}`;
+/** the next UTC midnight (when the daily limit starts again) */
+export const nextUtcMidnight = (d: Date): string => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)).toISOString();
+
+/**
+ * The character counter. A Durable Object runs one request at a time, and SQLite here is synchronous: between the
+ * check and the write of /reserve nothing else can run, so two requests can never both take the last characters.
+ *  POST /reserve {day, chars, limit} -> {ok, today}  (ok false = it does not fit: nothing is taken)
+ *  POST /settle  {day, reserved, billed}             (the reservation becomes what Speechify billed; one request more)
+ *  POST /release {day, reserved}                     (Speechify failed: the characters are given back)
+ *  GET  /usage?day=YYYY-MM-DD                        -> {days, requests} of that month
+ */
+export class UsageCounter {
+  private sql: SqlLike;
+  constructor(state: CounterState, _env?: unknown) {
+    this.sql = state.storage.sql;
+    this.sql.exec('CREATE TABLE IF NOT EXISTS days (day TEXT PRIMARY KEY, chars INTEGER NOT NULL DEFAULT 0, requests INTEGER NOT NULL DEFAULT 0)');
+  }
+  private charsOf(day: string): number {
+    const row = this.sql.exec('SELECT chars FROM days WHERE day = ?', day).toArray()[0];
+    return row ? Number(row.chars) || 0 : 0;
+  }
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    // (the body is read FIRST: after this line there is no await, so each step below is one piece)
+    const b = req.method === 'POST' ? ((await req.json().catch(() => ({}))) as { day?: string; chars?: number; limit?: number; reserved?: number; billed?: number }) : {};
+    const n = (v: unknown) => Math.max(0, Math.floor(Number(v) || 0));
+    const day = String(b.day ?? url.searchParams.get('day') ?? '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return json({ error: 'day' }, 400);
+    if (url.pathname === '/reserve') {
+      const now = this.charsOf(day), chars = n(b.chars);
+      if (now + chars > n(b.limit)) return json({ ok: false, today: now }, 200);
+      this.sql.exec('INSERT INTO days (day, chars, requests) VALUES (?, ?, 0) ON CONFLICT(day) DO UPDATE SET chars = chars + excluded.chars', day, chars);
+      return json({ ok: true, today: now + chars }, 200);
+    }
+    if (url.pathname === '/settle') {
+      this.sql.exec('INSERT INTO days (day, chars, requests) VALUES (?, ?, 1) ON CONFLICT(day) DO UPDATE SET chars = MAX(0, chars - ? + ?), requests = requests + 1', day, n(b.billed), n(b.reserved), n(b.billed));
+      // (rows older than about 13 months are not needed any more)
+      this.sql.exec('DELETE FROM days WHERE day < ?', utcDay(new Date(Date.parse(`${day}T00:00:00Z`) - 400 * 86_400_000)));
+      return json({ ok: true }, 200);
+    }
+    if (url.pathname === '/release') {
+      this.sql.exec('UPDATE days SET chars = MAX(0, chars - ?) WHERE day = ?', n(b.reserved), day);
+      return json({ ok: true }, 200);
+    }
+    if (url.pathname === '/usage') {
+      const m: MonthUsage = { days: {}, requests: {} };
+      for (const r of this.sql.exec('SELECT day, chars, requests FROM days WHERE day >= ? AND day <= ?', `${day.slice(0, 7)}-01`, `${day.slice(0, 7)}-31`).toArray()) {
+        m.days[String(r.day)] = Number(r.chars) || 0;
+        m.requests[String(r.day)] = Number(r.requests) || 0;
+      }
+      return json(m, 200);
+    }
+    return json({ error: 'not-found' }, 404);
+  }
+}
+
+/** one call to the counter (the Worker's only Durable Object, named "usage") */
+async function counter(env: Env, path: string, body?: Record<string, unknown>): Promise<Response> {
+  const stub = env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName('usage'));
+  return stub.fetch(new Request(`https://usage-counter${path}`, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}));
+}
 
 async function readMonth(env: Env, now: Date): Promise<MonthUsage> {
   try {
-    const raw = await env.USAGE.get(monthKey(now));
-    const v = raw ? (JSON.parse(raw) as Partial<MonthUsage>) : {};
+    const v = (await (await counter(env, `/usage?day=${utcDay(now)}`)).json()) as Partial<MonthUsage>;
     return { days: { ...(v.days ?? {}) }, requests: { ...(v.requests ?? {}) } };
   } catch { return { days: {}, requests: {} }; }
 }
@@ -121,23 +189,6 @@ export function usageView(m: MonthUsage, env: Env, now: Date) {
   const today = m.days[day] ?? 0;
   const limit = dailyLimit(env);
   return { day, today, month: day.slice(0, 7), monthChars: Object.values(m.days).reduce((a, b) => a + b, 0), requestsToday: m.requests[day] ?? 0, dailyLimit: limit, left: Math.max(0, limit - today) };
-}
-
-/** one KV write per paid request (KV free plan: 1,000 writes a day, 1 write a second to the same key: one retry) */
-async function addChars(env: Env, now: Date, chars: number): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const m = await readMonth(env, now);
-      const day = utcDay(now);
-      m.days[day] = (m.days[day] ?? 0) + chars;
-      m.requests[day] = (m.requests[day] ?? 0) + 1;
-      await env.USAGE.put(monthKey(now), JSON.stringify(m), { expirationTtl: 400 * 86_400 });
-      return;
-    } catch (e) {
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 1100));
-      else console.error('usage not counted', e);
-    }
-  }
 }
 
 // ---- voices ---------------------------------------------------------------------------------------------------------
@@ -207,16 +258,21 @@ function voiceInfo(v: SpeechifyVoice, def: string | null): VoiceInfo {
   return { id: v.id, name: v.display_name ?? v.id, locale: v.locale ?? '', gender: v.gender ?? 'not_specified', tags: v.tags ?? [], preview: v.preview_audio ?? null, british: isBritish(v), isDefault: v.id === def, models: (v.models ?? []).map((m) => m.name) };
 }
 
-/** the voice of a request: the app's, else DEFAULT_VOICE, else the British pick */
-async function voiceFor(asked: string, env: Env, ctx: Ctx): Promise<{ id: string; voice: SpeechifyVoice | null }> {
+/** the voice of a request: the app's, else DEFAULT_VOICE, else the British pick; `def` = the default ('' = not known now) */
+async function voiceFor(asked: string, env: Env, ctx: Ctx): Promise<{ id: string; voice: SpeechifyVoice | null; def: string }> {
   let voices: SpeechifyVoice[] = [];
-  try { voices = await loadVoices(env, ctx); } catch (e) { if (!asked && !env.DEFAULT_VOICE?.trim()) throw e; }
+  let listed = true;
+  try { voices = await loadVoices(env, ctx); } catch (e) { listed = false; if (!asked && !env.DEFAULT_VOICE?.trim()) throw e; }
+  const def = env.DEFAULT_VOICE?.trim() || (listed ? pickDefaultVoice(voices, modelOf(env))?.id ?? '' : '');
   const want = asked || env.DEFAULT_VOICE?.trim() || '';
-  if (want) return { id: want, voice: voices.find((v) => v.id === want) ?? null };
+  if (want) return { id: want, voice: voices.find((v) => v.id === want) ?? null, def };
   const pick = pickDefaultVoice(voices, modelOf(env));
   if (!pick) throw new Upstream('Speechify has no British English voice in its list: set DEFAULT_VOICE', 0);
-  return { id: pick.id, voice: pick };
+  return { id: pick.id, voice: pick, def };
 }
+
+/** what the apps keep their clips under: the model and the default voice ('' when the default is not known now) */
+export const versionOf = (env: Env, def: string): string => `${modelOf(env)}|${def}`;
 
 /** the model asked for, unless the voice lists others only (then its first) */
 const modelFor = (voice: SpeechifyVoice | null, model: string): string => (!voice?.models?.length || voice.models.some((m) => m.name === model) ? model : voice.models[0].name);
@@ -265,11 +321,13 @@ async function speak(req: Request, env: Env, ctx: Ctx, cors: Record<string, stri
   const lang = body.lang === 'zh' ? 'zh' : 'en';
   const asked = typeof body.voice === 'string' ? body.voice.trim().slice(0, 120) : '';
 
-  let voiceId: string, model: string;
+  let voiceId: string, model: string, version: string | undefined;
   try {
     const v = await voiceFor(asked, env, ctx);
     voiceId = v.id;
     model = modelFor(v.voice, modelOf(env));
+    // (the default is not known when Speechify's voice list could not be read: no version then, the app keeps its own)
+    version = v.def ? versionOf(env, v.def) : undefined;
   } catch (e) { return fail(502, 'speechify', (e as Error).message, cors); }
 
   // the same text in the same voice was made before (by either app): it is played again, nothing is paid or counted
@@ -278,14 +336,22 @@ async function speak(req: Request, env: Env, ctx: Ctx, cors: Record<string, stri
   const hit = await cache?.match(key).catch(() => undefined);
   if (hit) {
     const kept = (await hit.json()) as Record<string, unknown>;
-    return json({ ...kept, chars: 0, cached: true }, 200, { ...cors, 'X-Cache': 'HIT', 'X-Chars-Billed': '0' });
+    return json({ ...kept, chars: 0, cached: true, ...(version ? { version } : {}) }, 200, { ...cors, 'X-Cache': 'HIT', 'X-Chars-Billed': '0' });
   }
 
+  // the characters are reserved FIRST (one step in the counter): two requests at once cannot both pass the limit
   const now = new Date();
-  const usage = usageView(await readMonth(env, now), env, now);
-  if (usage.today + text.length > usage.dailyLimit) {
-    return json({ error: `Today's Speechify limit is reached (${usage.today} of ${usage.dailyLimit} characters). The free iPhone voice reads until tomorrow (UTC).`, code: 'daily-limit', ...usage }, 429, cors);
+  const day = utcDay(now);
+  const limit = dailyLimit(env);
+  const reserved = text.length;
+  let got: { ok?: boolean; today?: number };
+  try { got = (await (await counter(env, '/reserve', { day, chars: reserved, limit })).json()) as typeof got; } catch (e) { return fail(500, 'counter', `The character counter did not answer: ${(e as Error).message}`, cors); }
+  if (!got.ok) {
+    const usage = usageView(await readMonth(env, now), env, now);
+    return json({ error: `Today's Speechify limit is reached (${usage.today} of ${usage.dailyLimit} characters). The free iPhone voice reads until tomorrow (UTC).`, code: 'daily-limit', resetAt: nextUtcMidnight(now), ...usage }, 429, cors);
   }
+  // (from here on, every way out settles or releases the reservation)
+  const release = () => counter(env, '/release', { day, reserved }).catch((e) => console.error('reservation not given back', e));
 
   let res: Response;
   try {
@@ -294,15 +360,16 @@ async function speak(req: Request, env: Env, ctx: Ctx, cors: Record<string, stri
       headers: { Authorization: `Bearer ${env.SPEECHIFY_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: text, voice_id: voiceId, audio_format: format, model, ...(lang === 'zh' ? { language: 'zh-CN' } : {}), ...(env.OUTPUT_FORMAT?.trim() ? { output_format: env.OUTPUT_FORMAT.trim() } : {}) }),
     });
-  } catch (e) { return fail(502, 'speechify', `Speechify could not be reached: ${(e as Error).message}`, cors); }
-  if (!res.ok) { const u = await upstreamError(res, 'speech'); return json({ error: u.message, code: 'speechify', upstream: res.status }, 502, cors); }
+  } catch (e) { await release(); return fail(502, 'speechify', `Speechify could not be reached: ${(e as Error).message}`, cors); }
+  if (!res.ok) { await release(); const u = await upstreamError(res, 'speech'); return json({ error: u.message, code: 'speechify', upstream: res.status }, 502, cors); }
   let data: { audio_data?: string; audio_format?: string; billable_characters_count?: number; speech_marks?: { chunks?: Chunk[] } };
-  try { data = (await res.json()) as typeof data; } catch { return fail(502, 'speechify', 'Speechify sent an answer that is not JSON', cors); }
-  if (!data.audio_data) return fail(502, 'speechify', 'Speechify sent no sound', cors);
+  // (an answer without sound: Speechify may still have billed it; the reservation stays as the count)
+  try { data = (await res.json()) as typeof data; } catch { await counter(env, '/settle', { day, reserved, billed: reserved }).catch(() => undefined); return fail(502, 'speechify', 'Speechify sent an answer that is not JSON', cors); }
   const chars = typeof data.billable_characters_count === 'number' ? data.billable_characters_count : text.length;
-  const out = { audio: data.audio_data, mime: FORMATS[data.audio_format ?? format] ?? FORMATS[format], format: data.audio_format ?? format, chars, cached: false, voice: voiceId, model, marks: marksToTimings(data.speech_marks, text) };
+  await counter(env, '/settle', { day, reserved, billed: chars }).catch((e) => console.error('usage not counted', e));
+  if (!data.audio_data) return fail(502, 'speechify', 'Speechify sent no sound', cors);
+  const out = { audio: data.audio_data, mime: FORMATS[data.audio_format ?? format] ?? FORMATS[format], format: data.audio_format ?? format, chars, cached: false, voice: voiceId, model, ...(version ? { version } : {}), marks: marksToTimings(data.speech_marks, text) };
 
-  await addChars(env, now, chars);
   if (cache) ctx.waitUntil(cache.put(key, new Response(JSON.stringify({ ...out, chars: 0 }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': `public, max-age=${CLIP_TTL}` } })).catch(() => undefined));
   return json(out, 200, { ...cors, 'X-Cache': 'MISS', 'X-Chars-Billed': String(chars) });
 }
@@ -322,7 +389,12 @@ export default {
     try {
       if (path === '/speak') return req.method === 'POST' ? await speak(req, env, ctx, cors) : fail(405, 'method', 'Use POST', cors);
       if (req.method !== 'GET') return fail(405, 'method', 'Use GET', cors);
-      if (path === '/health') return json({ ok: true, model: modelOf(env), dailyLimit: dailyLimit(env) }, 200, cors);
+      if (path === '/health') {
+        // (the default voice too, for the apps' clip names; the voice list is free and kept for a day)
+        let def = env.DEFAULT_VOICE?.trim() || '';
+        if (!def) { try { def = pickDefaultVoice(await loadVoices(env, ctx), modelOf(env))?.id ?? ''; } catch { /* not known now */ } }
+        return json({ ok: true, model: modelOf(env), dailyLimit: dailyLimit(env), voice: def || null, ...(def ? { version: versionOf(env, def) } : {}) }, 200, cors);
+      }
       if (path === '/usage') { const now = new Date(); return json(usageView(await readMonth(env, now), env, now), 200, cors); }
       if (path === '/voices') {
         const all = await loadVoices(env, ctx);
@@ -333,7 +405,7 @@ export default {
         // the default first, then British voices (best first), then the other English voices
         const order = (v: SpeechifyVoice) => (v.id === def ? -1 : isBritish(v) ? rank(v, model) : 10_000 + rank(v, model));
         list.sort((a, b) => order(a) - order(b));
-        return json({ default: def, voices: list.map((v) => voiceInfo(v, def)) }, 200, cors);
+        return json({ default: def, model, ...(def ? { version: versionOf(env, def) } : {}), voices: list.map((v) => voiceInfo(v, def)) }, 200, cors);
       }
       return fail(404, 'not-found', 'Unknown address (use /speak, /voices, /usage or /health)', cors);
     } catch (e) {
