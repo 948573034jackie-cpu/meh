@@ -6,8 +6,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { writeTheme } from '../scripts/make-theme.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+// the one look (design/theme.json) -> static/theme.css, src/theme.ts, ios/YTLearn/Theme.swift, before anything is built
+for (const f of writeTheme()) console.log(`theme: wrote ${f}`);
 const out = path.resolve(root, '../youtube-to-claude/dream');
 const alias = { '@core': path.join(root, 'vendor/core'), '@shared': path.join(root, 'vendor/shared') };
 const entries = [

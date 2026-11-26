@@ -25,6 +25,7 @@ import { createSegmenter } from '@core/segment';
 import { StreamSentenceSplitter } from '@core/listen/sentences';
 import { explain as aiExplain, complete, getDictionary, getZipf } from './ai-client';
 import * as store from './store';
+import { icon } from './icons';
 import { cloudEngine, resolveVoice, VoiceWithBackup, WithVolume, sliderGain, OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES } from './voice';
 import { unknownChance, phraseSig, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, type AiItem } from './level-check';
@@ -67,21 +68,11 @@ function afterPaint(fn: () => void): void {
 }
 
 // ---- quiet line icons ------------------------------------------------------------------------------------------
-const ic = (d: string, fill = false) => `<svg class="ic" viewBox="0 0 24 24"${fill ? ' style="fill:currentColor;stroke:none"' : ''}>${d}</svg>`;
+// the one icon set (SF Symbols' names; the same symbols as the native views)
 const ICON = {
-  gear: ic('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
-  back: ic('<path d="M15 5l-7 7 7 7"/>'),
-  prev: ic('<path d="M14 6l-6 6 6 6"/>'),
-  next: ic('<path d="M10 6l6 6-6 6"/>'),
-  play: ic('<path d="M8 5.2v13.600l11-6.800z"/>', true),
-  pause: ic('<path d="M7 5h3.600v14H7zM13.400 5H17v14h-3.600z"/>', true),
-  sback: ic('<path d="M11 7l-6 5 6 5z"/><path d="M19 7l-6 5 6 5z"/>'),
-  sfwd: ic('<path d="M13 7l6 5-6 5z"/><path d="M5 7l6 5-6 5z"/>'),
-  book: ic('<path d="M4 5.500A2.500 2.500 0 0 1 6.500 3H20v15H6.500A2.500 2.500 0 0 0 4 20.500z"/><path d="M4 20.500A2.500 2.500 0 0 0 6.500 23H20"/>'),
-  ear: ic('<path d="M4 14.500V12a8 8 0 0 1 16 0v2.500"/><rect x="3" y="14" width="4.500" height="6.500" rx="1.800"/><rect x="16.500" y="14" width="4.500" height="6.500" rx="1.800"/>'),
-  plus: ic('<path d="M12 5v14M5 12h14"/>'),
-  tutor: ic('<path d="M4 6h16v10H9l-5 4z"/><path d="M8.500 10h7M8.500 13h4"/>'),
-  more: ic('<circle cx="5" cy="12" r="1.400"/><circle cx="12" cy="12" r="1.400"/><circle cx="19" cy="12" r="1.400"/>', true),
+  gear: icon('slider.horizontal.3'), back: icon('chevron.left'), prev: icon('chevron.left'), next: icon('chevron.right'),
+  play: icon('play.fill'), pause: icon('pause.fill'), sback: icon('backward.fill'), sfwd: icon('forward.fill'),
+  book: icon('book'), ear: icon('headphones'), plus: icon('plus'), tutor: icon('slider.horizontal.3'), more: icon('ellipsis'),
 };
 
 // ---- what is open ------------------------------------------------------------------------------------------------
@@ -175,7 +166,8 @@ function applyLook(relayout = true): void {
   const theme = themeOf(look, systemDark());
   // (only what changed is written: a value written again would have every word of the page styled again)
   for (const [k, v] of Object.entries({ ...paletteOf(theme), ...textVars(look) })) if (root.style.getPropertyValue(k) !== v) root.style.setProperty(k, v);
-  for (const [k, v] of Object.entries({ align: look.align, dark: theme.dark ? '1' : '0', marks: extras.stopItemsOn === false ? '0' : '1' })) if (root.dataset[k] !== v) root.dataset[k] = v;
+  // (theme: the bars, buttons and sheets (theme.css) are light on a light page, dark on a dark one)
+  for (const [k, v] of Object.entries({ align: look.align, dark: theme.dark ? '1' : '0', theme: theme.dark ? 'dark' : 'light', marks: extras.stopItemsOn === false ? '0' : '1' })) if (root.dataset[k] !== v) root.dataset[k] = v;
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme.bg);
   const shape = JSON.stringify({ ...look, theme: '', bg: '', fg: '', tapEdges: false });
   const moved = shape !== lookShape;
@@ -215,7 +207,7 @@ async function paintLibrary(): Promise<void> {
         <div class="acts"><button class="pill go" data-a="open">${ICON.book} Read</button><button class="pill" data-a="listen">${ICON.ear} Listen</button><button class="round" data-a="more" aria-label="More for ${esc(b.title)}">${ICON.more}</button></div><span class="t" hidden>${esc(b.title || 'Untitled')}</span></div>`;
     // (the book in the big card above is not shown a second time)
     $('grid').innerHTML = list.slice(1).map((x) => `<div class="tile" data-id="${esc(x.id)}"><button data-a="open" aria-label="Open ${esc(x.title)}">${coverHtml(x)}</button><span class="t">${esc(x.title || 'Untitled')}</span>
-      <span class="p" style="display:flex;justify-content:space-between;align-items:center"><span>${x.percent}%</span><button data-a="more" aria-label="More for ${esc(x.title)}" style="width:44px;height:28px;display:grid;place-items:center;margin:-6px -12px -6px 0">${ICON.more}</button></span></div>`).join('')
+      <span class="p" style="display:flex;justify-content:space-between;align-items:center"><span>${x.percent}%</span><button data-a="more" aria-label="More for ${esc(x.title)}" style="width:44px;height:44px;display:grid;place-items:center;margin:-14px -12px -14px 0">${ICON.more}</button></span></div>`).join('')
       + `<div class="tile add"><button data-a="add" aria-label="Add a book"><div class="cover">${ICON.plus}</div></button><span class="t">Add a book</span><span class="p">EPUB · PDF · text</span></div>`;
   }
   document.body.dataset.books = String(list.length);
@@ -1441,7 +1433,7 @@ function addSheet(paste = false): void {
 }
 const openSample = (): Promise<void> => openPasted(SAMPLE_TITLE, SAMPLE_TEXT, SAMPLE_AUTHOR).catch((e: Error) => { $('lib-msg').textContent = e.message; });
 function bookSheet(id: string, title: string): void {
-  const body = openSheet('book', `<h4>${esc(title)}</h4><button class="big go" data-a="open">Read</button><button class="big" data-a="listen">Listen</button><button class="big" data-a="remove" style="color:#b3261e">Remove from my books</button><p class="note">Removing a book keeps the words you learned from it.</p>`, true);
+  const body = openSheet('book', `<h4>${esc(title)}</h4><button class="big go" data-a="open">Read</button><button class="big" data-a="listen">Listen</button><button class="big danger" data-a="remove">Remove from my books</button><p class="note">Removing a book keeps the words you learned from it.</p>`, true);
   body.oninput = null; body.onchange = null;
   body.onclick = (ev) => {
     const b = (ev.target as HTMLElement).closest<HTMLElement>('[data-a]');

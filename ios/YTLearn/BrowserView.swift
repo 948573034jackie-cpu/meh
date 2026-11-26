@@ -19,9 +19,9 @@ struct BrowserScreen: View {
             if let tab = browser.current {
                 BrowserTop(model: model, browser: browser, tab: tab, typed: $typed, editing: $editing, addressFocused: $addressFocused)
                 if let note = browser.note {
-                    Text(note).font(.footnote).foregroundColor(.secondary)
+                    Text(note).font(Theme.footnote).foregroundColor(Theme.muted)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Color(.tertiarySystemBackground))
+                        .background(Theme.sunken)
                         .onTapGesture { browser.note = nil }
                 }
                 BrowserPageArea(browser: browser, tab: tab)
@@ -61,6 +61,7 @@ struct BrowserScreen: View {
             Text(q.message)
         }
         .onChange(of: browser.ask?.id) { _ in promptText = browser.ask?.preset ?? "" }
+        .tint(Theme.accent)
     }
 }
 
@@ -87,7 +88,7 @@ private struct BrowserTop: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Button { model.showBrowser = false } label: {
-                    Text("Done").font(.system(size: 16, weight: .semibold)).frame(minWidth: 54, minHeight: 44).contentShape(Rectangle())
+                    Text("Done").font(Theme.button).frame(minWidth: 54, minHeight: Theme.Control.min).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Done: back to the video")
                 TextField("Search or type an address", text: Binding(get: { editing ? typed : BrowserModel.short(tab.address) }, set: { typed = $0 }))
@@ -99,7 +100,7 @@ private struct BrowserTop: View {
                     .font(.system(size: 17))
                     .padding(.horizontal, 12)
                     .frame(minHeight: 44)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(.tertiarySystemFill)))
+                    .background(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).fill(Theme.sunken))
                     .onSubmit {
                         let text = typed
                         editing = false
@@ -122,7 +123,8 @@ private struct BrowserTop: View {
                 .frame(height: 2)
                 .opacity(tab.loading ? 1 : 0)
         }
-        .background(Color(.secondarySystemBackground))
+        .background(Theme.raised)
+        .overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
     }
 }
 
@@ -142,21 +144,20 @@ private struct BrowserPageArea: View {
     private var startPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Browser").font(.largeTitle.bold())
+                Text("Browser").font(Theme.largeTitle).foregroundColor(Theme.text)
                 Text("Type an address or what you look for in the bar at the top. Turn the tutor on at the bottom: then a tap on a word explains it.")
-                    .foregroundColor(.secondary)
+                    .font(Theme.body).foregroundColor(Theme.muted)
                 Button { browser.pasteLink() } label: {
-                    Label("Paste link", systemImage: "doc.on.clipboard").font(.system(size: 18, weight: .semibold))
-                        .frame(maxWidth: .infinity, minHeight: 60)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.15)))
+                    Label("Paste link", systemImage: "doc.on.clipboard").frame(maxWidth: .infinity)
                 }
+                .buttonStyle(ThemeButtonStyle(kind: .primary, main: true))
                 if !browser.bookmarks.isEmpty {
-                    Text("Bookmarks").font(.headline).padding(.top, 8)
+                    Text("Bookmarks").font(Theme.title).foregroundColor(Theme.text).padding(.top, 8)
                     ForEach(browser.bookmarks.prefix(12)) { page in
                         Button { browser.go(page.url) } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(page.name).font(.system(size: 17)).lineLimit(1)
-                                Text(BrowserModel.short(page.url)).font(.footnote).foregroundColor(.secondary).lineLimit(1)
+                                Text(page.name).font(Theme.body).foregroundColor(Theme.text).lineLimit(1)
+                                Text(BrowserModel.short(page.url)).font(Theme.footnote).foregroundColor(Theme.muted).lineLimit(1)
                             }
                             .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
                             .contentShape(Rectangle())
@@ -165,26 +166,25 @@ private struct BrowserPageArea: View {
                     }
                 }
             }
-            .padding(20)
+            .padding(Theme.Space.xl)
             .frame(maxWidth: 640)
             .frame(maxWidth: .infinity)
         }
-        .background(Color(.systemBackground))
+        .background(Theme.bg)
     }
 
     private func problemPage(_ text: String) -> some View {
         VStack(spacing: 16) {
-            Text("This page did not open").font(.title2.bold())
-            Text(text).multilineTextAlignment(.center).foregroundColor(.secondary)
+            Text("This page did not open").font(Theme.title).foregroundColor(Theme.text)
+            Text(text).font(Theme.body).multilineTextAlignment(.center).foregroundColor(Theme.muted)
             Button { browser.reloadOrStop() } label: {
-                Label("Reload", systemImage: "arrow.clockwise").font(.system(size: 18, weight: .semibold))
-                    .frame(minWidth: 180, minHeight: 60)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.15)))
+                Label("Reload", systemImage: "arrow.clockwise").frame(minWidth: 148)
             }
+            .buttonStyle(ThemeButtonStyle(kind: .primary, main: true))
         }
-        .padding(24)
+        .padding(Theme.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Theme.bg)
     }
 }
 
@@ -203,15 +203,16 @@ private struct BrowserBar: View {
             // Explanation mode: ONE button. On = a tap on a word explains it. Off = a normal browser.
             Button { browser.setExplain(!browser.explainOn) } label: {
                 big(browser.explainOn ? "graduationcap.fill" : "graduationcap", browser.explainOn ? "Tutor on" : "Tutor off")
-                    .foregroundColor(browser.explainOn ? .white : .primary)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(browser.explainOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(.tertiarySystemFill)))
+                    .foregroundColor(browser.explainOn ? Theme.onText : Theme.text)
+                    .background(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).fill(browser.explainOn ? Theme.on : Theme.sunken))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(browser.explainOn ? "Explanation mode is on: turn it off" : "Explanation mode is off: turn it on")
             // Explain what is on the screen now; while the tutor talks: Stop
             Button { browser.explainOrStop() } label: {
                 big(browser.speaking ? "stop.fill" : "text.bubble", browser.speaking ? "Stop" : "Explain")
-                    .background(RoundedRectangle(cornerRadius: 12).fill(browser.speaking ? Color(red: 0.85, green: 0.19, blue: 0.15).opacity(0.2) : Color(.tertiarySystemFill)))
+                    .foregroundColor(browser.speaking ? Theme.offText : Theme.text)
+                    .background(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).fill(browser.speaking ? Theme.off : Theme.sunken))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(browser.speaking ? "Stop the tutor" : "Explain what is on the screen")
@@ -219,11 +220,11 @@ private struct BrowserBar: View {
             Button { list = .tabs } label: {
                 ZStack {
                     Image(systemName: "square").font(.system(size: 24, weight: .regular))
-                    Text("\(browser.tabs.count)").font(.system(size: 12, weight: .semibold))
+                    Text("\(browser.tabs.count)").font(Theme.barLabel)
                 }
                 .frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.themeBar)
             .accessibilityLabel("Tabs: \(browser.tabs.count) open")
             Menu {
                 Button { browser.newTab() } label: { Label("New tab", systemImage: "plus") }
@@ -234,20 +235,21 @@ private struct BrowserBar: View {
                 Button { if let url = URL(string: tab.address) { sharing = ShareItem(url: url) } } label: { Label("Share", systemImage: "square.and.arrow.up") }
                 Button { browser.openInSafari() } label: { Label("Open in Safari", systemImage: "safari") }
             } label: {
-                Image(systemName: "ellipsis.circle").font(.system(size: 24)).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
+                Image(systemName: "ellipsis.circle").font(.system(size: 24)).foregroundColor(Theme.text).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
             }
             .accessibilityLabel("More: bookmarks, history, reader, share")
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(Color(.secondarySystemBackground))
+        .background(Theme.raised)
+        .overlay(alignment: .top) { Theme.line.frame(height: 1) }
     }
 
     private func small(_ symbol: String, _ title: String, enabled: Bool, _ run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol).font(.system(size: 22, weight: .medium)).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.themeBar)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.35)
         .accessibilityLabel(title)
@@ -256,7 +258,7 @@ private struct BrowserBar: View {
     private func big(_ symbol: String, _ title: String) -> some View {
         VStack(spacing: 3) {
             Image(systemName: symbol).font(.system(size: 22))
-            Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1).fixedSize()
+            Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1).fixedSize()
         }
         .frame(minWidth: 84, minHeight: 60)
         .contentShape(Rectangle())
@@ -279,7 +281,7 @@ struct BrowserListView: View {
                             Button { browser.select(tab); presentation.wrappedValue.dismiss() } label: { row(tab.name, BrowserModel.short(tab.address), bold: tab.id == browser.currentID) }
                                 .buttonStyle(.plain)
                             Button { browser.close(tab) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 24)).foregroundColor(.secondary).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
+                                Image(systemName: "xmark.circle.fill").font(.system(size: 24)).foregroundColor(Theme.muted).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Close this tab")
@@ -287,38 +289,41 @@ struct BrowserListView: View {
                     }
                     Button { browser.newTab(); presentation.wrappedValue.dismiss() } label: { Label("New tab", systemImage: "plus").frame(minHeight: 48) }
                 case .bookmarks:
-                    if browser.bookmarks.isEmpty { Text("No bookmarks yet. Open a page, then More ▸ Add bookmark.").foregroundColor(.secondary) }
+                    if browser.bookmarks.isEmpty { Text("No bookmarks yet. Open a page, then More ▸ Add bookmark.").foregroundColor(Theme.muted) }
                     ForEach(browser.bookmarks) { page in
                         HStack(spacing: 8) {
                             Button { browser.go(page.url); presentation.wrappedValue.dismiss() } label: { row(page.name, BrowserModel.short(page.url), bold: false) }
                                 .buttonStyle(.plain)
                             Button { browser.removeBookmark(page) } label: {
-                                Image(systemName: "trash").font(.system(size: 20)).foregroundColor(.red).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
+                                Image(systemName: "trash").font(.system(size: 20)).foregroundColor(Theme.off).frame(minWidth: 48, minHeight: 48).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Remove this bookmark")
                         }
                     }
                 case .history:
-                    if browser.history.isEmpty { Text("Nothing yet.").foregroundColor(.secondary) }
-                    else { Button("Clear history", role: .destructive) { browser.clearHistory() }.frame(minHeight: 48) }
+                    if browser.history.isEmpty { Text("Nothing yet.").foregroundColor(Theme.muted) }
+                    else { Button("Clear history", role: .destructive) { browser.clearHistory() }.foregroundColor(Theme.off).frame(minHeight: 48) }
                     ForEach(browser.history) { page in
                         Button { browser.go(page.url); presentation.wrappedValue.dismiss() } label: { row(page.name, BrowserModel.short(page.url), bold: false) }
                             .buttonStyle(.plain)
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
             .navigationTitle(which == .tabs ? "Tabs" : which == .bookmarks ? "Bookmarks" : "History")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
+            .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() }.font(Theme.button))
         }
         .navigationViewStyle(.stack)
+        .tint(Theme.accent)
     }
 
     private func row(_ title: String, _ sub: String, bold: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 17, weight: bold ? .semibold : .regular)).lineLimit(1)
-            if !sub.isEmpty { Text(sub).font(.footnote).foregroundColor(.secondary).lineLimit(1) }
+            Text(title).font(.system(size: Theme.TextSize.body, weight: bold ? .semibold : .regular)).foregroundColor(Theme.text).lineLimit(1)
+            if !sub.isEmpty { Text(sub).font(Theme.footnote).foregroundColor(Theme.muted).lineLimit(1) }
         }
         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
         .contentShape(Rectangle())

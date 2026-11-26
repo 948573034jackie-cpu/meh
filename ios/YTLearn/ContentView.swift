@@ -64,7 +64,7 @@ struct ContentView: View {
             HStack(spacing: wide ? 8 : 2) {
                 Button { model.dream("tutor") } label: {
                     Circle()
-                        .fill(model.tutorOn ? Color(red: 0.12, green: 0.56, blue: 0.24) : Color(red: 0.85, green: 0.19, blue: 0.15))
+                        .fill(model.tutorOn ? Theme.on : Theme.off)
                         .frame(width: 16, height: 16)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
@@ -101,7 +101,7 @@ struct ContentView: View {
                 } else {
                     // the tutor is off: a normal YouTube page, nothing of the tutor. One big button turns it on again.
                     Button { model.dream("tutor") } label: { barLabel("power", "Tutor off", big: true) }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.themeBar)
                         .accessibilityLabel("My tutor is off: turn it on")
                     if model.freeMode {
                         // (free mode, when Settings asks for it: the video stops at hard words, the card shows the dictionary, no AI)
@@ -123,34 +123,37 @@ struct ContentView: View {
                 appButton("link", "Paste link") { model.pasteLink() }
                 appButton("gearshape", "App settings") { showSettings = true }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, Theme.Space.xs + 2)
+            .padding(.vertical, Theme.Space.xs)
         }
-        .background(Color(.secondarySystemBackground))
+        .background(Theme.raised)
+        .overlay(alignment: .top) { Theme.line.frame(height: 1) }
     }
 
     /// a button of the bar: a symbol with a word under it. `big`: the main ones (at least 60 pt wide and 48 high; an
     /// iPad: 88 x 56); the others at least 50 x 44
     private func barLabel(_ symbol: String, _ title: String, big: Bool = false) -> some View {
         VStack(spacing: 3) {
-            Image(systemName: symbol).font(.system(size: big ? (wide ? 26 : 23) : (wide ? 20 : 17)))
-            Text(title).font(.system(size: big ? (wide ? 14 : 12) : (wide ? 12 : 10), weight: big ? .medium : .regular)).lineLimit(1).fixedSize()
+            Image(systemName: symbol).font(.system(size: big ? (wide ? 26 : 23) : (wide ? 20 : 18)))
+            // (the one look: a bar's word is 12 pt at least, 13 for the main buttons)
+            Text(title).font(.system(size: big ? (wide ? 15 : 13) : (wide ? 13 : 12), weight: big ? .semibold : .medium)).lineLimit(1).fixedSize()
         }
-        .frame(minWidth: big ? (wide ? 88 : 64) : (wide ? 64 : 50), minHeight: big ? (wide ? 56 : 48) : 44)
+        .foregroundColor(Theme.text)
+        .frame(minWidth: big ? (wide ? 88 : 64) : (wide ? 64 : 54), minHeight: big ? (wide ? 56 : Theme.Control.main) : Theme.Control.min)
         .contentShape(Rectangle())
     }
 
     /// one of My tutor's actions (window.__ytcDream.action in the page)
     private func tutorButton(_ action: String, _ symbol: String, _ title: String, big: Bool = false) -> some View {
         Button { model.dream(action) } label: { barLabel(symbol, title, big: big) }
-            .buttonStyle(.plain)
+            .buttonStyle(.themeBar)
             .accessibilityLabel(title)
     }
 
     /// one of the app's own buttons (they were the bar at the top)
     private func appButton(_ symbol: String, _ title: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) { barLabel(symbol, title) }
-            .buttonStyle(.plain)
+            .buttonStyle(.themeBar)
             .accessibilityLabel(title)
     }
 
@@ -158,7 +161,7 @@ struct ContentView: View {
     private var volumeSymbol: String { model.tutorVolume <= 32 ? "speaker.wave.1" : model.tutorVolume <= 63 ? "speaker.wave.2" : "speaker.wave.3" }
     private var volumeButton: some View {
         Button { model.showVolume() } label: { barLabel(volumeSymbol, "Volume") }
-            .buttonStyle(.plain)
+            .buttonStyle(.themeBar)
             .accessibilityLabel("Tutor volume \(model.tutorVolume) percent: quieter or louder")
     }
 
@@ -172,8 +175,8 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Tutor quieter")
                 VStack(spacing: 2) {
-                    Text("Tutor volume").font(.system(size: 12)).foregroundColor(.secondary)
-                    Text("\(model.tutorVolume)%").font(.system(size: 22, weight: .semibold)).monospacedDigit()
+                    Text("Tutor volume").font(Theme.caption).foregroundColor(Theme.muted)
+                    Text("\(model.tutorVolume)%").font(Theme.title).monospacedDigit().foregroundColor(Theme.text)
                 }
                 .frame(minWidth: 92)
                 Button { model.volumeStep("louder") } label: {
@@ -181,9 +184,11 @@ struct ContentView: View {
                 }
                 .accessibilityLabel("Tutor louder")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.themeBar)
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).stroke(Theme.line, lineWidth: 1))
+            .shadow(color: Theme.shadowColor, radius: Theme.shadowRadius, y: Theme.shadowY)
             .padding(.trailing, hideBar ? 76 : 10)
             .padding(.bottom, hideBar ? 12 : (wide ? 80 : 68))
         }
@@ -194,7 +199,7 @@ struct ContentView: View {
         Button { model.fullScreen() } label: {
             barLabel(model.pageFull ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", model.pageFull ? "Leave full" : "Full screen")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.themeBar)
         .accessibilityLabel(model.pageFull ? "Leave full screen" : "Full screen")
     }
 
@@ -218,7 +223,8 @@ struct ContentView: View {
         Button { railTouch(); run() } label: {
             Image(systemName: symbol).font(.system(size: 22, weight: .medium))
                 .frame(width: 60, height: 60)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                .foregroundColor(Theme.text)
+                .background(Theme.raised.opacity(0.92), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -237,10 +243,12 @@ struct ContentView: View {
     @ViewBuilder
     private var toastView: some View {
         if let text = model.toast {
+            // (the one look's toast: dark on a light iPhone, light on a dark one, like the web pages')
             Text(text)
-                .font(.footnote)
-                .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .font(Theme.footnote)
+                .foregroundColor(Theme.bg)
+                .padding(.horizontal, Theme.Space.l).padding(.vertical, Theme.Space.m - 2)
+                .background(Theme.text, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .padding()
                 .onTapGesture { model.toast = nil }
         }
@@ -261,7 +269,7 @@ struct SettingsView: View {
 
     private func keyField(_ name: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.footnote).foregroundColor(.secondary)
+            Text(label).font(Theme.footnote).foregroundColor(Theme.muted)
             SecureField(keyEnds[name].map { "saved (…\($0)): paste a new one to change it" } ?? "paste your key", text: Binding(get: { keyText[name] ?? "" }, set: { keyText[name] = $0 }))
                 .textContentType(.oneTimeCode)   // (no "save this password?" question, no strong-password offer)
                 .autocapitalization(.none)
@@ -277,11 +285,12 @@ struct SettingsView: View {
                     Button("All settings (voice, Level Check…)") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/options.html") }
                     Button("My Vocabulary") { presentation.wrappedValue.dismiss(); model.openPage("ytlearn://app/dream/vocab.html") }
                 }
+                .listRowBackground(Theme.raised)
                 Section(header: Text("API keys"),
                         footer: Text("Paste a key, then press Save the keys. An empty box keeps the key that is saved. Keys stay on this device (its Keychain). Claude explains; the Microsoft key (free) gives the natural voice. Test finds the Microsoft region by itself.")) {
                     ForEach(SettingsView.keyRows, id: \.0) { row in keyField(row.0, row.1) }
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Microsoft region").font(.footnote).foregroundColor(.secondary)
+                        Text("Microsoft region").font(Theme.footnote).foregroundColor(Theme.muted)
                         TextField("eastus", text: $region).autocapitalization(.none).disableAutocorrection(true).frame(minHeight: 44)
                     }
                     Button("Save the keys") {
@@ -296,29 +305,37 @@ struct SettingsView: View {
                         model.testMicrosoft { text in keyNote = text; region = model.savedRegion }
                     }
                     .frame(minHeight: 44)
-                    if !keyNote.isEmpty { Text(keyNote).font(.footnote) }
+                    if !keyNote.isEmpty { Text(keyNote).font(Theme.footnote) }
                 }
+                .listRowBackground(Theme.raised)
                 Section(header: Text("My vocabulary file (one for the Mac and this phone)"),
                         footer: Text("On the Mac, Chrome saves vocabulary.json in Documents ▸ MEH English, in iCloud Drive ▸ MEH English, and in Google Drive ▸ MEH English (when Google Drive is installed). iCloud Drive: choose that MEH English folder. Google Drive (the Files app does not let its folders be chosen): choose the file vocabulary.json inside it. The Mac and this phone then share one database: each adds its words, nothing is lost. Without that the words stay in the app (Files ▸ On My iPhone ▸ I Know ▸ vocabulary.json).")) {
                     Text(model.vocabFolder.map { "Shared: \($0)" } ?? "Nothing shared yet: the words stay in the app")
                     if !model.vocabStatus.isEmpty {
-                        Text(model.vocabStatus).font(.footnote).foregroundColor(.secondary)
+                        Text(model.vocabStatus).font(Theme.footnote).foregroundColor(Theme.muted)
                     }
                     Button("Choose the folder (iCloud Drive ▸ MEH English)…") { pickFolder = true }
                     Button("Or choose the file vocabulary.json (Google Drive)…") { pickFile = true }
                     if model.vocabFolder != nil {
                         Button("Stop sharing (keep the words in the app)", role: .destructive) { model.forgetVocabFolder() }
+                            .foregroundColor(Theme.off)
                     }
                 }
+                .listRowBackground(Theme.raised)
                 Section(header: Text("Microphone and voice"), footer: Text("Allow the Microphone and Speech Recognition when iOS asks: the tutor listens only while it waits for you (I know / I don't know, a question, a call, voice mode). Better voices: iOS Settings ▸ Accessibility ▸ Spoken Content ▸ Voices ▸ English ▸ download a Premium or Enhanced voice.")) {
                     EmptyView()
                 }
+                .listRowBackground(Theme.raised)
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
             .navigationTitle("Settings")
-            .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() })
+            .navigationBarItems(trailing: Button("Done") { presentation.wrappedValue.dismiss() }.font(Theme.button))
+            .toolbarBackground(Theme.bg, for: .navigationBar)
             .onAppear { keyEnds = model.savedKeyEnds(); region = model.savedRegion }
         }
         .navigationViewStyle(.stack)
+        .tint(Theme.accent)
         .sheet(isPresented: $pickFolder) { FolderPicker(types: [UTType.folder]) { url in model.chooseVocabFolder(url) } }
         .background(EmptyView().sheet(isPresented: $pickFile) { FolderPicker(types: [UTType.json]) { url in model.chooseVocabFolder(url, isFile: true) } })
     }
@@ -357,10 +374,14 @@ struct TutorPageView: View {
         NavigationView {
             WebHost(webView: model.sheet)
                 .ignoresSafeArea(edges: .bottom)
+                .background(Theme.bg)
                 .navigationTitle("My tutor")
                 .navigationBarTitleDisplayMode(.inline)
-                .navigationBarItems(trailing: Button("Done") { model.sheetOpen = false })
+                .navigationBarItems(trailing: Button("Done") { model.sheetOpen = false }.font(Theme.button))
+                .toolbarBackground(Theme.bg, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
         }
         .navigationViewStyle(.stack)
+        .tint(Theme.accent)
     }
 }

@@ -24,6 +24,7 @@ import type { Settings, VocabState, WordStatus } from '@shared/settings';
 import { getDictionary, getZipf } from './ai-client';
 import * as store from './store';
 import { WordCard } from './word-card';
+import { TOKENS } from './theme';
 import { TutorSay } from './tutor-say';
 import { markOf, cardOf } from './word-level';
 import { myLevelOf, levelToCefr } from './level100';
@@ -52,8 +53,9 @@ const CONTROL = 'button, input, textarea, select, option, label, summary, video,
 /** the parts of a page that are not what it says (for "what is on the screen" and the article) */
 const CHROME = 'nav, aside, footer, form, [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"], [aria-hidden="true"], [hidden]';
 const HARD = 'iknow-hard', LEARNING = 'iknow-learning';
-const MARK_CSS = `::highlight(${HARD}){text-decoration:underline;text-decoration-style:dotted;text-decoration-color:#1a73e8;text-decoration-thickness:2px;text-underline-offset:.2em;background-color:rgba(26,115,232,.10)}
-::highlight(${LEARNING}){text-decoration:underline;text-decoration-color:#c98a00;text-decoration-thickness:2px;text-underline-offset:.2em;background-color:rgba(255,214,102,.42)}`;
+// (the two word marks of the one look, design/theme.json)
+const MARK_CSS = `::highlight(${HARD}){text-decoration:underline;text-decoration-style:dotted;text-decoration-color:${TOKENS.light.hard};text-decoration-thickness:2px;text-underline-offset:.2em;background-color:color-mix(in srgb,${TOKENS.light.hard} 10%,transparent)}
+::highlight(${LEARNING}){text-decoration:underline;text-decoration-color:${TOKENS.light.learning};text-decoration-thickness:2px;text-underline-offset:.2em;background-color:color-mix(in srgb,${TOKENS.light.learning} 22%,transparent)}`;
 
 const pageTitle = (): string => (document.title || location.hostname || 'Web page').replace(/\s+/g, ' ').trim().slice(0, 160);
 

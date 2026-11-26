@@ -86,17 +86,21 @@ struct ReaderScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Read").font(.headline)
+                Text("Read").font(Theme.button).foregroundColor(Theme.text)
                 Spacer()
                 Button { model.showReader = false } label: {
-                    Text("Done").font(.system(size: 17, weight: .semibold)).frame(minWidth: 64, minHeight: 44).contentShape(Rectangle())
+                    Text("Done").frame(minWidth: 64)
                 }
+                .buttonStyle(.themeQuiet)
                 .accessibilityLabel("Done: back to the video")
             }
-            .padding(.horizontal, 14)
-            .background(Color(.secondarySystemBackground))
+            .padding(.horizontal, Theme.Space.m)
+            .background(Theme.raised)
+            .overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
             WebHost(webView: model.reader.web)
         }
+        .background(Theme.bg)
+        .tint(Theme.accent)
         .onAppear {
             model.coverOpened()
             model.reader.open()

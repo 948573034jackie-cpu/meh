@@ -3,11 +3,12 @@
  * them into a big box and taps "Use these lyrics"; they are timed and kept for this video (lyrics-find.ts).
  * Over the page, in its own shadow DOM (so it also opens when the video has no subtitles and no page was made).
  */
-const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483601;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:16px/1.4 -apple-system,system-ui,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%;
---bg:#fff;--fg:#1f2328;--muted:#5f6368;--line:#d5d9de;--chip:#e8ebee;--blue:#1a73e8;--on-blue:#fff}
-@media (prefers-color-scheme:dark){:host{--bg:#17191e;--fg:#e6e3dc;--muted:#a4a19a;--line:#3a3f48;--chip:#2c3038;--blue:#8ab4f8;--on-blue:#10141b}}
+import { THEME_HOST_CSS } from './theme';
+
+const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483601;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:16px/1.4 var(--t-font-ui);-webkit-text-size-adjust:100%;
+--bg:var(--t-bg);--fg:var(--t-text);--muted:var(--t-muted);--line:var(--t-line-strong);--chip:var(--t-hover);--blue:var(--t-accent);--on-blue:var(--t-accent-text)}
 *{box-sizing:border-box}
-.card{background:var(--bg);color:var(--fg);border-radius:14px;width:min(680px,100vw);height:min(100dvh,860px);display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.45);overflow:hidden;font-size:var(--fs,16px)}
+.card{background:var(--bg);color:var(--fg);border-radius:var(--t-radius-card);width:min(680px,100vw);height:min(100dvh,860px);display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.45);overflow:hidden;font-size:var(--fs,16px)}
 @media (max-width:700px),(max-height:600px){.card{border-radius:0;height:100dvh;width:100vw}}
 header{display:flex;align-items:center;gap:10px;padding:max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--line);flex:none}
 h2{margin:0;font-size:1.15em;flex:1}
@@ -46,7 +47,7 @@ export function openPasteBox(o: PasteBoxOptions): { close(): void } {
   // (typing here must not start YouTube's shortcuts)
   for (const type of ['keydown', 'keyup', 'keypress', 'click']) host.addEventListener(type, (e) => e.stopPropagation());
   const fs = Math.max(14, Math.min(30, Math.round(o.textSize ?? 16)));
-  root.innerHTML = `<style>${CSS}</style><div class="card" role="dialog" aria-label="Paste the lyrics" style="--fs:${fs}px">
+  root.innerHTML = `<style>${THEME_HOST_CSS}${CSS}</style><div class="card" role="dialog" aria-label="Paste the lyrics" style="--fs:${fs}px">
 <header><h2>Paste the lyrics</h2><button class="x" data-a="close" aria-label="Close">✕</button></header>
 <div class="body">
 <p class="song"></p>

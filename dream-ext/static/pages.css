@@ -1,60 +1,86 @@
-/* Dream Tutor pages (settings, My Vocabulary): Dream Read's Night look */
-:root {
-  --bg: #15171c; --bg-elevated: #1c1f25; --bg-hover: #242830; --bg-sunken: #111317;
-  --fg: #d7d2c8; --fg-muted: #8e8a82; --fg-faint: #5d5a54; --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.16);
-  --accent: #d9a066; --accent-fg: #15171c; --accent-soft: rgba(217,160,102,0.14); --danger: #e57373; --ok: #7fbf7f;
-  --hl-unknown: #59c7fa; --hl-learning: #ffd666;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
-  --font-serif: "Iowan Old Style", Palatino, Georgia, serif; --font-zh: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  color-scheme: dark;
-}
+/* My tutor's pages (All settings, My Vocabulary, the reader). Every colour, size and corner comes from theme.css
+   (design/theme.json, the one look of both apps): light or dark as the iPhone is set. Big readable text (17 px),
+   buttons at least 44 px, nothing wider than the phone. */
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-sans); }
-main { max-width: 900px; margin: 0 auto; padding: 24px 20px 80px; }
-h1 { font-family: var(--font-serif); color: var(--accent); font-size: 28px; margin: 0 0 4px; }
-h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-muted); margin: 0 0 12px; }
-.lead { color: var(--fg-muted); margin: 0 0 20px; }
-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin: 0 0 16px; }
-.field { display: grid; grid-template-columns: 220px 1fr; gap: 6px 14px; align-items: center; margin: 0 0 10px; }
-.field > label { color: var(--fg-muted); }
-.field .hint { grid-column: 2; color: var(--fg-faint); font-size: 12.5px; margin-top: -4px; }
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-button { font: inherit; color: var(--fg); background: var(--bg-hover); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
-button:hover { border-color: var(--border-strong); }
-button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; font-weight: 600; }
-button.danger { color: var(--danger); }
-input, select, textarea { font: inherit; color: var(--fg); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
-input[type="text"], input[type="password"], select { min-width: 260px; }
-input[type="number"] { width: 100px; }
-textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45; }
-label.check { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 8px; cursor: pointer; }
-label.check input { margin-top: 3px; accent-color: var(--accent); }
-.msg { font-size: 12.5px; }
-.msg.ok { color: var(--ok); } .msg.bad { color: var(--danger); }
-.muted { color: var(--fg-muted); }
-.styles { display: grid; grid-template-columns: 220px 1fr; gap: 14px; }
-.style-list { display: flex; flex-direction: column; gap: 4px; }
-.style-list button { text-align: left; display: flex; justify-content: space-between; gap: 6px; }
-.style-list button.sel { border-color: var(--accent); }
-.badge { font-size: 11px; color: var(--accent); }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { color: var(--fg-muted); font-weight: 500; position: sticky; top: 0; background: var(--bg-elevated); }
-td.word { font-family: var(--font-serif); font-weight: 700; font-size: 15px; }
-td.zh { font-family: var(--font-zh); color: var(--hl-learning); font-size: 15px; }
-.st-learning { color: var(--hl-learning); } .st-known { color: var(--ok); }
-.levels { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
-.level { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer; text-align: left; }
-.level b { font-size: 16px; }
-.bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; display: flex; margin: 6px 0 4px; }
-.bar .k { background: var(--ok); } .bar .l { background: var(--hl-learning); }
-.tabs { display: flex; gap: 6px; margin: 0 0 14px; }
-.tabs button.sel { border-color: var(--accent); color: var(--accent); }
-@media (max-width: 700px) { .field { grid-template-columns: 1fr; } .styles { grid-template-columns: 1fr; } .levels { grid-template-columns: repeat(3, 1fr); } }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { margin: 0; background: var(--t-bg); color: var(--t-text); font: var(--t-size-body)/var(--t-line-body) var(--t-font-ui); overflow-wrap: break-word; }
+main { max-width: 900px; margin: 0 auto; padding: var(--t-space-xl) var(--t-space-l) 80px; }
+h1 { font: 700 var(--t-size-large-title)/1.2 var(--t-font-serif); color: var(--t-text); margin: 0 0 var(--t-space-s); }
+h2 { font: 600 var(--t-size-caption)/1.3 var(--t-font-ui); text-transform: uppercase; letter-spacing: 0.08em; color: var(--t-muted); margin: 0 0 var(--t-space-m); }
+a { color: var(--t-accent); }
+.lead { color: var(--t-muted); margin: 0 0 var(--t-space-xl); }
+section { background: var(--t-raised); border: 1px solid var(--t-line); border-radius: var(--t-radius-card); padding: var(--t-space-l); margin: 0 0 var(--t-space-l); }
+.field { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--t-space-s) var(--t-space-m); align-items: center; margin: 0 0 var(--t-space-m); }
+.field > label { color: var(--t-muted); }
+.field .hint { grid-column: 2; color: var(--t-muted); font-size: var(--t-size-footnote); margin-top: -2px; }
+.hint { color: var(--t-muted); font-size: var(--t-size-footnote); }
+.row { display: flex; gap: var(--t-space-s); align-items: center; flex-wrap: wrap; min-width: 0; }
+.ic { width: 1.2em; height: 1.2em; flex: none; display: inline-block; vertical-align: -0.22em; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 
-/* My Vocabulary: how many words you know, and the online copy */
-.knowbox { border: 1px solid var(--border, #333); border-radius: 14px; padding: 14px 18px; margin: 6px 0 14px; }
-.knowbox .big { font-size: 26px; font-weight: 700; }
-.knowbox .big b { color: var(--accent, #d9a441); font-size: 34px; }
-.knowbox .online { margin-top: 8px; font-size: 13px; }
-.knowbox .online button { margin-left: 8px; font-size: 12px; padding: 3px 9px; }
+/* ---- the one button family: secondary (raised, a line around it), .primary (the accent), .quiet (text only) ---- */
+button { font: var(--t-weight-button) var(--t-size-button)/1.2 var(--t-font-ui); color: var(--t-text); background: var(--t-raised); border: 1px solid var(--t-line-strong); border-radius: var(--t-radius-control); min-height: var(--t-control); padding: 0 var(--t-space-l); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: var(--t-space-s); transition: background-color var(--t-fast), border-color var(--t-fast); -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+button:hover, button:active { background: var(--t-hover); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, a:focus-visible { outline: 2px solid var(--t-focus); outline-offset: 2px; }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--t-accent); color: var(--t-accent-text); border-color: var(--t-accent); }
+button.primary:hover, button.primary:active { background: var(--t-accent); filter: brightness(1.06); }
+button.quiet { background: transparent; border-color: transparent; color: var(--t-accent); }
+button.danger { color: var(--t-off); }
+
+input, select, textarea { font: var(--t-size-body)/1.3 var(--t-font-ui); color: var(--t-text); background: var(--t-sunken); border: 1px solid var(--t-line); border-radius: var(--t-radius-control); padding: 0 var(--t-space-m); min-height: var(--t-control); max-width: 100%; }
+input::placeholder, textarea::placeholder { color: var(--t-faint); }
+/* (a select drawn by the page, not by the system: the same height, corners and colours as a text field; a quiet chevron) */
+select { -webkit-appearance: none; appearance: none; padding-right: 36px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23857F73' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; background-size: 18px; }
+input[type="text"], input[type="password"], select { min-width: 0; width: 320px; }
+input[type="number"] { width: 110px; }
+input[type="range"] { accent-color: var(--t-accent); background: transparent; border: 0; padding: 0; }
+input[type="checkbox"] { min-height: 0; width: 22px; height: 22px; padding: 0; accent-color: var(--t-accent); }
+textarea { width: 100%; min-height: 120px; padding: var(--t-space-m); font: var(--t-size-footnote)/1.45 var(--t-font-mono); }
+pre { white-space: pre-wrap; word-break: break-all; background: var(--t-sunken); color: var(--t-text); padding: var(--t-space-s); border-radius: var(--t-radius-control); font: var(--t-size-footnote)/1.4 var(--t-font-mono); }
+label.check { display: flex; gap: var(--t-space-m); align-items: flex-start; margin: 0 0 var(--t-space-m); cursor: pointer; min-height: var(--t-control); padding-top: 10px; }
+label.check input { margin: 0; flex: none; }
+.msg { font-size: var(--t-size-footnote); }
+.msg.ok { color: var(--t-on); } .msg.bad { color: var(--t-off); }
+.muted { color: var(--t-muted); }
+.styles { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--t-space-m); }
+.style-list { display: flex; flex-direction: column; gap: var(--t-space-xs); }
+.style-list button { justify-content: space-between; text-align: left; font-weight: 500; }
+.style-list button.sel { border-color: var(--t-accent); background: var(--t-accent-soft); color: var(--t-accent); }
+.badge { font-size: var(--t-size-caption); color: var(--t-accent); }
+
+/* ---- My Vocabulary: the words ---- */
+table { width: 100%; border-collapse: collapse; font-size: var(--t-size-footnote); }
+th, td { text-align: left; padding: var(--t-space-s); border-bottom: 1px solid var(--t-line); vertical-align: top; }
+th { color: var(--t-muted); font: 600 var(--t-size-caption)/1.3 var(--t-font-ui); position: sticky; top: 0; background: var(--t-raised); }
+td.word { font: 700 var(--t-size-body)/1.3 var(--t-font-serif); }
+td.word .muted { font: 500 var(--t-size-caption) var(--t-font-ui); }
+td.zh { font: 500 var(--t-size-body)/1.4 var(--t-font-zh); color: var(--t-text); }
+.st-learning { color: var(--t-learning); } .st-known { color: var(--t-on); }
+.levels { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--t-space-s); }
+.level { background: var(--t-sunken); border: 1px solid var(--t-line); border-radius: var(--t-radius-control); padding: var(--t-space-m); cursor: pointer; text-align: left; font-size: var(--t-size-footnote); }
+.level b { font-size: var(--t-size-body); }
+.bar { height: 6px; border-radius: 3px; background: var(--t-line); overflow: hidden; display: flex; margin: 6px 0 4px; }
+.bar .k { background: var(--t-on); } .bar .l { background: var(--t-learning); }
+.tabs { display: flex; gap: var(--t-space-s); margin: 0 0 var(--t-space-l); flex-wrap: wrap; align-items: center; }
+.tabs button.sel { border-color: var(--t-accent); background: var(--t-accent-soft); color: var(--t-accent); }
+.knowbox { background: var(--t-raised); border: 1px solid var(--t-line); border-radius: var(--t-radius-card); padding: var(--t-space-l); margin: var(--t-space-xs) 0 var(--t-space-l); }
+.knowbox .big { font: 600 var(--t-size-title)/1.3 var(--t-font-ui); }
+.knowbox .big b { color: var(--t-accent); font-size: 34px; }
+.knowbox .online { margin-top: var(--t-space-s); font-size: var(--t-size-footnote); color: var(--t-muted); display: flex; flex-wrap: wrap; align-items: center; gap: var(--t-space-s); }
+
+/* ---- a phone: one column, nothing wider than the screen; the word list becomes one card per word ---- */
+@media (max-width: 700px) {
+  main { padding: var(--t-space-l) var(--t-space-l) 64px; }
+  .field { grid-template-columns: minmax(0, 1fr); gap: var(--t-space-xs); }
+  .field .hint { grid-column: 1; }
+  .field > label { color: var(--t-text); font-weight: 500; }
+  input[type="text"], input[type="password"], select { width: 100%; }
+  .field .row > input { flex: 1 1 100%; }
+  .styles { grid-template-columns: minmax(0, 1fr); }
+  .levels { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #tab-words table, #tab-words thead, #tab-words tbody, #tab-words tr, #tab-words td { display: block; width: 100%; }
+  #tab-words thead { display: none; }
+  #tab-words tr { position: relative; border-bottom: 1px solid var(--t-line); padding: var(--t-space-m) 0; }
+  #tab-words td { border: 0; padding: 2px 0; }
+  #tab-words td:nth-child(5), #tab-words td:nth-child(6) { display: inline-block; width: auto; margin: var(--t-space-s) var(--t-space-s) 0 0; }
+}

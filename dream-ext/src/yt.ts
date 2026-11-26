@@ -17,6 +17,8 @@
  *    call. Stops at hard words in the call are an option (silent card, the word goes to the call).
  */
 import css from './dream.css';
+import { THEME_HOST_CSS, TOKENS, RADIUS } from './theme';
+import { icon } from './icons';
 import type { Book, Position, CefrLevel } from '@core/model';
 import { sentenceKey } from '@core/model';
 import type { Dictionary } from '@core/dict/types';
@@ -130,7 +132,8 @@ interface SpeechRecognitionLike {
   start(): void; stop(): void;
 }
 
-const GREEN = '#1e8e3e', RED = '#d93025';
+// on / off: the one look's two state colours (design/theme.json); these buttons sit on YouTube's own page
+const GREEN = TOKENS.light.on, RED = TOKENS.light.off;
 const E2E = () => !!extras.fakeVoice;
 const HINTS_VERSION = 4; // 4: every hard sentence and phrase above the level (not a few per minute)
 
@@ -206,7 +209,8 @@ function makeHost(id: string): { host: HTMLElement; root: ShadowRoot } {
   host.id = id;
   const root = host.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
-  style.textContent = css;
+  // (the one look's variables first: the host follows the device, or the learner's Day / Night)
+  style.textContent = THEME_HOST_CSS + css;
   root.appendChild(style);
   return { host, root };
 }
@@ -680,7 +684,7 @@ class Session {
     root.querySelector('.songbox')?.remove();
     const box = document.createElement('div');
     box.className = 'songbox';
-    box.innerHTML = `<div class="songhead">🎵 ${esc(title)}</div><div class="songtext"></div><button type="button" class="primary" data-act="play">▶ Play the song</button>`;
+    box.innerHTML = `<div class="songhead">${icon('music.note')} ${esc(title)}</div><div class="songtext"></div><button type="button" class="primary" data-act="play">${icon('play.fill')} Play the song</button>`;
     box.querySelector('.songtext')!.textContent = text;
     root.appendChild(box);
     return box;
@@ -1217,8 +1221,8 @@ class Session {
       el.id = 'dr-stop-counter';
       el.title = 'Stops made / sentences so far';
       el.style.cssText = TOUCH
-        ? 'position:fixed;top:calc(3px + env(safe-area-inset-top));right:6px;z-index:2147483000;background:rgba(31,35,40,.6);color:#fff;border-radius:8px;padding:0 6px;font:10px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none;opacity:.6'
-        : 'position:fixed;top:60px;right:10px;z-index:2147483000;background:rgba(31,35,40,.82);color:#fff;border-radius:10px;padding:2px 8px;font:12px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none';
+        ? 'position:fixed;top:calc(3px + env(safe-area-inset-top));right:6px;z-index:2147483000;background:rgba(31,35,40,.6);color:#fff;border-radius:10px;padding:0 7px;font:13px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none;opacity:.6'
+        : 'position:fixed;top:60px;right:10px;z-index:2147483000;background:rgba(31,35,40,.82);color:#fff;border-radius:10px;padding:2px 8px;font:13px/1.5 -apple-system,system-ui,sans-serif;pointer-events:none';
       document.body.appendChild(el);
       this.counterEl = el;
     }
@@ -2022,7 +2026,7 @@ class Session {
       const hearingYou = !!chat && !chat.busy && lastLine?.who === 'you' && !lastLine.final;
       box.hidden = false;
       box.innerHTML = `<div class="tlog">${lines}</div><div class="tbar"><span class="mic ${(live && live.state === 'ready') || (chat && voiceOn) ? 'on' : ''} ${t.hearing || (chat && !chat.busy && voiceOn) ? 'hot' : ''}"></span><span class="tstate">${esc(state)}</span><span class="grow"></span>
-        ${hearingYou ? '<button data-act="send" class="primary" title="Send what I heard to your tutor now">Send ➤</button>' : ''}<button data-act="go" class="${hearingYou ? '' : 'primary'}">Go on ▶ <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)">✕</button></div>`;
+        ${hearingYou ? '<button data-act="send" class="primary" title="Send what I heard to your tutor now">Send</button>' : ''}<button data-act="go" class="${hearingYou ? '' : 'primary'}">Go on ${icon('play.fill')} <kbd>${esc(comboLabel(shortcutMap(extras.shortcuts).continue))}</kbd></button><button data-act="end" class="quiet" title="End the talk (the video stays paused)" aria-label="Close">${icon('xmark')}</button></div>`;
       // (Send on press: the bar is drawn again with every word heard, a click could land on a button that is gone)
       box.onpointerdown = (ev) => { if ((ev.target as HTMLElement).closest('button')?.dataset.act === 'send') { ev.preventDefault(); this.sendHeard(); } };
       box.onclick = (ev) => {
@@ -2067,7 +2071,7 @@ class Session {
       b.id = 'dr-end-call';
       b.textContent = 'End call';
       // (big: at least 60 pt high and 200 wide, clear of the home line at the bottom)
-      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom) + var(--yt2c-bar-h, 0px));z-index:2147483200;border:0;border-radius:30px;min-height:60px;min-width:200px;padding:14px 32px;font:600 18px -apple-system,system-ui,sans-serif;color:#fff;background:#d93025;box-shadow:0 4px 16px rgba(0,0,0,.35);touch-action:manipulation';
+      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom) + var(--yt2c-bar-h, 0px));z-index:2147483200;border:0;border-radius:30px;min-height:60px;min-width:200px;padding:14px 32px;font:600 18px -apple-system,system-ui,sans-serif;color:#fff;background:' + RED + ';box-shadow:0 4px 16px rgba(0,0,0,.35);touch-action:manipulation';
       // (bye: the call ends and the video plays)
       b.onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); this.byeBye(false); };
       (document.fullscreenElement ?? document.body).appendChild(b);
@@ -2728,7 +2732,7 @@ class Session {
     const el = document.createElement('div');
     el.className = 'panel';
     el.innerHTML = `<div class="head"></div><div class="status"></div><div class="lines"><div class="doc-inner"></div></div><div class="talk" hidden></div><div class="transcript"></div>
-      <form class="ask"><input type="text" placeholder="Type a question (pronunciation does not matter)" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit">Ask</button></form>
+      <form class="ask"><input type="text" placeholder="Type a question (pronunciation does not matter)" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">${icon('mic')} Speak</button><button type="submit">Ask</button></form>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     document.documentElement.classList.add('dr-panel');
@@ -2766,8 +2770,8 @@ class Session {
     host.hidden = true;
     const el = document.createElement('div');
     el.className = 'stage';
-    el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div><div class="pager"><button type="button" class="quiet" data-act="prev" title="The page before">‹</button><span class="pg"></span><button type="button" class="quiet" data-act="next" title="The next page">›</button></div>
-      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">✋ Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div>${TOUCH ? '' : '<form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">🎤 Speak</button><button type="submit" title="Send to my tutor">Ask</button></form>'}</div>
+    el.innerHTML = `<div class="top"></div><div class="flowstate" hidden></div><div class="page"><div class="doc-inner"></div></div><div class="pager"><button type="button" class="quiet" data-act="prev" title="The page before" aria-label="The page before">${icon('chevron.left')}</button><span class="pg"></span><button type="button" class="quiet" data-act="next" title="The next page" aria-label="The next page">${icon('chevron.right')}</button></div>
+      <div class="dock"><div class="sayrow"><div class="say"></div><button class="quiet hand" data-act="hand" hidden title="Pause the teacher and ask (Space)">${icon('hand.raised')} Ask</button><button class="quiet hand" data-act="bye" hidden title="Bye bye: stop the AI and play again (Esc)">Bye bye</button></div><div class="talk" hidden></div>${TOUCH ? '' : `<form class="ask"><input type="text" placeholder="Type or speak a question for your tutor" aria-label="Question for the tutor"><button type="button" class="speak" data-act="speak" title="Speak your question: Chrome writes it down">${icon('mic')} Speak</button><button type="submit" title="Send to my tutor">Ask</button></form>`}</div>
       <div class="cmd" hidden></div><div class="card" hidden></div><div class="quick" hidden></div><div class="toast" hidden></div><button type="button" class="selx" hidden></button>`;
     root.appendChild(el);
     this.stage = { host, root, el };
@@ -2830,14 +2834,14 @@ class Session {
     const range = this.partKeys && this.vb ? (() => { const ps = this.vb.order.filter((p) => this.partKeys!.has(sentenceKey(p))); return ps.length ? `${clock(this.vb.timingOf(ps[0])!.start)} – ${clock(this.vb.timingOf(ps[ps.length - 1])!.end)}` : ''; })() : '';
     const sc = shortcutMap(extras.shortcuts);
     const playing = !!video() && !video()!.paused;
-    top.innerHTML = `<span class="brand">Dream</span><button data-act="stop" class="stopbtn" title="${playing ? 'Stop everything' : 'Play on'} (${esc(comboLabel(sc.stop))})">${playing ? '⏸' : '▶'}</button><span class="ttl">${esc(this.vb?.book.title ?? '')}</span>${range ? `<span class="range">${range}</span>` : ''}<span class="grow"></span>
+    top.innerHTML = `<span class="brand">Dream</span><button data-act="stop" class="stopbtn" title="${playing ? 'Stop everything' : 'Play on'} (${esc(comboLabel(sc.stop))})">${icon(playing ? 'pause.fill' : 'play.fill')}</button><span class="ttl">${esc(this.vb?.book.title ?? '')}</span>${range ? `<span class="range">${range}</span>` : ''}<span class="grow"></span>
       <span class="seg" data-name="secs">${[10, 20, 30].map((n) => `<button data-secs="${n}" class="${settings.listen.lastSecondsWindow === n ? 'on' : ''}">${n}s</button>`).join('')}</span>
       <button data-act="smaller" title="Smaller text (${esc(comboLabel(sc.smaller))})">A−</button><button data-act="bigger" title="Bigger text (${esc(comboLabel(sc.bigger))})">A+</button>
       <button data-act="zh" aria-pressed="${extras.zhLines}" title="Chinese under each line (${esc(comboLabel(sc.zh))})">中文</button>
-      ${this.ai() ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞 Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye">🎙 Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
-      <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? '🎬 Video' : '📖 Listening'}</button>
-      ${listening ? '' : `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="This big page at stops and pauses: on / off (off = you only watch the video)">📄 Page ${extras.stageOn ? 'on' : 'off'}</button>`}
-      <button data-act="quick" title="Quick settings">⚙</button>${listening ? '' : '<button data-act="close" class="quiet" title="Back to the video">✕</button>'}`;
+      ${this.ai() ? `<button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">${icon('phone.fill')} Talk</button><button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye">${icon('mic')} Voice${extras.voiceMode ? ' on' : ''}</button>` : ''}
+      <button data-act="view" title="${listening ? 'Back to the normal video' : 'Listening mode: all subtitles'} (${esc(comboLabel(sc.listening))})">${listening ? `${icon('film')} Video` : `${icon('headphones')} Listening`}</button>
+      ${listening ? '' : `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="This big page at stops and pauses: on / off (off = you only watch the video)">${icon('doc.text')} Page ${extras.stageOn ? 'on' : 'off'}</button>`}
+      <button data-act="quick" title="Quick settings" aria-label="Quick settings">${icon('slider.horizontal.3')}</button>${listening ? '' : `<button data-act="close" class="quiet" title="Back to the video" aria-label="Back to the video">${icon('xmark')}</button>`}`;
     top.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
       if (!b) return;
@@ -2905,7 +2909,7 @@ class Session {
     const v = video();
     if (!b) return;
     const playing = !!v && !v.paused;
-    b.textContent = playing ? '⏸' : '▶';
+    b.innerHTML = icon(playing ? 'pause.fill' : 'play.fill');
     b.title = `${playing ? 'Stop everything' : 'Play on'} (${comboLabel(shortcutMap(extras.shortcuts).stop)})`;
   }
 
@@ -3094,13 +3098,13 @@ class Session {
     const tutor = this.ai();
     const sc = shortcutMap(extras.shortcuts);
     head.innerHTML = `<span class="brand">Dream</span><span class="mode tutor">My tutor</span><span class="grow"></span>
-      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hello”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})">📞</button>` : ''}
-      <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})">📖</button>
-      ${tutor ? `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="The big page at stops and pauses: on / off (off = you only watch the video)">📄 ${extras.stageOn ? 'on' : 'off'}</button>` : ''}
+      ${tutor ? `<button data-act="last" title="Explain what was just said (${esc(comboLabel(sc.explainLast))}, or say “hello”); ${esc(comboLabel(sc.explainSentence))} = the last sentence">Explain ${settings.listen.lastSecondsWindow} s</button><button data-act="talk" title="Talk to my tutor (${esc(comboLabel(sc.talk))})" aria-label="Talk to my tutor">${icon('phone.fill')}</button>` : ''}
+      <button data-act="view" title="Listening mode: all subtitles over the screen (${esc(comboLabel(sc.listening))})" aria-label="Listening mode">${icon('headphones')}</button>
+      ${tutor ? `<button data-act="pageAuto" aria-pressed="${extras.stageOn}" title="The big page at stops and pauses: on / off (off = you only watch the video)">${icon('doc.text')} ${extras.stageOn ? 'on' : 'off'}</button>` : ''}
       <button data-act="zh" aria-pressed="${settings.ai.speakChinese}" title="Say the two Chinese meanings at the end of explanations">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>
       <button data-act="smaller" title="Smaller text">A−</button><button data-act="bigger" title="Bigger text">A+</button>
-      <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye">🎙${extras.voiceMode ? ' on' : ''}</button>
-      <button data-act="vocab" title="My Vocabulary: you know about ${this.knownEstimate.toLocaleString()} English words">📒${this.knownEstimate ? ` ${this.knownEstimate.toLocaleString()}` : ''}</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts">⚙</button>`;
+      <button data-act="voice" aria-pressed="${extras.voiceMode}" title="Voice mode: say hello (explain the last part) / hi bro (call) / stop / play / bye" aria-label="Voice mode">${icon('mic')}${extras.voiceMode ? ' on' : ''}</button>
+      <button data-act="vocab" title="My Vocabulary: you know about ${this.knownEstimate.toLocaleString()} English words" aria-label="My Vocabulary">${icon('character.book.closed')}${this.knownEstimate ? ` ${this.knownEstimate.toLocaleString()}` : ''}</button><button data-act="quick" title="Quick settings: sizes, voice, talk, teacher, keys, shortcuts" aria-label="Quick settings">${icon('slider.horizontal.3')}</button>`;
     head.onclick = (ev) => {
       const b = (ev.target as HTMLElement).closest('button');
       const act = b?.dataset.act;
@@ -3528,7 +3532,7 @@ class Session {
     r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') this.toast('The microphone is blocked for youtube.com: click the icon left of the address bar → Microphone → Allow.', 9000); };
     r.onend = () => {
       this.ptt = null; this.pttActive = false;
-      if (btn) btn.textContent = '🎤 Speak';
+      if (btn) btn.innerHTML = `${icon('mic')} Speak`;
       const q = said.trim();
       if (q) { if (inp) inp.value = ''; this.ask(q, true); }
     };
@@ -3634,12 +3638,12 @@ class Session {
     // (Level Check: the explanation has no Chinese and no IPA; a phone's card is the Chinese dictionary: the word and its Chinese)
     const plain = this.levelOn() && !TOUCH;
     const noIpa = this.levelOn() || TOUCH;
-    cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !noIpa ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word">▶</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
+    cardEl.innerHTML = `<div class="hw"><span class="word">${esc(target)}</span>${entry?.ipa && !noIpa ? `<span class="ipa">${esc(entry.ipa)}</span>` : ''}<button class="quiet" data-act="say" title="Say the word" aria-label="Say the word">${icon('speaker.wave.2')}</button><span class="grow"></span>${level ? `<span class="lvl">${esc(level)}</span>` : ''}</div>
       ${plain ? '' : `<div class="zh here"${here ? '' : ' data-ai="1"'}>${here ? `<span><span class="pos">here</span>${esc(here[0])}${here[1] ? `<span class="pos"> · ${esc(here[1])}</span>` : ''}</span>` : '<span class="muted">AI 中文…</span>'}</div>
       ${glosses.length ? `<div class="zh">${glosses.map((g) => `<span>${g.pos ? `<span class="pos">${esc(g.pos)}</span>` : ''}${esc(g.zh)}</span>`).join('')}</div>` : '<div class="muted">Not in the offline dictionary.</div>'}`}
       <div class="en"></div>
       <div class="row"><button data-act="known" class="${status === 'known' ? 'active' : ''}">I know</button><button data-act="dontknow" class="${status === 'learning' ? 'active' : ''}">I don't know</button><button data-act="ignore">Ignore</button>
-      ${plain || TOUCH ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close">✕</button></div>`;
+      ${plain || TOUCH ? '' : `<button data-act="zh" class="${settings.ai.speakChinese ? 'active' : ''}">中文 ${settings.ai.speakChinese ? 'on' : 'off'}</button>`}<span class="grow"></span><button class="quiet" data-act="close" title="Close" aria-label="Close">${icon('xmark')}</button></div>`;
     cardEl.hidden = false;
     cardEl.classList.remove('full', 'sentence', 'one');
     cardEl.removeAttribute('role');
@@ -4668,7 +4672,7 @@ async function boot(): Promise<void> {
       if (bar.querySelector('#yt2c-b-tutor')) return;
       const b = document.createElement('button');
       b.id = 'yt2c-b-tutor';
-      b.style.cssText = 'border:0;border-radius:14px;padding:6px 12px;font:inherit;cursor:pointer;color:#fff;background:' + RED;
+      b.style.cssText = `border:0;border-radius:${RADIUS.control}px;padding:6px 12px;font:inherit;cursor:pointer;color:${TOKENS.light.offText};background:${RED}`;
       b.onclick = () => void setTutor(!extras.tutorOn);
       bar.insertBefore(b, bar.firstChild);
       tutorBtn = b;

@@ -11,6 +11,7 @@ import type { Dictionary } from '@core/dict/types';
 import { detectNames } from '@core/dict/names';
 import { buildVideoBook, type TimedSentence } from './video-book';
 import { clampLevel } from './level100';
+import { THEME_HOST_CSS } from './theme';
 import {
   buildRankPrompt, parseRankReply, makeSearches, pickCandidates, makeList, textDifficulty, orderedVideos, orderLevel, fitLabel, minutes,
   loadList, saveList, playFromList, finderNext, finderPrev,
@@ -58,11 +59,10 @@ export interface FinderDeps {
 /** how many videos have their subtitles read at the same time, and how often a video is asked for them at most */
 const AT_ONCE = 2, MAX_TRIES = 2;
 
-const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:16px/1.4 -apple-system,system-ui,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%;
---bg:#fff;--fg:#1f2328;--muted:#5f6368;--soft:#f3f5f7;--line:#e3e6ea;--chip:#e8ebee;--blue:#1a73e8;--on-blue:#fff;--ok:#137333;--ok-bg:#e0f2e6;--easy:#5f6368;--easy-bg:#e8ebee;--hard:#b3541e;--hard-bg:#fbe9dd;--bar:#c9ced4;--now:#e8f0fe}
-@media (prefers-color-scheme:dark){:host{--bg:#17191e;--fg:#e6e3dc;--muted:#a4a19a;--soft:#22252c;--line:#30343c;--chip:#2c3038;--blue:#8ab4f8;--on-blue:#10141b;--ok:#81c995;--ok-bg:#1d3324;--easy:#b6b3ac;--easy-bg:#2c3038;--hard:#f5b98a;--hard-bg:#3b2a1e;--bar:#444a54;--now:#25324a}}
+const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:16px/1.4 var(--t-font-ui);-webkit-text-size-adjust:100%;
+/* (the one look, design/theme.json: --t-* come from THEME_HOST_CSS, first in the style) */--bg:var(--t-bg);--fg:var(--t-text);--muted:var(--t-muted);--soft:var(--t-sunken);--line:var(--t-line);--chip:var(--t-hover);--blue:var(--t-accent);--on-blue:var(--t-accent-text);--ok:var(--t-on);--ok-bg:color-mix(in srgb,var(--t-on) 16%,var(--t-bg));--easy:var(--t-muted);--easy-bg:var(--t-sunken);--hard:var(--t-accent);--hard-bg:var(--t-accent-soft);--bar:var(--t-line-strong);--now:var(--t-accent-soft)}
 *{box-sizing:border-box}
-.card{background:var(--bg);color:var(--fg);border-radius:14px;width:min(720px,100vw);height:min(100dvh,940px);display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.45);overflow:hidden;font-size:var(--fs,16px)}
+.card{background:var(--bg);color:var(--fg);border-radius:var(--t-radius-card);width:min(720px,100vw);height:min(100dvh,940px);display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.45);overflow:hidden;font-size:var(--fs,16px)}
 @media (max-width:740px),(max-height:600px){.card{border-radius:0;height:100dvh;width:100vw}}
 header{display:flex;align-items:center;gap:10px;padding:max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left));border-bottom:1px solid var(--line);flex:none}
 h2{margin:0;font-size:1.15em;flex:1}
@@ -75,9 +75,9 @@ button{font:inherit;cursor:pointer;border:0;border-radius:12px;padding:10px 14px
 .newrow[hidden],.askbox[hidden],.order[hidden],.pl[hidden]{display:none}
 .ask{display:grid;grid-template-columns:1fr;gap:8px}
 @media (min-width:640px) and (max-height:520px){.ask{grid-template-columns:minmax(200px,38%) 1fr;align-items:stretch}}
-.speak{background:#d93025;color:#fff;font-size:1.1em;font-weight:700;min-height:64px;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
-.speak[aria-pressed=true]{background:#1e8e3e}
-.speak:disabled{background:#9aa0a6}
+.speak{background:var(--t-off);color:var(--t-off-text);font-size:1.1em;font-weight:700;min-height:64px;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.speak[aria-pressed=true]{background:var(--t-on);color:var(--t-on-text)}
+.speak:disabled{background:var(--t-faint)}
 textarea{font:inherit;width:100%;min-height:72px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;resize:vertical;color:var(--fg);background:var(--bg)}
 .hint{margin:4px 0 8px;color:var(--muted);font-size:.8em}
 .go{background:var(--blue);color:var(--on-blue);font-weight:700;font-size:1.05em;width:100%;min-height:60px}
@@ -165,7 +165,7 @@ class Finder {
     let fs = 16;
     try { fs = Math.max(14, Math.min(30, Math.round(this.deps.textSize?.() ?? 16))); } catch { /* 16 */ }
     const my = this.my();
-    root.innerHTML = `<style>${CSS}</style><div class="card" role="dialog" aria-label="Find a video" style="--fs:${fs}px">
+    root.innerHTML = `<style>${THEME_HOST_CSS}${CSS}</style><div class="card" role="dialog" aria-label="Find a video" style="--fs:${fs}px">
 <header><h2>Find a video</h2><button class="x" data-a="close" aria-label="Close">✕</button></header>
 <div class="scroll">
 <button class="newrow" data-a="new" aria-expanded="true" hidden><b>🔎 New search</b><span class="q"></span></button>

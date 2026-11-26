@@ -21,6 +21,7 @@ import { createSegmenter } from '@core/segment';
 import { StreamSentenceSplitter } from '@core/listen/sentences';
 import { explain as aiExplain, complete, completeStream, getDictionary, getZipf } from './ai-client';
 import * as store from './store';
+import { icon } from './icons';
 import { cloudEngine, resolveVoice, VoiceWithBackup } from './voice';
 import { unknownChance, phraseSig, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type AiItem } from './level-check';
@@ -150,8 +151,10 @@ function showLibrary(): void {
 // ---- the page ------------------------------------------------------------------------------------------------------
 function applyLook(): void {
   document.body.classList.toggle('day', !night());
+  // (the one look: the page's own Day / Night choice wins over the device)
+  document.body.dataset.theme = night() ? 'dark' : 'light';
   document.body.style.setProperty('--read-size', `${Math.max(14, Math.min(44, extras?.phoneSizePx ?? 21))}px`);
-  $('look').textContent = night() ? '☀' : '☾';
+  $('look').innerHTML = icon(night() ? 'sun.max' : 'moon');
   card?.setLook({ sizePx: extras?.phoneSizePx ?? 21, look: night() ? 'night' : 'day' });
 }
 
@@ -390,7 +393,7 @@ function setPlaying(on: boolean): void {
     closeCard();
   }
   playing = on;
-  $('play').textContent = on ? '⏸ Stop' : '▶ Play';
+  $('play').innerHTML = on ? `${icon('pause.fill')} Stop` : `${icon('play.fill')} Play`;
   if (on) { const mine = loop; void startAi().then(() => { if (playing && mine === loop) void readOn(); }); }
   else { cancelAll(); $('say').hidden = true; }
   debug();
@@ -417,7 +420,7 @@ async function tapped(el: HTMLElement): Promise<void> {
   const text = getSentence(book, pos)?.text ?? '';
   const was = playing;
   playing = false; cancelAll();
-  $('play').textContent = '▶ Play';
+  $('play').innerHTML = `${icon('play.fill')} Play`;
   $('say').hidden = true;
   const info = cardOf(word, dict);
   const on = tutor();
@@ -459,7 +462,7 @@ async function cardSentence(): Promise<void> {
 async function explainSentence(pos: Position, target: string): Promise<void> {
   if (!target.trim()) return;
   playing = false; cancelAll();
-  $('play').textContent = '▶ Play';
+  $('play').innerHTML = `${icon('play.fill')} Play`;
   const on = tutor();
   const mine = { lemma: '', word: '', pos };
   cardFor = mine;

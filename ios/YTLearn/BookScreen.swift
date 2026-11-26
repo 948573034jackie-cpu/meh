@@ -127,11 +127,13 @@ struct BookRootView: View {
     @ViewBuilder
     private var toastView: some View {
         if let text = model.toast {
+            // (the one look's toast, the same as I Know's and the book page's)
             Text(text)
-                .font(.footnote)
+                .font(Theme.footnote)
+                .foregroundColor(Theme.bg)
                 .multilineTextAlignment(.center)
-                .padding(10)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, Theme.Space.l).padding(.vertical, Theme.Space.m - 2)
+                .background(Theme.text, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .padding()
                 .onTapGesture { model.toast = nil }
         }

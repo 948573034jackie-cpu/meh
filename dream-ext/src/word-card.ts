@@ -4,6 +4,9 @@
  * It lives in a CLOSED shadow root on one empty element, so a web page cannot read it or restyle it, and nothing of
  * the page is changed. The browser's "Open link" bubble is here too.
  */
+import { TOKENS, FONTS, TYPE, RADIUS, CONTROL, type Palette } from './theme';
+import { icon } from './icons';
+
 export interface CardView {
   /** 'word': a tap on the card = I know; 'sentence' / 'note': a tap closes it */
   kind: 'word' | 'sentence' | 'note';
@@ -31,31 +34,34 @@ export interface CardHooks {
 }
 export interface CardLook { sizePx: number; look: 'day' | 'night' | 'auto' }
 
+// (the one look, design/theme.json: the card has its own copy of the colours, a web page cannot change them)
+const pal = (t: Palette) => `--bg:${t.raised};--fg:${t.text};--muted:${t.muted};--line:${t.lineStrong};--btn:${t.sunken};--zh:${t.text};--accent:${t.accent};--accent-text:${t.accentText}`;
 const CSS = `
 :host{all:initial}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 .card{position:fixed;left:8px;right:8px;bottom:12px;margin:0 auto;max-width:640px;max-height:62vh;overflow:auto;-webkit-overflow-scrolling:touch;
-  border-radius:18px;padding:14px 16px 12px;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
-  background:var(--bg);color:var(--fg);box-shadow:0 6px 28px rgba(0,0,0,.35);border:1px solid var(--line);cursor:pointer;
+  border-radius:${RADIUS.card}px;padding:14px 16px 12px;font-family:${FONTS.ui};
+  background:var(--bg);color:var(--fg);box-shadow:0 10px 28px -8px rgba(0,0,0,.4);border:1px solid var(--line);cursor:pointer;
   font-size:calc(var(--size) * 1px);line-height:1.4;touch-action:manipulation;-webkit-user-select:none;user-select:none}
 .card[hidden],.bubble[hidden]{display:none !important}
 .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-right:44px}
-.word{font-size:1.5em;font-weight:700;letter-spacing:.01em;word-break:break-word}
-.card.sentence .word,.card.note .word{font-size:1em;font-weight:600;color:var(--muted)}
-.ipa{font-size:1em;color:var(--muted);font-family:"Lucida Sans Unicode","Doulos SIL",-apple-system,sans-serif}
-.zh{font-size:1.15em;margin-top:4px;font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:var(--zh)}
+.word{font-size:1.5em;font-weight:700;letter-spacing:.01em;word-break:break-word;font-family:${FONTS.serif}}
+.card.sentence .word,.card.note .word{font-size:1em;font-weight:600;color:var(--muted);font-family:${FONTS.ui}}
+.ipa{font-size:1em;color:var(--muted);font-family:"Lucida Sans Unicode","Doulos SIL",${FONTS.ui}}
+.zh{font-size:1.15em;margin-top:4px;font-family:${FONTS.zh};color:var(--zh)}
 .text{font-size:.9em;margin-top:8px;white-space:pre-wrap}
-.hint{font-size:14px;color:var(--muted);margin-top:8px}
+.hint{font-size:${TYPE.footnote}px;color:var(--muted);margin-top:8px}
 .busy{display:inline-block;margin-left:6px;color:var(--muted);font-size:.8em}
 .row{display:flex;gap:8px;margin-top:10px}
-button{font:inherit;font-size:max(16px,.8em);min-height:48px;min-width:48px;border-radius:12px;border:1px solid var(--line);background:var(--btn);color:var(--fg);padding:8px 16px;cursor:pointer;touch-action:manipulation}
-.x{position:absolute;right:6px;top:6px;border:0;background:transparent;font-size:24px;line-height:1;color:var(--muted);padding:0;width:48px;height:48px}
+button{font:inherit;font-size:max(${TYPE.button}px,.8em);font-weight:600;min-height:${CONTROL.min + 4}px;min-width:${CONTROL.min + 4}px;border-radius:${RADIUS.control}px;border:1px solid var(--line);background:var(--btn);color:var(--fg);padding:8px 16px;cursor:pointer;touch-action:manipulation}
+.x{position:absolute;right:6px;top:6px;border:0;background:transparent;font-size:24px;line-height:1;color:var(--muted);padding:0;width:48px;height:48px;display:grid;place-items:center}
+.x svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round}
 .wrap{position:relative}
-.bubble{position:fixed;min-height:48px;min-width:120px;padding:10px 18px;border-radius:24px;border:0;background:#1a73e8;color:#fff;font:600 17px -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
-  box-shadow:0 4px 18px rgba(0,0,0,.35)}
-.root{--bg:#ffffff;--fg:#111418;--muted:#5f6670;--line:rgba(0,0,0,.14);--btn:#f1f3f5;--zh:#0b57d0}
-.root.night{--bg:#1c1f25;--fg:#f2eee6;--muted:#a09b92;--line:rgba(255,255,255,.18);--btn:#2a2f38;--zh:#ffd666}
-@media (prefers-color-scheme: dark){.root.auto{--bg:#1c1f25;--fg:#f2eee6;--muted:#a09b92;--line:rgba(255,255,255,.18);--btn:#2a2f38;--zh:#ffd666}}
+.bubble{position:fixed;min-height:${CONTROL.min + 4}px;min-width:120px;padding:10px 18px;border-radius:${RADIUS.pill}px;border:0;background:var(--accent);color:var(--accent-text);font:600 ${TYPE.button}px ${FONTS.ui};
+  box-shadow:0 6px 18px -6px rgba(0,0,0,.4)}
+.root{${pal(TOKENS.light)}}
+.root.night{${pal(TOKENS.dark)}}
+@media (prefers-color-scheme: dark){.root.auto{${pal(TOKENS.dark)}}}
 `;
 
 export class WordCard {
@@ -158,7 +164,8 @@ export class WordCard {
       row.append(b);
       box.append(row);
     }
-    const x = el('button', 'x', '×');
+    const x = el('button', 'x', '');
+    x.innerHTML = icon('xmark', '');
     x.dataset.a = 'x';
     x.setAttribute('aria-label', 'Close');
     box.append(x);

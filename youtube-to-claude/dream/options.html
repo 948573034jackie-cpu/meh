@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Tutor settings</title><link rel="stylesheet" href="pages.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dream Tutor settings</title><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="pages.css"></head>
 <body><main>
 <h1>Dream Tutor</h1>
 <p class="lead">Dream Read's teacher for YouTube. Press <b>My tutor</b> under a video: it stops at words above your level, explains them in easy English with their Chinese meaning, and saves them in My Vocabulary. Everything here is saved in this browser.</p>
@@ -16,7 +16,7 @@
 </section>
 
 <section><h2>You</h2>
-  <div class="field"><label for="myLevel">My level</label><select id="myLevel" style="height:44px;font-size:17px"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select><div class="hint">Nothing below your level is explained by itself, and nothing you know.</div></div>
+  <div class="field"><label for="myLevel">My level</label><select id="myLevel"><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select><div class="hint">Nothing below your level is explained by itself, and nothing you know.</div></div>
   <div class="field"><label for="explainPct">How much to explain: <b id="explainPctNow">100</b>% <span class="hint" style="display:inline">(0 = nothing, 100 = everything at your level or above; a low number = only the hardest; words, phrases and sentences together)</span></label><input id="explainPct" type="range" min="0" max="100" step="5" style="width:100%;height:44px"></div>
 </section>
 
@@ -26,9 +26,9 @@
   <div class="field"><label for="analysisModel">Model of the one analysis of each video</label><select id="analysisModel"><option value="">Claude Haiku 5.5 (cheapest)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5 (better, about 20 times the cost)</option><option value="claude-opus-5-5">Claude Opus 5.5 (best, about 40 times the cost)</option></select><div class="hint">Each video is analyzed once: the explanations are written ahead and saved, so the stops make no AI call and watching a video again costs nothing.</div></div>
   <label class="check"><input type="checkbox" id="levelMode"> Stop by Level Check: the hardest sentences. A hard word or phrase is said 3 times and waits for “I know”; else the explanation, the sentence again, then on. How many stop (words, phrases, sentences) is in ⚙ on the video page. (Off: the older stops below.)</label>
   <div class="field"><label>My vocabulary file</label><div class="muted" id="db-status">…</div>
-    <div id="db-install" hidden><div class="hint">To save it on this Mac, open Terminal in the extension's folder (the one you loaded in Chrome), run this once, then reload the extension:</div><pre id="db-command" style="white-space:pre-wrap;word-break:break-all;background:#f3f4f6;padding:8px;border-radius:8px"></pre></div>
+    <div id="db-install" hidden><div class="hint">To save it on this Mac, open Terminal in the extension's folder (the one you loaded in Chrome), run this once, then reload the extension:</div><pre id="db-command"></pre></div>
     <div class="hint" id="db-drive"></div></div>
-  <div class="row"><button id="copy-level" class="primary">Copy my level for Claude</button><button id="open-reader">📖 Read a PDF or text</button><span class="msg" id="copy-msg"></span></div>
+  <div class="row"><button id="copy-level" class="primary">Copy my level for Claude</button><button id="open-reader"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 6.6C10 5.1 7.2 4.6 3.6 5v13.2c3.6-.4 6.4.1 8.4 1.6 2-1.5 4.8-2 8.4-1.6V5c-3.6-.4-6.4.1-8.4 1.6z"/><path d="M12 6.6v13.2"/></svg> Read a PDF or text</button><span class="msg" id="copy-msg"></span></div>
 </section>
 
 <section><h2>Stopping at hard words (like Dream Read's Listening mode)</h2>
@@ -51,7 +51,7 @@
 <section><h2>Voices and look</h2>
   <div class="field"><label for="voiceId">English voice</label><div class="row"><select id="voiceId"></select><button id="test-voice">Test</button></div><div class="hint">Mac voices. For the nicest British voices download "Enhanced" or "Premium" ones in System Settings → Accessibility → Spoken Content. The Dream voice (Kokoro) needs the Mac app.</div></div>
   <div class="field"><label>Chinese voice</label><span id="zh-voice" class="muted"></span></div>
-  <div class="field"><label for="rate">Speed of the tutor</label><div class="row"><input id="rate" type="range" min="0.5" max="2" step="0.05" style="width:220px"><span id="rate-val"></span></div></div>
+  <div class="field"><label for="rate">Speed of the tutor</label><div class="row"><input id="rate" type="range" min="0.5" max="2" step="0.05" style="width:220px;max-width:100%"><span id="rate-val"></span></div></div>
   <div class="field"><label for="fontSizePx">Text size in the panel</label><input id="fontSizePx" type="number" min="14" max="28"></div>
   <div class="field"><label for="subtitleSizePx">Size of the sentence being spoken</label><input id="subtitleSizePx" type="number" min="18" max="40"></div>
   <label class="check"><input type="checkbox" id="showHints"> Chinese meaning under hard words</label>
@@ -59,5 +59,5 @@
   <div class="field"><label for="band">Big Dream subtitles on the video</label><select id="band"><option value="auto">In full screen and theater mode</option><option value="on">Always</option><option value="off">Never</option></select></div>
   <label class="check"><input type="checkbox" id="hideYtCaptions"> Hide YouTube's own captions while the Dream subtitles show</label>
 </section>
-<p class="muted">Saved automatically. <a href="vocab.html" style="color:var(--accent)">My Vocabulary →</a></p>
+<p class="muted">Saved automatically. <a href="vocab.html">My Vocabulary →</a></p>
 </main><script src="options.js"></script></body></html>

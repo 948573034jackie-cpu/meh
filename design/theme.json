@@ -1,0 +1,51 @@
+{
+  "about": "The one look of both apps (I Know and I Know Book). Change a value here, then run `node scripts/make-theme.mjs` (the build runs it too): it writes dream-ext/static/theme.css (every web page), dream-ext/src/theme.ts (the tutor inside its shadow roots, and the scripts) and ios/YTLearn/Theme.swift (the native screens). Never edit those three by hand. Text colours keep a contrast of at least 4.5:1 on bg, raised and sunken (WCAG AA); faint is only for things that need not be read (dividers, a disabled look, placeholders). Accent = the warm brown / gold; no iOS blue; green and red only for on and off / stop.",
+  "colors": {
+    "bg":          { "light": "#F8F5EE", "dark": "#17181C", "use": "the page" },
+    "raised":      { "light": "#FFFDF9", "dark": "#212328", "use": "cards, sheets, bars, secondary buttons" },
+    "sunken":      { "light": "#F0ECE4", "dark": "#101114", "use": "text fields, tracks, segmented control background" },
+    "hover":       { "light": "#E9E4D9", "dark": "#2A2C32", "use": "a pressed or hovered button" },
+    "text":        { "light": "#1F1C17", "dark": "#ECE8DF", "use": "body text" },
+    "muted":       { "light": "#5E584E", "dark": "#A8A398", "use": "labels, hints, captions" },
+    "faint":       { "light": "#857F73", "dark": "#7A766E", "use": "dividers, placeholders, disabled (not for reading)" },
+    "line":        { "light": "#E2DCD0", "dark": "#30323A", "use": "hairlines and borders" },
+    "lineStrong":  { "light": "#C9C1B2", "dark": "#474A53", "use": "the border of an outline button, a field in focus" },
+    "accent":      { "light": "#9A5B1E", "dark": "#D9A066", "use": "the one accent: main buttons, the chosen option, links, the tint of the native views" },
+    "accentText":  { "light": "#FFFFFF", "dark": "#17181C", "use": "text and icons on an accent fill" },
+    "accentSoft":  { "light": "#F2EBE0", "dark": "#3A3029", "use": "the background of a chosen option (accent text on it stays at 4.5:1)" },
+    "on":          { "light": "#2A7530", "dark": "#81C784", "use": "on / success (the tutor is on)" },
+    "onText":      { "light": "#FFFFFF", "dark": "#10130F", "use": "text and icons on an on fill" },
+    "off":         { "light": "#B3261E", "dark": "#F08A80", "use": "off / stop / danger" },
+    "offText":     { "light": "#FFFFFF", "dark": "#10130F", "use": "text and icons on an off fill" },
+    "hard":        { "light": "#2A62B8", "dark": "#7FB7F2", "use": "the mark under a hard word" },
+    "learning":    { "light": "#8F6400", "dark": "#E3B94F", "use": "the mark of a word being learned" },
+    "focus":       { "light": "#9A5B1E", "dark": "#D9A066", "use": "the keyboard focus ring" },
+    "scrim":       { "light": "rgba(20,18,14,0.32)", "dark": "rgba(0,0,0,0.55)", "use": "the veil behind a sheet" }
+  },
+  "fonts": {
+    "ui":    { "css": "-apple-system, BlinkMacSystemFont, \"SF Pro Text\", system-ui, \"Helvetica Neue\", Arial, sans-serif", "swift": "system", "use": "every control and label (San Francisco)" },
+    "serif": { "css": "Charter, \"Iowan Old Style\", Georgia, serif", "swift": "Charter", "use": "reading text and big titles" },
+    "zh":    { "css": "\"PingFang SC\", \"Hiragino Sans GB\", \"Noto Sans SC\", sans-serif", "swift": "PingFang SC", "use": "Chinese" },
+    "mono":  { "css": "ui-monospace, Menlo, monospace", "swift": "monospaced", "use": "keys and code" }
+  },
+  "type": {
+    "caption":    { "size": 13, "weight": 500, "use": "the smallest text allowed, captions only" },
+    "footnote":   { "size": 15, "weight": 400, "use": "hints and second lines" },
+    "body":       { "size": 17, "weight": 400, "line": 1.45, "use": "UI body text" },
+    "button":     { "size": 17, "weight": 600, "use": "every button" },
+    "title":      { "size": 22, "weight": 650, "use": "a sheet or section title" },
+    "largeTitle": { "size": 28, "weight": 700, "use": "a page title" }
+  },
+  "space": { "xs": 4, "s": 8, "m": 12, "l": 16, "xl": 24, "xxl": 32 },
+  "radius": { "control": 12, "card": 18, "pill": 999 },
+  "control": { "min": 44, "main": 52 },
+  "shadow": {
+    "light": { "css": "0 8px 24px -10px rgba(31,28,23,0.28)", "opacity": 0.14, "radius": 12, "y": 4 },
+    "dark":  { "css": "0 10px 28px -10px rgba(0,0,0,0.70)", "opacity": 0.45, "radius": 12, "y": 4 }
+  },
+  "motion": { "fast": 150, "normal": 250 },
+  "icons": {
+    "about": "One icon set: SF Symbols in the native views; on the web the same names drawn as line icons (dream-ext/src/icons.ts), 24 px, stroke 1.7.",
+    "names": ["book", "book.closed", "books.vertical", "character.book.closed", "gearshape", "slider.horizontal.3", "play.fill", "pause.fill", "stop.fill", "xmark", "chevron.left", "chevron.right", "speaker.wave.2", "text.magnifyingglass", "magnifyingglass", "text.bubble", "phone.fill", "mic", "headphones", "plus", "ellipsis", "doc.text", "square.and.arrow.down", "icloud", "sun.max", "moon", "arrow.uturn.backward", "textformat.size", "list.bullet", "gobackward", "goforward"]
+  }
+}

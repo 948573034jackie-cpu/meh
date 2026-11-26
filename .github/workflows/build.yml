@@ -61,7 +61,7 @@ jobs:
           ls "$APP" | head -30
           for f in shim-common shim-youtube shim-dream lib background youtube dream-bg dream-yt dream-web page-hooks; do test -f "$APP/$f.js" || { echo "MISSING $f.js"; exit 1; }; done
           # My tutor's own files (ytlearn://app/dream/…): the dictionary, the settings and vocabulary pages
-          for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js pages.css reader.html reader.js book.html book.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          for f in dict.json.gz zipf.json.gz options.html options.js vocab.html vocab-page.js theme.css pages.css reader.html reader.js book.html book.js; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           plutil -p "$APP/Info.plist" | grep -A2 UIBackgroundModes
           plutil -p "$APP/Info.plist" | grep -E "Microphone|Speech|DisplayName|UILaunch|ShortVersion" || true
           # (the app's name under its icon: "I Know")
@@ -110,7 +110,7 @@ jobs:
             -derivedDataPath build-sim-book CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build-sim-book.log | tail -25
           APP=build-sim-book/Build/Products/Debug-iphonesimulator/IKnowBook.app
           plutil -p "$APP/Info.plist" | grep -E "DisplayName|ShortVersion|BundleIdentifier" || true
-          for f in book.html book.js dict.json.gz zipf.json.gz; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
+          for f in book.html book.js theme.css dict.json.gz zipf.json.gz; do test -f "$APP/Web/dream/$f" || { echo "MISSING Web/dream/$f"; exit 1; }; done
           mkdir -p ../shots
           for KIND in "iPhone 1" "iPad"; do
             UDID=$(xcrun simctl list devices available | grep -F "$KIND" | tail -1 | grep -oE "[0-9A-F-]{36}")

@@ -4,6 +4,7 @@
  */
 import { GROUP_LABEL, type GroupId, type GroupScores } from './level-db';
 import { scoreTest, type TestGroups } from './level-check';
+import { THEME_HOST_CSS } from './theme';
 
 export interface GateHooks {
   /** the test of this text; null = it could not be read */
@@ -14,23 +15,23 @@ export interface GateHooks {
   done(how: 'skip' | 'test'): void;
 }
 
-const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:14px/1.35 -apple-system,system-ui,"Segoe UI",sans-serif;color:#1f2328}
+const CSS = `:host{all:initial;position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);font:14px/1.35 var(--t-font-ui);color:var(--t-text)}
 *{box-sizing:border-box}
-.card{background:#fff;border-radius:14px;width:min(520px,100vw);max-height:100dvh;display:flex;flex-direction:column;padding:12px 14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}
+.card{background:var(--t-bg);border-radius:var(--t-radius-card);width:min(520px,100vw);max-height:100dvh;display:flex;flex-direction:column;padding:12px 14px;box-shadow:0 8px 40px rgba(0,0,0,.45)}
 h2{margin:0 0 2px;font-size:17px}
-.sub{color:#5f6368;font-size:12px;margin:0 0 8px}
+.sub{color:var(--t-muted);font-size:13px;margin:0 0 8px}
 .main{display:flex;flex-direction:column;gap:8px;margin-top:6px}
-button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 12px}
-.go{background:#1a73e8;color:#fff;font-weight:600}
-.skip{background:#eef0f2;color:#1f2328}
+button{font:inherit;cursor:pointer;border:0;border-radius:var(--t-radius-control);padding:10px 12px}
+.go{background:var(--t-accent);color:var(--t-accent-text);font-weight:600}
+.skip{background:var(--t-raised);color:var(--t-text);border:1px solid var(--t-line-strong)}
 .scroll{overflow-y:auto;flex:1;min-height:0}
-h3{margin:4px 0 3px;font-size:12px;line-height:18px;color:#5f6368;font-weight:600}
+h3{margin:4px 0 3px;font-size:13px;line-height:18px;color:var(--t-muted);font-weight:600}
 .chips{display:flex;flex-wrap:wrap;gap:5px}
-.chip{padding:4px 10px;height:26px;line-height:18px;border-radius:13px;background:#eef0f2;color:#1f2328;font-size:13px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.chip[aria-pressed=true]{background:#1e8e3e;color:#fff}
-.done{margin-top:8px;background:#1a73e8;color:#fff;font-weight:600;flex:none}
+.chip{padding:4px 10px;height:26px;line-height:18px;border-radius:13px;background:var(--t-sunken);color:var(--t-text);font-size:13px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.chip[aria-pressed=true]{background:var(--t-on);color:var(--t-on-text)}
+.done{margin-top:8px;background:var(--t-accent);color:var(--t-accent-text);font-weight:600;flex:none}
 table{border-collapse:collapse;width:100%;margin:6px 0}
-td{padding:4px 2px;border-top:1px solid #eef0f2}
+td{padding:4px 2px;border-top:1px solid var(--t-line)}
 td:last-child{text-align:right;font-weight:600}
 .level{font-size:16px;font-weight:600;margin:6px 0}`;
 
@@ -79,7 +80,7 @@ export class LevelGate {
   }
 
   private page(html: string): void {
-    if (this.root) this.root.innerHTML = `<style>${CSS}</style><div class="card">${html}</div>`;
+    if (this.root) this.root.innerHTML = `<style>${THEME_HOST_CSS}${CSS}</style><div class="card">${html}</div>`;
   }
 
   private ask(): void {

@@ -7,6 +7,8 @@
  * at least 7:1, and only fonts that are already on an iPhone.
  */
 
+import { TOKENS } from './theme';
+
 export type ThemeId = 'auto' | 'white' | 'paper' | 'sepia' | 'green' | 'grey' | 'night' | 'black' | 'custom';
 export interface Theme { id: ThemeId; name: string; bg: string; fg: string; dark: boolean }
 
@@ -126,15 +128,17 @@ export function themeOf(look: Look, systemDark: boolean): Theme {
 /** every colour of the page, from its two: quiet greys for the small things, one warm accent */
 export function paletteOf(theme: Theme): Record<string, string> {
   const { bg, fg, dark } = theme;
-  const accent = dark ? '#D9A066' : '#9A5B1E';
+  // (the accent and the two word marks are the one look's, design/theme.json)
+  const t = dark ? TOKENS.dark : TOKENS.light;
+  const accent = t.accent;
   return {
     '--bk-bg': bg, '--bk-fg': fg,
     '--bk-muted': mix(fg, bg, 0.42), '--bk-faint': mix(fg, bg, 0.66),
     '--bk-line': mix(fg, bg, 0.86), '--bk-soft': mix(fg, bg, 0.93),
     '--bk-raised': dark ? mix(bg, '#FFFFFF', 0.07) : mix(bg, '#FFFFFF', 0.55),
     '--bk-accent': readable(bg, accent, 3.2), '--bk-accent-soft': mix(readable(bg, accent, 3.2), bg, 0.82),
-    '--bk-hard': dark ? '#7FB7F2' : '#2A62B8', '--bk-learning': dark ? '#E3B94F' : '#B07A00',
-    '--bk-on-accent': dark ? '#1B1A1E' : '#FFFFFF',
+    '--bk-hard': t.hard, '--bk-learning': t.learning,
+    '--bk-on-accent': t.accentText,
   };
 }
 

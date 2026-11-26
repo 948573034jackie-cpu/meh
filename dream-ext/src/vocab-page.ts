@@ -5,6 +5,7 @@ import type { VocabEntry } from '@shared/api';
 import * as store from './store';
 import { toCsv, computeProgress, unknownAtLevel, videoLink, estimateKnown } from './vocab';
 import { getDictData } from './ai-client';
+import { icon } from './icons';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -15,12 +16,12 @@ async function renderWords(): Promise<void> {
   const f = $<HTMLSelectElement>('filter').value;
   const shown = entries.filter((e) => (f === 'all' || e.status === f) && (!q || `${e.word} ${e.lemma} ${e.chinese} ${e.sentence}`.toLowerCase().includes(q)));
   $('rows').innerHTML = shown.map((e: VocabEntry) => `<tr data-lemma="${esc(e.lemma)}">
-    <td class="word">${esc(e.word || e.lemma)}${e.level ? ` <span class="muted" style="font-size:11px;font-family:var(--font-sans)">${esc(e.level)}</span>` : ''}</td>
+    <td class="word">${esc(e.word || e.lemma)}${e.level ? ` <span class="muted">${esc(e.level)}</span>` : ''}</td>
     <td class="zh">${esc(e.chinese)}</td>
     <td><div><i>${esc(e.sentence)}</i></div><div class="muted">${esc(e.explanation)}</div></td>
-    <td>${videoLink(e) ? `<a href="${esc(videoLink(e))}" target="_blank" style="color:var(--accent)">${esc(e.bookTitle)}${e.chapter ? ` (${esc(e.chapter)})` : ''}</a>` : esc(e.bookTitle)}</td>
+    <td>${videoLink(e) ? `<a href="${esc(videoLink(e))}" target="_blank">${esc(e.bookTitle)}${e.chapter ? ` (${esc(e.chapter)})` : ''}</a>` : esc(e.bookTitle)}</td>
     <td><button data-act="status" class="st-${e.status}">${e.status === 'known' ? 'known' : 'learning'}</button></td>
-    <td><button data-act="del" class="danger" title="Remove">✕</button></td></tr>`).join('');
+    <td><button data-act="del" class="danger" title="Remove" aria-label="Remove ${esc(e.word || e.lemma)}">${icon('xmark')}</button></td></tr>`).join('');
   $('empty').hidden = entries.length > 0;
   const learning = entries.filter((e) => e.status === 'learning').length;
   $('summary').textContent = `${entries.length} words · ${learning} learning · ${entries.length - learning} known`;
@@ -64,7 +65,7 @@ async function renderOnline(save = false): Promise<void> {
   const r = await chrome.runtime.sendMessage({ type: 'dream-vocab-online', save }).catch(() => null) as { at: string | null; words: number; sync: boolean } | null;
   if (!r || !r.sync) { el.textContent = 'Online copy: not available in this browser.'; return; }
   el.innerHTML = r.at
-    ? `☁ Saved online: ${esc(r.words.toLocaleString())} words · ${esc(new Date(r.at).toLocaleString())} <span class="muted">(your Google account, when Chrome sync is on)</span><button id="save-now">Save now</button>`
+    ? `${icon('icloud')} Saved online: ${esc(r.words.toLocaleString())} words · ${esc(new Date(r.at).toLocaleString())} <span class="muted">(your Google account, when Chrome sync is on)</span><button id="save-now">Save now</button>`
     : 'Not saved online yet.<button id="save-now">Save now</button>';
   $('save-now').onclick = () => void renderOnline(true);
 }
