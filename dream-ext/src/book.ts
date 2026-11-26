@@ -26,7 +26,8 @@ import { StreamSentenceSplitter } from '@core/listen/sentences';
 import { explain as aiExplain, complete, getDictionary, getZipf } from './ai-client';
 import * as store from './store';
 import { icon } from './icons';
-import { cloudEngine, resolveVoice, VoiceWithBackup, WithVolume, sliderGain, OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES } from './voice';
+import { cloudEngine, resolveVoice, VoiceWithBackup, WithVolume, sliderGain, OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, type VoiceKind } from './voice';
+import { speechifyRowsHtml, wireSpeechifyRows, SPEECHIFY_CHOICE, SPEECHIFY_CSS } from './speechify-rows';
 import { unknownChance, phraseSig, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, type AiItem } from './level-check';
 import { scoreSentences, selectStopsByLevel, keepHardest, kindWith, itemsToHits, stopKindOf, type SentenceScore, type StopCaps } from './level-stops';
@@ -99,7 +100,7 @@ let mode: 'read' | 'listen' = 'read';
 // the voice
 let tts: TtsEngine;
 let voiceId = '';
-let voiceKind: 'mac' | 'openai' | 'elevenlabs' | 'azure' = 'mac';
+let voiceKind: VoiceKind = 'mac';
 let macVoices: { id: string; name: string; lang: string }[] = [];
 const spokenLog: string[] = [];
 
@@ -155,6 +156,7 @@ function debug(): void {
     marks: { hard: document.querySelectorAll('#flow .w.hard').length, learning: document.querySelectorAll('#flow .w.learning').length },
     look: { theme: themeOf(look, systemDark()).id, size: look.size, font: look.font }, chrome: !$('rd').classList.contains('plain'), waiting: !!answer,
     ai: shelf && book ? aiId() : '', split: shelf?.split ?? 0, heavy,
+    deviceSaid: fakeDevice ? fakeDevice.spoken.slice(-12).map((x) => x.text) : [], voiceError: lastVoiceError,
   });
 }
 
@@ -585,19 +587,24 @@ function setMode(m: 'read' | 'listen'): void {
 function paintPlay(): void {
   for (const id of ['t-play', 'm-play']) { $(id).innerHTML = reading() ? ICON.pause : ICON.play; $(id).setAttribute('aria-label', reading() ? 'Pause' : 'Play'); }
   $('t-speed').textContent = `${(settings?.voice.rate ?? 1).toFixed(1)}×`;
-  $('t-voice').textContent = voiceKind === 'azure' ? 'Microsoft' : voiceKind === 'openai' ? 'OpenAI' : voiceKind === 'elevenlabs' ? 'ElevenLabs' : 'iPhone';
+  $('t-voice').textContent = voiceName(voiceKind);
 }
 
 // ---- the voice -----------------------------------------------------------------------------------------------------
+const voiceName = (k: VoiceKind): string => (k === 'azure' ? 'Microsoft' : k === 'openai' ? 'OpenAI' : k === 'elevenlabs' ? 'ElevenLabs' : k === 'speechify' ? 'Speechify' : 'iPhone');
+/** (tests only, extras.fakeVoice: the stand-in for the device's voice, to see what IT said) */
+let fakeDevice: { spoken: { text: string }[] } | null = null;
 async function prepareVoice(): Promise<void> {
-  if (extras.fakeVoice) useFakeEngine(2);
+  if (extras.fakeVoice) fakeDevice = useFakeEngine(2);
   const mac = getEngine('webspeech');
   macVoices = (await mac.listVoices().catch(() => [])).filter((v) => /^en/i.test(v.lang ?? '')).map((v) => ({ id: v.id, name: v.name, lang: v.lang ?? '' }));
   const macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
   // (the tutor off: the device's own voice only, never a paid one)
-  voiceKind = tutorOn() ? resolveVoice(extras.voice, keys) : 'mac';
-  const base: TtsEngine = voiceKind === 'mac' ? mac : new VoiceWithBackup(cloudEngine(voiceKind, 'en'), mac, () => macVoice, (e) => { lastVoiceError = e.message; toast(`The ${voiceKind === 'azure' ? 'Microsoft' : voiceKind} voice had a problem: ${e.message}`, 6000); });
-  voiceId = voiceKind === 'mac' ? macVoice : voiceKind === 'openai' ? extras.openaiVoice : voiceKind === 'azure' ? extras.azureVoice : extras.elevenVoice;
+  voiceKind = tutorOn() ? resolveVoice(extras.voice, keys, { speechifyUrl: extras.speechifyUrl ?? '' }) : 'mac';
+  // (a Speechify problem says itself once, in its own words: no server, today's limit; the iPhone voice reads at once)
+  const trouble = (e: Error) => { lastVoiceError = e.message; toast(voiceKind === 'speechify' ? e.message : `The ${voiceName(voiceKind)} voice had a problem: ${e.message}`, 6000); };
+  const base: TtsEngine = voiceKind === 'mac' ? mac : new VoiceWithBackup(cloudEngine(voiceKind, 'en'), mac, () => macVoice, trouble);
+  voiceId = voiceKind === 'mac' ? macVoice : voiceKind === 'openai' ? extras.openaiVoice : voiceKind === 'azure' ? extras.azureVoice : voiceKind === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
   tts = new WithVolume(() => base, () => sliderGain(extras.teacherVolume ?? 60));
   paintPlay();
 }
@@ -610,7 +617,8 @@ function say(text: string, slower = false): Promise<boolean> {
   debug();
   const h = tts.speak(text, { voiceId, rate: slower ? Math.min(rateNow(), 0.9) : rateNow() });
   speaking = h;
-  return h.done.then((o) => { if (speaking === h) speaking = null; return o === 'ended'; }, () => false);
+  // (the test page's look at itself follows: which voice said it)
+  return h.done.then((o) => { if (speaking === h) speaking = null; debug(); return o === 'ended'; }, () => false);
 }
 /** a pause in what the tutor says; whatever stops the voice (a tap on the card, a new word, Pause) ends it at once */
 let napEnd: (() => void) | null = null;
@@ -1024,7 +1032,9 @@ async function readOn(): Promise<void> {
     paintFoot();
     savePlaceSoon(); saveHeardSoon();
     // (the next sentences are made ready while this one is said; the meaning of the next card too)
-    tts.readAhead?.(order.slice(index + 1, index + 3).map(textOf).filter(Boolean), voiceId, rateNow());
+    // (Speechify: only the next sentence of the SAME paragraph, nothing across a paragraph's end: each clip is paid)
+    const next = order.slice(index + 1, index + 3);
+    tts.readAhead?.((voiceKind === 'speechify' ? next.slice(0, 1).filter((q) => q.chapter === pos.chapter && q.paragraph === pos.paragraph) : next).map(textOf).filter(Boolean), voiceId, rateNow());
     const coming = stopFor(pos);
     if (coming) { const it = coming.items[0]; if (it) askHere(it.kind, it.target, it.lemma, pos); else askHere('sentence', text, sentenceLemma(text), pos); }
     const ended = await say(text);
@@ -1345,9 +1355,9 @@ function tutorSheet(): void {
     <div class="rowline"><span>Size</span>${opts('cardSize', cardBig() ? 'big' : 'small', [['big', 'Big (whole screen)'], ['small', 'Small']])}</div>
     <div class="rowline"><span>Show the explanation as text</span>${opts('showSay', extras.showSay ? 'on' : 'off', [['on', 'On'], ['off', 'Off']])}</div>
     <h4>Voice</h4>
-    ${opts('voice', extras.voice, [['auto', 'Auto'], ['azure', 'Microsoft'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', 'iPhone']])}
+    ${opts('voice', extras.voice, [['auto', 'Auto'], ['azure', 'Microsoft'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], SPEECHIFY_CHOICE, ['mac', 'iPhone']])}
     ${missing ? `<p class="warn">No ${missing} key is saved, so you hear the iPhone voice now. Paste your ${missing} key and press Save.</p>${keyBox(wants as store.KeyName, `${missing} key`)}${wants === 'azure' ? `<div class="key"><input type="text" class="field" data-name="azureRegion" value="${esc(extras.azureRegion ?? 'eastus')}" placeholder="Region, for example eastus" autocapitalize="off" autocorrect="off" spellcheck="false"><button data-a="test-azure">Test</button></div>` : ''}` : ''}
-    ${voiceList}
+    ${extras.voice === 'speechify' || voiceKind === 'speechify' ? speechifyRowsHtml(extras, keys) : voiceList}
     <button class="big" data-a="test-voice">Hear the voice</button>
     ${range('teacherVolume', 'Volume', extras.teacherVolume ?? 60, { min: 0, max: 100, step: 5 }, `${extras.teacherVolume ?? 60}%`)}
     ${range('rate', 'Speed', Math.round(rateNow() * 20) / 20, { min: 0.6, max: 1.4, step: 0.05 }, `${rateNow().toFixed(2)}×`)}
@@ -1357,6 +1367,7 @@ function tutorSheet(): void {
     ${inApp() ? '<button class="big" data-a="app-settings">My word file, and more settings</button>' : ''}`, true);
   const again = () => { if (sheetKind === 'tutor') { const top = body.scrollTop; tutorSheet(); $('sheet-body').scrollTop = top; } };
   const afterVoice = async () => { const was = reading(); if (was) setPlaying(false); else cancelSpeech(); await prepareVoice(); again(); if (was && !playing && shelf) setPlaying(true); };
+  wireSpeechifyRows(body, { toast, changed: () => void Promise.all([store.getExtras(), store.getKeys()]).then(([x, k]) => { extras = x; keys = k; return afterVoice(); }) });
   body.oninput = (ev) => {
     const t = ev.target as HTMLInputElement;
     const name = t.dataset.name;
@@ -1487,6 +1498,7 @@ function wireChrome(): void {
 }
 
 async function boot(): Promise<void> {
+  { const st = document.createElement('style'); st.textContent = SPEECHIFY_CSS; document.head.append(st); }
   wireChrome(); wirePage(); wireSelection();
   const o = await chrome.storage.local.get([LOOK_KEY, OPEN_KEY, MODE_KEY]).catch(() => ({} as Record<string, unknown>));
   [extras, settings, keys] = await Promise.all([store.getExtras(), store.getSettings(), store.getKeys()]);

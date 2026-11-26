@@ -8,7 +8,8 @@ import { icon } from './icons';
 import type { Settings } from '@shared/settings';
 import * as store from './store';
 import { cefrToLevel, clampPct, DEFAULT_EXPLAIN_PCT } from './level100';
-import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_ACCENTS } from './voice';
+import { OPENAI_VOICES, ELEVEN_VOICES, AZURE_VOICES, AZURE_ACCENTS, type VoiceKind } from './voice';
+import { speechifyRowsHtml, wireSpeechifyRows, SPEECHIFY_CHOICE } from './speechify-rows';
 import { DEFAULT_TEACHER, MY_TEACHER_STYLE } from './teacher-text';
 import { isWay, wayOf, wayStyle, bandOf } from './teaching-ways';
 import { SHORTCUTS, shortcutMap, comboLabel, comboOf } from './shortcuts';
@@ -19,7 +20,7 @@ export interface QuickCtx {
   extras: store.YtExtras;
   keys: store.Keys;
   /** the voice really speaking now (a cloud voice without its key = the Mac voice) */
-  voiceNow: 'mac' | 'openai' | 'elevenlabs' | 'azure';
+  voiceNow: VoiceKind;
   /** the Microsoft voices the learner's region has (null = not checked yet: all are shown) */
   azureAvail?: string[] | null;
   /** the Mac's English voices, and the one the tutor uses */
@@ -109,6 +110,8 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     now === 'openai' ? `<label>OpenAI voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select> <span class="muted">(the live call too)</span></label>` : '',
     now === 'elevenlabs' ? `<label>ElevenLabs voice <select data-name="elevenVoice">${options(ELEVEN_VOICES, x.elevenVoice)}</select> ${seg('elevenQ', x.elevenQuality ?? 'best', [['best', 'Best'], ['fast', 'Fast (half the credits)']])}</label>` : '',
     now === 'mac' ? (ctx.macVoices.length ? `<label>${device} voice <select data-name="macVoice">${options(ctx.macVoices.map((v) => ({ id: v.id, name: `${v.name} (${v.lang})` })), ctx.macVoice)}</select></label>` : `<p class="muted">No English ${device} voice was found.</p>`) : '',
+    // the Speechify voice: the server's address, the app code, its voices, Test, the counter, the daily limit
+    x.voice === 'speechify' || now === 'speechify' ? speechifyRowsHtml(x, keys, { device }) : '',
     `<span><button type="button" data-act="test">${icon('play.fill')} Test the voice</button></span>`,
   ].filter(Boolean).join('\n      ');
   const callVoiceRow = now !== 'openai' ? `<label>Live call voice <select data-name="openaiVoice">${options(OPENAI_VOICES, x.openaiVoice)}</select>${keys.openai ? '' : ' <span class="warn">needs an OpenAI key</span>'}</label>` : '';
@@ -133,7 +136,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${ctx.phone ? `<label>Card ${seg('cardSize', x.cardSize === 'small' ? 'small' : 'big', [['big', 'Big (whole screen)'], ['small', 'Small']])} <span class="muted">the word, phrase or sentence with its translation; it closes by itself before the sentence plays again</span></label>` : ''}
       <label>Look ${seg('readLook', x.readLook === 'day' || x.readLook === 'night' ? x.readLook : 'auto', [['auto', 'Auto'], ['day', 'Day'], ['night', 'Night']])} <span class="muted">every mode the same · Auto = as your ${ctx.phone ? 'iPhone' : 'computer'} is set</span></label>
       <label>Mode ${seg('view', x.view, [['listening', 'Listening'], ['reading', 'Reading'], ['lyrics', 'Lyrics'], ['normal', 'Video']])}</label>
-      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
+      <label>Tutor's voice ${seg('voice', x.voice, [['auto', 'Auto'], ['azure', 'Microsoft (free)'], ['openai', 'OpenAI'], ['elevenlabs', 'ElevenLabs'], SPEECHIFY_CHOICE, ['mac', ctx.phone ? 'iPhone' : 'Mac']])}</label>
       ${voiceRows}
       ${needKey ? `<p class="warn">No Claude key is saved: the tutor cannot explain. Paste your Claude key here and press Save:</p>${keyBox('anthropic', 'Claude key', true)}` : ''}
     </section>
@@ -192,7 +195,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
       ${callVoiceRow}
       <label>Speed ${slider('rate', Math.round((s.voice.rate || 1) * 100) / 100, 0.6, 1.6, 0.05, '×')}</label>
       <label>Say the Chinese meanings at the end ${onOff('speakChinese', s.ai.speakChinese)}</label>
-      <p class="muted">Auto = the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice. One hour of the tutor speaking costs about: Microsoft $0 (free about 9 hours a month, then about $0.90), OpenAI $0.90, ElevenLabs $3 or more, Mac free.</p>
+      <p class="muted">Auto = the Speechify voice when its server address and app code are saved, else the Microsoft voice when its key is saved, else the OpenAI voice with an OpenAI key, else the Mac voice. One hour of the tutor speaking costs about: Microsoft $0 (free about 9 hours a month, then about $0.90), OpenAI $0.90, ElevenLabs $3 or more, Mac free.</p>
     </section>
     <section><h4>Talk to my tutor</h4>
       <label>After each explanation ${onOff('talkAfter', x.talkAfterExplain)}</label>
@@ -223,6 +226,7 @@ export function renderQuick(el: HTMLElement, ctx: QuickCtx): void {
     <section class="links"><button type="button" data-act="all">All settings</button><button type="button" data-act="vocab">${icon('character.book.closed')} My Vocabulary</button><button type="button" data-act="reader">${icon('book')} Read a PDF or text</button></section>
   </div>`;
 
+  wireSpeechifyRows(el, { toast: (t, ms) => ctx.toast(t, ms) });
   el.querySelector<HTMLDetailsElement>('details.adv.main')?.addEventListener('toggle', (ev) => { advOpen = (ev.target as HTMLDetailsElement).open; });
   el.querySelector<HTMLDetailsElement>('details.adv.keys')?.addEventListener('toggle', (ev) => { keysOpen = (ev.target as HTMLDetailsElement).open; });
   // the Microsoft voice: how much of this month's free 500,000 characters is used (counted on this computer)

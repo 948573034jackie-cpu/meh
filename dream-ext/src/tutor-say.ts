@@ -44,10 +44,10 @@ export class TutorSay {
     const mac = getEngine('webspeech');
     const macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
     this.rate = settings.voice.rate;
-    const kind = free ? 'mac' : resolveVoice(extras.voice, keys);
+    const kind = free ? 'mac' : resolveVoice(extras.voice, keys, { speechifyUrl: extras.speechifyUrl ?? '' });
     if (kind === 'mac') { this.tts = mac; this.voiceId = macVoice; return; }
     this.tts = new VoiceWithBackup(this.appPlays ? new NativeAudioEngine(kind) : cloudEngine(kind, 'en'), mac, () => macVoice, () => undefined);
-    this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
+    this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : kind === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
   }
 
   private begin(): number { this.active++; this.began = this.run; this.onBusy(true); return this.run; }

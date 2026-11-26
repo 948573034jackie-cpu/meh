@@ -524,10 +524,10 @@ async function prepareVoice(): Promise<void> {
   rate = settings.voice.rate;
   { const l = settings.ai.explanationLength as string; teachLen = l === 'short' || l === 'long' ? l : 'normal'; }
   // (free mode: the device's own voice only, never a paid one)
-  const kind = tutor() ? resolveVoice(extras.voice, await store.getKeys()) : 'mac';
+  const kind = tutor() ? resolveVoice(extras.voice, await store.getKeys(), { speechifyUrl: extras.speechifyUrl ?? '' }) : 'mac';
   if (kind === 'mac') { tts = mac; voiceId = macVoice; return; }
   tts = new VoiceWithBackup(cloudEngine(kind, 'en'), mac, () => macVoice, () => undefined);
-  voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
+  voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : kind === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
 }
 
 // ---- the one analysis of a chapter (for the reading aloud): started by Play or by the test, saved -------------------

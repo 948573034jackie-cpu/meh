@@ -55,7 +55,7 @@ import { explain as aiExplain, complete, completeStream, getDictionary, getDictD
 import * as store from './store';
 import { clock, computeProgress, estimateKnown, suggestLevel, levelNote } from './vocab';
 import { voiceStats } from '@core/tts/audio';
-import { cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, ShortPieces, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
+import { type VoiceKind, cloudEngine, resolveVoice, azureZhVoice, isMultilingual, QuotesFromVideo, VoiceWithBackup, SentenceFromVideo, ShortPieces, WithVolume, sliderGain, LIVE_VOICES, cloudSpoken } from './voice';
 import { LiveCall, liveInstructions } from './live';
 import { ChatCall } from './chat-call';
 import { splitWithAi, flatten, regroup, SPLIT_VERSION, splitReport } from './sentences-ai';
@@ -63,6 +63,7 @@ import { buildLinesPrompt, parseLines, buildWordPrompt, parseWordMeanings } from
 import { buildHardSentencesPrompt, parseHardSentences, HARD_PER_SECONDS } from './hard-sentences';
 import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } from './shortcuts';
 import { renderQuick } from './quick';
+import { SPEECHIFY_CSS } from './speechify-rows';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
 import { scoreSentences, selectStopsByLevel, keepHardest, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
@@ -210,7 +211,7 @@ function makeHost(id: string): { host: HTMLElement; root: ShadowRoot } {
   const root = host.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
   // (the one look's variables first: the host follows the device, or the learner's Day / Night)
-  style.textContent = THEME_HOST_CSS + css;
+  style.textContent = THEME_HOST_CSS + css + SPEECHIFY_CSS;
   root.appendChild(style);
   return { host, root };
 }
@@ -340,7 +341,7 @@ class Session {
   private wordOut: WithVolume | null = null;
   private teachOut: WithVolume | null = null;
   private zhOut: WithVolume | null = null;
-  private voiceKind: 'mac' | 'openai' | 'elevenlabs' | 'azure' = 'mac';
+  private voiceKind: VoiceKind = 'mac';
   /** why the good voice failed last (for the 🩺 check) */
   private lastVoiceError: string | null = null;
   private voiceId = '';
@@ -761,7 +762,8 @@ class Session {
   }
 
   /** the teacher's voice says the Chinese in a sentence itself (cloud voices; Microsoft only its multilingual ones) */
-  private saysChineseItself(): boolean { return this.voiceKind !== 'mac' && (this.voiceKind !== 'azure' || isMultilingual(this.voiceId)); }
+  // (the Speechify voice is an English voice here: the Chinese meanings keep the device's Chinese voice, which costs nothing)
+  private saysChineseItself(): boolean { return this.voiceKind !== 'mac' && this.voiceKind !== 'speechify' && (this.voiceKind !== 'azure' || isMultilingual(this.voiceId)); }
 
   /** the Microsoft voices the learner's region has (from the key test), for the list in ⚙ */
   azureAvail: string[] | null = null;
@@ -774,24 +776,27 @@ class Session {
   private applyVoice(): void {
     if (!this.mac) return;
     // (free mode: only the iOS voice, never a paid one)
-    const kind = this.ai() ? resolveVoice(extras.voice, this.keys) : 'mac';
+    const kind = this.ai() ? resolveVoice(extras.voice, this.keys, { speechifyUrl: extras.speechifyUrl ?? '' }) : 'mac';
     this.tts?.cancelAll();
     this.voiceKind = kind;
     this.lastVoiceError = null;
     if (kind === 'mac') {
       this.tts = this.mac; this.zhTts = this.mac; this.voiceId = this.macVoice; this.zhVoice = this.zhMac;
     } else {
-      const name = kind === 'openai' ? 'OpenAI' : kind === 'azure' ? 'Microsoft' : 'ElevenLabs';
+      const name = kind === 'openai' ? 'OpenAI' : kind === 'azure' ? 'Microsoft' : kind === 'speechify' ? 'Speechify' : 'ElevenLabs';
       const plain = navigator.maxTouchPoints > 1 ? 'built-in' : 'Mac';
       const trouble = (e: Error, cooling: boolean) => {
         this.lastVoiceError = `${name} voice: ${e.message}`;
         // one failed sentence is said by the plain voice quietly; only a longer problem is shown
         if (cooling) this.toast(`The ${name} voice has a problem (${e.message}). The ${plain} voice speaks for 1 minute, then the ${name} voice again.`, 9000);
+        // (the Speechify voice says once why the ${plain} voice reads: no server, today's limit, an error)
+        else if (kind === 'speechify') this.toast(e.message, 7000);
       };
       this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, trouble);
-      this.zhTts = new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', trouble);
-      this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : extras.elevenVoice;
-      this.zhVoice = kind === 'azure' ? azureZhVoice(this.voiceId) : this.voiceId;
+      // (Speechify: the Chinese meanings in the device's own Chinese voice, so no characters are paid for them)
+      this.zhTts = kind === 'speechify' ? this.mac : new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', trouble);
+      this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : kind === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
+      this.zhVoice = kind === 'azure' ? azureZhVoice(this.voiceId) : kind === 'speechify' ? this.zhMac : this.voiceId;
     }
     // the sentence plays again from the video (after the explanation): the word card has done its job
     this.router = new SentenceFromVideo(() => this.tts!, this.engine, (t) => this.isTaught(t), () => { if (this.card) this.closeCard(); });
@@ -4113,7 +4118,7 @@ class Session {
   extrasChanged(prev: store.YtExtras): void {
     this.applyLook();
     if (prev.teacherVolume !== extras.teacherVolume || prev.followVideoVolume !== extras.followVideoVolume) { const v = this.volumeOf('teacher'); this.talk?.live?.setVolume(v); this.pre?.setVolume(v); }
-    const voiceChanged = prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion;
+    const voiceChanged = prev.openaiVoice !== extras.openaiVoice || prev.elevenVoice !== extras.elevenVoice || prev.azureVoice !== extras.azureVoice || prev.azureRegion !== extras.azureRegion || prev.speechifyUrl !== extras.speechifyUrl || prev.speechifyVoice !== extras.speechifyVoice;
     if (prev.voice !== extras.voice || voiceChanged) {
       this.applyVoice();
       // the voice you hear changed: it says a test sentence (not when only the live call's voice changed)

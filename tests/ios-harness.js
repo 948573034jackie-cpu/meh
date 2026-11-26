@@ -83,6 +83,7 @@ const apiHandler = (req, res) => {
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks).toString('utf8');
+    if (req.url.startsWith('/speechify/')) return speechifyHandler(req, res, body);
     let j = {};
     try { j = JSON.parse(body); } catch (e) { /* not json */ }
     const sys = JSON.stringify(j.system || '');
@@ -111,6 +112,32 @@ const apiHandler = (req, res) => {
     return sse(res, /meticulous/.test(cur) ? 'Meticulous means very careful about every small detail. Your friend checks her work again and again.' : /gregarious/.test(cur) ? 'Gregarious means a person who loves being with other people.' : 'It means something simple.');
   });
 };
+// ---- the fake Speechify server (the learner's own Cloudflare Worker, speech-proxy/): /health, /voices, /usage, /speak ----
+// No real Speechify and no real key: the app code it accepts is SPEECHIFY_CODE; a test makes it fail with failSpeechify(n).
+const SPEECHIFY_CODE = 'test-app-code-7f3a9c';
+const speechifyLog = [];
+let failNextSpeechify = 0;
+const SPEECHIFY_VOICES = [
+  { id: 'gb-emma', name: 'Emma', locale: 'en-GB', gender: 'female', tags: ['warm'], preview: null, british: true, isDefault: true },
+  { id: 'gb-oliver', name: 'Oliver', locale: 'en-GB', gender: 'male', tags: [], preview: null, british: true, isDefault: false },
+  { id: 'us-ava', name: 'Ava', locale: 'en-US', gender: 'female', tags: [], preview: null, british: false, isDefault: false },
+];
+const speechifyClip = makeWav(1.2, true);
+function speechifyHandler(req, res, body) {
+  const path0 = req.url.replace(/^\/speechify/, '').split('?')[0];
+  let j = {};
+  try { j = JSON.parse(body || '{}'); } catch (e) { /* not json */ }
+  const entry = { path: path0, method: req.method, code: req.headers['x-app-code'] || '', text: j.text, voice: j.voice, at: Date.now() };
+  speechifyLog.push(entry);
+  const send = (status, o) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+  if (entry.code !== SPEECHIFY_CODE) return send(401, { error: 'App code missing or wrong', code: 'auth' });
+  if (failNextSpeechify > 0) { failNextSpeechify--; entry.failed = true; return send(502, { error: 'Speechify did not answer', code: 'upstream' }); }
+  if (path0 === '/health') return send(200, { ok: true, model: 'simba-3.5', dailyLimit: 20000 });
+  if (path0 === '/voices') return send(200, { default: 'gb-emma', voices: SPEECHIFY_VOICES });
+  if (path0 === '/usage') return send(200, { day: new Date().toISOString().slice(0, 10), today: 2345, month: new Date().toISOString().slice(0, 7), monthChars: 9876, requestsToday: 4, dailyLimit: 20000, left: 17655 });
+  if (path0 === '/speak' && req.method === 'POST') return send(200, { audio: speechifyClip.toString('base64'), mime: 'audio/wav', chars: String(j.text || '').length, cached: false, model: 'simba-3.5', marks: null });
+  return send(404, { error: 'Unknown address', code: 'not-found' });
+}
 const PORT = +process.env.IOS_TEST_PORT || 8791;   // (another port: two runs side by side)
 const FAKE = 'http://localhost:' + PORT;
 // the fake server is started by the test (startServer() once; close() it at the end)
@@ -136,6 +163,8 @@ function realToFake(url) { // what URLSession would reach: the real services, he
   const az = /^([a-z0-9-]+)\.tts\.speech\.microsoft\.com$/.exec(u.hostname);
   if (az) return `${FAKE}/azure/${az[1]}${u.pathname}${u.search}`;
   if (u.hostname === 'api.anthropic.com' || u.hostname === 'api.openai.com') return FAKE + u.pathname + u.search;
+  // (the learner's own Speechify server: https://<worker>.<account>.workers.dev, as NativeFetch.swift allows it)
+  if (/^[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev$/.test(u.hostname)) return `${FAKE}/speechify${u.pathname}${u.search}`;
   throw new Error('host not allowed: ' + u.hostname);
 }
 async function native(page, b) {
@@ -247,6 +276,7 @@ module.exports = {
   // (a new learner: the shared file as it was at the start, with nothing heard or learned by an earlier part of a test)
   resetVocab: () => { vocabShared = JSON.parse(vocabShared0); },
   failAzure: (n) => { failNextAzure = n; },
+  SPEECHIFY_CODE, SPEECHIFY_VOICES, speechifyLog, failSpeechify: (n) => { failNextSpeechify = n; },
   setHard: (list) => { hardReply = list; },
   setTranslate: (r) => { translateReply = r; },
   native, fakeWebkit, startServer, newAppContext,

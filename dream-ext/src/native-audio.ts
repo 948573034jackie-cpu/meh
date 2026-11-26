@@ -1,12 +1,14 @@
 /**
- * The tutor's cloud voice (Microsoft, OpenAI, ElevenLabs) on a web page of the app's browser: the sound is made by
+ * The tutor's cloud voice (Microsoft, OpenAI, ElevenLabs, Speechify) on a web page of the app's browser: the sound is made by
  * the voice service as always ('dream-tts', the key stays in the private world), but it is PLAYED BY THE APP
  * (AVAudioPlayer), not by an audio element of the page. A website's own rules (its Content-Security-Policy) can
  * forbid sounds the page did not make itself; the app's player is not the page, so the voice works on every site.
  * The app answers "audioPlay" with { ok, duration } and tells the start and the end through window.__ytcAudio.
  */
 import type { TtsEngine, TtsVoice, SpeakOptions, SpeakHandle, SpeakOutcome } from '@core/tts/engine';
+import type { TtsEngineId } from '@shared/settings';
 import { appPost } from './native-bridge';
+import { ttsError, SPEECHIFY_ENGINE, type CloudVoice } from './voice';
 
 type Sound = { b64: string; mime: string };
 type AudioEvent = { id?: number; event?: string };
@@ -28,7 +30,9 @@ export class NativeAudioEngine implements TtsEngine {
   private cache = new Map<string, Promise<Sound>>();
   private live = new Set<SpeakHandle>();
 
-  constructor(readonly id: 'openai' | 'elevenlabs' | 'azure', private lang: 'en' | 'zh' = 'en') { wire(); }
+  /** the engine's id ('speechify' is not one of Dream Read's ids: SPEECHIFY_ENGINE, as in voice.ts) */
+  readonly id: TtsEngineId;
+  constructor(private voice: CloudVoice, private lang: 'en' | 'zh' = 'en') { this.id = voice === 'speechify' ? SPEECHIFY_ENGINE : voice; wire(); }
 
   async listVoices(): Promise<TtsVoice[]> { return []; }
 
@@ -36,8 +40,9 @@ export class NativeAudioEngine implements TtsEngine {
     const key = `${voiceId}\u0000${text}`;
     let p = this.cache.get(key);
     if (!p) {
-      p = (chrome.runtime.sendMessage({ type: 'dream-tts', engine: this.id, text, voice: voiceId, lang: this.lang }) as Promise<{ b64?: string; mime?: string; error?: string } | undefined>).then((r) => {
-        if (!r || r.error || !r.b64) throw new Error(r?.error ?? 'The voice service did not answer.');
+      p = (chrome.runtime.sendMessage({ type: 'dream-tts', engine: this.voice, text, voice: voiceId, lang: this.lang }) as Promise<{ b64?: string; mime?: string; error?: string; code?: string; note?: string } | undefined>).then((r) => {
+        // (the same error as the page's own cloud voice: a Speechify failure goes to the device voice at once, said once)
+        if (!r || r.error || !r.b64) throw ttsError(this.voice, r);
         return { b64: r.b64, mime: r.mime ?? 'audio/mpeg' };
       });
       p.catch(() => { if (this.cache.get(key) === p) this.cache.delete(key); });

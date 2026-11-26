@@ -254,6 +254,9 @@ jobs:
       - name: The browser with Explanation mode (tap a word, a link, a selection, "hello"), in WebKit
         if: always()
         run: node tests/ios-browser-test.js
+      - name: The Speechify voice in Settings of both apps (a fake Speechify server, no real key), in WebKit
+        if: always()
+        run: node tests/speechify-ui-test.js
 
   dream-tutor:
     runs-on: ubuntu-24.04   # (Playwright 1.56 has no browsers for the newer ubuntu-latest yet)

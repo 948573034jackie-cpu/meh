@@ -142,14 +142,18 @@ That is **good**: the Worker is running, and it refuses people without your app 
 
 Do this in **I Know** and in **I Know Book**:
 
-1. Open **Settings**.
-2. **Speechify address**: paste the address from Step 9.
-3. **Speechify app code**: paste the code from Step 8.
-4. Press **Test**. It should say "The Speechify Worker works".
-5. **Voice**: choose **Speechify** (or keep **Auto**: Auto uses Speechify first when the address and code are set).
-6. **Speechify voice**: the British voice marked ★ is the default. You can pick another one.
+1. Open **Settings**. I Know: the **Settings** tab ▸ **Voice**. I Know Book: the **Settings** tab ▸ **Voice**.
+2. Tap **Speechify (natural)** in the voice choice. The Speechify rows appear under it.
+3. **Server address**: paste the address from Step 9. Press **Save**.
+4. **App code**: paste the code from Step 8. Press **Save**. (It goes into the iPhone's Keychain. The box stays empty
+   after that: the code is never shown again.)
+5. Press **Test**. It should say "The Speechify Worker works".
+6. **Voice**: the British voice marked ★ is the default. You can pick another one.
+   (Or choose **Auto** in the voice choice: Auto uses Speechify first when the address and the code are saved.)
 
-In Settings you also see **Speechify today / this month** (characters used) and the **daily limit**
+The steps of this page are in the apps too: Settings ▸ Voice ▸ **How to set up Speechify**.
+
+In Settings you also see **Speechify today / this month** (characters used) and the **Daily limit**
 (20,000 characters at first). When the limit is reached, the app uses the free iPhone voice until tomorrow.
 
 ---
