@@ -120,6 +120,9 @@ export class Analysis {
     this.o.onChange?.();
   }
 
+  /** the explanation of this stop if it is written already (nothing is asked for, nothing waits) */
+  peek(id: string): string | null { return id in this.texts ? this.texts[id] : null; }
+
   /** the explanation of this sentence, when it is written; null: it will not come (the caller asks the AI for this one) */
   wait(id: string): Promise<string | null> {
     if (id in this.texts) return Promise.resolve(this.texts[id]);

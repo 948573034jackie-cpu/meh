@@ -270,6 +270,9 @@ jobs:
       - name: The Speechify voice in Settings of both apps (a fake Speechify server, no real key), in WebKit
         if: always()
         run: node tests/speechify-ui-test.js
+      - name: I Know 3.13 step 1 (the smooth Speechify voice - no other voice takes over, quiet new tries, sounds made ahead, the voice log), in WebKit
+        if: always()
+        run: node tests/ios-313-test.js
       - name: The simpler apps (3 tabs, one main action, often-used actions in one tap), in WebKit
         if: always()
         run: node tests/tabs-test.js

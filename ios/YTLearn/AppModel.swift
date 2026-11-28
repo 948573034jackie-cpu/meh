@@ -110,6 +110,9 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.syncVocabulary() }
         // back in the app: a page iOS stopped meanwhile is opened again where it was
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.backInFront() }
+        #if !BOOK
+        watchSound()
+        #endif
         youtube.navigationDelegate = self
         youtube.allowsBackForwardNavigationGestures = true
         // (every new page, also inside YouTube's own page: the last one is opened again next time)
@@ -436,6 +439,49 @@ final class AppModel: NSObject, ObservableObject, WKNavigationDelegate {
         youtube.evaluateJavaScript(js, in: nil, in: AppModel.world, completionHandler: nil)
         #endif
     }
+
+    #if !BOOK
+    /// I Know 3.13: what iOS does to the sound is written into the tutor's voice log (Settings ▸ Voice ▸ Voice log), so
+    /// the real cause of a voice that stops can be found: an interruption (a call, Siri, another app's sound), a new
+    /// output (Bluetooth or headphones on or off, the microphone switched on), the sound system started again.
+    private func watchSound() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let raw = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
+            let began = AVAudioSession.InterruptionType(rawValue: raw) == .began
+            var why = began ? "iOS took the sound (a call, Siri or another app)" : "iOS gave the sound back"
+            if !began, let o = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt, AVAudioSession.InterruptionOptions(rawValue: o).contains(.shouldResume) { why += ", it may go on" }
+            self?.soundLog(began ? "iOS: sound interrupted" : "iOS: interruption over", why)
+        }
+        center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] note in
+            let raw = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt) ?? 0
+            let reason: String
+            switch AVAudioSession.RouteChangeReason(rawValue: raw) {
+            case .newDeviceAvailable?: reason = "a new output was connected"
+            case .oldDeviceUnavailable?: reason = "the output was disconnected"
+            case .categoryChange?: reason = "the sound mode changed (the microphone on or off)"
+            case .override?: reason = "the output was switched"
+            case .wakeFromSleep?: reason = "the device woke up"
+            case .noSuitableRouteForCategory?: reason = "no output fits the sound mode"
+            case .routeConfigurationChange?: reason = "the output's set-up changed"
+            default: reason = "another reason (\(raw))"
+            }
+            let session = AVAudioSession.sharedInstance()
+            let out = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
+            let mic = session.currentRoute.inputs.map { $0.portName }.joined(separator: ", ")
+            self?.soundLog("iOS: sound output changed", "\(reason); sound: \(out.isEmpty ? "none" : out); microphone: \(mic.isEmpty ? "off" : mic)")
+        }
+        center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.soundLog("iOS: sound system restarted", "the media services were reset")
+        }
+    }
+
+    /// one line for the tutor's voice log (dream-ext/src/voice-log.ts; no personal data: only what the sound did)
+    private func soundLog(_ what: String, _ why: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: [what, why]), let json = String(data: data, encoding: .utf8) else { return }
+        youtube.evaluateJavaScript("window.__ytcVoiceLog && window.__ytcVoiceLog.apply(null, \(json)); 0", in: nil, in: AppModel.world, completionHandler: nil)
+    }
+    #endif
 
     private func sendSpeech(_ event: [String: Any]) {
         if showBrowser { browser.heard(event); return }   // the browser is in front: only its page hears "hello" / "stop"

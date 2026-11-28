@@ -11,6 +11,7 @@ import type { TtsEngineId } from '@shared/settings';
 import type { CloudTtsResult } from '@shared/api';
 import type { VoiceChoice } from './store';
 import type { Position } from '@core/model';
+import { voiceLog } from './voice-log';
 import { AZURE_BUSY, SPEECHIFY_LIMIT } from './tts-cache';
 
 export const OPENAI_VOICES: { id: string; name: string }[] = [
@@ -82,7 +83,12 @@ function fromBase64(b64: string): ArrayBuffer {
  * plays the clip at 24 kHz anyway);
  * `fast`: ElevenLabs uses its fast model (eleven_flash_v2_5), whatever the quality setting says.
  */
-export interface CloudOptions { light?: boolean; fast?: boolean }
+/**
+ * `steady` (I Know 3.13, the Speechify voice): no other voice ever takes over. The background waits longer and tries
+ * again quietly (bg.ts speechifySteady), the next TWO sentences are made ahead, and a sound that iOS stops from
+ * outside is started again once. What happened is written to the voice log (voice-log.ts).
+ */
+export interface CloudOptions { light?: boolean; fast?: boolean; steady?: boolean }
 export const BOOK_VOICE: CloudOptions = { light: true, fast: true };
 
 /** the voice service is full for the moment (Microsoft's free limit): `code` 'busy' */
@@ -108,9 +114,14 @@ export const SPEECHIFY_LABEL = 'Speechify voice';
  */
 export const SPEECHIFY_START_TIMEOUT_MS = 8_000;
 export const SPEECHIFY_COOL_MS = 60_000;
+/**
+ * The steady Speechify voice (I Know 3.13) waits this long for a sentence's sound before it gives the sentence up:
+ * longer than the background's three tries together (bg.ts: 12 s + 0.4 s + 12 s + 1.2 s + 12 s).
+ */
+export const STEADY_START_TIMEOUT_MS = 40_000;
 
 /** what the background sent back when a sentence could not be made */
-type TtsReply = { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string; note?: string } | undefined;
+type TtsReply = { b64?: string; mime?: string; timings?: CloudTtsResult['timings']; error?: string; code?: string; note?: string; why?: string } | undefined;
 
 /**
  * The error of one failed sentence. `code` 'busy' = it goes to the device voice at once (no second try): Microsoft's
@@ -119,6 +130,8 @@ type TtsReply = { b64?: string; mime?: string; timings?: CloudTtsResult['timings
  */
 export function ttsError(id: CloudVoice, r: TtsReply): Error {
   const message = r?.error ?? 'The voice service did not answer.';
+  // (the steady Speechify voice: the sentence is not spoken; `made` = the sound was never made, so playing it again cannot help)
+  if (r?.code === 'silent') return Object.assign(new Error(message), { code: 'silent', note: r.note ?? `${message} This sentence was not spoken.`, why: r.why ?? 'failed', made: false });
   if (id === 'speechify') {
     const limit = message.startsWith(SPEECHIFY_LIMIT) || r?.note === SPEECHIFY_LIMIT;
     const note = limit ? SPEECHIFY_LIMIT : r?.note ?? `${message.startsWith('Speechify') ? message : `Speechify voice: ${message}`} The iPhone voice reads instead.`;
@@ -135,8 +148,9 @@ export function cloudEngine(id: CloudVoice, lang: 'en' | 'zh', o: CloudOptions =
     if (cloudSpoken.length > 400) cloudSpoken.splice(0, 200);
     let r: TtsReply;
     try {
-      r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang, ...(o.light ? { light: true } : {}), ...(o.fast ? { fast: true } : {}) })) as TtsReply;
-    } catch (e) { r = { error: (e as Error).message || 'The voice service did not answer.' }; }
+      r = (await chrome.runtime.sendMessage({ type: 'dream-tts', engine: id, text, voice: voiceId, lang, ...(o.light ? { light: true } : {}), ...(o.fast ? { fast: true } : {}), ...(o.steady ? { steady: true } : {}) })) as TtsReply;
+    } catch (e) { r = { error: (e as Error).message || 'The voice service did not answer.', ...(o.steady ? { code: 'silent' } : {}) }; }
+    if (o.steady && (!r || r.error || r.b64 === undefined)) throw ttsError(id, { ...(r ?? {}), error: r?.error ?? 'Speechify voice: no answer.', code: 'silent' });
     if (!r || r.error || r.b64 === undefined) throw ttsError(id, r);
     return { audio: fromBase64(r.b64), mime: r.mime ?? 'audio/mpeg', timings: r.timings ?? null, durationSec: null };
   };
@@ -144,7 +158,8 @@ export function cloudEngine(id: CloudVoice, lang: 'en' | 'zh', o: CloudOptions =
     // the picker's list comes from the Worker (speechifyVoiceList); here only the default ('' = the Worker's British voice)
     const list = async () => [{ id: '', name: 'Speechify British (default)', lang: lang === 'zh' ? 'zh-CN' : 'en-GB' }];
     // only the very next sentence is made ahead (it costs characters); the word times come from Speechify's speech marks
-    return new AudioTtsEngine(SPEECHIFY_ENGINE, synth, list, true, { segment: false, ahead: 1, label: SPEECHIFY_LABEL, costNote: 'Paid by the characters: through your own Worker, with a daily limit' });
+    // (steady: the next two, because one sentence takes the Worker 3 to 5 s; a sound stopped from outside starts again)
+    return new AudioTtsEngine(SPEECHIFY_ENGINE, synth, list, true, { segment: false, ahead: o.steady ? 2 : 1, label: SPEECHIFY_LABEL, costNote: 'Paid by the characters: through your own Worker, with a daily limit', ...(o.steady ? { steady: true, log: voiceLog } : {}) });
   }
   const list = async () => (id === 'openai' ? OPENAI_VOICES : id === 'azure' ? AZURE_VOICES : ELEVEN_VOICES).map((v) => ({ ...v, lang: lang === 'zh' ? 'zh-CN' : 'en' }));
   // whole sentences (no cuts at commas): a cloud voice is fast, and each piece made separately breaks the tone and
@@ -222,12 +237,22 @@ export class VoiceWithBackup implements TtsEngine {
   private busyTold = -Infinity;
   /** the notes told once already (the Speechify voice: "today's limit", "did not work") */
   private toldOnce = new Set<string>();
-  constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onTrouble: (e: Error, cooling: boolean) => void, private startTimeoutMs = 12_000, private now: () => number = () => Date.now()) {
+  /**
+   * `o.steady` (I Know 3.13): the good voice is the ONLY voice. The backup never speaks and there is no "plain voice
+   * for a minute". A sentence whose sound cannot be made is not spoken: speak() ends as 'ended' (what comes after it
+   * goes on), `onTrouble` says why (the same reason at most once a minute), and the reason is in the voice log.
+   */
+  constructor(private primary: TtsEngine, private backup: TtsEngine, private backupVoice: () => string, private onTrouble: (e: Error, cooling: boolean) => void, private startTimeoutMs = 12_000, private now: () => number = () => Date.now(), private o: { steady?: boolean; log?: typeof voiceLog } = {}) {
     this.id = primary.id; this.kind = primary.kind; this.label = primary.label; this.costNote = primary.costNote; this.wordBoundaries = primary.wordBoundaries;
   }
-  get failed(): boolean { return this.now() < this.coolUntil; }
+  get steady(): boolean { return !!this.o.steady; }
+  get failed(): boolean { return !this.steady && this.now() < this.coolUntil; }
   /** the Speechify voice: every sentence is tried once only (it costs characters, and a wait is silence) */
-  private get oneTry(): boolean { return this.primary.id === SPEECHIFY_ENGINE; }
+  private get oneTry(): boolean { return !this.steady && this.primary.id === SPEECHIFY_ENGINE; }
+  /** when each reason was last told to the learner (steady: the same reason at most once a minute) */
+  private toldAt = new Map<string, number>();
+  /** sentences not spoken since the voice last worked (steady; for the check) */
+  silentInARow = 0;
   get paused(): boolean { return (this.failed ? this.backup : this.primary).paused; }
   listVoices(): Promise<TtsVoice[]> { return this.primary.listVoices(); }
   /** the backup voice for this text; '' (no fitting Mac voice, e.g. for Chinese) = say nothing */
@@ -272,13 +297,35 @@ export class VoiceWithBackup implements TtsEngine {
         if (this.primary.paused) { timer = watch(); return; }
         timedOut = true;
         h.cancel();
-      }, this.oneTry ? Math.min(this.startTimeoutMs, SPEECHIFY_START_TIMEOUT_MS) : this.startTimeoutMs);
+      }, this.steady ? STEADY_START_TIMEOUT_MS : this.oneTry ? Math.min(this.startTimeoutMs, SPEECHIFY_START_TIMEOUT_MS) : this.startTimeoutMs);
       let timer = watch();
+      const t0 = this.now();
       return h.done.then(async (o): Promise<SpeakOutcome> => {
         clearTimeout(timer);
         if (gone()) return 'cancelled';
-        if (o === 'ended') { this.fails = 0; return o; }
+        if (o === 'ended') { this.fails = 0; this.silentInARow = 0; return o; }
         if (o === 'cancelled' && !timedOut) return o;
+        if (this.steady) {
+          const err = (h.error ?? null) as (Error & { note?: string; made?: boolean; why?: string }) | null;
+          // the sound was made but would not play (iOS refused or stopped it): once more, it is still in memory
+          if (!timedOut && err?.made !== false && n === 0) {
+            this.o.log?.('the sound did not play: once more', { why: err?.message ?? 'no reason given', ms: this.now() - t0, text });
+            await new Promise((r) => setTimeout(r, 300));
+            if (gone()) return 'cancelled';
+            return attempt(1);
+          }
+          const why = timedOut ? 'Speechify voice: no sound came in time.' : err?.message ?? 'Speechify voice: the sound did not play.';
+          const note = timedOut ? `${why} This sentence was not spoken.` : err?.note ?? `${why} This sentence was not spoken.`;
+          this.lastError = why;
+          this.silentInARow++;
+          // (what the background could not make is in the log already, with every try; the rest is written here)
+          if (timedOut || err?.made !== false) this.o.log?.('not spoken', { why, ms: this.now() - t0, text });
+          const last = this.toldAt.get(note) ?? -Infinity;
+          if (this.now() - last >= 60_000) { this.toldAt.set(note, this.now()); this.onTrouble(Object.assign(new Error(note), { code: 'silent', why: err?.why ?? 'failed' }), false); }
+          handle.error = err ?? new Error(why);
+          // (not 'error': what follows this sentence, the rest of an explanation, the video, goes on)
+          return 'ended';
+        }
         // no room at the service just now: a second try would wait in the same line, so this sentence goes to the
         // Mac voice at once; it is no failure of the good voice (the limit frees by itself)
         if (!timedOut && isBusy(h.error)) {

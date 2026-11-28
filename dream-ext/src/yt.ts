@@ -64,6 +64,7 @@ import { buildHardSentencesPrompt, parseHardSentences, HARD_PER_SECONDS } from '
 import { actionFor, comboLabel, shortcutMap, SHORTCUTS, type ShortcutAction } from './shortcuts';
 import { renderQuick } from './quick';
 import { SPEECHIFY_CSS } from './speechify-rows';
+import { voiceLog, voiceLogNow, voiceLogLineText } from './voice-log';
 import { unknownChance, phraseSig, EMPTY_META, type LevelMeta } from './level-db';
 import { buildItemsPrompt, parseItems, collectItems, pickForScreen, type TestGroups } from './level-check';
 import { scoreSentences, selectStopsByLevel, keepHardest, stopKindOf, kindWith, counterText, type SentenceScore, type StopCaps, type StopGroup } from './level-stops';
@@ -792,7 +793,11 @@ class Session {
         // (the Speechify voice says once why the ${plain} voice reads: no server, today's limit, an error)
         else if (kind === 'speechify') this.toast(e.message, 7000);
       };
-      this.tts = new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, trouble);
+      // (the Speechify voice, I Know 3.13: the only voice. It is never replaced by the device voice: a longer wait,
+      // quiet new tries, and a sentence that still has no sound is not spoken; `trouble` says why, the log keeps it)
+      this.tts = kind === 'speechify'
+        ? new VoiceWithBackup(cloudEngine(kind, 'en', { steady: true }), this.mac, () => this.macVoice, trouble, 12_000, undefined, { steady: true, log: voiceLog })
+        : new VoiceWithBackup(cloudEngine(kind, 'en'), this.mac, () => this.macVoice, trouble);
       // (Speechify: the Chinese meanings in the device's own Chinese voice, so no characters are paid for them)
       this.zhTts = kind === 'speechify' ? this.mac : new VoiceWithBackup(cloudEngine(kind, 'zh'), this.mac, () => this.zhMac ?? '', trouble);
       this.voiceId = kind === 'openai' ? extras.openaiVoice : kind === 'azure' ? extras.azureVoice : kind === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
@@ -2591,8 +2596,62 @@ class Session {
   /** the hard words of the sentence that starts now: their voice is made ahead (said 3 times at the stop) */
   private prefetchVoice(pos: Position): void {
     // (not Microsoft's free plan: 20 requests a minute are kept for what the tutor really says)
-    if (this.voiceKind === 'mac' || this.voiceKind === 'azure' || !this.ai() || !this.controller || this.levelOn()) return;
+    if (this.voiceKind === 'mac' || this.voiceKind === 'azure' || !this.ai() || !this.controller) return;
+    if (this.levelOn()) { this.prefetchStopWords(pos); return; }
     for (const t of this.controller.triggersFor(pos)) if (t.lemma && t.kind !== 'sentence') this.tts?.prefetch?.(t.target, this.voiceId, Math.min(settings.voice.rate, 0.9));
+  }
+
+  /**
+   * (the Speechify voice, I Know 3.13) No wait at a stop: the hard words of the stops that come in the next sentences
+   * get their sound now, while the video still plays (a word is a few characters, and its clip is kept for ever).
+   * Only what would really be asked: its kind is on, it is not known, and it was not asked a moment ago.
+   */
+  private wordsAhead = new Set<string>();
+  private prefetchStopWords(pos: Position): void {
+    if (this.voiceKind !== 'speechify' || !this.vb) return;
+    const caps = this.caps();
+    let p: Position | null = pos;
+    for (let i = 0; i < STOP_WORDS_AHEAD && p; i++, p = nextPosition(this.vb.book, p)) {
+      const key = sentenceKey(p);
+      if (!this.stopSet.has(key) || this.doneBefore.has(key) || this.stopped.has(key)) continue;
+      const sc = this.scores.get(key);
+      if (!sc) continue;
+      const here = this.wordsBefore(p);
+      sc.lemmas.forEach((lemma, j) => {
+        if (!(caps[sc.kinds[j]] > 0) || vocab.words[lemma] === 'known' || vocab.words[lemma] === 'ignored' || this.askedLately(lemma, here)) return;
+        // (once per word and voice: when that did not work, the stop itself asks again)
+        const once = `${this.voiceId}|${sc.items[j]}`;
+        if (this.wordsAhead.has(once)) return;
+        this.wordsAhead.add(once);
+        this.wordOut?.prefetch(sc.items[j], this.voiceId, Math.min(settings.voice.rate, 0.9));
+      });
+    }
+  }
+
+  /**
+   * (the Speechify voice, I Know 3.13) The window of a stop is open (the word was said, the learner may tap "I know"):
+   * the first sentence of the explanation gets its sound now, so the explanation starts without a wait. The text is
+   * the one the analysis wrote; it is cut exactly as the teacher will say it, so the same clip is used (nothing is
+   * paid twice). A tap on "I know" before this = nothing was made.
+   */
+  private prefetchStopExplanation(w: CommandWindow): void {
+    if (this.voiceKind !== 'speechify' || !this.levelOn() || !this.ai() || !this.analysis || !this.vb) return;
+    const pos = this.playback?.position ?? this.cur;
+    const sentence = pos ? getSentence(this.vb.book, pos)?.text : null;
+    if (!sentence) return;
+    const text = this.analysis.peek(stopId(sentence, w.kind === 'sentence' ? undefined : w.target));
+    if (!text) return;
+    // (the first sentence; when that is only a few words, such as the word itself, the second one too)
+    let letters = 0;
+    for (const sen of new StreamSentenceSplitter().push(`${text} `).slice(0, 2)) {
+      if (letters >= STOP_AHEAD_MIN_CHARS) break;
+      for (const part of sen.split(/\[PAUSE\]/i)) {
+        const tx = cleanSpokenProse(part).trim();
+        if (!tx || /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/.test(tx)) continue;
+        letters += tx.length;
+        this.teachOut?.prefetch(tx, this.voiceId, Math.min(settings.voice.rate, 1.2));
+      }
+    }
   }
 
   /** a commands window opened / closed: after an explanation the talk opens instead of a countdown */
@@ -2605,7 +2664,7 @@ class Session {
       const pos = this.playback?.position ?? this.cur;
       if (pos) this.openCard(pos, -1, sentenceLemma(w.target), w.target, 'sentence', null, undefined, { full: true });
     }
-    if (w.phase === 'before') { this.muteTalk(); return; }
+    if (w.phase === 'before') { this.prefetchStopExplanation(w); this.muteTalk(); return; }
     if (w.phase === 'after' && talkAfter() && !this.flow && !this.levelOn()) {
       // (keeping the window open while we talk reports it again: the talk is only opened once)
       if (this.talk) { this.talk.live?.setMic(true); return; }
@@ -4253,6 +4312,8 @@ class Session {
       talk: this.talk ? (this.talk.live ? `live ${this.talk.live.state}` : this.talk.error ? `no live: ${this.talk.error}` : 'speech recognition') : 'closed',
       state: this.playback?.state ?? null, hardSentences: this.hardSentences.length, hints: Object.keys(this.hints).length, status: this.statusText.slice(0, 160),
       ...(this.statusBad ? { problem: `My tutor: ${this.statusText}` } : {}),
+      // (why the voice waited, was stopped or did not speak: the newest lines of the voice log)
+      voiceLog: voiceLogNow().slice(-25).map(voiceLogLineText),
     };
   }
 
@@ -4399,6 +4460,10 @@ function saysBye(lower: string): boolean {
 
 /** how long a stop waits for its explanation from the one analysis before it asks for this one alone */
 const ANALYSIS_WAIT_MS = 6000;
+/** (the Speechify voice) the hard words of the stops in this many coming sentences get their sound ahead */
+const STOP_WORDS_AHEAD = 4;
+/** (the Speechify voice) at a stop the explanation's first sentence is made ahead; shorter than this, the second one too */
+const STOP_AHEAD_MIN_CHARS = 40;
 /** a stop with no voice and no window for this long plays on by itself */
 const SILENT_STOP_MS = 30_000;
 
@@ -4665,6 +4730,13 @@ async function boot(): Promise<void> {
   if (TOUCH && raw.migrated === undefined && raw.stageOn === undefined) extras = await store.patchExtras({ stageOn: false });
   // (the school level the prompts use always follows the slider)
   if (typeof extras.myLevel === 'number' && levelToCefr(extras.myLevel) !== settings.learnerLevel) settings = await store.patchSettings({ learnerLevel: levelToCefr(extras.myLevel) as Settings['learnerLevel'] });
+  // (the app tells the voice log what iOS did to the sound: an interruption, a new output such as Bluetooth)
+  (window as unknown as { __ytcVoiceLog?: (what: string, why?: string) => void; __ytcSoundInterrupted?: boolean }).__ytcVoiceLog = (what, why) => {
+    // (while iOS itself has the sound, a clip of the tutor that was paused waits for it: audio.ts)
+    if (/^iOS: sound interrupted/.test(what)) (window as unknown as { __ytcSoundInterrupted?: boolean }).__ytcSoundInterrupted = true;
+    else if (/^iOS: (interruption over|sound system restarted)/.test(what)) (window as unknown as { __ytcSoundInterrupted?: boolean }).__ytcSoundInterrupted = false;
+    voiceLog(String(what).slice(0, 80), why ? { why: String(why) } : {});
+  };
   window.__ytcDream = {
     owns: () => !!session && session.owns(),
     // (the finder's voice note has the microphone: the tutor lets it go meanwhile)

@@ -29,7 +29,8 @@ import { levelSummary } from './level-db';
 import { buildRulePrompt, partPromptFor, BOOK_ALWAYS_RULES, type RuleRequest } from './level-rule';
 import { splitByScript } from '@core/listen/script';
 import { getLevel, updateLevel } from './store';
-import { getSound, putSound, CACHE_MAX_CHARS, AZURE_BUSY, SPEECHIFY_LIMIT } from './tts-cache';
+import { getSound, putSound, CACHE_MAX_CHARS, AZURE_BUSY, SPEECHIFY_LIMIT, SPEECHIFY_LIMIT_STEADY } from './tts-cache';
+import { voiceLog } from './voice-log';
 import { wordsFromAlignment, type Alignment } from './word-times';
 import { findLyrics } from './lyrics';
 
@@ -331,7 +332,8 @@ export async function runChat(system: string, messages: ChatTurn[], signal: Abor
 
 // ---- the tutor's voice: OpenAI (gpt-4o-mini-tts) or ElevenLabs, one sentence at a time --------------------------
 /** `light`: Microsoft's smaller sound (AZURE_LIGHT); `fast`: ElevenLabs' fast model whatever the quality setting (voice.ts CloudOptions) */
-interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure' | 'speechify'; text: string; voice: string; lang?: 'en' | 'zh'; light?: boolean; fast?: boolean }
+/** `steady` (I Know 3.13): the Speechify voice that never hands a sentence to another voice: a longer wait, quiet new tries (speechifySteady) */
+interface TtsAsk { engine: 'openai' | 'elevenlabs' | 'azure' | 'speechify'; text: string; voice: string; lang?: 'en' | 'zh'; light?: boolean; fast?: boolean; steady?: boolean }
 interface TtsAnswer { b64: string; mime: string; timings: { start: number; end: number; charIndex: number; charLength: number }[] | null }
 
 const VOICE_STYLE = {
@@ -615,10 +617,102 @@ let speechifyQuietUntil = 0;
 /** why (the same words, so the learner is told only once) */
 let speechifyQuietWhy = '';
 /** (tests) */
-export function resetSpeechifyQuiet(): void { speechifyQuietUntil = 0; }
+export function resetSpeechifyQuiet(): void { speechifyQuietUntil = 0; speechifyDown = false; }
+
+// ---- the steady Speechify voice (I Know 3.13, step 1): no other voice ever takes over ---------------------------------
+// Measured on the learner's Worker (28 Nov 2026): a new sentence takes 3 to 5 s, sometimes 7. The old rule (6 s, one
+// try, then the iPhone voice for a minute) therefore changed the voice again and again. Now a sentence waits longer
+// and is tried again quietly; when every try failed it is simply not spoken (the page says why, once), and every try
+// that failed is written to the voice log with its reason.
+/** one try waits this long for the Worker */
+export const SPEECHIFY_STEADY_TIMEOUT_MS = 12_000;
+/** a sentence is tried this many times */
+export const SPEECHIFY_STEADY_TRIES = 3;
+/** the waits before the second and the third try (ms) */
+export const SPEECHIFY_STEADY_WAITS: readonly number[] = [400, 1200];
+/** after a sentence that failed every try: each next one gets ONE short try, until the Worker answers again */
+export const SPEECHIFY_DOWN_TIMEOUT_MS = 6_000;
+let speechifyDown = false;
+/** (tests) the waits between the tries can be made short */
+export const speechifyTest: { waits: readonly number[] | null; timeoutMs: number | null } = { waits: null, timeoutMs: null };
+
+/** the error of the steady voice: `code` 'silent' = the sentence is not spoken (no other voice says it); `note` = what the learner is told */
+export function speechifySilent(e: unknown): Error & { code: 'silent'; note: string; why: string } {
+  const x = e as Error & { why?: string };
+  const why = x?.why === 'limit' ? 'limit' : x?.why === 'setup' ? 'setup' : 'failed';
+  const message = why === 'limit' ? SPEECHIFY_LIMIT_STEADY : (x?.message || 'Speechify voice: no answer.');
+  const note = why === 'limit' ? SPEECHIFY_LIMIT_STEADY : `${message} This sentence was not spoken.`;
+  return Object.assign(new Error(message), { code: 'silent' as const, note, why });
+}
+
+/** the Worker's answer to /speak as a clip; the characters billed are counted on this device */
+async function speechifyClip(res: Response, text: string): Promise<TtsAnswer & { version?: string }> {
+  let j: { audio?: string; mime?: string; chars?: number; cached?: boolean; model?: string; version?: string; marks?: TtsAnswer['timings'] };
+  try { j = (await res.json()) as typeof j; } catch { throw speechifyError('the Worker sent something that is not a clip.'); }
+  if (!j.audio) throw speechifyError('the Worker sent no sound.');
+  // (a clip the Worker had kept costs nothing: 0 characters)
+  const billed = j.cached ? 0 : Math.max(0, Math.round(typeof j.chars === 'number' ? j.chars : text.length));
+  if (billed > 0) await addUsage({ date: new Date().toISOString(), provider: 'openai', model: SPEECHIFY_MODEL, inputTokens: billed, outputTokens: 0, cachedTokens: 0, usd: speechifyUsd(billed, j.model ?? '') }).catch(() => undefined);
+  return { b64: j.audio, mime: j.mime ?? 'audio/mpeg', timings: Array.isArray(j.marks) && j.marks.length ? j.marks : null, ...(typeof j.version === 'string' && j.version ? { version: j.version } : {}) };
+}
+
+/** one sentence by the steady voice: up to SPEECHIFY_STEADY_TRIES tries; what cannot work (no setup, today's limit) is not tried again */
+async function speechifySteady(a: TtsAsk): Promise<TtsAnswer & { version?: string }> {
+  const text = a.text.trim();
+  const t0 = Date.now();
+  let voice = '';
+  try {
+    await speechifyAccess();
+    const u = await getSpeechifyUsage();
+    if (u.stopped) throw speechifyError(SPEECHIFY_LIMIT, 'limit');
+    if (text.length > u.left) throw speechifyError(`this text is longer than the characters left today (${u.left.toLocaleString('en-US')}).`);
+    voice = (a.voice || (await getExtras()).speechifyVoice || '').trim();
+  } catch (e) {
+    const err = speechifySilent(e);
+    voiceLog('not asked', { why: err.message, text });
+    throw err;
+  }
+  speechifySent.push(text);
+  if (speechifySent.length > 400) speechifySent.splice(0, 200);
+  const wasDown = speechifyDown;
+  const tries = wasDown ? 1 : SPEECHIFY_STEADY_TRIES;
+  const timeout = speechifyTest.timeoutMs ?? (wasDown ? SPEECHIFY_DOWN_TIMEOUT_MS : SPEECHIFY_STEADY_TIMEOUT_MS);
+  const waits = speechifyTest.waits ?? SPEECHIFY_STEADY_WAITS;
+  let last: unknown = null;
+  let final = false;
+  for (let n = 0; n < tries && !final; n++) {
+    if (n > 0) await new Promise((r) => setTimeout(r, waits[n - 1] ?? waits[waits.length - 1] ?? 1200));
+    const t1 = Date.now();
+    try {
+      const res = await workerFetch('/speak', { method: 'POST', body: { text, ...(voice ? { voice } : {}), format: 'mp3', lang: a.lang ?? 'en' } }, timeout);
+      if (!res.ok) {
+        const p = (await workerProblem(res)) as Error & { why?: string };
+        // (the app code, the Worker's setup, today's limit: a new try would get the same answer)
+        if (p.why === 'setup' || p.why === 'limit') final = true;
+        throw p;
+      }
+      const clip = await speechifyClip(res, text);
+      if (wasDown) voiceLog('Speechify answers again', { ms: Date.now() - t0, text });
+      else if (n > 0) voiceLog(`worked at try ${n + 1}`, { ms: Date.now() - t0, text });
+      else if (Date.now() - t1 > 6000) voiceLog('slow answer', { why: 'the Worker took long for this sentence', ms: Date.now() - t1, text });
+      speechifyDown = false;
+      return clip;
+    } catch (e) {
+      last = e;
+      // (one short try while the Worker is down: the "not spoken" line below says it all)
+      if (tries > 1) voiceLog(`try ${n + 1} of ${tries} failed`, { why: (e as Error).message, ms: Date.now() - t1, text });
+    }
+  }
+  // (the Worker cannot be reached or keeps failing: the next sentences do not each wait three long tries)
+  if (!final) speechifyDown = true;
+  const err = speechifySilent(last);
+  voiceLog('not spoken', { why: err.message, ms: Date.now() - t0, text });
+  throw err;
+}
 
 /** one sentence / paragraph from the Worker; the characters billed are counted on this device; the daily limit holds */
 async function speechifySay(a: TtsAsk): Promise<TtsAnswer & { version?: string }> {
+  if (a.steady) return speechifySteady(a);
   const text = a.text.trim();
   await speechifyAccess();
   // (the Worker did not answer a moment ago: the device voice at once, no new wait of seconds per sentence)
@@ -639,13 +733,7 @@ async function speechifySay(a: TtsAsk): Promise<TtsAnswer & { version?: string }
     throw e;
   }
   if (!res.ok) throw await workerProblem(res);
-  let j: { audio?: string; mime?: string; chars?: number; cached?: boolean; model?: string; version?: string; marks?: TtsAnswer['timings'] };
-  try { j = (await res.json()) as typeof j; } catch { throw speechifyError('the Worker sent something that is not a clip.'); }
-  if (!j.audio) throw speechifyError('the Worker sent no sound.');
-  // (a clip the Worker had kept costs nothing: 0 characters)
-  const billed = j.cached ? 0 : Math.max(0, Math.round(typeof j.chars === 'number' ? j.chars : text.length));
-  if (billed > 0) await addUsage({ date: new Date().toISOString(), provider: 'openai', model: SPEECHIFY_MODEL, inputTokens: billed, outputTokens: 0, cachedTokens: 0, usd: speechifyUsd(billed, j.model ?? '') }).catch(() => undefined);
-  return { b64: j.audio, mime: j.mime ?? 'audio/mpeg', timings: Array.isArray(j.marks) && j.marks.length ? j.marks : null, ...(typeof j.version === 'string' && j.version ? { version: j.version } : {}) };
+  return speechifyClip(res, text);
 }
 
 /**
@@ -871,7 +959,7 @@ export function installDreamBackground(): void {
     if (msg?.type === 'dream-test-key' && msg.provider) { void testKey(msg.provider).then(sendResponse); return true; }
     if (msg?.type === 'dream-vocab-online') { void (async () => { const saved = (msg as { save?: boolean }).save ? await saveOnline().catch(() => null) : null; const on = await loadOnline().catch(() => null); sendResponse({ saved, at: on?.at ?? null, words: on ? Object.keys(on.words).length : 0, sync: !!chrome.storage?.sync }); })(); return true; }
     if (msg?.type === 'dream-dev-check') { void devReload(_sender.tab?.id, (msg as { build?: string }).build).then((r) => sendResponse({ reloading: r })); return true; }
-    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error & { code?: string; note?: string }) => sendResponse({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.note ? { note: e.note } : {}) })); return true; }
+    if (msg?.type === 'dream-tts') { void keepAwake(synthesize(msg as unknown as TtsAsk)).then(sendResponse, (e: Error & { code?: string; note?: string; why?: string }) => sendResponse({ error: e.message, ...(e.code ? { code: e.code } : {}), ...(e.note ? { note: e.note } : {}), ...(e.why ? { why: e.why } : {}) })); return true; }
     if (msg?.type === 'dream-test-azure') { void testAzure((msg as { key?: string }).key).then(sendResponse); return true; }
     if (msg?.type === 'dream-speechify-voices') { void speechifyVoices().then(sendResponse, (e: Error) => sendResponse({ error: e.message })); return true; }
     if (msg?.type === 'dream-speechify-usage') { void Promise.all([getSpeechifyUsage(), speechifyServerUsage().catch(() => null)]).then(([local, server]) => sendResponse({ local, server }), (e: Error) => sendResponse({ error: e.message })); return true; }

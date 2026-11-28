@@ -30,7 +30,24 @@ export interface AudioEngineOptions {
   /** (YouTube side) the name and cost note of an engine that is not in ENGINE_LABELS (the Speechify voice) */
   label?: string;
   costNote?: string;
+  /**
+   * (YouTube side, I Know 3.13) the steady voice: a clip that the device pauses from outside (iOS takes the sound for
+   * a moment) is started again once; if it stays paused it ends as an error, so nothing waits for it for ever.
+   */
+  steady?: boolean;
+  /** (YouTube side) what happened to the sound, for the voice log: a slow start, a sound that would not play, a pause from outside */
+  log?: (what: string, o?: { why?: string; ms?: number; text?: string }) => void;
 }
+
+/** a sound that started later than this after speak() is written to the voice log (ms) */
+const SLOW_START_MS = 2500;
+/** a clip paused from outside is started again after this long; still paused this long after that = it is given up (ms) */
+const OUTSIDE_PAUSE_RETRY_MS = 250;
+const OUTSIDE_PAUSE_GIVE_UP_MS = 3000;
+/** while iOS itself has the sound (a phone call, Siri) a paused clip waits, at most this long; then it goes on (ms) */
+const INTERRUPTION_MAX_MS = 180_000;
+/** the app says so (AppModel.swift watchSound, through yt.ts): iOS has taken the sound just now */
+const soundInterrupted = (): boolean => !!(globalThis as unknown as { __ytcSoundInterrupted?: boolean }).__ytcSoundInterrupted;
 
 /** cloud voices cost money per character: never fetch further ahead than this */
 const CLOUD_PREFETCH = 2;
@@ -364,13 +381,17 @@ export class AudioTtsEngine implements TtsEngine {
       const { audio, url } = clip;
       live = { audio, k };
       let startWatch: ReturnType<typeof setTimeout> | null = null;
+      /** (the steady voice) the clip was paused from outside: the timer of its new start / of giving it up */
+      let pauseWatch: ReturnType<typeof setTimeout> | null = null;
+      let resumedOnce = false;
       let swapped = false;
       const swap = (): boolean => {
         if (!orElse || swapped || over || started0) return false;
         swapped = true; over = true;
         if (startWatch) clearTimeout(startWatch);
+        if (pauseWatch) { clearTimeout(pauseWatch); pauseWatch = null; }
         cancelAnimationFrame(raf);
-        audio.onplaying = audio.onended = audio.onerror = null;
+        audio.onplaying = audio.onended = audio.onerror = audio.onpause = null;
         audio.pause(); audio.src = ''; URL.revokeObjectURL(url);
         if (live?.audio === audio) live = null;
         cleanup = null;
@@ -402,8 +423,9 @@ export class AudioTtsEngine implements TtsEngine {
         if (over) return;
         over = true;
         if (startWatch) { clearTimeout(startWatch); startWatch = null; }
+        if (pauseWatch) { clearTimeout(pauseWatch); pauseWatch = null; }
         cancelAnimationFrame(raf);
-        audio.onplaying = audio.onended = audio.onerror = null;
+        audio.onplaying = audio.onended = audio.onerror = audio.onpause = null;
         if (live?.audio === audio) live = null;
         // played to its end: kept for a moment, so the same text said again at once is just play() on this element
         if (o === 'ended') self.keepAgain(k, { ...clip, vol: volume });
@@ -415,7 +437,12 @@ export class AudioTtsEngine implements TtsEngine {
         if (!started0) { voiceStats.started++; if (isBaked) { voiceStats.baked++; bakeOk(); } }
         started0 = true;
         if (startWatch) { clearTimeout(startWatch); startWatch = null; }
-        if (!started) { started = true; self.lastStartDelayMs = performance.now() - t0; opts.onStart?.(); }
+        if (pauseWatch) { clearTimeout(pauseWatch); pauseWatch = null; }
+        if (!started) {
+          started = true; self.lastStartDelayMs = performance.now() - t0;
+          if (self.lastStartDelayMs > SLOW_START_MS) self.opts.log?.('slow start', { why: 'the sound started late', ms: self.lastStartDelayMs, text: seg.text });
+          opts.onStart?.();
+        }
         cancelAnimationFrame(raf);
         raf = requestAnimationFrame(tick);
       };
@@ -424,10 +451,50 @@ export class AudioTtsEngine implements TtsEngine {
         while (timings && nextWord < timings.length) { opts.onWord?.(timings[nextWord].charIndex, timings[nextWord].charLength); nextWord++; }
         end('ended');
       };
-      audio.onerror = () => { if (swap()) return; handle.error = new Error('audio playback failed'); end('error'); };
+      audio.onerror = () => {
+        if (swap()) return;
+        const code = audio.error?.code;
+        handle.error = new Error(`audio playback failed${code ? ` (media error ${code})` : ''}`);
+        self.opts.log?.('the sound failed while playing', { why: handle.error.message, text: seg.text });
+        end('error');
+      };
+      // (the steady voice) the device paused the clip, not the tutor (iOS took the sound for a moment: another sound,
+      // the microphone, a call): it is started again once; a clip that stays paused ends, so nothing waits for ever
+      if (self.opts.steady) audio.onpause = () => {
+        if (over || self._paused || audio.ended || !started0) return;
+        self.opts.log?.('paused from outside', { why: soundInterrupted() ? 'iOS has the sound (a call, Siri): waiting' : resumedOnce ? 'again: the device paused the sound' : 'the device paused the sound (not the tutor)', text: seg.text });
+        if (pauseWatch) clearTimeout(pauseWatch);
+        const pausedAt = performance.now();
+        let waited = false;
+        const giveUp = () => {
+          pauseWatch = null;
+          if (over || self._paused || !audio.paused) return;
+          // (a phone call or Siri has the sound: the clip waits for its end and then goes on from where it was)
+          if (soundInterrupted() && performance.now() - pausedAt < INTERRUPTION_MAX_MS) { waited = true; pauseWatch = setTimeout(giveUp, 1000); return; }
+          if (waited) {
+            waited = false;
+            audio.play().then(() => self.opts.log?.('started again', { why: 'after the interruption', text: seg.text }), (e: Error) => self.opts.log?.('could not start again', { why: e?.message || e?.name || 'refused', text: seg.text }));
+            pauseWatch = setTimeout(giveUp, OUTSIDE_PAUSE_GIVE_UP_MS);
+            return;
+          }
+          handle.error = new Error('the device paused the sound and it would not go on');
+          self.opts.log?.('given up', { why: handle.error.message, text: seg.text });
+          end('error');
+        };
+        if (resumedOnce) { pauseWatch = setTimeout(giveUp, OUTSIDE_PAUSE_GIVE_UP_MS); return; }
+        resumedOnce = true;
+        pauseWatch = setTimeout(() => {
+          if (over || self._paused || !audio.paused) { pauseWatch = null; return; }
+          audio.play().then(() => self.opts.log?.('started again', { text: seg.text }), (e: Error) => self.opts.log?.('could not start again', { why: e?.message || e?.name || 'refused', text: seg.text }));
+          pauseWatch = setTimeout(giveUp, OUTSIDE_PAUSE_GIVE_UP_MS);
+        }, OUTSIDE_PAUSE_RETRY_MS);
+      };
       self.current = { audio, cancel: handle.cancel };
       if (orElse) startWatch = setTimeout(() => { startWatch = null; if (!self._paused) swap(); }, BAKED_START_MS);
-      audio.play().catch((e: Error) => { if (swap()) return; if (!over) { handle.error = e; end('error'); } });
+      audio.play().catch((e: Error) => {
+        if (swap()) return;
+        if (!over) { handle.error = e; self.opts.log?.('the sound would not start', { why: `${e?.name ?? 'Error'}: ${e?.message ?? ''}`.trim(), text: seg.text }); end('error'); }
+      });
       }
     });
 

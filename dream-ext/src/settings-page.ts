@@ -11,6 +11,7 @@ import css from './dream.css';
 import { THEME_HOST_CSS } from './theme';
 import { renderQuick } from './quick';
 import { SPEECHIFY_CSS } from './speechify-rows';
+import { voiceLog, readVoiceLog, forgetVoiceLog, voiceLogLineText, voiceLogText, VOICE_LOG_KEY } from './voice-log';
 import * as store from './store';
 import type { Settings } from '@shared/settings';
 import type { TtsEngine } from '@core/tts/engine';
@@ -27,12 +28,21 @@ const PAGE_CSS = `.quick.page{position:static;inset:auto;width:auto;max-width:72
 .quick.page .q-body{overflow:visible;max-height:none;padding:var(--t-space-s) var(--t-space-l) 48px}
 .quick.page section{border-color:var(--t-line)}
 .ptoast{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;max-width:calc(100% - 32px);background:var(--t-text);color:var(--t-bg);font:500 var(--t-size-footnote)/1.35 var(--t-font-ui);padding:10px 16px;border-radius:var(--t-radius-control);text-align:center;box-shadow:var(--t-shadow)}
-.ptoast[hidden]{display:none}`;
+.ptoast[hidden]{display:none}
+.vlog{max-width:720px;margin:0 auto;padding:0 var(--t-space-l) 56px}
+.vlog[hidden]{display:none}
+.vlog h3{font:600 var(--t-size-body)/1.3 var(--t-font-ui);margin:0 0 4px;color:var(--t-text)}
+.vlog p{font:400 var(--t-size-footnote)/1.4 var(--t-font-ui);margin:0 0 8px;color:var(--t-muted)}
+.vlog pre{font:400 var(--t-size-footnote)/1.45 var(--t-font-ui);white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 10px;padding:10px 12px;border:1px solid var(--t-line);border-radius:var(--t-radius-control);background:var(--t-sunken);color:var(--t-text);max-height:320px;overflow:auto}
+.vlog .row{display:flex;gap:10px;flex-wrap:wrap}
+.vlog button{min-height:44px;padding:0 16px;font:500 var(--t-size-body)/1 var(--t-font-ui);border:1px solid var(--t-line);border-radius:var(--t-radius-control);background:var(--t-raised);color:var(--t-text)}`;
 const host = document.getElementById('dr-settings-host') as HTMLElement;
 if (TOUCH) host.dataset.phone = '1';
 if (window.__ytcDevice === 'pad') host.dataset.pad = '1';
 const root = host.attachShadow({ mode: 'open' });
-root.innerHTML = `<style>${THEME_HOST_CSS}${css}${SPEECHIFY_CSS}${PAGE_CSS}</style><div class="quick page" role="form" aria-label="My tutor's settings"></div><div class="ptoast" role="status" hidden></div>`;
+root.innerHTML = `<style>${THEME_HOST_CSS}${css}${SPEECHIFY_CSS}${PAGE_CSS}</style><div class="quick page" role="form" aria-label="My tutor's settings"></div>
+<section class="vlog" aria-label="Voice log" hidden><h3>Voice log</h3><p>When the voice waits long, is stopped or does not speak, the reason is written here (the newest line is the last).</p><pre data-vlog></pre><div class="row"><button type="button" data-vlog-act="copy">Copy the log</button><button type="button" data-vlog-act="clear">Clear</button></div></section>
+<div class="ptoast" role="status" hidden></div>`;
 const q = root.querySelector<HTMLElement>('.quick')!;
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -63,7 +73,10 @@ async function prepareVoice(): Promise<void> {
   macVoice = settings.voice.voiceId || (await defaultVoiceFor('webspeech').catch(() => ''));
   // (the tutor off = free mode: the device's own voice only, never a paid one)
   voiceNow = extras.tutorOn !== false ? resolveVoice(extras.voice, keys, { speechifyUrl: extras.speechifyUrl ?? '' }) : 'mac';
-  const base: TtsEngine = voiceNow === 'mac' ? mac : new VoiceWithBackup(cloudEngine(voiceNow, 'en'), mac, () => macVoice, (e) => toast(e.message, 6000));
+  // (the Speechify voice is the only voice, as on the video: never the device voice in its place)
+  const base: TtsEngine = voiceNow === 'mac' ? mac
+    : voiceNow === 'speechify' ? new VoiceWithBackup(cloudEngine(voiceNow, 'en', { steady: true }), mac, () => macVoice, (e) => toast(e.message, 6000), 12_000, undefined, { steady: true, log: voiceLog })
+      : new VoiceWithBackup(cloudEngine(voiceNow, 'en'), mac, () => macVoice, (e) => toast(e.message, 6000));
   voiceId = voiceNow === 'mac' ? macVoice : voiceNow === 'openai' ? extras.openaiVoice : voiceNow === 'azure' ? extras.azureVoice : voiceNow === 'speechify' ? extras.speechifyVoice ?? '' : extras.elevenVoice;
   teacher = new WithVolume(() => base, () => sliderGain(extras.teacherVolume ?? 60));
   word = new WithVolume(() => base, () => sliderGain(extras.wordVolume ?? 80));
@@ -74,6 +87,27 @@ function test(which: 'teacher' | 'word'): void {
   e.cancelAll();
   e.speak(which === 'teacher' ? 'Hello! I am your English tutor. This is how I sound.' : 'meticulous', { voiceId, rate: which === 'teacher' ? settings.voice.rate : Math.min(settings.voice.rate, 0.9) });
 }
+
+// ---- the voice log (the Voice part): why the voice waited, was stopped or did not speak --------------------------------
+const vlog = root.querySelector<HTMLElement>('.vlog')!;
+async function renderVoiceLog(): Promise<void> {
+  vlog.hidden = part !== 'voice';
+  if (vlog.hidden) return;
+  const all = await readVoiceLog();
+  const pre = vlog.querySelector<HTMLElement>('[data-vlog]')!;
+  pre.textContent = all.length ? all.slice(-15).map(voiceLogLineText).join('\n') : 'Nothing yet: no problem was seen.';
+  pre.scrollTop = pre.scrollHeight;
+}
+vlog.addEventListener('click', (ev) => {
+  const act = (ev.target as HTMLElement).closest<HTMLElement>('[data-vlog-act]')?.dataset.vlogAct;
+  if (act === 'clear') { void forgetVoiceLog().then(renderVoiceLog); return; }
+  if (act !== 'copy') return;
+  void readVoiceLog().then(async (all) => {
+    const text = all.length ? voiceLogText(all, 150) : 'Voice log: nothing yet.';
+    try { await navigator.clipboard.writeText(text); toast(`Copied (${all.length} lines). Paste it into the chat.`, 4000); }
+    catch { toast('Could not copy. Press and hold on the log, then Select All and Copy.', 6000); }
+  });
+});
 
 // ---- drawn again after every change (a box being typed in keeps its value: not drawn under the finger) ----------------
 let azureAvail: string[] | null = null;
@@ -92,13 +126,16 @@ async function render(force = false): Promise<void> {
     close: () => undefined, toast,
   });
   if (!force) window.scrollTo(0, y);
+  await renderVoiceLog();
   document.body.dataset.part = part;
   document.body.dataset.ready = '1';
 }
 
 let soon: ReturnType<typeof setTimeout> | null = null;
-chrome.storage.onChanged.addListener((_ch, area) => {
+chrome.storage.onChanged.addListener((ch, area) => {
   if (area !== 'local') return;
+  // (only a new line of the voice log: the log is drawn again, the rest of the page stays as it is)
+  if (Object.keys(ch).every((k) => k === VOICE_LOG_KEY)) { void renderVoiceLog(); return; }
   if (soon) clearTimeout(soon);
   soon = setTimeout(() => { soon = null; void render(); }, 60);
 });

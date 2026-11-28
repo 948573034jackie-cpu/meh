@@ -494,3 +494,316 @@ describe('the picker, the counter of the Worker, the Test button', () => {
     expect((await testSpeechify()).ok).toBe(false);
   });
 });
+
+// ---- I Know 3.13, step 1: the steady Speechify voice (no other voice ever takes over) --------------------------------
+import { speechifyTest, SPEECHIFY_STEADY_TRIES, SPEECHIFY_STEADY_TIMEOUT_MS } from '../src/bg';
+import { SPEECHIFY_LIMIT_STEADY } from '../src/tts-cache';
+import { STEADY_START_TIMEOUT_MS } from '../src/voice';
+import { voiceLogNow, clearVoiceLog, mergeVoiceLog, voiceLogLineText, voiceLog, VOICE_LOG_MAX } from '../src/voice-log';
+
+const saySteady = (text: string, voice = '') => synthesize({ engine: 'speechify', text, voice, steady: true } as never);
+const logged = () => voiceLogNow().map((l) => l.what);
+
+describe('the steady voice asks the Worker: a longer wait, quiet new tries, no "quiet minute"', () => {
+  beforeEach(() => { clearVoiceLog(); speechifyTest.waits = [1, 1]; speechifyTest.timeoutMs = null; });
+  afterEach(() => { speechifyTest.waits = null; speechifyTest.timeoutMs = null; });
+
+  it('a Worker that needs 9 s is waited for (the old voice gave up after 6 s)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    expect(SPEECHIFY_STEADY_TIMEOUT_MS).toBeGreaterThan(SPEECHIFY_SPEAK_TIMEOUT_MS + 3000);
+    answer = (c) => new Promise((r) => setTimeout(() => r(okClip(c)), 9000));
+    const p = saySteady('A slow sentence.');
+    await vi.advanceTimersByTimeAsync(9100);
+    expect((await p).b64).toBe('SUQzZmFrZQ==');
+    expect(speakCalls()).toHaveLength(1);
+    // (a long wait is written down, with how long it took)
+    expect(voiceLogNow().map((l) => [l.what, l.ms && l.ms >= 9000])).toEqual([['slow answer', true]]);
+  });
+  it('a failed try is tried again quietly: the second try works, nothing is told', async () => {
+    let n = 0;
+    answer = (c) => (++n === 1 ? new Response(JSON.stringify({ code: 'speechify', error: 'Speechify is busy' }), { status: 502 }) : okClip(c));
+    expect((await saySteady('Tried twice.')).b64).toBe('SUQzZmFrZQ==');
+    expect(speakCalls()).toHaveLength(2);
+    expect(logged()).toEqual(['try 1 of 3 failed', 'worked at try 2']);
+    expect(voiceLogNow()[0].why).toMatch(/Speechify is busy/);
+    // (the text was paid for once)
+    expect(speechifySent).toEqual(['Tried twice.']);
+  });
+  it('every try failed: three requests, the error says "not spoken" (code silent, never busy), each try is in the log with its reason', async () => {
+    answer = () => { throw new TypeError('Failed to fetch'); };
+    const e = await failOf(saySteady('No internet now.'));
+    expect(speakCalls()).toHaveLength(SPEECHIFY_STEADY_TRIES);
+    expect(e?.code).toBe('silent');
+    expect(isBusy(e)).toBe(false);
+    expect(e?.note).toMatch(/could not be reached.*This sentence was not spoken\.$/);
+    expect(e?.note).not.toMatch(/iPhone voice/);
+    expect(logged()).toEqual(['try 1 of 3 failed', 'try 2 of 3 failed', 'try 3 of 3 failed', 'not spoken']);
+    expect(voiceLogNow().every((l) => /could not be reached/.test(l.why ?? '') && l.text === 'No internet now.')).toBe(true);
+  });
+  it('after that: each next sentence gets ONE short try (no long waits in a row), and the voice is back by itself', async () => {
+    answer = () => { throw new TypeError('Failed to fetch'); };
+    await failOf(saySteady('One.'));
+    calls = [];
+    await failOf(saySteady('Two.'));
+    expect(speakCalls()).toHaveLength(1);
+    // (no request is ever refused without asking: the Worker is asked for every sentence)
+    answer = okClip;
+    calls = [];
+    expect((await saySteady('Three.')).b64).toBe('SUQzZmFrZQ==');
+    expect(logged().at(-1)).toBe('Speechify answers again');
+    // (and three tries again from now on)
+    answer = () => new Response('{}', { status: 500 });
+    calls = [];
+    await failOf(saySteady('Four.'));
+    expect(speakCalls()).toHaveLength(3);
+  });
+  it('what a new try cannot change is asked once: a wrong app code, the Worker\'s daily limit', async () => {
+    answer = () => new Response(JSON.stringify({ error: 'App code missing or wrong', code: 'auth' }), { status: 401 });
+    const e = await failOf(saySteady('Wrong code.'));
+    expect(speakCalls()).toHaveLength(1);
+    expect(e?.message).toMatch(/did not accept the app code/);
+    expect(e?.code).toBe('silent');
+    calls = [];
+    answer = () => new Response(JSON.stringify({ code: 'daily-limit', error: 'limit', resetAt: nextUtcMidnight() }), { status: 429 });
+    const l = await failOf(saySteady('Too much today.'));
+    expect(speakCalls()).toHaveLength(1);
+    expect(l?.message).toBe(SPEECHIFY_LIMIT_STEADY);
+    expect(l?.note).toBe(SPEECHIFY_LIMIT_STEADY);
+    // (the day is done on this device: the next sentence is not even sent, and says the same)
+    calls = [];
+    expect((await failOf(saySteady('Next one.')))?.message).toBe(SPEECHIFY_LIMIT_STEADY);
+    expect(speakCalls()).toHaveLength(0);
+    expect(logged().at(-1)).toBe('not asked');
+  });
+  it('the old voice (I Know Book) is exactly as before: one try, 6 s, then the quiet minute', async () => {
+    answer = () => { throw new TypeError('Failed to fetch'); };
+    const e = await failOf(say('Old rule.'));
+    expect(speakCalls()).toHaveLength(1);
+    expect(isBusy(e)).toBe(true);
+    expect(e?.note).toMatch(/The iPhone voice reads instead\.$/);
+    answer = okClip;
+    await failOf(say('Old rule, next.'));
+    expect(speakCalls()).toHaveLength(1);
+    expect(voiceLogNow()).toEqual([]);
+  });
+});
+
+describe('VoiceWithBackup, steady: the Speechify voice is the only voice', () => {
+  const silentErr = (message: string) => ttsError('speechify', { error: message, code: 'silent' });
+  it('a sentence that could not be made: NOT said by the device voice, the next one is asked again, the reason told once a minute', async () => {
+    let t = 5_000_000;
+    const primary = failing(silentErr('Speechify voice: the Worker could not be reached (Failed to fetch).'));
+    const mac = device();
+    const told: [string, boolean][] = [];
+    const v = new VoiceWithBackup(primary, mac, () => 'Daniel', (e, cooling) => told.push([e.message, cooling]), 12_000, () => t, { steady: true });
+    for (const s of ['First.', 'Second.', 'Third.', 'Fourth.']) expect(await v.speak(s, { voiceId: '', rate: 1 }).done).toBe('ended');
+    // (asked for every sentence, once each: the background already tried three times)
+    expect(primary.asked).toEqual(['First.', 'Second.', 'Third.', 'Fourth.']);
+    expect(mac.said).toEqual([]);
+    expect(v.failed).toBe(false);
+    expect(told).toEqual([['Speechify voice: the Worker could not be reached (Failed to fetch). This sentence was not spoken.', false]]);
+    expect(v.silentInARow).toBe(4);
+    t += 61_000;
+    await v.speak('Fifth.', { voiceId: '', rate: 1 }).done;
+    expect(told).toHaveLength(2);
+  });
+  it('the sound was made but did not play: once more (it is still in memory), then it is left out; never the device voice', async () => {
+    const primary = failing(new Error('audio playback failed'));
+    const mac = device();
+    const lines: string[] = [];
+    const v = new VoiceWithBackup(primary, mac, () => 'Daniel', () => undefined, 12_000, undefined, { steady: true, log: (what) => lines.push(what) });
+    const h = v.speak('Play me.', { voiceId: '', rate: 1 });
+    expect(await h.done).toBe('ended');
+    expect(primary.asked).toEqual(['Play me.', 'Play me.']);
+    expect(mac.said).toEqual([]);
+    expect(lines).toEqual(['the sound did not play: once more', 'not spoken']);
+    expect(h.error?.message).toBe('audio playback failed');
+  });
+  it('no sound for 40 s: the sentence is given up, nothing else speaks, and the next sentence is the Speechify voice again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const asked: string[] = [];
+    let hang = true;
+    const primary: TtsEngine = {
+      id: SPEECHIFY_ENGINE, kind: 'cloud', label: 'Speechify', costNote: '', wordBoundaries: false, paused: false,
+      listVoices: async () => [],
+      speak(text: string, o: SpeakOptions): SpeakHandle {
+        asked.push(text);
+        if (!hang) { o.onStart?.(); return { done: Promise.resolve('ended' as SpeakOutcome), cancel: () => undefined }; }
+        let end!: (x: SpeakOutcome) => void; const done = new Promise<SpeakOutcome>((r) => { end = r; }); return { done, cancel: () => end('cancelled') };
+      },
+      pause() {}, resume() {}, cancelAll() {},
+    };
+    const mac = device();
+    const told: string[] = [];
+    const v = new VoiceWithBackup(primary, mac, () => 'Daniel', (e) => told.push(e.message), 12_000, undefined, { steady: true });
+    const h = v.speak('Never comes.', { voiceId: '', rate: 1 });
+    // (the old Speechify rule gave up after 8 s and changed the voice: here it still waits)
+    await vi.advanceTimersByTimeAsync(STEADY_START_TIMEOUT_MS - 1000);
+    let over = false;
+    void h.done.then(() => { over = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(over).toBe(false);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(await h.done).toBe('ended');
+    expect(mac.said).toEqual([]);
+    expect(told).toEqual(['Speechify voice: no sound came in time. This sentence was not spoken.']);
+    expect(v.failed).toBe(false);
+    hang = false;
+    expect(await v.speak('Here I am.', { voiceId: '', rate: 1 }).done).toBe('ended');
+    expect(asked).toEqual(['Never comes.', 'Here I am.']);
+    expect(v.silentInARow).toBe(0);
+  });
+  it('made ahead whatever happened before (the old voice stopped preparing while it "cooled")', () => {
+    const got: string[] = [];
+    const primary = { ...failing(silentErr('x')), prefetch: (t: string) => { got.push(t); }, readAhead: (ts: string[]) => { got.push(...ts); } } as unknown as TtsEngine;
+    const v = new VoiceWithBackup(primary, device(), () => 'Daniel', () => undefined, 12_000, undefined, { steady: true });
+    v.prefetch('A word', '', 1);
+    v.readAhead(['Next.', 'After.'], '', 1);
+    expect(got).toEqual(['A word', 'Next.', 'After.']);
+  });
+});
+
+describe('the steady engine: the next TWO sentences are made ahead', () => {
+  beforeEach(() => {
+    G.Audio = FakeAudio;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:test/1');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+  });
+  afterEach(() => { vi.restoreAllMocks(); delete G.Audio; });
+  it('readAhead of three sentences sends two (one sentence takes the Worker 3 to 5 s)', async () => {
+    const e = cloudEngine('speechify', 'en', { steady: true });
+    e.readAhead(['Next one.', 'After that.', 'And later.'], '', 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(speechifySent).toEqual(['Next one.', 'After that.']);
+    // (they went to the Worker as the steady voice's requests)
+    expect(speakCalls()).toHaveLength(2);
+    e.stopReadAhead();
+  });
+});
+
+describe('the voice log', () => {
+  beforeEach(() => clearVoiceLog());
+  it('a line: the time, what, why, how long, the first words of the text (never more than 40 letters)', () => {
+    voiceLog('not spoken', { why: 'the Worker did not answer in time.', ms: 12_034, text: 'It means to feel a little worried about something that may happen soon.' });
+    const [l] = voiceLogNow();
+    expect(l.text).toBe('It means to feel a little worried about');
+    expect(voiceLogLineText({ ...l, at: new Date(2026, 10, 28, 14, 3, 27).getTime() })).toBe('14:03:27 not spoken · the Worker did not answer in time. · 12.0 s · “It means to feel a little worried about”');
+  });
+  it('the saved lines and the new ones are one list: each line once, in the order of time, the newest kept', () => {
+    const a = [{ at: 1, what: 'a' }, { at: 3, what: 'c' }];
+    const b = [{ at: 2, what: 'b' }, { at: 3, what: 'c' }];
+    expect(mergeVoiceLog(a, b).map((l) => l.what)).toEqual(['a', 'b', 'c']);
+    const many = Array.from({ length: VOICE_LOG_MAX + 20 }, (_, i) => ({ at: i, what: `l${i}` }));
+    const kept = mergeVoiceLog(many, []);
+    expect(kept).toHaveLength(VOICE_LOG_MAX);
+    expect(kept[0].what).toBe('l20');
+  });
+});
+
+/** an audio element that plays until the test ends it; the test can pause it "from outside" (as iOS does) */
+class LiveAudio {
+  static last: LiveAudio | null = null;
+  static refuse = false;
+  preload = ''; preservesPitch = false; playbackRate = 1; volume = 1; currentTime = 0; duration = 2; paused = true; ended = false; error = null;
+  plays = 0;
+  onplaying: (() => void) | null = null; onended: (() => void) | null = null; onerror: (() => void) | null = null; onpause: (() => void) | null = null;
+  constructor(public src = '') { LiveAudio.last = this; }
+  load(): void {}
+  addEventListener(): void {}
+  removeEventListener(): void {}
+  play(): Promise<void> {
+    this.plays++;
+    if (LiveAudio.refuse && this.plays > 1) return Promise.reject(new DOMException('not allowed now', 'NotAllowedError'));
+    this.paused = false;
+    queueMicrotask(() => this.onplaying?.());
+    return Promise.resolve();
+  }
+  pause(): void { this.paused = true; }
+  /** iOS pauses the clip (not the tutor) */
+  outsidePause(): void { this.paused = true; this.onpause?.(); }
+  finish(): void { this.ended = true; this.paused = true; this.onpause?.(); this.onended?.(); }
+}
+
+describe('the steady engine: a sound that the device pauses from outside', () => {
+  const W = globalThis as unknown as { __ytcSoundInterrupted?: boolean; requestAnimationFrame?: unknown; cancelAnimationFrame?: unknown };
+  let lines: string[] = [];
+  beforeEach(() => {
+    G.Audio = LiveAudio; LiveAudio.last = null; LiveAudio.refuse = false; lines = [];
+    W.requestAnimationFrame = () => 0; W.cancelAnimationFrame = () => undefined;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:test/1');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    clearVoiceLog();
+  });
+  afterEach(() => { vi.restoreAllMocks(); delete G.Audio; delete W.__ytcSoundInterrupted; delete W.requestAnimationFrame; delete W.cancelAnimationFrame; });
+  const start = async () => {
+    const e = cloudEngine('speechify', 'en', { steady: true });
+    const h = e.speak('A sentence that is being said.', { voiceId: '', rate: 1 });
+    await vi.advanceTimersByTimeAsync(30);
+    const a = LiveAudio.last!;
+    let out: SpeakOutcome | null = null;
+    void h.done.then((o) => { out = o; });
+    return { e, h, a, out: () => out };
+  };
+  const whats = () => voiceLogNow().map((l) => l.what);
+
+  it('is started again by itself, and the sentence is said to its end', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { h, a, out } = await start();
+    expect(a.plays).toBe(1);
+    a.outsidePause();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(a.plays).toBe(2);
+    expect(a.paused).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(out()).toBe(null);
+    a.finish();
+    expect(await h.done).toBe('ended');
+    expect(whats()).toEqual(['paused from outside', 'started again']);
+  });
+  it('that will not go on: given up after 3 s (nothing waits for ever), with the reason in the log', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    LiveAudio.refuse = true;
+    const { h, a } = await start();
+    a.outsidePause();
+    await vi.advanceTimersByTimeAsync(300 + 3100);
+    expect(await h.done).toBe('error');
+    expect(h.error?.message).toMatch(/paused the sound and it would not go on/);
+    expect(whats()).toEqual(['paused from outside', 'could not start again', 'given up']);
+  });
+  it('the tutor\'s own pause is not one (the learner paused the teacher): nothing is started again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { e, a } = await start();
+    e.pause();
+    a.onpause?.();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(a.plays).toBe(1);
+    expect(whats()).toEqual([]);
+    e.cancelAll();
+  });
+  it('a phone call or Siri has the sound: the clip waits for the end of it, then goes on (it is not skipped)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    LiveAudio.refuse = true;
+    const { h, a, out } = await start();
+    W.__ytcSoundInterrupted = true;
+    a.outsidePause();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(out()).toBe(null);
+    // the call is over
+    W.__ytcSoundInterrupted = false;
+    LiveAudio.refuse = false;
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(a.paused).toBe(false);
+    a.finish();
+    expect(await h.done).toBe('ended');
+    expect(whats().at(-1)).toBe('started again');
+  });
+  it('the old engine (I Know Book) does nothing of this: a paused clip is left as it was', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const e = cloudEngine('speechify', 'en');
+    e.speak('The old way.', { voiceId: '', rate: 1 });
+    await vi.advanceTimersByTimeAsync(30);
+    const a = LiveAudio.last!;
+    expect(a.onpause).toBe(null);
+    e.cancelAll();
+  });
+});

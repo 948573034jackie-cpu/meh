@@ -13,6 +13,8 @@ export interface CachedSound { b64: string; mime: string; timings: { start: numb
 export const AZURE_BUSY = 'Microsoft is busy (free keys allow 19 requests a minute)';
 /** what the background answers when the Speechify voice is done for today (the app's or the Worker's daily limit) */
 export const SPEECHIFY_LIMIT = "Speechify: today's limit is reached, the free iPhone voice reads until tomorrow";
+/** the same for the steady voice (I Know 3.13: no other voice takes over) */
+export const SPEECHIFY_LIMIT_STEADY = "Speechify: today's limit is reached. The tutor does not speak until tomorrow. To go on today: Settings, Voice, Daily limit.";
 
 const DB = 'dreamVoice', STORE = 'sounds', MAX = 3000;
 /** only short texts are worth keeping (an explanation is new every time) */
